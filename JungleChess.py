@@ -1,6 +1,4 @@
 import tkinter as tk
-from tkinter import messagebox
-import random
 from tkinter import ttk
 
 # -----------------------------
@@ -440,7 +438,48 @@ class ChessBot:
         return new_board
 
     def evaluate_board(self, board):
-        # Define piece values for your variant (King worth 0)
+        # First, check if either king is missing (win/loss)
+        enemy_king_found = False
+        our_king_found = False
+        for r in range(ROWS):
+            for c in range(COLS):
+                piece = board[r][c]
+                if piece is not None and isinstance(piece, King):
+                    if piece.color == self.color:
+                        our_king_found = True
+                    else:
+                        enemy_king_found = True
+        if not enemy_king_found:
+            return 10000  # Large win value if enemy king is gone
+        if not our_king_found:
+            return -10000  # Large loss value if our king is gone
+
+        # Add bonus for moves that threaten to evaporate the enemy king.
+        bonus = 0
+        # For each of our evaporation-capable pieces (Knight and Queen)
+        for r in range(ROWS):
+            for c in range(COLS):
+                piece = board[r][c]
+                if piece is not None and piece.color == self.color and (isinstance(piece, Knight) or isinstance(piece, Queen)):
+                    valid_moves = piece.get_valid_moves(board, (r, c))
+                    for move in valid_moves:
+                        # Simulate the move
+                        test_board = self.simulate_move(board, (r, c), move)
+                        # Check if enemy king is present in test_board
+                        enemy_king_still_here = False
+                        for rr in range(ROWS):
+                            for cc in range(COLS):
+                                p = test_board[rr][cc]
+                                if p is not None and isinstance(p, King) and p.color != self.color:
+                                    enemy_king_still_here = True
+                                    break
+                            if enemy_king_still_here:
+                                break
+                        if not enemy_king_still_here:
+                            # If enemy king would vanish, add a bonus
+                            bonus += 500  # Adjust this bonus value as needed
+
+        # Now sum material based on defined piece values
         piece_values = {
             Pawn: 1,
             Knight: 6,
@@ -456,7 +495,9 @@ class ChessBot:
                 if piece is not None:
                     value = piece_values.get(type(piece), 0)
                     score += value if piece.color == self.color else -value
-        return score
+
+        return score + bonus
+
 
     def get_all_moves(self, board, color):
         moves = []
@@ -531,9 +572,6 @@ class ChessBot:
             return False
 
 
-# -----------------------------
-# Enhanced Chess App with Improved UI
-# -----------------------------
 class EnhancedChessApp:
     def __init__(self, master):
         self.master = master
@@ -543,14 +581,16 @@ class EnhancedChessApp:
         self.COLORS = self.setup_styles()
         self.master.configure(bg=self.COLORS['bg_dark'])
 
-        # Window setup
-        window_width = 1300  # Slightly wider window
-        window_height = 640  # Slightly taller window
+        # Window setup: Fill the screen (windowed fullscreen)
         screen_width = self.master.winfo_screenwidth()
         screen_height = self.master.winfo_screenheight()
-        x = (screen_width // 2) - (window_width // 2)
-        y = (screen_height // 2 - 40) - (window_height // 2)
-        self.master.geometry(f"{window_width}x{window_height}+{x}+{y}")
+        self.master.geometry(f"{screen_width}x{screen_height}+0+0")
+        self.master.state('zoomed')  # Start maximized/fullscreen
+        self.fullscreen = True  # Flag to track fullscreen state
+        
+        # Bind to configuration changes to detect when fullscreen is exited via window buttons
+        self.master.bind("<Configure>", self.on_configure)
+
 
         # Main frame with padding
         self.main_frame = ttk.Frame(master, style='Left.TFrame')
@@ -563,8 +603,8 @@ class EnhancedChessApp:
 
         # Add a title to the left panel
         ttk.Label(self.left_panel, text="CHESS", 
-                 style='Header.TLabel',
-                 font=('Helvetica', 24, 'bold')).pack(pady=(0, 20))
+                  style='Header.TLabel',
+                  font=('Helvetica', 24, 'bold')).pack(pady=(0, 20))
 
         # Game mode frame with subtle border
         self.game_mode_frame = ttk.Frame(self.left_panel, style='Left.TFrame')
@@ -573,19 +613,17 @@ class EnhancedChessApp:
         # Game mode selection
         self.game_mode = tk.StringVar(value="bot")
         ttk.Label(self.game_mode_frame, text="GAME MODE", 
-                 style='Header.TLabel').pack(anchor=tk.W)
-        
-        # Radio buttons with more padding
+                  style='Header.TLabel').pack(anchor=tk.W)
         ttk.Radiobutton(self.game_mode_frame, text="Human vs Bot", 
-                       variable=self.game_mode,
-                       value="bot", 
-                       command=self.reset_game, 
-                       style='Custom.TRadiobutton').pack(anchor=tk.W, pady=(5, 3))
+                        variable=self.game_mode,
+                        value="bot", 
+                        command=self.reset_game, 
+                        style='Custom.TRadiobutton').pack(anchor=tk.W, pady=(5, 3))
         ttk.Radiobutton(self.game_mode_frame, text="Human vs Human", 
-                       variable=self.game_mode,
-                       value="human", 
-                       command=self.reset_game, 
-                       style='Custom.TRadiobutton').pack(anchor=tk.W)
+                        variable=self.game_mode,
+                        value="human", 
+                        command=self.reset_game, 
+                        style='Custom.TRadiobutton').pack(anchor=tk.W)
 
         # Controls frame
         self.controls_frame = ttk.Frame(self.left_panel, style='Left.TFrame')
@@ -593,20 +631,21 @@ class EnhancedChessApp:
 
         # Buttons with increased padding
         ttk.Button(self.controls_frame, text="NEW GAME", 
-                  command=self.reset_game,
-                  style='Control.TButton').pack(fill=tk.X, pady=5)
-        ttk.Button(self.controls_frame, text="FULLSCREEN", 
-                  command=self.toggle_fullscreen,
-                  style='Control.TButton').pack(fill=tk.X, pady=5)
+                   command=self.reset_game,
+                   style='Control.TButton').pack(fill=tk.X, pady=5)
+        # Replace FULLSCREEN button with BOT SETTINGS button
+        ttk.Button(self.controls_frame, text="BOT SETTINGS", 
+                   command=self.open_settings,
+                   style='Control.TButton').pack(fill=tk.X, pady=5)
         ttk.Button(self.controls_frame, text="QUIT", 
-                  command=self.master.quit,
-                  style='Control.TButton').pack(fill=tk.X, pady=5)
+                   command=self.master.quit,
+                   style='Control.TButton').pack(fill=tk.X, pady=5)
 
         # Enhanced turn indicator
         self.turn_frame = ttk.Frame(self.left_panel, style='Left.TFrame')
         self.turn_frame.pack(fill=tk.X, pady=(20, 0))
         self.turn_label = ttk.Label(self.turn_frame, text="WHITE'S TURN", 
-                                  style='Status.TLabel')
+                                    style='Status.TLabel')
         self.turn_label.pack(fill=tk.X)
 
         # Right panel with improved canvas positioning
@@ -625,11 +664,11 @@ class EnhancedChessApp:
 
         # Enhanced chess board canvas
         self.canvas = tk.Canvas(self.canvas_frame,
-                              width=COLS*SQUARE_SIZE,
-                              height=ROWS*SQUARE_SIZE,
-                              bg=self.COLORS['bg_light'],
-                              highlightthickness=2,
-                              highlightbackground=self.COLORS['accent'])
+                                width=COLS * SQUARE_SIZE,
+                                height=ROWS * SQUARE_SIZE,
+                                bg=self.COLORS['bg_light'],
+                                highlightthickness=2,
+                                highlightbackground=self.COLORS['accent'])
         self.canvas.pack()
 
         # Rest of initialization
@@ -651,6 +690,44 @@ class EnhancedChessApp:
         # Initial draw
         self.draw_board()
 
+    def on_configure(self, event):
+        # If we were in fullscreen but the window state is no longer zoomed,
+        # then set the window to a smaller size.
+        if self.fullscreen and self.master.state() != 'zoomed':
+            self.fullscreen = False
+            self.master.geometry("1000x600")
+
+
+    def open_settings(self):
+        # Create a settings window (Toplevel)
+        settings_win = tk.Toplevel(self.master)
+        settings_win.title("Bot Settings")
+        
+        # Center the settings window (for example, 300x150)
+        win_width, win_height = 300, 150
+        screen_width = settings_win.winfo_screenwidth()
+        screen_height = settings_win.winfo_screenheight()
+        x = (screen_width - win_width) // 2
+        y = (screen_height - win_height) // 2
+        settings_win.geometry(f"{win_width}x{win_height}+{x}+{y}")
+        
+        # Label and Spinbox for bot search depth
+        ttk.Label(settings_win, text="Bot Search Depth:",
+                  font=('Helvetica', 12)).pack(pady=(20, 5))
+        depth_var = tk.IntVar(value=ChessBot.search_depth)
+        spin = ttk.Spinbox(settings_win, from_=1, to=5, textvariable=depth_var, width=5)
+        spin.pack(pady=(0, 20))
+        
+        def apply_settings():
+            # Update both the class default and the current bot instance
+            new_depth = depth_var.get()
+            ChessBot.search_depth = new_depth
+            if hasattr(self, 'bot'):
+                self.bot.search_depth = new_depth
+            settings_win.destroy()
+        
+        ttk.Button(settings_win, text="Apply", command=apply_settings).pack()
+
     def setup_styles(self):
         style = ttk.Style()
         style.theme_use('clam')
@@ -658,64 +735,60 @@ class EnhancedChessApp:
         # Define color scheme
         COLORS = {
             'bg_dark': '#1a1a2e',  # Darker background
-            'bg_medium': '#16213e', # Medium background
-            'bg_light': '#0f3460',  # Lighter background
-            'accent': '#e94560',    # Accent color
+            'bg_medium': '#16213e',  # Medium background
+            'bg_light': '#0f3460',   # Lighter background
+            'accent': '#e94560',     # Accent color
             'text_light': '#ffffff',
             'text_dark': '#a2a2a2'
         }
 
         # Configure frame styles
-        style.configure('Left.TFrame', 
-                       background=COLORS['bg_dark'])
-        style.configure('Right.TFrame', 
-                       background=COLORS['bg_medium'])
-        style.configure('Canvas.TFrame', 
-                       background=COLORS['bg_medium'])
+        style.configure('Left.TFrame', background=COLORS['bg_dark'])
+        style.configure('Right.TFrame', background=COLORS['bg_medium'])
+        style.configure('Canvas.TFrame', background=COLORS['bg_medium'])
 
         # Enhanced header label style
         style.configure('Header.TLabel',
-                       background=COLORS['bg_dark'],
-                       foreground=COLORS['text_light'],
-                       font=('Helvetica', 14, 'bold'),
-                       padding=(0, 10))
+                        background=COLORS['bg_dark'],
+                        foreground=COLORS['text_light'],
+                        font=('Helvetica', 14, 'bold'),
+                        padding=(0, 10))
 
         # Modern status label style
         style.configure('Status.TLabel',
-                       background=COLORS['bg_light'],
-                       foreground=COLORS['text_light'],
-                       font=('Helvetica', 16, 'bold'),
-                       padding=(15, 10),
-                       relief='flat',
-                       borderwidth=0)
+                        background=COLORS['bg_light'],
+                        foreground=COLORS['text_light'],
+                        font=('Helvetica', 16, 'bold'),
+                        padding=(15, 10),
+                        relief='flat',
+                        borderwidth=0)
 
         # Sleek button style
         style.configure('Control.TButton',
-                       background=COLORS['accent'],
-                       foreground=COLORS['text_light'],
-                       font=('Helvetica', 11, 'bold'),
-                       padding=(15, 12),
-                       borderwidth=0,
-                       relief='flat')
+                        background=COLORS['accent'],
+                        foreground=COLORS['text_light'],
+                        font=('Helvetica', 11, 'bold'),
+                        padding=(15, 12),
+                        borderwidth=0,
+                        relief='flat')
         
         style.map('Control.TButton',
-                 background=[('active', COLORS['accent']),
-                           ('pressed', '#d13550')],
-                 relief=[('pressed', 'flat'),
-                        ('!pressed', 'flat')])
+                  background=[('active', COLORS['accent']),
+                              ('pressed', '#d13550')],
+                  relief=[('pressed', 'flat'),
+                          ('!pressed', 'flat')])
 
         # Modern radio button style
         style.configure('Custom.TRadiobutton',
-                       background=COLORS['bg_dark'],
-                       foreground=COLORS['text_light'],
-                       font=('Helvetica', 11),
-                       padding=(5, 8))
+                        background=COLORS['bg_dark'],
+                        foreground=COLORS['text_light'],
+                        font=('Helvetica', 11),
+                        padding=(5, 8))
         
         style.map('Custom.TRadiobutton',
-                 background=[('active', COLORS['bg_dark'])],
-                 foreground=[('active', COLORS['accent'])])
+                  background=[('active', COLORS['bg_dark'])],
+                  foreground=[('active', COLORS['accent'])])
                  
-
         return COLORS
 
     def toggle_fullscreen(self, event=None):
