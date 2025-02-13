@@ -17,8 +17,14 @@ HIGHLIGHT_COLOR = "#ADD8E6"  # light blue for valid moves
 # -----------------------------
 class Piece:
     def __init__(self, color):
-        self.color = color  # "white" or "black"
+        self.color = color
         self.has_moved = False
+
+    def save_state(self):
+        return {'has_moved': self.has_moved}
+
+    def restore_state(self, state):
+        self.has_moved = state['has_moved']
 
     def symbol(self):
         return "?"
@@ -390,6 +396,142 @@ def check_evaporation(board):
                 piece.evaporate(board, (r, c))
 
 # -----------------------------
+# Chess Bot Class
+# -----------------------------
+import copy  # Make sure to import copy at the top
+
+class ChessBot:
+    search_depth = 2  # Configurable search depth (placed at the top)
+
+    def __init__(self, board, color):
+        self.board = board
+        self.color = color
+
+    def is_in_check(self, board, color):
+        # Find the king's position
+        king_pos = None
+        for r in range(ROWS):
+            for c in range(COLS):
+                piece = board[r][c]
+                if isinstance(piece, King) and piece.color == color:
+                    king_pos = (r, c)
+                    break
+        if king_pos is None:
+            return False  # Shouldn't happen in normal play
+
+        # Check if any enemy piece can capture the king
+        enemy_color = "black" if color == "white" else "white"
+        for r in range(ROWS):
+            for c in range(COLS):
+                piece = board[r][c]
+                if piece is not None and piece.color == enemy_color:
+                    if king_pos in piece.get_valid_moves(board, (r, c)):
+                        return True
+        return False
+
+    def simulate_move(self, board, start, end):
+        # Create a true deep copy of the board
+        new_board = copy.deepcopy(board)
+    
+        # Make the move
+        piece = new_board[start[0]][start[1]]
+        new_board = piece.move(new_board, start, end)
+        check_evaporation(new_board)  # Apply evaporation rules
+        return new_board
+
+    def evaluate_board(self, board):
+        # Define piece values for your variant (King worth 0)
+        piece_values = {
+            Pawn: 1,
+            Knight: 6,
+            Bishop: 6,
+            Rook: 5,
+            Queen: 8,
+            King: 0
+        }
+        score = 0
+        for r in range(ROWS):
+            for c in range(COLS):
+                piece = board[r][c]
+                if piece is not None:
+                    value = piece_values.get(type(piece), 0)
+                    score += value if piece.color == self.color else -value
+        return score
+
+    def get_all_moves(self, board, color):
+        moves = []
+        for r in range(ROWS):
+            for c in range(COLS):
+                piece = board[r][c]
+                if piece is not None and piece.color == color:
+                    valid_moves = piece.get_valid_moves(board, (r, c))
+                    for move in valid_moves:
+                        test_board = self.simulate_move(board, (r, c), move)
+                        if not self.is_in_check(test_board, color):
+                            moves.append(((r, c), move))
+        return moves
+
+    def minimax(self, board, depth, maximizing_player, alpha, beta):
+        # Determine whose turn it is
+        current_color = self.color if maximizing_player else ("black" if self.color == "white" else "white")
+        moves = self.get_all_moves(board, current_color)
+
+        # Terminal condition: reached desired depth or no legal moves
+        if depth == 0 or not moves:
+            return self.evaluate_board(board)
+
+        if maximizing_player:
+            max_eval = float('-inf')
+            for move in moves:
+                start, end = move
+                new_board = self.simulate_move(board, start, end)
+                eval = self.minimax(new_board, depth - 1, False, alpha, beta)
+                max_eval = max(max_eval, eval)
+                alpha = max(alpha, eval)
+                if beta <= alpha:
+                    break  # Beta cut-off
+            return max_eval
+        else:
+            min_eval = float('inf')
+            for move in moves:
+                start, end = move
+                new_board = self.simulate_move(board, start, end)
+                eval = self.minimax(new_board, depth - 1, True, alpha, beta)
+                min_eval = min(min_eval, eval)
+                beta = min(beta, eval)
+                if beta <= alpha:
+                    break  # Alpha cut-off
+            return min_eval
+
+    def make_move(self):
+        best_move = None
+        best_value = float('-inf')
+        moves = self.get_all_moves(self.board, self.color)
+
+        if not moves:
+            # No legal moves available
+            return False
+
+        for move in moves:
+            start, end = move
+            new_board = self.simulate_move(self.board, start, end)
+            # Start minimax with the opponent's turn and using the configured depth
+            board_value = self.minimax(new_board, ChessBot.search_depth - 1, False, float('-inf'), float('inf'))
+            if board_value > best_value:
+                best_value = board_value
+                best_move = move
+
+        if best_move is not None:
+            start, end = best_move
+            moving_piece = self.board[start[0]][start[1]]
+            self.board = moving_piece.move(self.board, start, end)
+            check_evaporation(self.board)
+            return True
+        else:
+            return False
+
+
+# -----------------------------
 # Enhanced Chess App with Improved UI
 # -----------------------------
 class EnhancedChessApp:
@@ -499,6 +641,7 @@ class EnhancedChessApp:
         self.dragging = False
         self.drag_piece = None
         self.drag_start = None
+        self.bot = ChessBot(self.board, "black")
 
         # Bind events
         self.canvas.bind("<Button-1>", self.on_drag_start)
@@ -689,66 +832,11 @@ class EnhancedChessApp:
         self.valid_moves = []
         self.draw_board()
 
-    def is_in_check(self, board, color):
-        # Find the king's position
-        king_pos = None
-        for r in range(ROWS):
-            for c in range(COLS):
-                piece = board[r][c]
-                if isinstance(piece, King) and piece.color == color:
-                    king_pos = (r, c)
-                    break
-        if king_pos is None:
-            return False  # No king found (shouldn't happen in normal play)
-
-        # Check if any enemy piece can capture the king
-        enemy_color = "black" if color == "white" else "white"
-        for r in range(ROWS):
-            for c in range(COLS):
-                piece = board[r][c]
-                if piece is not None and piece.color == enemy_color:
-                    if king_pos in piece.get_valid_moves(board, (r, c)):
-                        return True
-        return False
-
-    def simulate_move(self, board, start, end):
-        # Create a deep copy of the board
-        new_board = [[None for _ in range(COLS)] for _ in range(ROWS)]
-        for r in range(ROWS):
-            for c in range(COLS):
-                if board[r][c] is not None:
-                    new_board[r][c] = board[r][c]
-    
-        # Make the move
-        piece = new_board[start[0]][start[1]]
-        new_board = piece.move(new_board, start, end)
-        check_evaporation(new_board)  # Apply evaporation rules
-        return new_board
-
     def make_bot_move(self):
         if self.game_over:
             return
     
-        # Get all possible moves for black pieces
-        possible_moves = []
-        for r in range(ROWS):
-            for c in range(COLS):
-                piece = self.board[r][c]
-                if piece is not None and piece.color == "black":
-                    valid_moves = piece.get_valid_moves(self.board, (r, c))
-                    for move in valid_moves:
-                        # Simulate the move and check if it leaves/puts the king in check
-                        test_board = self.simulate_move(self.board, (r, c), move)
-                        if not self.is_in_check(test_board, "black"):
-                            possible_moves.append(((r, c), move))
-
-        if possible_moves:
-            # Make a random move from the legal moves
-            start, end = random.choice(possible_moves)
-            moving_piece = self.board[start[0]][start[1]]
-            self.board = moving_piece.move(self.board, start, end)
-            check_evaporation(self.board)
-    
+        if self.bot.make_move():
             winner = check_game_over(self.board)
             if winner is not None:
                 self.game_over = True
@@ -772,6 +860,7 @@ class EnhancedChessApp:
         self.dragging = False
         self.drag_piece = None
         self.drag_start = None
+        self.bot = ChessBot(self.board, "black")
         self.turn_label.config(text="Turn: White")
         self.draw_board()
 
