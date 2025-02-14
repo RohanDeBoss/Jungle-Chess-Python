@@ -1,14 +1,16 @@
 import tkinter as tk
 from tkinter import ttk
+import time
+import hashlib
 
 # -----------------------------
 # Global Constants
 # -----------------------------
 ROWS, COLS = 8, 8
 SQUARE_SIZE = 65  # pixels
-BOARD_COLOR_1 = "#D2B48C"  # Slightly darker light squares for better contrast
-BOARD_COLOR_2 = "#8B5A2B"  # dark
-HIGHLIGHT_COLOR = "#ADD8E6"  # light blue for valid moves
+BOARD_COLOR_1 = "#D2B48C"
+BOARD_COLOR_2 = "#8B5A2B"
+HIGHLIGHT_COLOR = "#ADD8E6"
 
 # -----------------------------
 # Piece Base Class and Subclasses
@@ -17,6 +19,11 @@ class Piece:
     def __init__(self, color):
         self.color = color
         self.has_moved = False
+
+    def clone(self):
+        new_piece = self.__class__(self.color)
+        new_piece.has_moved = self.has_moved
+        return new_piece
 
     def save_state(self):
         return {'has_moved': self.has_moved}
@@ -37,6 +44,7 @@ class Piece:
         board[start[0]][start[1]] = None
         self.has_moved = True
         return board
+
 
 # ---- King ----
 class King(Piece):
@@ -340,6 +348,13 @@ class Pawn(Piece):
         return board
 
 # -----------------------------
+# Custom Board Copy Function
+# -----------------------------
+def copy_board(board):
+    return [[piece.clone() if piece is not None else None for piece in row] for row in board]
+
+
+# -----------------------------
 # Board Setup and Game Over Check
 # -----------------------------
 def create_initial_board():
@@ -382,9 +397,6 @@ def check_game_over(board):
         return "white"
     return None
 
-# -----------------------------
-# Game Logic Updates
-# -----------------------------
 def check_evaporation(board):
     """Check for evaporation after every move."""
     for r in range(ROWS):
@@ -393,184 +405,235 @@ def check_evaporation(board):
             if isinstance(piece, Knight):
                 piece.evaporate(board, (r, c))
 
-# -----------------------------
-# Chess Bot Class
-# -----------------------------
-import copy  # Make sure to import copy at the top
+    
+def manhattan_distance(pos1, pos2):
+    """Calculate the Manhattan distance between two positions."""
+    return abs(pos1[0] - pos2[0]) + abs(pos1[1] - pos2[1])
 
 class ChessBot:
-    search_depth = 2  # Configurable search depth (placed at the top)
+    search_depth = 3
 
     def __init__(self, board, color):
         self.board = board
         self.color = color
+        self.tt = {}
+        self.nodes_searched = 0
 
-    def is_in_check(self, board, color):
-        # Find the king's position
-        king_pos = None
-        for r in range(ROWS):
-            for c in range(COLS):
-                piece = board[r][c]
-                if isinstance(piece, King) and piece.color == color:
-                    king_pos = (r, c)
-                    break
-        if king_pos is None:
-            return False  # Shouldn't happen in normal play
-
-        # Check if any enemy piece can capture the king
-        enemy_color = "black" if color == "white" else "white"
-        for r in range(ROWS):
-            for c in range(COLS):
-                piece = board[r][c]
-                if piece is not None and piece.color == enemy_color:
-                    if king_pos in piece.get_valid_moves(board, (r, c)):
-                        return True
-        return False
-
-    def simulate_move(self, board, start, end):
-        # Create a true deep copy of the board
-        new_board = copy.deepcopy(board)
-    
-        # Make the move
-        piece = new_board[start[0]][start[1]]
-        new_board = piece.move(new_board, start, end)
-        check_evaporation(new_board)  # Apply evaporation rules
-        return new_board
-
-    def evaluate_board(self, board):
-        # First, check if either king is missing (win/loss)
-        enemy_king_found = False
-        our_king_found = False
-        for r in range(ROWS):
-            for c in range(COLS):
-                piece = board[r][c]
-                if piece is not None and isinstance(piece, King):
-                    if piece.color == self.color:
-                        our_king_found = True
-                    else:
-                        enemy_king_found = True
-        if not enemy_king_found:
-            return 10000  # Large win value if enemy king is gone
-        if not our_king_found:
-            return -10000  # Large loss value if our king is gone
-
-        # Add bonus for moves that threaten to evaporate the enemy king.
-        bonus = 0
-        # For each of our evaporation-capable pieces (Knight and Queen)
-        for r in range(ROWS):
-            for c in range(COLS):
-                piece = board[r][c]
-                if piece is not None and piece.color == self.color and (isinstance(piece, Knight) or isinstance(piece, Queen)):
-                    valid_moves = piece.get_valid_moves(board, (r, c))
-                    for move in valid_moves:
-                        # Simulate the move
-                        test_board = self.simulate_move(board, (r, c), move)
-                        # Check if enemy king is present in test_board
-                        enemy_king_still_here = False
-                        for rr in range(ROWS):
-                            for cc in range(COLS):
-                                p = test_board[rr][cc]
-                                if p is not None and isinstance(p, King) and p.color != self.color:
-                                    enemy_king_still_here = True
-                                    break
-                            if enemy_king_still_here:
-                                break
-                        if not enemy_king_still_here:
-                            # If enemy king would vanish, add a bonus
-                            bonus += 500  # Adjust this bonus value as needed
-
-        # Now sum material based on defined piece values
+    def evaluate_board(self, board, depth):
         piece_values = {
-            Pawn: 1,
-            Knight: 6,
-            Bishop: 6,
-            Rook: 5,
-            Queen: 8,
-            King: 0
+            Pawn: 100,
+            Knight: 700,
+            Bishop: 600,
+            Rook: 500,
+            Queen: 900,
+            King: 100000
         }
+        
         score = 0
+        our_king_pos = None
+        enemy_king_pos = None
+        
+        # First pass: find kings and calculate material score
         for r in range(ROWS):
             for c in range(COLS):
                 piece = board[r][c]
-                if piece is not None:
-                    value = piece_values.get(type(piece), 0)
-                    score += value if piece.color == self.color else -value
+                if piece is None:
+                    continue
+                    
+                # Track king positions
+                if isinstance(piece, King):
+                    if piece.color == self.color:
+                        our_king_pos = (r, c)
+                    else:
+                        enemy_king_pos = (r, c)
+                    continue
+                
+                # Calculate piece value with bonuses
+                value = piece_values[type(piece)]
+                if isinstance(piece, Knight):
+                    value += len(piece.get_valid_moves(board, (r, c))) * 10
+                elif isinstance(piece, Queen):
+                    atomic_threats = sum(1 for move in piece.get_valid_moves(board, (r, c))
+                                      if any(isinstance(board[adj_r][adj_c], King)
+                                           for adj_r, adj_c in self.get_adjacent_squares(move)))
+                    value += atomic_threats * 20
+                
+                score += value if piece.color == self.color else -value
 
-        return score + bonus
+        # Check win/loss conditions
+        if enemy_king_pos is None:
+            return float('inf')
+        if our_king_pos is None:
+            return float('-inf')
 
-
-    def get_all_moves(self, board, color):
-        moves = []
+        # Evaluate threats to our king
+        threat_score = 0
         for r in range(ROWS):
             for c in range(COLS):
                 piece = board[r][c]
-                if piece is not None and piece.color == color:
-                    valid_moves = piece.get_valid_moves(board, (r, c))
-                    for move in valid_moves:
-                        test_board = self.simulate_move(board, (r, c), move)
-                        if not self.is_in_check(test_board, color):
-                            moves.append(((r, c), move))
-        return moves
+                if piece and piece.color != self.color:
+                    for move in piece.get_valid_moves(board, (r, c)):
+                        if manhattan_distance(move, our_king_pos) <= 1:
+                            threat_score += 200
+
+        return int(score - threat_score)
 
     def minimax(self, board, depth, maximizing_player, alpha, beta):
-        # Determine whose turn it is
-        current_color = self.color if maximizing_player else ("black" if self.color == "white" else "white")
-        moves = self.get_all_moves(board, current_color)
+        self.nodes_searched += 1
+        
+        board_key = self.board_hash(board)
+        if board_key in self.tt and self.tt[board_key][0] >= depth:
+            return self.tt[board_key][1]
 
-        # Terminal condition: reached desired depth or no legal moves
-        if depth == 0 or not moves:
-            return self.evaluate_board(board)
+        if depth == 0:
+            return self.evaluate_board(board, depth)
 
+        moves = self.get_all_moves(board, 
+                                 self.color if maximizing_player 
+                                 else ("black" if self.color == "white" else "white"))
+        if not moves:
+            return self.evaluate_board(board, depth)
+
+        best_move = None
         if maximizing_player:
-            max_eval = float('-inf')
+            value = float('-inf')
             for move in moves:
                 start, end = move
                 new_board = self.simulate_move(board, start, end)
-                eval = self.minimax(new_board, depth - 1, False, alpha, beta)
-                max_eval = max(max_eval, eval)
-                alpha = max(alpha, eval)
+                eval_value = self.minimax(new_board, depth - 1, False, alpha, beta)
+                if eval_value > value:
+                    value = eval_value
+                    best_move = move
+                alpha = max(alpha, value)
                 if beta <= alpha:
-                    break  # Beta cut-off
-            return max_eval
+                    break
         else:
-            min_eval = float('inf')
+            value = float('inf')
             for move in moves:
                 start, end = move
                 new_board = self.simulate_move(board, start, end)
-                eval = self.minimax(new_board, depth - 1, True, alpha, beta)
-                min_eval = min(min_eval, eval)
-                beta = min(beta, eval)
+                eval_value = self.minimax(new_board, depth - 1, True, alpha, beta)
+                if eval_value < value:
+                    value = eval_value
+                    best_move = move
+                beta = min(beta, value)
                 if beta <= alpha:
-                    break  # Alpha cut-off
-            return min_eval
+                    break
+
+        self.tt[board_key] = (depth, value, best_move)
+        return value
 
     def make_move(self):
         best_move = None
         best_value = float('-inf')
-        moves = self.get_all_moves(self.board, self.color)
-
-        if not moves:
-            # No legal moves available
-            return False
-
-        for move in moves:
-            start, end = move
-            new_board = self.simulate_move(self.board, start, end)
-            # Start minimax with the opponent's turn and using the configured depth
-            board_value = self.minimax(new_board, ChessBot.search_depth - 1, False, float('-inf'), float('inf'))
-            if board_value > best_value:
-                best_value = board_value
-                best_move = move
-
+        total_start = time.time()
+        
+        for current_depth in range(1, self.search_depth + 1):
+            self.nodes_searched = 0
+            iteration_start = time.time()
+            
+            moves = self.get_all_moves(self.board, self.color)
+            if not moves:
+                return False
+                
+            current_best_move = None
+            current_best_value = float('-inf')
+            
+            for move in moves:
+                start, end = move
+                new_board = self.simulate_move(self.board, start, end)
+                value = self.minimax(new_board, current_depth - 1, False, float('-inf'), float('inf'))
+                if value > current_best_value:
+                    current_best_value = value
+                    current_best_move = move
+                    
+            iteration_time = time.time() - iteration_start
+            print(f"Depth {current_depth}: {iteration_time:.3f}s, "
+                  f"nodes: {self.nodes_searched}, value: {current_best_value}")
+                  
+            best_move = current_best_move
+            best_value = current_best_value
+            
+        print(f"Total time: {(time.time() - total_start):.3f}s")
+        
         if best_move is not None:
             start, end = best_move
             moving_piece = self.board[start[0]][start[1]]
             self.board = moving_piece.move(self.board, start, end)
             check_evaporation(self.board)
             return True
-        else:
+        return False
+
+    # Helper methods
+    def board_hash(self, board):
+        """Generate a unique hash for the board state."""
+        board_str = ''.join(
+            piece.symbol() if piece is not None else '.'
+            for row in board for piece in row
+        )
+        return hashlib.md5(board_str.encode()).hexdigest()
+
+    def get_adjacent_squares(self, pos):
+        """Get all adjacent squares for a given position."""
+        r, c = pos
+        adjacent_squares = [
+            (r-1, c-1), (r-1, c), (r-1, c+1),
+            (r, c-1),           (r, c+1),
+            (r+1, c-1), (r+1, c), (r+1, c+1)
+        ]
+        return [(adj_r, adj_c) for adj_r, adj_c in adjacent_squares 
+                if 0 <= adj_r < ROWS and 0 <= adj_c < COLS]
+
+    def simulate_move(self, board, start, end):
+        """Simulate a move on the board and return the new board state."""
+        new_board = copy_board(board)
+        piece = new_board[start[0]][start[1]]
+        new_board = piece.move(new_board, start, end)
+        return new_board
+
+    def is_in_check(self, board, color):
+        """Check if the given color is in check."""
+        king_pos = None
+        for r in range(ROWS):
+            for c in range(COLS):
+                piece = board[r][c]
+                if piece is not None and isinstance(piece, King) and piece.color == color:
+                    king_pos = (r, c)
+                    break
+            if king_pos is not None:
+                break
+
+        if king_pos is None:
             return False
 
+        for r in range(ROWS):
+            for c in range(COLS):
+                piece = board[r][c]
+                if piece is not None and piece.color != color:
+                    if king_pos in piece.get_valid_moves(board, (r, c)):
+                        return True
+        return False
+
+    def get_all_moves(self, board, color):
+        """Get all legal moves for the given color."""
+        moves = []
+        for r in range(ROWS):
+            for c in range(COLS):
+                piece = board[r][c]
+                if piece is not None and piece.color == color:
+                    for move in piece.get_valid_moves(board, (r, c)):
+                        test_board = self.simulate_move(board, (r, c), move)
+                        if not self.is_in_check(test_board, color):
+                            moves.append(((r, c), move))
+        
+        # Reorder moves using the transposition table
+        board_key = self.board_hash(board)
+        if board_key in self.tt:
+            tt_best_move = self.tt[board_key][2]
+            if tt_best_move in moves:
+                moves.remove(tt_best_move)
+                moves.insert(0, tt_best_move)
+        return moves
 
 class EnhancedChessApp:
     def __init__(self, master):
