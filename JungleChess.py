@@ -413,11 +413,12 @@ def manhattan_distance(pos1, pos2):
 class ChessBot:
     search_depth = 3
 
-    def __init__(self, board, color):
+    def __init__(self, board, color, app):
         self.board = board
         self.color = color
         self.tt = {}
         self.nodes_searched = 0
+        self.app = app  # Store the EnhancedChessApp instance
 
     def evaluate_board(self, board, depth):
         piece_values = {
@@ -454,8 +455,8 @@ class ChessBot:
                     value += len(piece.get_valid_moves(board, (r, c))) * 10
                 elif isinstance(piece, Queen):
                     atomic_threats = sum(1 for move in piece.get_valid_moves(board, (r, c))
-                                      if any(isinstance(board[adj_r][adj_c], King)
-                                           for adj_r, adj_c in self.get_adjacent_squares(move)))
+                                    if any(isinstance(board[adj_r][adj_c], King)
+                                        for adj_r, adj_c in self.get_adjacent_squares(move)))
                     value += atomic_threats * 20
                 
                 score += value if piece.color == self.color else -value
@@ -548,9 +549,14 @@ class ChessBot:
                     current_best_move = move
                     
             iteration_time = time.time() - iteration_start
+            # Flip the evaluation value if the bot is black to report from white's perspective
+            reported_value = -current_best_value if self.color == 'black' else current_best_value
             print(f"Depth {current_depth}: {iteration_time:.3f}s, "
-                  f"nodes: {self.nodes_searched}, value: {current_best_value}")
-                  
+                f"nodes: {self.nodes_searched}, value: {reported_value}")
+            
+            # Update the evaluation bar in the UI
+            self.app.master.after(0, lambda: self.app.draw_eval_bar(reported_value))
+                
             best_move = current_best_move
             best_value = current_best_value
             
@@ -589,6 +595,7 @@ class ChessBot:
         new_board = copy_board(board)
         piece = new_board[start[0]][start[1]]
         new_board = piece.move(new_board, start, end)
+        check_evaporation(new_board)  # Apply evaporation effect
         return new_board
 
     def is_in_check(self, board, color):
@@ -623,6 +630,7 @@ class ChessBot:
                 if piece is not None and piece.color == color:
                     for move in piece.get_valid_moves(board, (r, c)):
                         test_board = self.simulate_move(board, (r, c), move)
+                        check_evaporation(test_board)  # Apply evaporation effect
                         if not self.is_in_check(test_board, color):
                             moves.append(((r, c), move))
         
@@ -654,7 +662,6 @@ class EnhancedChessApp:
         # Bind to configuration changes to detect when fullscreen is exited via window buttons
         self.master.bind("<Configure>", self.on_configure)
 
-
         # Main frame with padding
         self.main_frame = ttk.Frame(master, style='Left.TFrame')
         self.main_frame.pack(fill=tk.BOTH, expand=True, padx=2, pady=2)
@@ -664,11 +671,14 @@ class EnhancedChessApp:
         self.left_panel.pack(side=tk.LEFT, fill=tk.Y, padx=15, pady=15)
         self.left_panel.pack_propagate(False)
 
-        # Add a title to the left panel
-        ttk.Label(self.left_panel, text="CHESS", 
-                  style='Header.TLabel',
-                  font=('Helvetica', 24, 'bold')).pack(pady=(0, 20))
+        # Add the evaluation bar to the top of the left panel
+        self.eval_frame = ttk.Frame(self.left_panel, style='Left.TFrame')
+        self.eval_frame.pack(side=tk.TOP, fill=tk.Y, padx=15, pady=15)
 
+        # Add other elements (title, game mode, controls, etc.) below the evaluation bar
+        ttk.Label(self.left_panel, text="CHESS", 
+          style='Header.TLabel',
+          font=('Helvetica', 24, 'bold')).pack(pady=(0, 20))
         # Game mode frame with subtle border
         self.game_mode_frame = ttk.Frame(self.left_panel, style='Left.TFrame')
         self.game_mode_frame.pack(fill=tk.X, pady=(0, 20))
@@ -713,7 +723,7 @@ class EnhancedChessApp:
 
         # Right panel with improved canvas positioning
         self.right_panel = ttk.Frame(self.main_frame, style='Right.TFrame')
-        self.right_panel.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=15, pady=15)
+        self.right_panel.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=15, pady=15)
 
         # Canvas container with shadow effect
         self.canvas_container = ttk.Frame(self.right_panel, style='Canvas.TFrame')
@@ -734,6 +744,31 @@ class EnhancedChessApp:
                                 highlightbackground=self.COLORS['accent'])
         self.canvas.pack()
 
+        # Move eval_frame to the left panel
+        self.eval_frame = ttk.Frame(self.left_panel, style='Left.TFrame')
+        self.eval_frame.pack(side=tk.TOP, fill=tk.Y, padx=15, pady=15)
+
+        # Now sized for a horizontal bar
+        self.eval_bar_canvas = tk.Canvas(self.eval_frame, 
+            width=300,
+            height=30,
+            bg=self.COLORS['bg_light'],
+            highlightthickness=0)
+        # If you want it truly at the "bottom left," you might do side=tk.BOTTOM here:
+        self.eval_bar_canvas.pack(side=tk.BOTTOM, pady=(10, 5))
+
+
+        # Label to display the evaluation score (optional, can be removed)
+        self.eval_score_label = ttk.Label(self.eval_frame, 
+                                        text="",  # Empty by default
+                                        style='Status.TLabel')
+        self.eval_score_label.pack()
+
+        # Initialize the evaluation bar
+        self.draw_eval_bar(0)  # Start with a neutral evaluation
+        # Add a toggle for the evaluation bar in the bot settings
+        self.eval_bar_visible = True
+
         # Rest of initialization
         self.board = create_initial_board()
         self.turn = "white"
@@ -743,7 +778,7 @@ class EnhancedChessApp:
         self.dragging = False
         self.drag_piece = None
         self.drag_start = None
-        self.bot = ChessBot(self.board, "black")
+        self.bot = ChessBot(self.board, "black", self)  # Pass self to ChessBot
 
         # Bind events
         self.canvas.bind("<Button-1>", self.on_drag_start)
@@ -752,14 +787,10 @@ class EnhancedChessApp:
 
         # Initial draw
         self.draw_board()
-
+        
     def on_configure(self, event):
-        # If we were in fullscreen but the window state is no longer zoomed,
-        # then set the window to a smaller size.
-        if self.fullscreen and self.master.state() != 'zoomed':
-            self.fullscreen = False
-            self.master.geometry("1000x600")
-
+        # Handle window configuration changes (e.g., resizing)
+        pass
 
     def open_settings(self):
         # Create a settings window (Toplevel)
@@ -780,6 +811,11 @@ class EnhancedChessApp:
         depth_var = tk.IntVar(value=ChessBot.search_depth)
         spin = ttk.Spinbox(settings_win, from_=1, to=5, textvariable=depth_var, width=5)
         spin.pack(pady=(0, 20))
+
+        # Checkbox to toggle evaluation bar visibility
+        eval_bar_var = tk.BooleanVar(value=self.eval_bar_visible)
+        ttk.Checkbutton(settings_win, text="Show Evaluation Bar", 
+                        variable=eval_bar_var).pack(pady=(0, 10))
         
         def apply_settings():
             # Update both the class default and the current bot instance
@@ -787,9 +823,70 @@ class EnhancedChessApp:
             ChessBot.search_depth = new_depth
             if hasattr(self, 'bot'):
                 self.bot.search_depth = new_depth
+            
+            # Toggle evaluation bar visibility
+            self.eval_bar_visible = eval_bar_var.get()
+            if self.eval_bar_visible:
+                self.eval_frame.pack(side=tk.RIGHT, fill=tk.Y, padx=15, pady=15)
+            else:
+                self.eval_frame.pack_forget()
+            
             settings_win.destroy()
         
         ttk.Button(settings_win, text="Apply", command=apply_settings).pack()
+
+    def draw_eval_bar(self, eval_score):
+        """
+        Draw a horizontal evaluation bar along the bottom-left.
+        """
+        # Convert centipawn eval to pawn units.
+        eval_score /= 100.0
+
+        self.eval_bar_canvas.delete("all")
+
+        bar_width = 235   # match red buttons
+        bar_height = 30
+        max_eval = 5.0
+        neutral_zone = 0.2
+
+        normalized_score = max(min(eval_score / max_eval, 1.0), -1.0)
+
+        # Draw left-to-right gradient from black to white.
+        for x in range(bar_width):
+            ratio = x / float(bar_width)
+            r = int(255 * ratio)
+            g = int(255 * ratio)
+            b = int(255 * ratio)
+            color = f"#{r:02x}{g:02x}{b:02x}"
+            self.eval_bar_canvas.create_line(x, 0, x, bar_height, fill=color)
+
+        # Compute marker position based on eval.
+        marker_x = int((normalized_score + 1) / 2 * bar_width)
+        accent_color = self.COLORS.get('accent', '#e94560')
+        marker_width = 2
+        self.eval_bar_canvas.create_rectangle(
+            marker_x - marker_width, 0,
+            marker_x + marker_width, bar_height,
+            fill=accent_color, outline=""
+        )
+
+        # Shift the middle marker slightly further left.
+        middle_offset = 0  # increased from 3 to 5 pixels
+        mid_x = (bar_width // 2) - middle_offset
+        self.eval_bar_canvas.create_line(mid_x, 0, mid_x, bar_height, fill="#666666", width=1)
+
+        # Update evaluation score label.
+        if abs(eval_score) < neutral_zone:
+            self.eval_score_label.config(text="Even", font=("Helvetica", 10))
+        else:
+            display_score = abs(eval_score)
+            if eval_score > 0:
+                self.eval_score_label.config(text=f"+{display_score:.2f}", font=("Helvetica", 10))
+            else:
+                self.eval_score_label.config(text=f"-{display_score:.2f}", font=("Helvetica", 10))
+
+        self.master.update_idletasks()
+
 
     def setup_styles(self):
         style = ttk.Style()
@@ -996,7 +1093,7 @@ class EnhancedChessApp:
         self.dragging = False
         self.drag_piece = None
         self.drag_start = None
-        self.bot = ChessBot(self.board, "black")
+        self.bot = ChessBot(self.board, "black", self)  # Pass self to ChessBot
         self.turn_label.config(text="Turn: White")
         self.draw_board()
 
