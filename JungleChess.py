@@ -1,7 +1,7 @@
 import tkinter as tk
 from tkinter import ttk
 import time
-
+import random
 
 # -----------------------------
 # Global Constants
@@ -11,6 +11,7 @@ SQUARE_SIZE = 65
 BOARD_COLOR_1 = "#D2B48C"
 BOARD_COLOR_2 = "#8B5A2B"
 HIGHLIGHT_COLOR = "#ADD8E6"
+movedelay = 400 # milliseconds
 
 DIRECTIONS = {
     'king': [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (-1, 1), (1, -1), (1, 1)],
@@ -367,6 +368,7 @@ def manhattan_distance(pos1, pos2):
     """Calculate the Manhattan distance between two positions."""
     return abs(pos1[0] - pos2[0]) + abs(pos1[1] - pos2[1])
 
+
 class ChessBot:
     search_depth = 3
 
@@ -610,6 +612,7 @@ class ChessBot:
         ]
         
         # Reorder moves using the transposition table
+
         board_key = self.board_hash(board)
         if board_key in self.tt:
             tt_best_move = self.tt[board_key][2]
@@ -618,7 +621,6 @@ class ChessBot:
                 moves.insert(0, tt_best_move)
         return moves
 
-
 class EnhancedChessApp:
     def __init__(self, master):
         self.master = master
@@ -626,76 +628,75 @@ class EnhancedChessApp:
         self.COLORS = self.setup_styles()
         self.master.configure(bg=self.COLORS['bg_dark'])
 
-        # Window setup remains unchanged...
-        screen_width = self.master.winfo_screenwidth()
-        screen_height = self.master.winfo_screenheight()
-        self.master.geometry(f"{screen_width}x{screen_height}+0+0")
+        # Window setup
+        screen_w = self.master.winfo_screenwidth()
+        screen_h = self.master.winfo_screenheight()
+        self.master.geometry(f"{screen_w}x{screen_h}+0+0")
         self.master.state('zoomed')
         self.fullscreen = True
         self.master.bind("<Configure>", self.on_configure)
-
+        
+        # Main frame setup
         self.main_frame = ttk.Frame(master, style='Left.TFrame')
         self.main_frame.pack(fill=tk.BOTH, expand=True, padx=2, pady=2)
-
-        # Left panel with less top padding so everything moves upward
+        
+        # Left panel (sidebar)
         self.left_panel = ttk.Frame(self.main_frame, width=250, style='Left.TFrame')
         self.left_panel.pack(side=tk.LEFT, fill=tk.Y, padx=15, pady=(0,15))
         self.left_panel.pack_propagate(False)
-
-        # Reduced top spacing for the evaluation frame and header
-        self.eval_frame = ttk.Frame(self.left_panel, style='Left.TFrame')
-        self.eval_frame.pack(side=tk.TOP, fill=tk.Y, padx=15, pady=(5,10))
         
-        ttk.Label(self.left_panel, text="JUNGLE CHESS", 
-                  style='Header.TLabel',
-                  font=('Helvetica', 24, 'bold')).pack(pady=(0,10))
-
-        self.game_mode_frame = ttk.Frame(self.left_panel, style='Left.TFrame')
-        self.game_mode_frame.pack(fill=tk.X, pady=(0,10))
+        # Header label
+        ttk.Label(self.left_panel, text="JUNGLE CHESS", style='Header.TLabel',
+                font=('Helvetica', 24, 'bold')).pack(pady=(0,10))
+        
+        # Game mode frame setup
         self.game_mode = tk.StringVar(value="bot")
-        ttk.Label(self.game_mode_frame, text="GAME MODE", style='Header.TLabel').pack(anchor=tk.W)
-        ttk.Radiobutton(self.game_mode_frame, text="Human vs Bot", 
-                        variable=self.game_mode,
-                        value="bot", 
-                        command=self.reset_game, 
-                        style='Custom.TRadiobutton').pack(anchor=tk.W, pady=(5,3))
-        ttk.Radiobutton(self.game_mode_frame, text="Human vs Human", 
-                        variable=self.game_mode,
-                        value="human", 
-                        command=self.reset_game, 
-                        style='Custom.TRadiobutton').pack(anchor=tk.W)
-
-        self.controls_frame = ttk.Frame(self.left_panel, style='Left.TFrame')
-        self.controls_frame.pack(fill=tk.X, pady=5)
-        ttk.Button(self.controls_frame, text="NEW GAME", 
-                   command=self.reset_game,
-                   style='Control.TButton').pack(fill=tk.X, pady=5)
-        ttk.Button(self.controls_frame, text="BOT SETTINGS", 
-                   command=self.open_settings,
-                   style='Control.TButton').pack(fill=tk.X, pady=5)
-        ttk.Button(self.controls_frame, text="SWAP SIDES", 
-                   command=self.swap_sides,
-                   style='Control.TButton').pack(fill=tk.X, pady=5)
-        ttk.Button(self.controls_frame, text="QUIT", 
-                   command=self.master.quit,
-                   style='Control.TButton').pack(fill=tk.X, pady=5)
-
+        game_mode_frame = ttk.Frame(self.left_panel, style='Left.TFrame')
+        game_mode_frame.pack(fill=tk.X, pady=(0,10))
+        ttk.Label(game_mode_frame, text="GAME MODE", style='Header.TLabel').pack(anchor=tk.W)
+        ttk.Radiobutton(game_mode_frame, text="Human vs Bot", variable=self.game_mode,
+                        value="bot", command=self.reset_game, style='Custom.TRadiobutton').pack(anchor=tk.W, pady=(5,3))
+        ttk.Radiobutton(game_mode_frame, text="Human vs Human", variable=self.game_mode,
+                        value="human", command=self.reset_game, style='Custom.TRadiobutton').pack(anchor=tk.W)
+        
+        # Controls frame setup
+        controls_frame = ttk.Frame(self.left_panel, style='Left.TFrame')
+        controls_frame.pack(fill=tk.X, pady=5)
+        ttk.Button(controls_frame, text="NEW GAME", command=self.reset_game,
+                style='Control.TButton').pack(fill=tk.X, pady=5)
+        ttk.Button(controls_frame, text="BOT SETTINGS", command=self.open_settings,
+                style='Control.TButton').pack(fill=tk.X, pady=5)
+        ttk.Button(controls_frame, text="SWAP SIDES", command=self.swap_sides,
+                style='Control.TButton').pack(fill=tk.X, pady=5)
+        ttk.Button(controls_frame, text="QUIT", command=self.master.quit,
+                style='Control.TButton').pack(fill=tk.X, pady=5)
+        
+        # Turn display frame
         self.turn_frame = ttk.Frame(self.left_panel, style='Left.TFrame')
         self.turn_frame.pack(fill=tk.X, pady=(10,0))
         self.turn_label = ttk.Label(self.turn_frame, text="WHITE'S TURN", style='Status.TLabel')
         self.turn_label.pack(fill=tk.X)
+        
+        # Evaluation frame setup
+        self.eval_frame = ttk.Frame(self.left_panel, style='Left.TFrame')
+        self.eval_frame.pack(side=tk.TOP, fill=tk.Y, padx=15, pady=15)
+        self.eval_bar_canvas = tk.Canvas(self.eval_frame, width=300, height=30,
+                                        bg=self.COLORS['bg_light'], highlightthickness=0)
+        self.eval_bar_canvas.pack(side=tk.BOTTOM, pady=(10, 5))
+        self.eval_score_label = ttk.Label(self.eval_frame, text="", style='Status.TLabel')
+        self.eval_score_label.pack()
+        self.draw_eval_bar(0)
+        self.eval_bar_visible = True
 
+        # Right panel (main game board)
         self.right_panel = ttk.Frame(self.main_frame, style='Right.TFrame')
         self.right_panel.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=15, pady=15)
-
         self.canvas_container = ttk.Frame(self.right_panel, style='Canvas.TFrame')
         self.canvas_container.pack(expand=True)
         self.canvas_container.grid_rowconfigure(0, weight=1)
         self.canvas_container.grid_columnconfigure(0, weight=1)
-
         self.canvas_frame = ttk.Frame(self.canvas_container, style='Canvas.TFrame')
         self.canvas_frame.grid(row=0, column=0)
-
         self.canvas = tk.Canvas(self.canvas_frame,
                                 width=COLS * SQUARE_SIZE,
                                 height=ROWS * SQUARE_SIZE,
@@ -704,20 +705,7 @@ class EnhancedChessApp:
                                 highlightbackground=self.COLORS['accent'])
         self.canvas.pack()
 
-        self.eval_frame = ttk.Frame(self.left_panel, style='Left.TFrame')
-        self.eval_frame.pack(side=tk.TOP, fill=tk.Y, padx=15, pady=15)
-        self.eval_bar_canvas = tk.Canvas(self.eval_frame, 
-            width=300,
-            height=30,
-            bg=self.COLORS['bg_light'],
-            highlightthickness=0)
-        self.eval_bar_canvas.pack(side=tk.BOTTOM, pady=(10, 5))
-        self.eval_score_label = ttk.Label(self.eval_frame, text="", style='Status.TLabel')
-        self.eval_score_label.pack()
-        self.draw_eval_bar(0)
-        self.eval_bar_visible = True
-
-        # Set initial player's color to white.
+        # Initial game state initialization
         self.human_color = "white"
         self.board = create_initial_board()
         self.turn = "white"
@@ -727,16 +715,15 @@ class EnhancedChessApp:
         self.dragging = False
         self.drag_piece = None
         self.drag_start = None
-        bot_color = "black"  # Opponent always plays opposite color.
+        bot_color = "black"  # Opponent always plays opposite
         self.bot = ChessBot(self.board, bot_color, self)
-
-
-        # Bind canvas events using the new coordinate mapping
+        
+        # Bind canvas events and initial drawing
         self.canvas.bind("<Button-1>", self.on_drag_start)
         self.canvas.bind("<B1-Motion>", self.on_drag_motion)
         self.canvas.bind("<ButtonRelease-1>", self.on_drag_end)
         self.draw_board()
-
+    
     def swap_sides(self):
         # Swap which color the human plays. After swapping, the board is redrawn from the new perspective.
         self.human_color = "black" if self.human_color == "white" else "white"
@@ -782,7 +769,7 @@ class EnhancedChessApp:
         settings_win.geometry(f"{win_width}x{win_height}+{x}+{y}")
         ttk.Label(settings_win, text="Bot Search Depth:", font=('Helvetica', 12)).pack(pady=(20, 5))
         depth_var = tk.IntVar(value=ChessBot.search_depth)
-        spin = ttk.Spinbox(settings_win, from_=1, to=5, textvariable=depth_var, width=5)
+        spin = ttk.Spinbox(settings_win, from_=1, to=6, textvariable=depth_var, width=5)
         spin.pack(pady=(0, 20))
         eval_bar_var = tk.BooleanVar(value=self.eval_bar_visible)
         ttk.Checkbutton(settings_win, text="Show Evaluation Bar", variable=eval_bar_var).pack(pady=(0, 10))
@@ -833,6 +820,7 @@ class EnhancedChessApp:
             else:
                 self.eval_score_label.config(text=f"-{display_score:.2f}", font=("Helvetica", 10))
         self.master.update_idletasks()
+
 
     def setup_styles(self):
         style = ttk.Style()
@@ -982,7 +970,7 @@ class EnhancedChessApp:
                 self.turn = "black" if self.turn == "white" else "white"
                 self.turn_label.config(text=f"Turn: {self.turn.capitalize()}")
                 if self.game_mode.get() == "bot" and self.turn != self.human_color:
-                    self.master.after(500, self.make_bot_move)
+                    self.master.after(movedelay, self.make_bot_move)
         self.dragging = False
         self.drag_piece = None
         self.drag_start = None
