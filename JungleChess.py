@@ -250,26 +250,27 @@ class Pawn(Piece):
     def get_valid_moves(self, board, pos):
         moves = []
         direction = -1 if self.color == "white" else 1
-        
-        # Forward moves (1 or 2 squares)
+        starting_row = 6 if self.color == "white" else 1
+
+        # Forward moves (1 or 2 squares based on rank)
         for steps in [1, 2]:
-            if steps == 2 and self.has_moved:
-                continue  # Pawns can only move 2 squares on their first move
-                
+            if steps == 2 and pos[0] != starting_row:
+                continue  # Allow 2-square move only from starting rank
+
             new_r = pos[0] + (direction * steps)
             new_c = pos[1]
-            
+
             if 0 <= new_r < ROWS:
-                # Forward capture
+                # Forward capture: if an enemy is directly ahead
                 if board[new_r][new_c] is not None and board[new_r][new_c].color != self.color:
                     moves.append((new_r, new_c))
-                # Normal forward move
+                # Normal forward move: if square is empty
                 if board[new_r][new_c] is None:
                     moves.append((new_r, new_c))
                 if board[new_r][new_c] is not None:
-                    break  # Stop if a piece is blocking the path
-        
-        # Sideways captures at current rank
+                    break  # Block further movement if occupied
+
+        # Sideways captures at the current rank
         for dc in [-1, 1]:
             new_c = pos[1] + dc
             if 0 <= new_c < COLS:
@@ -279,22 +280,14 @@ class Pawn(Piece):
         return moves
 
     def move(self, board, start, end):
-        # Handle capture if present
-        if board[end[0]][end[1]] is not None and board[end[0]][end[1]].color != self.color:
-            board[end[0]][end[1]] = None
-        
-        # Move the pawn
-        board[end[0]][end[1]] = self
-        board[start[0]][start[1]] = None
-        self.has_moved = True
-        
-        # Promotion logic: white promotes when reaching row 0, black when reaching the last row
-        if (self.color == "white" and end[0] == 0) or (self.color == "black" and end[0] == ROWS - 1):
+        board = super().move(board, start, end)
+        # Determine promotion rank: 1st row for white, last row for black
+        promotion_rank = 0 if self.color == "white" else (ROWS - 1)
+        if end[0] == promotion_rank:
+            # Promote pawn to queen
             board[end[0]][end[1]] = Queen(self.color)
-        
         return board
-
-
+        
 # -----------------------------
 # Helper Functions
 # -----------------------------
@@ -738,7 +731,6 @@ def is_in_explosion_threat(board, color):
     return False
 
 def validate_move(board, color, start, end):
-    """Validate a move, considering explosion mechanics for king capturing queen."""
     # Precompute king's position once
     king_pos = None
     for r in range(ROWS):
@@ -746,50 +738,29 @@ def validate_move(board, color, start, end):
             if isinstance(board[r][c], King) and board[r][c].color == color:
                 king_pos = (r, c)
                 break
-        if king_pos:
-            break
+        if king_pos: break
 
-    # Get the moving piece
-    piece = board[start[0]][start[1]]
-    if not piece or piece.color != color:
-        return False  # Invalid piece or wrong color
-
-    # Simulate the move
     simulated = copy_board(board)
+    piece = simulated[start[0]][start[1]]
+    if not piece or piece.color != color:
+        return False
+    
     simulated = piece.move(simulated, start, end)
     check_evaporation(simulated)
-
-    # Check if the move leaves the king in check
+    
     if is_in_check(simulated, color):
         return False
-
-    # Check for explosion threats
+    
     if is_in_explosion_threat(simulated, color):
         return False
-
-    # Check for knight evaporation threats
+    
     if is_king_in_knight_evaporation_danger(simulated, color):
         return False
-
-    # Special case: King capturing queen
-    if isinstance(piece, King):
-        target = board[end[0]][end[1]]
-        if isinstance(target, Queen) and target.color != color:
-            # Check if the king would explode after capturing the queen
-            for dr in [-1, 0, 1]:
-                for dc in [-1, 0, 1]:
-                    if dr == 0 and dc == 0:
-                        continue
-                    r = end[0] + dr
-                    c = end[1] + dc
-                    if 0 <= r < ROWS and 0 <= c < COLS:
-                        if isinstance(simulated[r][c], King) and simulated[r][c].color == color:
-                            return False  # King would be harmed by explosion
-
-    # Only check knight attack if the king is moving
+    
+    # Only check knight attack if the king is moving.
     if isinstance(piece, King) and is_king_attacked_by_knight(simulated, color, end):
         return False
-
+    
     return True
 
 def is_king_attacked_by_knight(board, color, king_pos):
