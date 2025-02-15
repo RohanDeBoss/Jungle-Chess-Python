@@ -599,7 +599,7 @@ class ChessBot:
     # Search Methods (Minimax & Move Selection)
     # ====================================================
     def minimax(self, board, depth, maximizing_player, alpha, beta):
-        """Optimized minimax with alpha-beta pruning and early termination."""
+        """Optimized minimax with alpha-beta pruning and Principal Variation Search (PVS)."""
         self.nodes_searched += 1
 
         current_turn = self.color if maximizing_player else ('black' if self.color == 'white' else 'white')
@@ -608,8 +608,8 @@ class ChessBot:
         current_key = generate_position_key(board, current_turn)
         if self.app.position_history.count(current_key) >= 2:
             return 0  # Evaluate repeated position as draw
-        # =========================================================================
-
+        # ============================================================================
+        
         if is_stalemate(board, current_turn):
             return 0
 
@@ -629,25 +629,44 @@ class ChessBot:
 
         moves = self.order_moves(board, moves, maximizing_player)
 
+        first_move = True
         best_value = float('-inf') if maximizing_player else float('inf')
+
         for move in moves:
             start, end = move
             new_board = self.simulate_move(board, start, end)
-            eval_value = self.minimax(new_board, depth - 1, not maximizing_player, alpha, beta)
-
-            if (maximizing_player and eval_value > best_value) or (not maximizing_player and eval_value < best_value):
-                best_value = eval_value
+            
+            if first_move:
+                # For the first move, search with the full window
+                score = self.minimax(new_board, depth - 1, not maximizing_player, alpha, beta)
+                first_move = False
+            else:
+                # Principal Variation Search: use a null window search first
+                if maximizing_player:
+                    score = self.minimax(new_board, depth - 1, not maximizing_player, alpha, alpha + 1)
+                    # If the null-window search indicates a potentially better move, re-search with full window
+                    if alpha < score < beta:
+                        score = self.minimax(new_board, depth - 1, not maximizing_player, score, beta)
+                else:
+                    score = self.minimax(new_board, depth - 1, not maximizing_player, beta - 1, beta)
+                    if alpha < score < beta:
+                        score = self.minimax(new_board, depth - 1, not maximizing_player, alpha, score)
 
             if maximizing_player:
+                if score > best_value:
+                    best_value = score
                 alpha = max(alpha, best_value)
             else:
+                if score < best_value:
+                    best_value = score
                 beta = min(beta, best_value)
 
             if beta <= alpha:
-                break
+                break  # Prune remaining branches
 
         self.tt[board_key] = (depth, best_value)
         return best_value
+
 
     def make_move(self):
         """Make the best move found by the bot."""
