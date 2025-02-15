@@ -877,12 +877,12 @@ class EnhancedChessApp:
         self.canvas_container.grid_columnconfigure(0, weight=1)
         self.canvas_frame = ttk.Frame(self.canvas_container, style='Canvas.TFrame')
         self.canvas_frame.grid(row=0, column=0)
+        # In the __init__ method of EnhancedChessApp, change the canvas creation:
         self.canvas = tk.Canvas(self.canvas_frame,
                                 width=COLS * SQUARE_SIZE,
                                 height=ROWS * SQUARE_SIZE,
                                 bg=self.COLORS['bg_light'],
-                                highlightthickness=2,
-                                highlightbackground=self.COLORS['accent'])
+                                highlightthickness=0)  # Remove built-in highlight border
         self.canvas.pack()
 
         # Initial game state initialization
@@ -1070,11 +1070,24 @@ class EnhancedChessApp:
                 x2, y2 = x1 + SQUARE_SIZE, y1 + SQUARE_SIZE
                 color = BOARD_COLOR_1 if (r + c) % 2 == 0 else BOARD_COLOR_2
                 self.canvas.create_rectangle(x1, y1, x2, y2, fill=color, outline="")
+
                 # highlight valid moves if needed
                 if (r, c) in self.valid_moves:
                     self.canvas.create_oval(x1 + 19, y1 + 19, x2 - 19, y2 - 19,
-                                              fill="#1E90FF", outline="#1E90FF", width=3)
-        # Draw pieces
+                                            fill="#1E90FF", outline="#1E90FF", width=3)
+
+        # Highlight kings if in check or checkmated
+        for r in range(ROWS):
+            for c in range(COLS):
+                piece = self.board[r][c]
+                if piece and isinstance(piece, King):
+                    if is_in_check(self.board, piece.color):
+                        highlight_color = "darkred" if not has_legal_moves(self.board, piece.color) else "red"
+                        x1, y1 = self.board_to_canvas(r, c)
+                        x2, y2 = x1 + SQUARE_SIZE, y1 + SQUARE_SIZE
+                        self.canvas.create_rectangle(x1, y1, x2, y2, outline=highlight_color, width=3)
+
+        # Draw pieces (existing code)
         for r in range(ROWS):
             for c in range(COLS):
                 piece = self.board[r][c]
@@ -1087,19 +1100,25 @@ class EnhancedChessApp:
                         shadow_offset = 2
                         shadow_color = "#444444"
                         self.canvas.create_text(x_center + shadow_offset, y_center + shadow_offset,
-                                                text=symbol, font=("Arial", 39), fill=shadow_color, tags="piece")
+                                                text=symbol, font=("Arial", 39),
+                                                fill=shadow_color, tags="piece")
                         self.canvas.create_text(x_center, y_center,
                                                 text=symbol, font=("Arial Unicode MS", 39),
                                                 fill="white", tags="piece")
                     else:
                         self.canvas.create_text(x_center, y_center, text=symbol,
                                                 font=("Arial", 39), fill="black", tags="piece")
+
         # Draw dragging piece if any
         if self.dragging and self.drag_piece:
-            # Draw piece following the mouse (using raw event coordinates)
             piece = self.board[self.drag_start[0]][self.drag_start[1]]
             self.canvas.create_text(self.drag_piece[0], self.drag_piece[1],
                                     text=piece.symbol(), font=("Arial", 36), tags="drag")
+        
+        # Draw an even border around the chess board
+        board_width = COLS * SQUARE_SIZE
+        board_height = ROWS * SQUARE_SIZE
+        self.canvas.create_rectangle(0, 0, board_width, board_height, outline=self.COLORS['accent'], width=4)
 
     def draw_piece(self, r, c):
         piece = self.board[r][c]
