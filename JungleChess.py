@@ -738,6 +738,7 @@ def is_in_explosion_threat(board, color):
     return False
 
 def validate_move(board, color, start, end):
+    """Validate a move, considering explosion mechanics for king capturing queen."""
     # Precompute king's position once
     king_pos = None
     for r in range(ROWS):
@@ -745,29 +746,50 @@ def validate_move(board, color, start, end):
             if isinstance(board[r][c], King) and board[r][c].color == color:
                 king_pos = (r, c)
                 break
-        if king_pos: break
+        if king_pos:
+            break
 
-    simulated = copy_board(board)
-    piece = simulated[start[0]][start[1]]
+    # Get the moving piece
+    piece = board[start[0]][start[1]]
     if not piece or piece.color != color:
-        return False
-    
+        return False  # Invalid piece or wrong color
+
+    # Simulate the move
+    simulated = copy_board(board)
     simulated = piece.move(simulated, start, end)
     check_evaporation(simulated)
-    
+
+    # Check if the move leaves the king in check
     if is_in_check(simulated, color):
         return False
-    
+
+    # Check for explosion threats
     if is_in_explosion_threat(simulated, color):
         return False
-    
+
+    # Check for knight evaporation threats
     if is_king_in_knight_evaporation_danger(simulated, color):
         return False
-    
-    # Only check knight attack if the king is moving.
+
+    # Special case: King capturing queen
+    if isinstance(piece, King):
+        target = board[end[0]][end[1]]
+        if isinstance(target, Queen) and target.color != color:
+            # Check if the king would explode after capturing the queen
+            for dr in [-1, 0, 1]:
+                for dc in [-1, 0, 1]:
+                    if dr == 0 and dc == 0:
+                        continue
+                    r = end[0] + dr
+                    c = end[1] + dc
+                    if 0 <= r < ROWS and 0 <= c < COLS:
+                        if isinstance(simulated[r][c], King) and simulated[r][c].color == color:
+                            return False  # King would be harmed by explosion
+
+    # Only check knight attack if the king is moving
     if isinstance(piece, King) and is_king_attacked_by_knight(simulated, color, end):
         return False
-    
+
     return True
 
 def is_king_attacked_by_knight(board, color, king_pos):
