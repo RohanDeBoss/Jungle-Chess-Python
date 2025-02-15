@@ -1,7 +1,6 @@
 import tkinter as tk
 from tkinter import ttk
 import time
-import random
 
 # -----------------------------
 # Global Constants
@@ -340,6 +339,8 @@ def create_initial_board():
     return board
 
 def check_game_over(board):
+    """Check if the game is over due to checkmate, stalemate, or king capture."""
+    # Check if kings are still on the board
     white_king_found = False
     black_king_found = False
     for row in board:
@@ -349,11 +350,20 @@ def check_game_over(board):
                     white_king_found = True
                 elif piece.color == "black":
                     black_king_found = True
+    
+    # If a king is missing, the other player wins
     if not white_king_found:
         return "black"
     if not black_king_found:
         return "white"
-    return None
+    
+    # Check for stalemate
+    if is_stalemate(board, "white"):
+        return "stalemate"
+    if is_stalemate(board, "black"):
+        return "stalemate"
+    
+    return None  # Game is not over
 
 def check_evaporation(board):
     """Check for evaporation after every move."""
@@ -492,12 +502,18 @@ class ChessBot:
         original_eval = int(score - threat_score - explosion_threat)
 
         return original_eval
+        
     # Modify the ChessBot's minimax function:
     def minimax(self, board, depth, maximizing_player, alpha, beta):
         self.nodes_searched += 1
         
         # Determine current turn for this node
         current_turn = self.color if maximizing_player else ('black' if self.color == 'white' else 'white')
+        
+        # Check for stalemate
+        if is_stalemate(board, current_turn):
+            return 0  # Stalemate is a draw
+        
         # Generate current position key
         current_key = generate_position_key(board, current_turn)
         # Check if this position has occurred twice in the game history (third occurrence)
@@ -514,7 +530,11 @@ class ChessBot:
 
         moves = self.get_all_moves(board, current_turn)
         if not moves:
-            return self.evaluate_board(board, depth, current_turn)
+            # If no legal moves, it's either checkmate or stalemate
+            if is_in_check(board, current_turn):
+                return float('-inf') if maximizing_player else float('inf')  # Checkmate
+            else:
+                return 0  # Stalemate
 
         best_move = None
         value = float('-inf') if maximizing_player else float('inf')
@@ -537,7 +557,6 @@ class ChessBot:
 
         self.tt[board_key] = (depth, value, best_move)
         return value
-
 
     def make_move(self):
         best_move = None
@@ -747,6 +766,23 @@ def generate_position_key(board, turn):
                 key_parts.append('..')  # Represent empty squares
     key_parts.append(turn)
     return ''.join(key_parts)
+
+def is_stalemate(board, color):
+    """Check if the current player has no legal moves and is not in check."""
+    # Check if the king is in check
+    if is_in_check(board, color):
+        return False  # Not a stalemate if in check
+    
+    # Check if there are any legal moves for the current player
+    for r in range(ROWS):
+        for c in range(COLS):
+            piece = board[r][c]
+            if piece and piece.color == color:
+                moves = piece.get_valid_moves(board, (r, c))
+                for move in moves:
+                    if validate_move(board, color, (r, c), move):
+                        return False  # At least one legal move exists
+    return True  # No legal moves and not in check
 
 class EnhancedChessApp:
     def __init__(self, master):
@@ -1102,16 +1138,21 @@ class EnhancedChessApp:
                 # Update position history
                 self.position_history.append(self.get_position_key())
 
+                # Check for game over conditions
                 winner = check_game_over(self.board)
                 if winner is not None:
                     self.game_over = True
-                    self.turn_label.config(text=f"{winner.capitalize()} wins!")
+                    if winner == "stalemate":
+                        self.turn_label.config(text="Stalemate! It's a draw.")
+                    else:
+                        self.turn_label.config(text=f"{winner.capitalize()} wins!")
                 else:
                     # Switch turns
-                    # Update EnhancedChessApp's get_position_key method
                     self.turn = "black" if self.turn == "white" else "white"
-                    # Then update position history
-                    self.position_history.append(self.get_position_key())                    # If playing against the bot and it's the bot's turn, schedule the bot's move
+                    # Update position history after switching turns
+                    self.position_history.append(self.get_position_key())
+
+                    # If playing against the bot and it's the bot's turn, schedule the bot's move
                     if self.game_mode.get() == "bot" and self.turn != self.human_color:
                         self.master.after(movedelay, self.make_bot_move)
             else:
@@ -1140,11 +1181,15 @@ class EnhancedChessApp:
             winner = check_game_over(self.board)
             if winner is not None:
                 self.game_over = True
-                self.turn_label.config(text=f"{winner.capitalize()} wins!")
+                if winner == "stalemate":
+                    self.turn_label.config(text="Stalemate! It's a draw.")
+                else:
+                    self.turn_label.config(text=f"{winner.capitalize()} wins!")
             else:
                 # Switch turns back to the human player
-                self.turn = self.human_color  # Switch turns
-                self.position_history.append(self.get_position_key())  # Update history
+                self.turn = self.human_color
+                # Update position history after switching turns
+                self.position_history.append(self.get_position_key())
 
             # Debug output for timing
             elapsed_time = time.time() - start_time
@@ -1153,7 +1198,7 @@ class EnhancedChessApp:
             # If the bot cannot make a move, the human wins
             self.game_over = True
             self.turn_label.config(text=f"{self.human_color.capitalize()} wins!")
-
+            
     def swap_sides(self):
         self.human_color = "black" if self.human_color == "white" else "white"
         self.reset_game()
