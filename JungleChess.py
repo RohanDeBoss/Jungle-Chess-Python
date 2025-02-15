@@ -832,42 +832,59 @@ class EnhancedChessApp:
         # Game mode frame setup
         self.game_mode = tk.StringVar(value="bot")
         game_mode_frame = ttk.Frame(self.left_panel, style='Left.TFrame')
-        game_mode_frame.pack(fill=tk.X, pady=(0,10))
+        game_mode_frame.pack(fill=tk.X, pady=(0,9))
         ttk.Label(game_mode_frame, text="GAME MODE", style='Header.TLabel').pack(anchor=tk.W)
         ttk.Radiobutton(game_mode_frame, text="Human vs Bot", variable=self.game_mode,
                         value="bot", command=self.reset_game, style='Custom.TRadiobutton').pack(anchor=tk.W, pady=(5,3))
         ttk.Radiobutton(game_mode_frame, text="Human vs Human", variable=self.game_mode,
                         value="human", command=self.reset_game, style='Custom.TRadiobutton').pack(anchor=tk.W)
         
-        # Controls frame setup
+       # Controls frame setup
         controls_frame = ttk.Frame(self.left_panel, style='Left.TFrame')
-        controls_frame.pack(fill=tk.X, pady=5)
+        controls_frame.pack(fill=tk.X, pady=4)
         ttk.Button(controls_frame, text="NEW GAME", command=self.reset_game,
-                style='Control.TButton').pack(fill=tk.X, pady=5)
-        ttk.Button(controls_frame, text="BOT SETTINGS", command=self.open_settings,
-                style='Control.TButton').pack(fill=tk.X, pady=5)
+                   style='Control.TButton').pack(fill=tk.X, pady=5)
+        # Remove the BOT SETTINGS button
         ttk.Button(controls_frame, text="SWAP SIDES", command=self.swap_sides,
-                style='Control.TButton').pack(fill=tk.X, pady=5)
+                   style='Control.TButton').pack(fill=tk.X, pady=5)
         ttk.Button(controls_frame, text="QUIT", command=self.master.quit,
-                style='Control.TButton').pack(fill=tk.X, pady=5)
+                   style='Control.TButton').pack(fill=tk.X, pady=5)
+# Inline Bot settings with a Bot Depth slider
+        ttk.Label(controls_frame, text="Bot Depth:", style='Header.TLabel').pack(anchor=tk.W, pady=(10,0))
+        self.bot_depth_slider = tk.Scale(controls_frame, from_=1, to=6, orient=tk.HORIZONTAL,
+                                         command=self.update_bot_depth,
+                                         bg=self.COLORS['bg_dark'], fg=self.COLORS['text_light'],
+                                         highlightthickness=0)
+        self.bot_depth_slider.set(ChessBot.search_depth)
+        self.bot_depth_slider.pack(fill=tk.X, pady=(0,4))
+        
+        # Add an Instant Move checkmark
+        self.instant_move = tk.BooleanVar(value=False)
+        ttk.Checkbutton(controls_frame, text="Instant Move", variable=self.instant_move,
+                        style='Custom.TRadiobutton').pack(anchor=tk.W, pady=(3,3))
         
         # Turn display frame
         self.turn_frame = ttk.Frame(self.left_panel, style='Left.TFrame')
-        self.turn_frame.pack(fill=tk.X, pady=(10,0))
+        self.turn_frame.pack(fill=tk.X, pady=(9,0))
         self.turn_label = ttk.Label(self.turn_frame, text="WHITE'S TURN", style='Status.TLabel')
         self.turn_label.pack(fill=tk.X)
         
-        # Evaluation frame setup
+        # Updated Evaluation frame setup
         self.eval_frame = ttk.Frame(self.left_panel, style='Left.TFrame')
-        self.eval_frame.pack(side=tk.TOP, fill=tk.Y, padx=15, pady=15)
-        self.eval_bar_canvas = tk.Canvas(self.eval_frame, width=300, height=30,
+        # Remove horizontal padding so it matches the other elements
+        self.eval_frame.pack(side=tk.TOP, fill=tk.X, padx=0, pady=(5,5))
+
+        self.eval_score_label = ttk.Label(self.eval_frame, text="Even", style='Status.TLabel', anchor="center")
+        # Pack without extra fill or vertical padding
+        self.eval_score_label.pack(pady=(7,5))
+
+        # The eval canvas remains the same:
+        self.eval_bar_canvas = tk.Canvas(self.eval_frame, height=26,
                                         bg=self.COLORS['bg_light'], highlightthickness=0)
-        self.eval_bar_canvas.pack(side=tk.BOTTOM, pady=(10, 5))
-        self.eval_score_label = ttk.Label(self.eval_frame, text="", style='Status.TLabel')
-        self.eval_score_label.pack()
+        self.eval_bar_canvas.pack(side=tk.BOTTOM, fill=tk.X, expand=True)
+        self.eval_bar_canvas.bind("<Configure>", lambda event: self.draw_eval_bar(0))
         self.draw_eval_bar(0)
         self.eval_bar_visible = True
-
         # Right panel (main game board)
         self.right_panel = ttk.Frame(self.main_frame, style='Right.TFrame')
         self.right_panel.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=15, pady=15)
@@ -903,6 +920,11 @@ class EnhancedChessApp:
         self.canvas.bind("<B1-Motion>", self.on_drag_motion)
         self.canvas.bind("<ButtonRelease-1>", self.on_drag_end)
         self.draw_board()
+
+    def update_bot_depth(self, value):
+        new_depth = int(value)
+        ChessBot.search_depth = new_depth
+        self.bot.search_depth = new_depth
     
     # Update EnhancedChessApp's get_position_key method
     def get_position_key(self):
@@ -975,7 +997,8 @@ class EnhancedChessApp:
     def draw_eval_bar(self, eval_score):
         eval_score /= 100.0
         self.eval_bar_canvas.delete("all")
-        bar_width = 235
+        # Use evolving canvas width instead of fixed value
+        bar_width = self.eval_bar_canvas.winfo_width() or 235
         bar_height = 30
         max_eval = 10.0
         neutral_zone = 0.2
@@ -989,10 +1012,10 @@ class EnhancedChessApp:
             self.eval_bar_canvas.create_line(x, 0, x, bar_height, fill=color)
         marker_x = int((normalized_score + 1) / 2 * bar_width)
         accent_color = self.COLORS.get('accent', '#e94560')
-        marker_width = 2
+        marker_width = 1  # Reduced marker outline thickness
         self.eval_bar_canvas.create_rectangle(marker_x - marker_width, 0,
-                                              marker_x + marker_width, bar_height,
-                                              fill=accent_color, outline="")
+                                            marker_x + marker_width, bar_height,
+                                            fill=accent_color, outline=accent_color)
         mid_x = (bar_width // 2)
         self.eval_bar_canvas.create_line(mid_x, 0, mid_x, bar_height, fill="#666666", width=1)
         if abs(eval_score) < neutral_zone:
@@ -1025,11 +1048,12 @@ class EnhancedChessApp:
                         foreground=COLORS['text_light'],
                         font=('Helvetica', 14, 'bold'),
                         padding=(0, 10))
+        # Reduced padding makes the label box slimmer
         style.configure('Status.TLabel',
                         background=COLORS['bg_light'],
                         foreground=COLORS['text_light'],
                         font=('Helvetica', 16, 'bold'),
-                        padding=(15, 10),
+                        padding=(11, 4),   # Reduced from (18, 10)
                         relief='flat',
                         borderwidth=0)
         # Adjusted button style: reduced padding for a skinnier red button look.
@@ -1185,7 +1209,8 @@ class EnhancedChessApp:
 
                     # If playing against the bot and it's the bot's turn, schedule the bot's move
                     if self.game_mode.get() == "bot" and self.turn != self.human_color:
-                        self.master.after(movedelay, self.make_bot_move)
+                        delay = 0 if self.instant_move.get() else 500  # 0ms if Instant Move, else 500ms
+                        self.master.after(delay, self.make_bot_move)
             else:
                 print("Illegal move!")
 
