@@ -579,21 +579,34 @@ class ChessBot:
 
     def order_moves(self, board, moves, maximizing_player=True):
         """
-        Order moves using a heuristic evaluation.
-        Optimized to avoid unnecessary sorting when possible.
+        Order moves using a heuristic evaluation and transposition table (TT) best move.
+        If the TT contains a best move for the current board, that move is promoted.
         """
         if not moves:
             return moves
 
-        # Evaluate all moves in one pass
+        board_key = self.board_hash(board)
+        best_tt_move = None
+
+        # Check if TT entry exists and has a best move stored (assumes TT entries are stored as (depth, best_value, best_move))
+        if board_key in self.tt and len(self.tt[board_key]) > 2:
+            best_tt_move = self.tt[board_key][2]
+
+        # If the TT best move is among our moves, promote it to the front.
+        if best_tt_move and best_tt_move in moves:
+            moves.remove(best_tt_move)
+            moves.insert(0, best_tt_move)
+
+        # Evaluate all moves in one pass.
         scored_moves = [(self.evaluate_move(board, move), move) for move in moves]
 
-        # Sort only if there are multiple moves with different scores
+        # Sort only if there are multiple moves with different scores.
         if len(set(score for score, _ in scored_moves)) > 1:
             scored_moves.sort(reverse=maximizing_player, key=lambda x: x[0])
 
-        # Return only the moves (without scores)
+        # Return only the moves (without scores).
         return [move for _, move in scored_moves]
+
 
     # ====================================================
     # Search Methods (Minimax & Move Selection)
@@ -646,18 +659,24 @@ class ChessBot:
         first_move = True
 
         for i, move in enumerate(moves):
-            # -------- Late Move Reductions (LMR) --------
+            start, end = move
+            piece = board[start[0]][start[1]]
+            target = board[end[0]][end[1]]
+            # Determine if the move is tactical (capture or promotion)
+            is_tactical = (target is not None)
+            # Also consider a pawn promotion as a tactical move.
+            if not is_tactical and isinstance(piece, Pawn) and (end[0] == 0 or end[0] == ROWS - 1):
+                is_tactical = True
+
             reduction = 0
-            if i >= 3 and depth >= 4:  # For later moves when depth is sufficient (should be higher than null move)
-                reduction = 1  # Reduction factor (tweakable based on experiments)
+            if not is_tactical and i >= 3 and depth >= 4:
+                reduction = 1  # Reduction factor (adjustable)
+
             new_depth = depth - 1 - reduction
             # ----------------------------------------------
-
-            start, end = move
+            # Then continue with move simulation and scoring
             new_board = self.simulate_move(board, start, end)
-
             if first_move:
-                # For the first move, search with full window
                 score = self.minimax(new_board, new_depth, not maximizing_player, alpha, beta)
                 first_move = False
             else:
