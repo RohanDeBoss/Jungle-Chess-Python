@@ -1037,6 +1037,20 @@ class EnhancedChessApp:
                 else:
                     self.turn = "black" if self.turn == "white" else "white"
                     self.turn_label.config(text=f"Turn: {self.turn.capitalize()}")
+                    
+                    # Check for checkmate or stalemate
+                    current_player = self.turn
+                    moves = self.bot.get_all_moves(self.board, current_player)
+                    if not moves:
+                        if is_in_check(self.board, current_player):
+                            winner = "white" if current_player == "black" else "black"
+                            self.game_over = True
+                            self.turn_label.config(text=f"{winner.capitalize()} wins by checkmate!")
+                        else:
+                            self.game_over = True
+                            self.turn_label.config(text="Stalemate! Game is a draw.")
+                        return
+                    
                     if self.game_mode.get() == "bot" and self.turn != self.human_color:
                         self.master.after(movedelay, self.make_bot_move)
             else:
@@ -1057,10 +1071,21 @@ class EnhancedChessApp:
                 self.game_over = True
                 self.turn_label.config(text=f"{winner.capitalize()} wins!")
             else:
-                # After the bot moves, set turn to the human's color.
                 self.turn = self.human_color
                 self.turn_label.config(text=f"Turn: {self.human_color.capitalize()}")
-            self.draw_board()
+                
+                # Check for checkmate or stalemate
+                moves = self.bot.get_all_moves(self.board, self.human_color)
+                if not moves:
+                    if is_in_check(self.board, self.human_color):
+                        winner = self.bot.color.capitalize()
+                        self.game_over = True
+                        self.turn_label.config(text=f"{winner} wins by checkmate!")
+                    else:
+                        self.game_over = True
+                        self.turn_label.config(text="Stalemate! Game is a draw.")
+                    return
+                self.draw_board()
         else:
             self.game_over = True
             self.turn_label.config(text="White wins!")
