@@ -651,39 +651,77 @@ def is_in_explosion_threat(board, color):
                             return True
     return False
 
-def is_in_knight_threat(board, color):
-    """Check if any knights are in evaporation danger."""
-    enemy_color = 'black' if color == 'white' else 'white'
-    for r in range(ROWS):
-        for c in range(COLS):
-            piece = board[r][c]
-            if isinstance(piece, Knight) and piece.color == color:
-                # Check all knight move positions for enemy knights
-                for dr, dc in DIRECTIONS['knight']:
-                    nr, nc = r + dr, c + dc
-                    if 0 <= nr < ROWS and 0 <= nc < COLS:
-                        target = board[nr][nc]
-                        if isinstance(target, Knight) and target.color == enemy_color:
-                            return True
-    return False
-
 def validate_move(board, color, start, end):
-    """Check if a move is valid considering all game rules."""
-    # Create simulated board
     simulated = copy_board(board)
     piece = simulated[start[0]][start[1]]
     if not piece or piece.color != color:
         return False
     
-    # Perform the move on simulated board
     simulated = piece.move(simulated, start, end)
     check_evaporation(simulated)
     
-    # Check all threats
-    return not (is_in_check(simulated, color) or 
-               is_in_explosion_threat(simulated, color) or 
-               is_in_knight_threat(simulated, color))
+    if is_in_check(simulated, color):
+        return False
+    
+    if is_in_explosion_threat(simulated, color):
+        return False
+    
+    if is_king_in_knight_evaporation_danger(simulated, color):
+        return False
+    
+    # Only check knight attack if the king is moving.
+    if isinstance(piece, King) and is_king_attacked_by_knight(simulated, color, end):
+        return False
+    
+    return True
 
+def is_king_attacked_by_knight(board, color, king_pos):
+    """Check if the king is moving into a square attacked by an enemy knight."""
+    enemy_color = 'black' if color == 'white' else 'white'
+    
+    # Check all enemy knights
+    for r in range(ROWS):
+        for c in range(COLS):
+            piece = board[r][c]
+            if isinstance(piece, Knight) and piece.color == enemy_color:
+                # Check if the king's new position is a knight's move away from this knight
+                for dr, dc in DIRECTIONS['knight']:
+                    if (r + dr) == king_pos[0] and (c + dc) == king_pos[1]:
+                        return True
+    return False
+
+
+def is_king_in_knight_evaporation_danger(board, color):
+    """Check if the king is in a position where it could be evaporated on the next turn."""
+    # Find the king's position
+    king_pos = None
+    for r in range(ROWS):
+        for c in range(COLS):
+            piece = board[r][c]
+            if isinstance(piece, King) and piece.color == color:
+                king_pos = (r, c)
+                break
+        if king_pos:
+            break
+    if not king_pos:
+        return False  # King not found
+    
+    enemy_color = 'black' if color == 'white' else 'white'
+    
+    # Check all enemy knights
+    for r in range(ROWS):
+        for c in range(COLS):
+            piece = board[r][c]
+            if isinstance(piece, Knight) and piece.color == enemy_color:
+                # Get all valid moves for this knight
+                valid_moves = piece.get_valid_moves(board, (r, c))
+                for move in valid_moves:
+                    # Check if the king's position is a knight's move away from this move
+                    for dr, dc in DIRECTIONS['knight']:
+                        kr, kc = king_pos
+                        if (move[0] + dr) == kr and (move[1] + dc) == kc:
+                            return True
+    return False
 
 class EnhancedChessApp:
     def __init__(self, master):
