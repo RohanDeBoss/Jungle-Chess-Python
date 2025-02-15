@@ -567,6 +567,13 @@ class ChessBot:
         self.nodes_searched += 1
 
         current_turn = self.color if maximizing_player else ('black' if self.color == 'white' else 'white')
+        
+        # Threefold repetition check ==============================================
+        current_key = generate_position_key(board, current_turn)
+        if self.app.position_history.count(current_key) >= 2:
+            return 0  # Evaluate repeated position as draw
+        # =========================================================================
+
         if is_stalemate(board, current_turn):
             return 0
 
