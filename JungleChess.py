@@ -435,9 +435,11 @@ class ChessBot:
         self.nodes_searched = 0
         self.app = app  # Store the EnhancedChessApp instance
 
+    # ====================================================
+    # Threat Checking Methods
+    # ====================================================
     def is_in_explosion_threat(self, board, color):
         """Check if the current player's king is under threat of explosion from an enemy queen's capture."""
-        # Find the king's position of the given color
         king_pos = None
         for r in range(ROWS):
             for c in range(COLS):
@@ -450,7 +452,6 @@ class ChessBot:
         if not king_pos:
             return False  # King not found
 
-        # Check all enemy queens' moves to squares adjacent to the king
         enemy_color = 'black' if color == 'white' else 'white'
         for r in range(ROWS):
             for c in range(COLS):
@@ -458,9 +459,7 @@ class ChessBot:
                 if isinstance(piece, Queen) and piece.color == enemy_color:
                     queen_moves = piece.get_valid_moves(board, (r, c))
                     for move in queen_moves:
-                        # Check if move is adjacent to the king's position
                         if max(abs(move[0] - king_pos[0]), abs(move[1] - king_pos[1])) == 1:
-                            # Check if the move captures a piece of 'color' (current player)
                             target_piece = board[move[0]][move[1]]
                             if target_piece and target_piece.color == color:
                                 return True
@@ -473,7 +472,6 @@ class ChessBot:
             for c in range(COLS):
                 piece = board[r][c]
                 if isinstance(piece, Knight) and piece.color == color:
-                    # Check all squares a knight can move to (L-shaped) for enemy knights
                     for dr, dc in DIRECTIONS['knight']:
                         nr, nc = r + dr, c + dc
                         if 0 <= nr < ROWS and 0 <= nc < COLS:
@@ -482,6 +480,9 @@ class ChessBot:
                                 return True
         return False
 
+    # ====================================================
+    # Position Evaluation Methods
+    # ====================================================
     def evaluate_board(self, board, depth, current_turn):
         """Evaluate the board state with early termination for winning/losing conditions."""
         piece_values = {
@@ -496,14 +497,12 @@ class ChessBot:
         score = 0
         our_king_pos = enemy_king_pos = None
 
-        # First pass: find kings and calculate material score
         for r in range(ROWS):
             for c in range(COLS):
                 piece = board[r][c]
                 if not piece:
                     continue
 
-                # Track king positions
                 if isinstance(piece, King):
                     if piece.color == self.color:
                         our_king_pos = (r, c)
@@ -511,7 +510,6 @@ class ChessBot:
                         enemy_king_pos = (r, c)
                     continue
 
-                # Calculate piece value with bonuses
                 value = piece_values.get(type(piece), 0)
                 if isinstance(piece, Knight):
                     value += len(piece.get_valid_moves(board, (r, c))) * 10
@@ -519,22 +517,18 @@ class ChessBot:
                     atomic_threats = sum(
                         1 for move in piece.get_valid_moves(board, (r, c))
                         if any(isinstance(board[adj_r][adj_c], King)
-                            for adj_r, adj_c in self.get_adjacent_squares(move))
+                               for adj_r, adj_c in self.get_adjacent_squares(move))
                     )
                     value += atomic_threats * 20
 
                 score += value if piece.color == self.color else -value
 
-        # Early termination for win/loss conditions
         if not enemy_king_pos:
             return float('inf')
         if not our_king_pos:
             return float('-inf')
 
-        # Evaluate explosion threats from enemy queens
         explosion_threat = self.is_in_explosion_threat(board, self.color)
-
-        # Evaluate threats to our king
         threat_score = 0
         if our_king_pos:
             for r in range(ROWS):
@@ -546,34 +540,51 @@ class ChessBot:
 
         return int(score - threat_score - explosion_threat)
 
+    # ====================================================
+    # Move Ordering Methods
+    # ====================================================
+    def evaluate_move(self, board, move):
+        """Heuristic to evaluate the quality of a move for move ordering."""
+        start, end = move
+        piece = board[start[0]][start[1]]
+        target = board[end[0]][end[1]]
+        if target:
+            return 1000  # Prioritize captures
+        return 0
+
+    def order_moves(self, board, moves, maximizing_player=True):
+        """
+        Order moves using a heuristic evaluation. 
+        You can extend this method to incorporate additional heuristics if desired.
+        """
+        return sorted(moves, key=lambda move: self.evaluate_move(board, move), reverse=maximizing_player)
+
+    # ====================================================
+    # Search Methods (Minimax & Move Selection)
+    # ====================================================
     def minimax(self, board, depth, maximizing_player, alpha, beta):
         """Optimized minimax with alpha-beta pruning and early termination."""
         self.nodes_searched += 1
 
-        # Early termination for terminal states
         current_turn = self.color if maximizing_player else ('black' if self.color == 'white' else 'white')
         if is_stalemate(board, current_turn):
-            return 0  # Stalemate is a draw
+            return 0
 
-        # Check transposition table for cached results
         board_key = self.board_hash(board)
         if board_key in self.tt and self.tt[board_key][0] >= depth:
             return self.tt[board_key][1]
 
-        # Evaluate leaf nodes
         if depth == 0:
             return self.evaluate_board(board, depth, current_turn)
 
-        # Generate and order moves
         moves = self.get_all_moves(board, current_turn)
         if not moves:
             if is_in_check(board, current_turn):
-                return float('-inf') if maximizing_player else float('inf')  # Checkmate
+                return float('-inf') if maximizing_player else float('inf')
             else:
-                return 0  # Stalemate
+                return 0
 
-        # Sort moves for better alpha-beta pruning
-        moves.sort(key=lambda move: self.evaluate_move(board, move), reverse=maximizing_player)
+        moves = self.order_moves(board, moves, maximizing_player)
 
         best_value = float('-inf') if maximizing_player else float('inf')
         for move in moves:
@@ -584,27 +595,16 @@ class ChessBot:
             if (maximizing_player and eval_value > best_value) or (not maximizing_player and eval_value < best_value):
                 best_value = eval_value
 
-            # Alpha-beta pruning
             if maximizing_player:
                 alpha = max(alpha, best_value)
             else:
                 beta = min(beta, best_value)
 
             if beta <= alpha:
-                break  # Prune remaining branches
+                break
 
-        # Cache result in transposition table
         self.tt[board_key] = (depth, best_value)
         return best_value
-
-    def evaluate_move(self, board, move):
-        """Heuristic to evaluate the quality of a move for move ordering."""
-        start, end = move
-        piece = board[start[0]][start[1]]
-        target = board[end[0]][end[1]]
-        if target:
-            return 1000  # Prioritize captures
-        return 0  # Default value for non-captures
 
     def make_move(self):
         """Make the best move found by the bot."""
@@ -620,9 +620,7 @@ class ChessBot:
             if not moves:
                 return False
 
-            # Sort moves for better alpha-beta pruning
-            moves.sort(key=lambda move: self.evaluate_move(self.board, move), reverse=True)
-
+            moves = self.order_moves(self.board, moves, maximizing_player=True)
             current_best_move = None
             current_best_value = float('-inf')
 
@@ -636,16 +634,13 @@ class ChessBot:
 
             iteration_time = time.time() - iteration_start
             reported_value = -current_best_value if self.color == 'black' else current_best_value
-            print(f"Depth {current_depth}: {iteration_time:.3f}s, "
-                  f"nodes: {self.nodes_searched}, value: {reported_value}")
+            print(f"Depth {current_depth}: {iteration_time:.3f}s, nodes: {self.nodes_searched}, value: {reported_value}")
 
             self.app.master.after(0, lambda: self.app.draw_eval_bar(reported_value))
-
             best_move = current_best_move
             best_value = current_best_value
 
         print(f"Total time: {(time.time() - total_start):.3f}s")
-
         if best_move:
             start, end = best_move
             moving_piece = self.board[start[0]][start[1]]
@@ -654,33 +649,32 @@ class ChessBot:
             return True
         return False
 
-    # Helper methods
+    # ====================================================
+    # Helper Methods
+    # ====================================================
     def board_hash(self, board):
-        """Generate a unique hash for the board state."""
         board_str = ''.join(
-            piece.symbol() if piece else '.'
-            for row in board for piece in row
+            piece.symbol() if piece else '.' for row in board for piece in row
         )
         return hash(board_str)
 
     def get_adjacent_squares(self, pos):
-        """Get all adjacent squares for a given position."""
         r, c = pos
         return [
-            (adj_r, adj_c) for adj_r in range(r - 1, r + 2) for adj_c in range(c - 1, c + 2)
+            (adj_r, adj_c)
+            for adj_r in range(r - 1, r + 2)
+            for adj_c in range(c - 1, c + 2)
             if 0 <= adj_r < ROWS and 0 <= adj_c < COLS and (adj_r, adj_c) != (r, c)
         ]
 
     def simulate_move(self, board, start, end):
-        """Simulate a move on the board and return the new board state."""
         new_board = copy_board(board)
         piece = new_board[start[0]][start[1]]
         new_board = piece.move(new_board, start, end)
-        check_evaporation(new_board)  # Apply evaporation effect
+        check_evaporation(new_board)
         return new_board
 
     def get_all_moves(self, board, color):
-        """Get all legal moves for the given color."""
         return [
             ((r, c), move)
             for r in range(ROWS) for c in range(COLS)
@@ -688,20 +682,18 @@ class ChessBot:
             for move in piece.get_valid_moves(board, (r, c))
             if validate_move(board, color, (r, c), move)
         ]
-        
+
 # -----------------------------
-# Threat Checking Utilities
+# Threat Checking Utilities (External)
 # -----------------------------
 def is_in_check(board, color):
-    """Check if the given color is in check."""
     king_pos = next(
         ((r, c) for r in range(ROWS) for c in range(COLS)
-        if isinstance(board[r][c], King) and board[r][c].color == color),
+         if isinstance(board[r][c], King) and board[r][c].color == color),
         None
     )
     if not king_pos:
         return False
-
     return any(
         king_pos in piece.get_valid_moves(board, (r, c))
         for r in range(ROWS) for c in range(COLS)
@@ -709,7 +701,6 @@ def is_in_check(board, color):
     )
 
 def is_in_explosion_threat(board, color):
-    """Check if king is threatened by queen explosion capture."""
     king_pos = None
     for r in range(ROWS):
         for c in range(COLS):
@@ -734,7 +725,6 @@ def is_in_explosion_threat(board, color):
     return False
 
 def validate_move(board, color, start, end):
-    # Precompute king's position once
     king_pos = None
     for r in range(ROWS):
         for c in range(COLS):
@@ -760,31 +750,23 @@ def validate_move(board, color, start, end):
     if is_king_in_knight_evaporation_danger(simulated, color):
         return False
     
-    # Only check knight attack if the king is moving.
     if isinstance(piece, King) and is_king_attacked_by_knight(simulated, color, end):
         return False
     
     return True
 
 def is_king_attacked_by_knight(board, color, king_pos):
-    """Check if the king is moving into a square attacked by an enemy knight."""
     enemy_color = 'black' if color == 'white' else 'white'
-    
-    # Check all enemy knights
     for r in range(ROWS):
         for c in range(COLS):
             piece = board[r][c]
             if isinstance(piece, Knight) and piece.color == enemy_color:
-                # Check if the king's new position is a knight's move away from this knight
                 for dr, dc in DIRECTIONS['knight']:
                     if (r + dr) == king_pos[0] and (c + dc) == king_pos[1]:
                         return True
     return False
 
-
 def is_king_in_knight_evaporation_danger(board, color):
-    """Check if the king is in a position where it could be evaporated on the next turn."""
-    # Find the king's position
     king_pos = None
     for r in range(ROWS):
         for c in range(COLS):
@@ -795,26 +777,21 @@ def is_king_in_knight_evaporation_danger(board, color):
         if king_pos:
             break
     if not king_pos:
-        return False  # King not found
+        return False
     
     enemy_color = 'black' if color == 'white' else 'white'
-    
-    # Check all enemy knights
     for r in range(ROWS):
         for c in range(COLS):
             piece = board[r][c]
             if isinstance(piece, Knight) and piece.color == enemy_color:
-                # Get all valid moves for this knight
                 valid_moves = piece.get_valid_moves(board, (r, c))
                 for move in valid_moves:
-                    # Check if the king's position is a knight's move away from this move
                     for dr, dc in DIRECTIONS['knight']:
                         kr, kc = king_pos
                         if (move[0] + dr) == kr and (move[1] + dc) == kc:
                             return True
     return False
 
-    # Add the helper function at the top level (outside any class)
 def generate_position_key(board, turn):
     key_parts = []
     for row in board:
@@ -823,17 +800,13 @@ def generate_position_key(board, turn):
                 key_parts.append(piece.symbol())
                 key_parts.append('1' if piece.has_moved else '0')
             else:
-                key_parts.append('..')  # Represent empty squares
+                key_parts.append('..')
     key_parts.append(turn)
     return ''.join(key_parts)
 
 def is_stalemate(board, color):
-    """Check if the current player has no legal moves and is not in check."""
-    # Check if the king is in check
     if is_in_check(board, color):
-        return False  # Not a stalemate if in check
-    
-    # Check if there are any legal moves for the current player
+        return False
     for r in range(ROWS):
         for c in range(COLS):
             piece = board[r][c]
@@ -841,8 +814,9 @@ def is_stalemate(board, color):
                 moves = piece.get_valid_moves(board, (r, c))
                 for move in moves:
                     if validate_move(board, color, (r, c), move):
-                        return False  # At least one legal move exists
-    return True  # No legal moves and not in check
+                        return False
+    return True
+
 
 class EnhancedChessApp:
     def __init__(self, master):
