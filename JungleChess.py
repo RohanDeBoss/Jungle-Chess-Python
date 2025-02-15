@@ -787,14 +787,6 @@ def is_in_explosion_threat(board, color):
     return False
 
 def validate_move(board, color, start, end):
-    king_pos = None
-    for r in range(ROWS):
-        for c in range(COLS):
-            if isinstance(board[r][c], King) and board[r][c].color == color:
-                king_pos = (r, c)
-                break
-        if king_pos: break
-
     simulated = copy_board(board)
     piece = simulated[start[0]][start[1]]
     if not piece or piece.color != color:
@@ -803,6 +795,14 @@ def validate_move(board, color, start, end):
     simulated = piece.move(simulated, start, end)
     check_evaporation(simulated)
     
+    # NEW: Ensure the king still exists after the move (i.e. wasn't evaporated)
+    king_exists = any(
+        isinstance(simulated[r][c], King) and simulated[r][c].color == color 
+        for r in range(ROWS) for c in range(COLS)
+    )
+    if not king_exists:
+        return False
+
     if is_in_check(simulated, color):
         return False
     
