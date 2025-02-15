@@ -428,7 +428,8 @@ class ChessBot:
         return False
 
 
-    def evaluate_board(self, board, depth):
+    # Update the evaluate_board method to remove threefold check
+    def evaluate_board(self, board, depth, current_turn):
         piece_values = {
             Pawn: 100,
             Knight: 700,
@@ -487,23 +488,33 @@ class ChessBot:
             if manhattan_distance(move, our_king_pos) <= 1
         )
 
-        return int(score - threat_score - explosion_threat)
+        # Calculate original evaluation
+        original_eval = int(score - threat_score - explosion_threat)
 
+        return original_eval
+    # Modify the ChessBot's minimax function:
     def minimax(self, board, depth, maximizing_player, alpha, beta):
         self.nodes_searched += 1
+        
+        # Determine current turn for this node
+        current_turn = self.color if maximizing_player else ('black' if self.color == 'white' else 'white')
+        # Generate current position key
+        current_key = generate_position_key(board, current_turn)
+        # Check if this position has occurred twice in the game history (third occurrence)
+        count = self.app.position_history.count(current_key)
+        if count >= 2:
+            return 0  # Draw score
         
         board_key = self.board_hash(board)
         if board_key in self.tt and self.tt[board_key][0] >= depth:
             return self.tt[board_key][1]
 
         if depth == 0:
-            return self.evaluate_board(board, depth)
+            return self.evaluate_board(board, depth, current_turn)
 
-        moves = self.get_all_moves(
-            board, self.color if maximizing_player else ("black" if self.color == "white" else "white")
-        )
+        moves = self.get_all_moves(board, current_turn)
         if not moves:
-            return self.evaluate_board(board, depth)
+            return self.evaluate_board(board, depth, current_turn)
 
         best_move = None
         value = float('-inf') if maximizing_player else float('inf')
@@ -526,6 +537,7 @@ class ChessBot:
 
         self.tt[board_key] = (depth, value, best_move)
         return value
+
 
     def make_move(self):
         best_move = None
@@ -723,12 +735,26 @@ def is_king_in_knight_evaporation_danger(board, color):
                             return True
     return False
 
+    # Add the helper function at the top level (outside any class)
+def generate_position_key(board, turn):
+    key_parts = []
+    for row in board:
+        for piece in row:
+            if piece:
+                key_parts.append(piece.symbol())
+                key_parts.append('1' if piece.has_moved else '0')
+            else:
+                key_parts.append('..')  # Represent empty squares
+    key_parts.append(turn)
+    return ''.join(key_parts)
+
 class EnhancedChessApp:
     def __init__(self, master):
         self.master = master
         self.master.title("Enhanced Chess")
         self.COLORS = self.setup_styles()
         self.master.configure(bg=self.COLORS['bg_dark'])
+        self.position_history = []  # Track positions for threefold repetition
 
         # Window setup
         screen_w = self.master.winfo_screenwidth()
@@ -826,6 +852,10 @@ class EnhancedChessApp:
         self.canvas.bind("<ButtonRelease-1>", self.on_drag_end)
         self.draw_board()
     
+    # Update EnhancedChessApp's get_position_key method
+    def get_position_key(self):
+        return generate_position_key(self.board, self.turn)
+
     def swap_sides(self):
         # Swap which color the human plays. After swapping, the board is redrawn from the new perspective.
         self.human_color = "black" if self.human_color == "white" else "white"
@@ -1058,28 +1088,36 @@ class EnhancedChessApp:
     def on_drag_end(self, event):
         if not self.dragging:
             return
+
         row, col = self.canvas_to_board(event.x, event.y)
         end_pos = (row, col)
-        
+
         if end_pos in self.valid_moves:
             # Validate move against game rules
             if validate_move(self.board, self.turn, self.drag_start, end_pos):
                 moving_piece = self.board[self.drag_start[0]][self.drag_start[1]]
                 self.board = moving_piece.move(self.board, self.drag_start, end_pos)
                 check_evaporation(self.board)
-                
+
+                # Update position history
+                self.position_history.append(self.get_position_key())
+
                 winner = check_game_over(self.board)
                 if winner is not None:
                     self.game_over = True
                     self.turn_label.config(text=f"{winner.capitalize()} wins!")
                 else:
+                    # Switch turns
+                    # Update EnhancedChessApp's get_position_key method
                     self.turn = "black" if self.turn == "white" else "white"
-                    self.turn_label.config(text=f"Turn: {self.turn.capitalize()}")
+                    # Then update position history
+                    self.position_history.append(self.get_position_key())                    # If playing against the bot and it's the bot's turn, schedule the bot's move
                     if self.game_mode.get() == "bot" and self.turn != self.human_color:
                         self.master.after(movedelay, self.make_bot_move)
             else:
                 print("Illegal move - would leave king in danger or knight under threat!")
-        
+
+        # Reset dragging state
         self.dragging = False
         self.drag_piece = None
         self.drag_start = None
@@ -1089,19 +1127,32 @@ class EnhancedChessApp:
     def make_bot_move(self):
         if self.game_over:
             return
+
+        # Start timing for debug output
+        start_time = time.time()
+
+        # Make the bot's move
         if self.bot.make_move():
+            # Update the board display immediately
+            self.draw_board()
+
+            # Check for a winner after the bot's move
             winner = check_game_over(self.board)
             if winner is not None:
                 self.game_over = True
                 self.turn_label.config(text=f"{winner.capitalize()} wins!")
             else:
-                # After the bot moves, set turn to the human's color.
-                self.turn = self.human_color
-                self.turn_label.config(text=f"Turn: {self.human_color.capitalize()}")
-            self.draw_board()
+                # Switch turns back to the human player
+                self.turn = self.human_color  # Switch turns
+                self.position_history.append(self.get_position_key())  # Update history
+
+            # Debug output for timing
+            elapsed_time = time.time() - start_time
+            print(f"Bot move completed in {elapsed_time:.3f} seconds")
         else:
+            # If the bot cannot make a move, the human wins
             self.game_over = True
-            self.turn_label.config(text="White wins!")
+            self.turn_label.config(text=f"{self.human_color.capitalize()} wins!")
 
     def swap_sides(self):
         self.human_color = "black" if self.human_color == "white" else "white"
