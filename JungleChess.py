@@ -434,7 +434,6 @@ class ChessBot:
         self.tt = {}  # Transposition table
         self.nodes_searched = 0
         self.app = app  # Store the EnhancedChessApp instance
-        
 
     def is_in_explosion_threat(self, board, color):
         """Check if the current player's king is under threat of explosion from an enemy queen's capture."""
@@ -483,9 +482,8 @@ class ChessBot:
                                 return True
         return False
 
-
-    # Update the evaluate_board method to remove threefold check
     def evaluate_board(self, board, depth, current_turn):
+        """Evaluate the board state with early termination for winning/losing conditions."""
         piece_values = {
             Pawn: 100,
             Knight: 700,
@@ -494,17 +492,17 @@ class ChessBot:
             Queen: 900,
             King: 100000
         }
-        
+
         score = 0
         our_king_pos = enemy_king_pos = None
-        
+
         # First pass: find kings and calculate material score
         for r in range(ROWS):
             for c in range(COLS):
                 piece = board[r][c]
                 if not piece:
                     continue
-                    
+
                 # Track king positions
                 if isinstance(piece, King):
                     if piece.color == self.color:
@@ -512,7 +510,7 @@ class ChessBot:
                     else:
                         enemy_king_pos = (r, c)
                     continue
-                
+
                 # Calculate piece value with bonuses
                 value = piece_values.get(type(piece), 0)
                 if isinstance(piece, Knight):
@@ -524,21 +522,21 @@ class ChessBot:
                             for adj_r, adj_c in self.get_adjacent_squares(move))
                     )
                     value += atomic_threats * 20
-                
+
                 score += value if piece.color == self.color else -value
 
-        # Check win/loss conditions
+        # Early termination for win/loss conditions
         if not enemy_king_pos:
             return float('inf')
         if not our_king_pos:
             return float('-inf')
 
-        # Evaluate explosion threats from enemy queens.
+        # Evaluate explosion threats from enemy queens
         explosion_threat = self.is_in_explosion_threat(board, self.color)
 
+        # Evaluate threats to our king
         threat_score = 0
         if our_king_pos:
-            # Check if any enemy piece can attack the king directly
             for r in range(ROWS):
                 for c in range(COLS):
                     piece = board[r][c]
@@ -546,82 +544,88 @@ class ChessBot:
                         if our_king_pos in piece.get_valid_moves(board, (r, c)):
                             threat_score += 200  # Direct threat to king
 
-        # Calculate original evaluation
-        original_eval = int(score - threat_score - explosion_threat)
+        return int(score - threat_score - explosion_threat)
 
-        return original_eval
-        
-    # Modify the ChessBot's minimax function:
     def minimax(self, board, depth, maximizing_player, alpha, beta):
+        """Optimized minimax with alpha-beta pruning and early termination."""
         self.nodes_searched += 1
-        
-        # Determine current turn for this node
+
+        # Early termination for terminal states
         current_turn = self.color if maximizing_player else ('black' if self.color == 'white' else 'white')
-        
-        # Check for stalemate
         if is_stalemate(board, current_turn):
             return 0  # Stalemate is a draw
-        
-        # Generate current position key
-        current_key = generate_position_key(board, current_turn)
-        # Check if this position has occurred twice in the game history (third occurrence)
-        count = self.app.position_history.count(current_key)
-        if count >= 2:
-            return 0  # Draw score
-        
+
+        # Check transposition table for cached results
         board_key = self.board_hash(board)
         if board_key in self.tt and self.tt[board_key][0] >= depth:
             return self.tt[board_key][1]
 
+        # Evaluate leaf nodes
         if depth == 0:
             return self.evaluate_board(board, depth, current_turn)
 
+        # Generate and order moves
         moves = self.get_all_moves(board, current_turn)
         if not moves:
-            # If no legal moves, it's either checkmate or stalemate
             if is_in_check(board, current_turn):
                 return float('-inf') if maximizing_player else float('inf')  # Checkmate
             else:
                 return 0  # Stalemate
 
-        best_move = None
-        value = float('-inf') if maximizing_player else float('inf')
+        # Sort moves for better alpha-beta pruning
+        moves.sort(key=lambda move: self.evaluate_move(board, move), reverse=maximizing_player)
+
+        best_value = float('-inf') if maximizing_player else float('inf')
         for move in moves:
             start, end = move
             new_board = self.simulate_move(board, start, end)
             eval_value = self.minimax(new_board, depth - 1, not maximizing_player, alpha, beta)
-            
-            if (maximizing_player and eval_value > value) or (not maximizing_player and eval_value < value):
-                value = eval_value
-                best_move = move
-            
-            if maximizing_player:
-                alpha = max(alpha, value)
-            else:
-                beta = min(beta, value)
-            
-            if beta <= alpha:
-                break
 
-        self.tt[board_key] = (depth, value, best_move)
-        return value
+            if (maximizing_player and eval_value > best_value) or (not maximizing_player and eval_value < best_value):
+                best_value = eval_value
+
+            # Alpha-beta pruning
+            if maximizing_player:
+                alpha = max(alpha, best_value)
+            else:
+                beta = min(beta, best_value)
+
+            if beta <= alpha:
+                break  # Prune remaining branches
+
+        # Cache result in transposition table
+        self.tt[board_key] = (depth, best_value)
+        return best_value
+
+    def evaluate_move(self, board, move):
+        """Heuristic to evaluate the quality of a move for move ordering."""
+        start, end = move
+        piece = board[start[0]][start[1]]
+        target = board[end[0]][end[1]]
+        if target:
+            return 1000  # Prioritize captures
+        return 0  # Default value for non-captures
 
     def make_move(self):
+        """Make the best move found by the bot."""
         best_move = None
         best_value = float('-inf')
         total_start = time.time()
-        
+
         for current_depth in range(1, self.search_depth + 1):
             self.nodes_searched = 0
             iteration_start = time.time()
-            
+
             moves = self.get_all_moves(self.board, self.color)
             if not moves:
                 return False
-                
+
+            # Sort moves for better alpha-beta pruning
+            moves.sort(key=lambda move: self.evaluate_move(self.board, move), reverse=True)
+
             current_best_move = None
             current_best_value = float('-inf')
-            
+
             for move in moves:
                 start, end = move
                 new_board = self.simulate_move(self.board, start, end)
@@ -629,19 +633,19 @@ class ChessBot:
                 if value > current_best_value:
                     current_best_value = value
                     current_best_move = move
-                    
+
             iteration_time = time.time() - iteration_start
             reported_value = -current_best_value if self.color == 'black' else current_best_value
             print(f"Depth {current_depth}: {iteration_time:.3f}s, "
-                f"nodes: {self.nodes_searched}, value: {reported_value}")
-            
+                  f"nodes: {self.nodes_searched}, value: {reported_value}")
+
             self.app.master.after(0, lambda: self.app.draw_eval_bar(reported_value))
-                
+
             best_move = current_best_move
             best_value = current_best_value
-            
+
         print(f"Total time: {(time.time() - total_start):.3f}s")
-        
+
         if best_move:
             start, end = best_move
             moving_piece = self.board[start[0]][start[1]]
@@ -663,7 +667,7 @@ class ChessBot:
         """Get all adjacent squares for a given position."""
         r, c = pos
         return [
-            (adj_r, adj_c) for adj_r in range(r-1, r+2) for adj_c in range(c-1, c+2)
+            (adj_r, adj_c) for adj_r in range(r - 1, r + 2) for adj_c in range(c - 1, c + 2)
             if 0 <= adj_r < ROWS and 0 <= adj_c < COLS and (adj_r, adj_c) != (r, c)
         ]
 
@@ -674,7 +678,6 @@ class ChessBot:
         new_board = piece.move(new_board, start, end)
         check_evaporation(new_board)  # Apply evaporation effect
         return new_board
-
 
     def get_all_moves(self, board, color):
         """Get all legal moves for the given color."""
