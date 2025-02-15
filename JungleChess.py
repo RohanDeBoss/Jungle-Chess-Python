@@ -11,42 +11,59 @@ SQUARE_SIZE = 65
 BOARD_COLOR_1 = "#D2B48C"
 BOARD_COLOR_2 = "#8B5A2B"
 HIGHLIGHT_COLOR = "#ADD8E6"
-movedelay = 400 # milliseconds
+MOVEDELAY = 400  # milliseconds
 
 DIRECTIONS = {
-    'king': [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (-1, 1), (1, -1), (1, 1)],
-    'queen': [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (-1, 1), (1, -1), (1, 1)],
-    'rook': [(0, 1), (0, -1), (1, 0), (-1, 0)],
-    'bishop': [(-1, -1), (-1, 1), (1, -1), (1, 1)],
-    'knight': [(2, 1), (2, -1), (-2, 1), (-2, -1), (1, 2), (1, -2), (-1, 2), (-1, -2)]
+    'king': ((-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (-1, 1), (1, -1), (1, 1)),
+    'queen': ((-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (-1, 1), (1, -1), (1, 1)),
+    'rook': ((0, 1), (0, -1), (1, 0), (-1, 0)),
+    'bishop': ((-1, -1), (-1, 1), (1, -1), (1, 1)),
+    'knight': ((2, 1), (2, -1), (-2, 1), (-2, -1), (1, 2), (1, -2), (-1, 2), (-1, -2))
 }
+
+ADJACENT_DIRS = (
+    (-1, -1), (-1, 0), (-1, 1),
+    (0, -1),          (0, 1),
+    (1, -1),  (1, 0), (1, 1)
+)
+
 
 # -----------------------------
 # Piece Base Class and Subclasses
 # -----------------------------
 class Piece:
+    """Base class for all chess pieces"""
     def __init__(self, color):
         self.color = color
         self.has_moved = False
 
     def clone(self):
+        """Create a deep copy of the piece"""
         new_piece = self.__class__(self.color)
         new_piece.has_moved = self.has_moved
         return new_piece
 
     def save_state(self):
+        """Save current state for potential rollback"""
         return {'has_moved': self.has_moved}
 
     def restore_state(self, state):
+        """Restore state from saved data"""
         self.has_moved = state['has_moved']
 
     def symbol(self):
+        """Unicode character representing the piece"""
         return "?"
 
     def get_valid_moves(self, board, pos):
+        """Return list of valid moves (to be implemented by subclasses)"""
         return []
 
     def move(self, board, start, end):
+        """
+        Execute move on the board
+        Returns modified board state
+        """
         if board[end[0]][end[1]] is not None and board[end[0]][end[1]].color != self.color:
             board[end[0]][end[1]] = None
         board[end[0]][end[1]] = self
@@ -56,6 +73,7 @@ class Piece:
 
 
 class King(Piece):
+    """King piece implementation"""
     def symbol(self):
         return "♔" if self.color == "white" else "♚"
 
@@ -78,9 +96,8 @@ class King(Piece):
         return moves
 
 
-# In the Queen class, update move() as follows:
-
 class Queen(Piece):
+    """Queen piece implementation with explosion mechanics on capture"""
     def symbol(self):
         return "♕" if self.color == "white" else "♛"
 
@@ -103,31 +120,30 @@ class Queen(Piece):
         return moves
 
     def move(self, board, start, end):
-        # If capturing an enemy piece, remove that piece and trigger explosion.
+        # If the queen captures an enemy piece, trigger explosion
         if board[end[0]][end[1]] and board[end[0]][end[1]].color != self.color:
-            # Remove the target piece.
+            # Remove the target piece
             board[end[0]][end[1]] = None
-            # Loop through the 8 surrounding squares (adjacent neighbors) and clear enemy pieces.
-            for dr in [-1, 0, 1]:
-                for dc in [-1, 0, 1]:
-                    if dr == 0 and dc == 0:
-                        continue
-                    r = end[0] + dr
-                    c = end[1] + dc
-                    if 0 <= r < ROWS and 0 <= c < COLS:
-                        if board[r][c] and board[r][c].color != self.color:
-                            board[r][c] = None
-            # Remove the queen from her original square.
+            # Loop through the 8 surrounding squares (adjacent neighbors) and clear enemy pieces
+            for dr, dc in ADJACENT_DIRS:
+                r = end[0] + dr
+                c = end[1] + dc
+                if 0 <= r < ROWS and 0 <= c < COLS:
+                    if board[r][c] and board[r][c].color != self.color:
+                        board[r][c] = None
+            # Remove the queen from her original square
             board[start[0]][start[1]] = None
-            # The queen "dies" after capturing and exploding, so do not place her at the destination.
+            # The queen "dies" after capturing and exploding, so do not place her at the destination
             board[end[0]][end[1]] = None
         else:
+            # Normal move (no capture, no explosion)
             board = super().move(board, start, end)
         self.has_moved = True
         return board
-
+        
 
 class Rook(Piece):
+    """Rook piece implementation with path clearing"""
     def symbol(self):
         return "♖" if self.color == "white" else "♜"
 
@@ -163,12 +179,14 @@ class Rook(Piece):
             d = (0, 1) if end[1] > start[1] else (0, -1)
         else:
             d = (1, 0) if end[0] > start[0] else (-1, 0)
+        
         r, c = start
         path = []
         while (r, c) != end:
             r += d[0]
             c += d[1]
             path.append((r, c))
+        
         if any(board[r][c] and board[r][c].color != self.color for r, c in path):
             for r, c in path:
                 if board[r][c] and board[r][c].color != self.color:
@@ -177,15 +195,119 @@ class Rook(Piece):
         return board
 
 
+class Bishop(Piece):
+    """Bishop piece implementation with complex movement patterns"""
+    def symbol(self):
+        return "♗" if self.color == "white" else "♝"
+
+    def get_valid_moves(self, board, pos):
+        return list(set(get_zigzag_moves(board, pos, self.color) + get_diagonal_moves(board, pos, self.color)))
+
+    def move(self, board, start, end):
+        return super().move(board, start, end)
+
+
+class Knight(Piece):
+    """Knight piece implementation with evaporation mechanics"""
+    def symbol(self):
+        return "♘" if self.color == "white" else "♞"
+
+    def get_valid_moves(self, board, pos):
+        return [
+            (pos[0] + dr, pos[1] + dc)
+            for dr, dc in DIRECTIONS['knight']
+            if 0 <= (pos[0] + dr) < ROWS 
+            and 0 <= (pos[1] + dc) < COLS
+            and (not (piece := board[pos[0]+dr][pos[1]+dc]) 
+            or piece.color != self.color)
+        ]
+
+    def move(self, board, start, end):
+        super().move(board, start, end)
+        self.evaporate(board, end)
+        return board
+
+    def evaporate(self, board, pos):
+        """Remove surrounding enemy pieces after move"""
+        enemy_knights = []
+        for dr, dc in DIRECTIONS['knight']:
+            r, c = pos[0] + dr, pos[1] + dc
+            if 0 <= r < ROWS and 0 <= c < COLS:
+                piece = board[r][c]
+                if piece and piece.color != self.color:
+                    if isinstance(piece, Knight):
+                        enemy_knights.append((r, c))
+                    board[r][c] = None
+        if enemy_knights:
+            board[pos[0]][pos[1]] = None
+
+
+class Pawn(Piece):
+    """Pawn piece implementation with variant movement rules"""
+    def symbol(self):
+        return "♙" if self.color == "white" else "♟"
+
+    def get_valid_moves(self, board, pos):
+        moves = []
+        direction = -1 if self.color == "white" else 1
+        
+        # Forward moves (1 or 2 squares)
+        for steps in [1, 2]:
+            if steps == 2 and self.has_moved:
+                continue  # Pawns can only move 2 squares on their first move
+                
+            new_r = pos[0] + (direction * steps)
+            new_c = pos[1]
+            
+            if 0 <= new_r < ROWS:
+                # Forward capture
+                if board[new_r][new_c] is not None and board[new_r][new_c].color != self.color:
+                    moves.append((new_r, new_c))
+                # Normal forward move
+                if board[new_r][new_c] is None:
+                    moves.append((new_r, new_c))
+                if board[new_r][new_c] is not None:
+                    break  # Stop if a piece is blocking the path
+        
+        # Sideways captures at current rank
+        for dc in [-1, 1]:
+            new_c = pos[1] + dc
+            if 0 <= new_c < COLS:
+                if board[pos[0]][new_c] is not None and board[pos[0]][new_c].color != self.color:
+                    moves.append((pos[0], new_c))
+        
+        return moves
+
+    def move(self, board, start, end):
+        # Handle capture if present
+        if board[end[0]][end[1]] is not None and board[end[0]][end[1]].color != self.color:
+            board[end[0]][end[1]] = None
+        
+        # Move the pawn
+        board[end[0]][end[1]] = self
+        board[start[0]][start[1]] = None
+        self.has_moved = True
+        
+        # Promotion logic: white promotes when reaching row 0, black when reaching the last row
+        if (self.color == "white" and end[0] == 0) or (self.color == "black" and end[0] == ROWS - 1):
+            board[end[0]][end[1]] = Queen(self.color)
+        
+        return board
+
+
+# -----------------------------
+# Helper Functions
+# -----------------------------
 def get_zigzag_moves(board, pos, color):
+    """Calculate bishop's special zig-zag pattern moves"""
     moves = set()
     r, c = pos
-    direction_pairs = [
+    direction_pairs = (
         ((-1, 1), (-1, -1)), ((-1, -1), (-1, 1)),
         ((1, 1), (1, -1)), ((1, -1), (1, 1)),
         ((-1, 1), (1, 1)), ((1, 1), (-1, 1)),
         ((-1, -1), (1, -1)), ((1, -1), (-1, -1))
-    ]
+    )
     for d1, d2 in direction_pairs:
         cr, cc, cd = r, c, d1
         while True:
@@ -204,6 +326,7 @@ def get_zigzag_moves(board, pos, color):
 
 
 def get_diagonal_moves(board, pos, color):
+    """Standard diagonal moves calculation"""
     moves = []
     for d in DIRECTIONS['bishop']:
         r, c = pos
@@ -221,95 +344,8 @@ def get_diagonal_moves(board, pos, color):
     return moves
 
 
-class Bishop(Piece):
-    def symbol(self):
-        return "♗" if self.color == "white" else "♝"
-
-    def get_valid_moves(self, board, pos):
-        return list(set(get_zigzag_moves(board, pos, self.color) + get_diagonal_moves(board, pos, self.color)))
-
-    def move(self, board, start, end):
-        return super().move(board, start, end)
-
-
-class Knight(Piece):
-    def symbol(self):
-        return "♘" if self.color == "white" else "♞"
-
-    def get_valid_moves(self, board, pos):
-        return [
-            (pos[0] + dr, pos[1] + dc)
-            for dr, dc in DIRECTIONS['knight']
-            if 0 <= (pos[0] + dr) < ROWS and 0 <= (pos[1] + dc) < COLS
-            and (not (piece := board[pos[0]+dr][pos[1]+dc]) or piece.color != self.color)
-        ]
-
-    def move(self, board, start, end):
-        super().move(board, start, end)
-        self.evaporate(board, end)
-        return board
-
-    def evaporate(self, board, pos):
-        enemy_knights = []
-        for dr, dc in DIRECTIONS['knight']:
-            r, c = pos[0] + dr, pos[1] + dc
-            if 0 <= r < ROWS and 0 <= c < COLS:
-                piece = board[r][c]
-                if piece and piece.color != self.color:
-                    if isinstance(piece, Knight):
-                        enemy_knights.append((r, c))
-                    board[r][c] = None
-        if enemy_knights:
-            board[pos[0]][pos[1]] = None
-
-
-class Pawn(Piece):
-    def symbol(self):
-        return "♙" if self.color == "white" else "♟"
-
-    def get_valid_moves(self, board, pos):
-        moves = []
-        direction = -1 if self.color == "white" else 1
-        
-        # Forward moves and captures (including two squares on first move)
-        for steps in [1, 2]:
-            if steps == 2 and self.has_moved:
-                continue
-                
-            new_r = pos[0] + (direction * steps)
-            new_c = pos[1]
-            
-            if 0 <= new_r < ROWS:
-                if board[new_r][new_c] is None or (board[new_r][new_c] is not None and board[new_r][new_c].color != self.color):
-                    moves.append((new_r, new_c))
-                if board[new_r][new_c] is not None:
-                    break
-        
-        # Sideways captures at current rank
-        for dc in [-1, 1]:
-            new_c = pos[1] + dc
-            if 0 <= new_c < COLS:
-                if board[pos[0]][new_c] is not None and board[pos[0]][new_c].color != self.color:
-                    moves.append((pos[0], new_c))
-        
-        return moves
-
-    def move(self, board, start, end):
-        # Handle capture if present.
-        if board[end[0]][end[1]] is not None and board[end[0]][end[1]].color != self.color:
-            board[end[0]][end[1]] = None
-        board[end[0]][end[1]] = self
-        board[start[0]][start[1]] = None
-        self.has_moved = True
-        
-        # Promotion logic: white promotes when reaching row 0, black when reaching the last row.
-        if (self.color == "white" and end[0] == 0) or (self.color == "black" and end[0] == ROWS - 1):
-            board[end[0]][end[1]] = Queen(self.color)
-        
-        return board
-
-
 def copy_board(board):
+    """Create a deep copy of the game board"""
     return [[p.clone() if p else None for p in row] for row in board]
 
 # -----------------------------
@@ -507,13 +543,15 @@ class ChessBot:
         # Evaluate explosion threats from enemy queens.
         explosion_threat = self.is_in_explosion_threat(board, self.color)
 
-        # Evaluate threats to our king (existing approach).
-        threat_score = sum(
-            200 for r in range(ROWS) for c in range(COLS)
-            if (piece := board[r][c]) and piece.color != self.color
-            for move in piece.get_valid_moves(board, (r, c))
-            if manhattan_distance(move, our_king_pos) <= 1
-        )
+        threat_score = 0
+        if our_king_pos:
+            # Check if any enemy piece can attack the king directly
+            for r in range(ROWS):
+                for c in range(COLS):
+                    piece = board[r][c]
+                    if piece and piece.color != self.color:
+                        if our_king_pos in piece.get_valid_moves(board, (r, c)):
+                            threat_score += 200  # Direct threat to king
 
         # Calculate original evaluation
         original_eval = int(score - threat_score - explosion_threat)
@@ -700,6 +738,15 @@ def is_in_explosion_threat(board, color):
     return False
 
 def validate_move(board, color, start, end):
+    # Precompute king's position once
+    king_pos = None
+    for r in range(ROWS):
+        for c in range(COLS):
+            if isinstance(board[r][c], King) and board[r][c].color == color:
+                king_pos = (r, c)
+                break
+        if king_pos: break
+
     simulated = copy_board(board)
     piece = simulated[start[0]][start[1]]
     if not piece or piece.color != color:
@@ -1256,9 +1303,6 @@ class EnhancedChessApp:
                 # Update position history after switching turns
                 self.position_history.append(self.get_position_key())
 
-            # Debug output for timing
-            elapsed_time = time.time() - start_time
-            print(f"Bot move completed in {elapsed_time:.3f} seconds")
         else:
             # If the bot cannot make a move, the human wins
             self.game_over = True
