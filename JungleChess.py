@@ -548,16 +548,52 @@ class ChessBot:
         start, end = move
         piece = board[start[0]][start[1]]
         target = board[end[0]][end[1]]
+
+        # Base score for captures
         if target:
-            return 1000  # Prioritize captures
-        return 0
+            # Prioritize capturing higher-value pieces
+            piece_values = {
+                Pawn: 100,
+                Knight: 700,
+                Bishop: 600,
+                Rook: 500,
+                Queen: 900,
+                King: 100000
+            }
+            capture_score = piece_values.get(type(target), 0)
+            return 1000 + capture_score  # Base capture bonus + piece value
+
+        # Bonus for moving to central squares
+        center_squares = {(3, 3), (3, 4), (4, 3), (4, 4)}
+        if end in center_squares:
+            return 50  # Small bonus for central control
+
+        # Bonus for pawn advancement
+        if isinstance(piece, Pawn):
+            if piece.color == "white":
+                return end[0]  # Higher score for advancing white pawns
+            else:
+                return 7 - end[0]  # Higher score for advancing black pawns
+
+        return 0  # Default score for non-captures
 
     def order_moves(self, board, moves, maximizing_player=True):
         """
-        Order moves using a heuristic evaluation. 
-        You can extend this method to incorporate additional heuristics if desired.
+        Order moves using a heuristic evaluation.
+        Optimized to avoid unnecessary sorting when possible.
         """
-        return sorted(moves, key=lambda move: self.evaluate_move(board, move), reverse=maximizing_player)
+        if not moves:
+            return moves
+
+        # Evaluate all moves in one pass
+        scored_moves = [(self.evaluate_move(board, move), move) for move in moves]
+
+        # Sort only if there are multiple moves with different scores
+        if len(set(score for score, _ in scored_moves)) > 1:
+            scored_moves.sort(reverse=maximizing_player, key=lambda x: x[0])
+
+        # Return only the moves (without scores)
+        return [move for _, move in scored_moves]
 
     # ====================================================
     # Search Methods (Minimax & Move Selection)
