@@ -1094,7 +1094,6 @@ class EnhancedChessApp:
                 x2, y2 = x1 + SQUARE_SIZE, y1 + SQUARE_SIZE
                 color = BOARD_COLOR_1 if (r + c) % 2 == 0 else BOARD_COLOR_2
                 self.canvas.create_rectangle(x1, y1, x2, y2, fill=color, outline="")
-
                 # highlight valid moves if needed
                 if (r, c) in self.valid_moves:
                     self.canvas.create_oval(x1 + 19, y1 + 19, x2 - 19, y2 - 19,
@@ -1134,10 +1133,11 @@ class EnhancedChessApp:
                                                 font=("Arial", 39), fill="black", tags="piece")
 
         # Draw dragging piece if any
-        if self.dragging and self.drag_piece:
+        if self.dragging and self.drag_piece and self.drag_start is not None:
             piece = self.board[self.drag_start[0]][self.drag_start[1]]
-            self.canvas.create_text(self.drag_piece[0], self.drag_piece[1],
-                                    text=piece.symbol(), font=("Arial", 36), tags="drag")
+            if piece is not None:
+                self.canvas.create_text(self.drag_piece[0], self.drag_piece[1],
+                                        text=piece.symbol(), font=("Arial", 36), tags="drag")
         
         # Draw an even border around the chess board
         board_width = COLS * SQUARE_SIZE
@@ -1188,11 +1188,14 @@ class EnhancedChessApp:
         end_pos = (row, col)
 
         if end_pos in self.valid_moves:
-            # Validate move against game rules
             if validate_move(self.board, self.turn, self.drag_start, end_pos):
                 moving_piece = self.board[self.drag_start[0]][self.drag_start[1]]
                 self.board = moving_piece.move(self.board, self.drag_start, end_pos)
                 check_evaporation(self.board)
+                
+                # Redraw board and force an update so the capture animation completes
+                self.draw_board()
+                self.master.update_idletasks()  # Ensure canvas refresh
 
                 # Check for game over conditions
                 result, winner = check_game_over(self.board)
@@ -1203,17 +1206,16 @@ class EnhancedChessApp:
                     self.game_over = True
                     self.turn_label.config(text="Stalemate! It's a draw.")
                 else:
-                    # Switch turns
+                    # Switch turns and record position history
                     self.turn = "black" if self.turn == "white" else "white"
                     self.position_history.append(self.get_position_key())
-
-                    # If playing against the bot and it's the bot's turn, schedule the bot's move
+                    
+                    # Use a minimal delay (20ms) to let board animation finalize if instant move is on
                     if self.game_mode.get() == "bot" and self.turn != self.human_color:
-                        delay = 0 if self.instant_move.get() else 500  # 0ms if Instant Move, else 500ms
+                        delay = 20 if self.instant_move.get() else 500
                         self.master.after(delay, self.make_bot_move)
             else:
                 print("Illegal move!")
-
         # Reset dragging state
         self.dragging = False
         self.drag_piece = None
