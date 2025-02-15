@@ -599,17 +599,16 @@ class ChessBot:
     # Search Methods (Minimax & Move Selection)
     # ====================================================
     def minimax(self, board, depth, maximizing_player, alpha, beta):
-        """Optimized minimax with alpha-beta pruning and Principal Variation Search (PVS)."""
+        """Optimized minimax with alpha-beta pruning, null move pruning, LMR, and PVS."""
         self.nodes_searched += 1
 
         current_turn = self.color if maximizing_player else ('black' if self.color == 'white' else 'white')
         
-        # Threefold repetition check ==============================================
+        # Threefold repetition check
         current_key = generate_position_key(board, current_turn)
         if self.app.position_history.count(current_key) >= 2:
             return 0  # Evaluate repeated position as draw
-        # ============================================================================
-        
+
         if is_stalemate(board, current_turn):
             return 0
 
@@ -620,6 +619,20 @@ class ChessBot:
         if depth == 0:
             return self.evaluate_board(board, depth, current_turn)
 
+        # -------- Null Move Pruning --------
+        # Only apply if not in check and depth is sufficiently high
+        if depth >= 3 and not is_in_check(board, current_turn):
+            null_move_reduction = 2  # Reduction factor for null moves
+            if maximizing_player:
+                null_value = self.minimax(board, depth - 1 - null_move_reduction, False, alpha, beta)
+                if null_value >= beta:
+                    return null_value
+            else:
+                null_value = self.minimax(board, depth - 1 - null_move_reduction, True, alpha, beta)
+                if null_value <= alpha:
+                    return null_value
+        # ------------------------------------
+
         moves = self.get_all_moves(board, current_turn)
         if not moves:
             if is_in_check(board, current_turn):
@@ -629,28 +642,34 @@ class ChessBot:
 
         moves = self.order_moves(board, moves, maximizing_player)
 
-        first_move = True
         best_value = float('-inf') if maximizing_player else float('inf')
+        first_move = True
 
-        for move in moves:
+        for i, move in enumerate(moves):
+            # -------- Late Move Reductions (LMR) --------
+            reduction = 0
+            if i >= 3 and depth >= 4:  # For later moves when depth is sufficient (should be higher than null move)
+                reduction = 1  # Reduction factor (tweakable based on experiments)
+            new_depth = depth - 1 - reduction
+            # ----------------------------------------------
+
             start, end = move
             new_board = self.simulate_move(board, start, end)
-            
+
             if first_move:
-                # For the first move, search with the full window
-                score = self.minimax(new_board, depth - 1, not maximizing_player, alpha, beta)
+                # For the first move, search with full window
+                score = self.minimax(new_board, new_depth, not maximizing_player, alpha, beta)
                 first_move = False
             else:
-                # Principal Variation Search: use a null window search first
+                # Principal Variation Search (PVS) with LMR applied:
                 if maximizing_player:
-                    score = self.minimax(new_board, depth - 1, not maximizing_player, alpha, alpha + 1)
-                    # If the null-window search indicates a potentially better move, re-search with full window
-                    if alpha < score < beta:
-                        score = self.minimax(new_board, depth - 1, not maximizing_player, score, beta)
+                    score = self.minimax(new_board, new_depth, not maximizing_player, alpha, alpha + 1)
+                    if score > alpha and score < beta:
+                        score = self.minimax(new_board, new_depth, not maximizing_player, score, beta)
                 else:
-                    score = self.minimax(new_board, depth - 1, not maximizing_player, beta - 1, beta)
-                    if alpha < score < beta:
-                        score = self.minimax(new_board, depth - 1, not maximizing_player, alpha, score)
+                    score = self.minimax(new_board, new_depth, not maximizing_player, beta - 1, beta)
+                    if score < beta and score > alpha:
+                        score = self.minimax(new_board, new_depth, not maximizing_player, alpha, score)
 
             if maximizing_player:
                 if score > best_value:
@@ -662,10 +681,11 @@ class ChessBot:
                 beta = min(beta, best_value)
 
             if beta <= alpha:
-                break  # Prune remaining branches
+                break  # Beta cut-off
 
         self.tt[board_key] = (depth, best_value)
         return best_value
+
 
 
     def make_move(self):
