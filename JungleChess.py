@@ -1,6 +1,7 @@
 import tkinter as tk
 from tkinter import ttk
 import time
+import math
 
 # -----------------------------
 # Global Constants
@@ -997,12 +998,16 @@ class EnhancedChessApp:
     def draw_eval_bar(self, eval_score):
         eval_score /= 100.0
         self.eval_bar_canvas.delete("all")
-        # Use evolving canvas width instead of fixed value
         bar_width = self.eval_bar_canvas.winfo_width() or 235
         bar_height = 30
         max_eval = 10.0
-        neutral_zone = 0.2
-        normalized_score = max(min(eval_score / max_eval, 1.0), -1.0)
+        # Picking a scaling factor such that tanh(62/scaling) is nearly 1.
+        # For example, tanh(62/23.4) ~ 0.99.
+        scaling = 23.4
+        normalized_score = math.tanh(eval_score / scaling)
+        # Clamp to the interval [-1, 1]
+        normalized_score = max(min(normalized_score, 1.0), -1.0)
+    
         for x in range(bar_width):
             ratio = x / float(bar_width)
             r = int(255 * ratio)
@@ -1010,15 +1015,17 @@ class EnhancedChessApp:
             b = int(255 * ratio)
             color = f"#{r:02x}{g:02x}{b:02x}"
             self.eval_bar_canvas.create_line(x, 0, x, bar_height, fill=color)
+    
         marker_x = int((normalized_score + 1) / 2 * bar_width)
         accent_color = self.COLORS.get('accent', '#e94560')
         marker_width = 1  # Reduced marker outline thickness
         self.eval_bar_canvas.create_rectangle(marker_x - marker_width, 0,
-                                            marker_x + marker_width, bar_height,
-                                            fill=accent_color, outline=accent_color)
+                                              marker_x + marker_width, bar_height,
+                                              fill=accent_color, outline=accent_color)
         mid_x = (bar_width // 2)
         self.eval_bar_canvas.create_line(mid_x, 0, mid_x, bar_height, fill="#666666", width=1)
-        if abs(eval_score) < neutral_zone:
+    
+        if abs(eval_score) < 0.2:
             self.eval_score_label.config(text="Even", font=("Helvetica", 10))
         else:
             display_score = abs(eval_score)
