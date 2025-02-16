@@ -4,7 +4,6 @@ import time
 import math
 from GameLogic import create_initial_board, ROWS, COLS, SQUARE_SIZE, BOARD_COLOR_1, BOARD_COLOR_2, generate_position_key, King, is_in_check, has_legal_moves, validate_move, check_game_over, check_evaporation
 from AI import ChessBot
-from OpponentAI import OpponentAI  # import your new AI
 
 
 class EnhancedChessApp:
@@ -42,24 +41,22 @@ class EnhancedChessApp:
         game_mode_frame.pack(fill=tk.X, pady=(0,9))
         ttk.Label(game_mode_frame, text="GAME MODE", style='Header.TLabel').pack(anchor=tk.W)
         ttk.Radiobutton(game_mode_frame, text="Human vs Bot", variable=self.game_mode,
-                        value="bot", command=self.reset_game, style='Custom.TRadiobutton').pack(anchor=tk.W, pady=(2,1))
+                        value="bot", command=self.reset_game, style='Custom.TRadiobutton').pack(anchor=tk.W, pady=(5,3))
         ttk.Radiobutton(game_mode_frame, text="Human vs Human", variable=self.game_mode,
                         value="human", command=self.reset_game, style='Custom.TRadiobutton').pack(anchor=tk.W)
-        ttk.Radiobutton(game_mode_frame, text="AI vs AI", variable=self.game_mode,
-                        value="ai_vs_ai", command=self.reset_game, style='Custom.TRadiobutton').pack(anchor=tk.W, pady=(1,2))
         
        # Controls frame setup
         controls_frame = ttk.Frame(self.left_panel, style='Left.TFrame')
         controls_frame.pack(fill=tk.X, pady=4)
         ttk.Button(controls_frame, text="NEW GAME", command=self.reset_game,
                    style='Control.TButton').pack(fill=tk.X, pady=5)
+        # Remove the BOT SETTINGS button
         ttk.Button(controls_frame, text="SWAP SIDES", command=self.swap_sides,
                    style='Control.TButton').pack(fill=tk.X, pady=5)
         ttk.Button(controls_frame, text="QUIT", command=self.master.quit,
                    style='Control.TButton').pack(fill=tk.X, pady=5)
-
         # Inline Bot settings with a Bot Depth slider
-        ttk.Label(controls_frame, text="Bot Depth:", style='Header.TLabel').pack(anchor=tk.W, pady=(9,0))
+        ttk.Label(controls_frame, text="Bot Depth:", style='Header.TLabel').pack(anchor=tk.W, pady=(10,0))
         self.bot_depth_slider = tk.Scale(controls_frame, from_=1, to=6, orient=tk.HORIZONTAL,
                                          command=self.update_bot_depth,
                                          bg=self.COLORS['bg_dark'], fg=self.COLORS['text_light'],
@@ -70,8 +67,8 @@ class EnhancedChessApp:
         # Add an Instant Move checkmark
         self.instant_move = tk.BooleanVar(value=False)
         ttk.Checkbutton(controls_frame, text="Instant Move", variable=self.instant_move,
-                        style='Custom.TRadiobutton').pack(anchor=tk.W, pady=(2,0))
-
+                        style='Custom.TRadiobutton').pack(anchor=tk.W, pady=(3,3))
+        
         # Turn display frame
         self.turn_frame = ttk.Frame(self.left_panel, style='Left.TFrame')
         self.turn_frame.pack(fill=tk.X, pady=(9,0))
@@ -110,17 +107,6 @@ class EnhancedChessApp:
                                 bg=self.COLORS['bg_light'],
                                 highlightthickness=0)  # Remove built-in highlight border
         self.canvas.pack()
-        
-        # Scoreboard UI for AI vs AI displayed in the top right of the right panel
-        self.scoreboard_frame = ttk.Frame(self.right_panel, style='Right.TFrame')
-        self.scoreboard_frame.pack(side=tk.TOP, anchor='ne', padx=15, pady=15)
-        self.scoreboard_label = ttk.Label(self.scoreboard_frame,
-                                        text="AI vs AI Score:\nWhite: 0\nBlack: 0\nDraws: 0\nGames: 0/100",
-                                        font=("Helvetica", 10),  # Reduced font size
-                                        background=self.COLORS['bg_medium'],
-                                        foreground=self.COLORS['text_light'])
-        self.scoreboard_label.pack()
-
 
         # Initial game state initialization
         self.human_color = "white"
@@ -135,43 +121,17 @@ class EnhancedChessApp:
         bot_color = "black"  # Opponent always plays opposite
         self.bot = ChessBot(self.board, bot_color, self)
         
-        # Initialize AI vs AI counters (used only when in ai_vs_ai mode)
-        self.ai_game_count = 0
-        self.white_wins = 0
-        self.black_wins = 0
-        self.draws = 0
-
         # Bind canvas events and initial drawing
         self.canvas.bind("<Button-1>", self.on_drag_start)
         self.canvas.bind("<B1-Motion>", self.on_drag_motion)
         self.canvas.bind("<ButtonRelease-1>", self.on_drag_end)
         self.draw_board()
 
-        # When initializing, create the default bot.
-        bot_color = "black"  # Opponent always plays opposite
-        self.bot = ChessBot(self.board, bot_color, self)
-        
-    def use_opponent_ai(self):
-        """Switch opponent to the new AI type."""
-        bot_color = "black" if self.human_color == "white" else "white"
-        self.bot = OpponentAI(self.board, bot_color, self)
-        # You may want to update the UI or restart the AI move if needed.
-        print("Switched to Opponent AI.")
-
     def update_bot_depth(self, value):
         new_depth = int(value)
-        ChessBot.search_depth = new_depth      # Update ChessBot's class variable
-        OpponentAI.search_depth = new_depth     # Update OpponentAI's class variable
-        # Update current bot instance if it exists (works for either type)
-        if hasattr(self, 'bot'):
-            self.bot.search_depth = new_depth
-        # If playing AI vs AI, update both white and black bots if they exist
-        if hasattr(self, 'white_bot'):
-            self.white_bot.search_depth = new_depth
-        if hasattr(self, 'black_bot'):
-            self.black_bot.search_depth = new_depth
-
-
+        ChessBot.search_depth = new_depth
+        self.bot.search_depth = new_depth
+    
     # Update EnhancedChessApp's get_position_key method
     def get_position_key(self):
         return generate_position_key(self.board, self.turn)
@@ -520,101 +480,14 @@ class EnhancedChessApp:
         self.dragging = False
         self.drag_piece = None
         self.drag_start = None
+        # Bot takes the color that is not chosen by the human.
+        bot_color = "black" if self.human_color == "white" else "white"
+        self.bot = ChessBot(self.board, bot_color, self)
         self.turn_label.config(text=f"Turn: {self.turn.capitalize()}")
-        
-        if self.game_mode.get() == "ai_vs_ai":
-            # Instantiate both bots:
-            self.white_bot = ChessBot(self.board, "white", self)
-            self.black_bot = OpponentAI(self.board, "black", self)
-        elif self.game_mode.get() == "bot":
-            # Human vs Bot: assume human is white
-            bot_color = "black"
-            self.bot = ChessBot(self.board, bot_color, self)
-        # For human vs human, no bots are needed.
-        
         self.draw_board()
-        
-        # If playing AI vs AI, start the moves automatically:
-        if self.game_mode.get() == "ai_vs_ai":
-            # If 100 AI games haven't been played yet, start moves automatically.
-            if self.ai_game_count < 100:
-                self.master.after(500, self.make_ai_move)
-        elif self.game_mode.get() == "bot" and self.turn != self.human_color:
-            self.master.after(500, self.make_ai_move)
-
-    def update_scoreboard(self):
-        # Update the scoreboard label with current counts
-        self.scoreboard_label.config(text=f"AI vs AI Score:\nWhite: {self.white_wins}\nBlack: {self.black_wins}\nDraws: {self.draws}\nGames: {self.ai_game_count}/100")
-
-    def make_ai_move(self):
-        if self.game_over:
-            # Only update scores and reset if in AI vs AI mode.
-            if self.game_mode.get() == "ai_vs_ai":
-                # Determine game result
-                result, winner = check_game_over(self.board)
-                self.ai_game_count += 1
-                if result == "checkmate":
-                    if winner == "white":
-                        self.white_wins += 1
-                    elif winner == "black":
-                        self.black_wins += 1
-                elif result == "stalemate":
-                    self.draws += 1
-
-                self.update_scoreboard()
-                
-                # If count is less than 100, reset for next game after a delay.
-                if self.ai_game_count < 100:
-                    self.master.after(1000, self.reset_game)
-                else:
-                    self.turn_label.config(text="100 Games Complete")
-            return
-
-        start_time = time.time()
-        
-        # Select the bot based on whose turn it is:
-        if self.game_mode.get() == "ai_vs_ai":
-            current_bot = self.white_bot if self.turn == "white" else self.black_bot
-        elif self.game_mode.get() == "bot":
-            current_bot = self.bot
-        else:
-            return
-
-        if current_bot.make_move():
-            self.draw_board()
-            result, winner = check_game_over(self.board)
-            if result == "checkmate":
-                self.game_over = True
-                self.turn_label.config(text=f"Checkmate! {winner.capitalize()} wins!")
-            elif result == "stalemate":
-                self.game_over = True
-                self.turn_label.config(text="Stalemate! It's a draw.")
-            else:
-                # Switch turns and add position history.
-                self.turn = "black" if self.turn == "white" else "white"
-                self.position_history.append(self.get_position_key())
-                
-                # Continue AI moves if both sides are bots.
-                if self.game_mode.get() == "ai_vs_ai":
-                    self.master.after(500, self.make_ai_move)
-                # In human vs bot mode, switch control back if it becomes the bot's turn.
-                elif self.game_mode.get() == "bot" and self.turn != self.human_color:
-                    self.master.after(500, self.make_ai_move)
-        else:
-            # If the bot cannot make a move, declare game over.
-            self.game_over = True
-            self.turn_label.config(text=f"{self.turn.capitalize()} wins!")
-            
-            # For AI vs AI, update scores and cycle games.
-            if self.game_mode.get() == "ai_vs_ai":
-                self.ai_game_count += 1
-                # Here you might decide which color wins by default if no move is made.
-                self.draw_board()
-                self.update_scoreboard()
-                if self.ai_game_count < 100:
-                    self.master.after(1000, self.reset_game)
-                else:
-                    self.turn_label.config(text="100 Games Complete!")
+        # If playing in bot mode and it's not the human's turn, let the bot move.
+        if self.game_mode.get() == "bot" and self.turn != self.human_color:
+            self.master.after(500, self.make_bot_move)
 
 def main():
     root = tk.Tk()

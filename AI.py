@@ -4,42 +4,50 @@ from GameLogic import *
 
 class ChessBot:
     search_depth = 3
+    CENTER_SQUARES = {(3, 3), (3, 4), (4, 3), (4, 4)}
+    PIECE_VALUES = {
+        Pawn: 100,
+        Knight: 700,
+        Bishop: 600,
+        Rook: 500,
+        Queen: 900,
+        King: 100000
+    }
 
     def __init__(self, board, color, app):
         self.board = board
         self.color = color
-        self.tt = {}  # Transposition table
+        self.tt = {}
         self.nodes_searched = 0
-        self.app = app  # Store the EnhancedChessApp instance
+        self.app = app
+        self.zobrist_table = self.initialize_zobrist_table()
 
     # ====================================================
     # Threat Checking Methods
     # ====================================================
     def is_in_explosion_threat(self, board, color):
-        """Check if the current player's king is under threat of explosion from an enemy queen's capture."""
         king_pos = None
+        enemy_color = 'black' if color == 'white' else 'white'
+        enemy_queens = []
+
         for r in range(ROWS):
             for c in range(COLS):
                 piece = board[r][c]
                 if isinstance(piece, King) and piece.color == color:
                     king_pos = (r, c)
-                    break
-            if king_pos:
-                break
-        if not king_pos:
-            return False  # King not found
+                elif isinstance(piece, Queen) and piece.color == enemy_color:
+                    enemy_queens.append((r, c))
 
-        enemy_color = 'black' if color == 'white' else 'white'
-        for r in range(ROWS):
-            for c in range(COLS):
-                piece = board[r][c]
-                if isinstance(piece, Queen) and piece.color == enemy_color:
-                    queen_moves = piece.get_valid_moves(board, (r, c))
-                    for move in queen_moves:
-                        if max(abs(move[0] - king_pos[0]), abs(move[1] - king_pos[1])) == 1:
-                            target_piece = board[move[0]][move[1]]
-                            if target_piece and target_piece.color == color:
-                                return True
+        if not king_pos:
+            return False
+
+        for r, c in enemy_queens:
+            queen_moves = board[r][c].get_valid_moves(board, (r, c))
+            for move in queen_moves:
+                if max(abs(move[0] - king_pos[0]), abs(move[1] - king_pos[1])) == 1:
+                    target_piece = board[move[0]][move[1]]
+                    if target_piece and target_piece.color == color:
+                        return True
         return False
 
     def is_in_knight_evaporation_threat(self, board, color):
@@ -61,18 +69,9 @@ class ChessBot:
     # Position Evaluation Methods
     # ====================================================
     def evaluate_board(self, board, depth, current_turn):
-        """Evaluate the board state with early termination for winning/losing conditions."""
-        piece_values = {
-            Pawn: 100,
-            Knight: 700,
-            Bishop: 600,
-            Rook: 500,
-            Queen: 900,
-            King: 100000
-        }
-
         score = 0
         our_king_pos = enemy_king_pos = None
+        enemy_pieces = []
 
         for r in range(ROWS):
             for c in range(COLS):
@@ -87,7 +86,10 @@ class ChessBot:
                         enemy_king_pos = (r, c)
                     continue
 
-                value = piece_values.get(type(piece), 0)
+                if piece.color != self.color:
+                    enemy_pieces.append((r, c, piece))
+
+                value = self.PIECE_VALUES.get(type(piece), 0)
                 if isinstance(piece, Knight):
                     value += len(piece.get_valid_moves(board, (r, c))) * 10
                 elif isinstance(piece, Queen):
@@ -100,60 +102,36 @@ class ChessBot:
 
                 score += value if piece.color == self.color else -value
 
-        if not enemy_king_pos:
-            return float('inf')
-        if not our_king_pos:
-            return float('-inf')
+        if not enemy_king_pos or not our_king_pos:
+            return float('inf') if not enemy_king_pos else float('-inf')
 
-        explosion_threat = self.is_in_explosion_threat(board, self.color)
         threat_score = 0
         if our_king_pos:
-            for r in range(ROWS):
-                for c in range(COLS):
-                    piece = board[r][c]
-                    if piece and piece.color != self.color:
-                        if our_king_pos in piece.get_valid_moves(board, (r, c)):
-                            threat_score += 200  # Direct threat to king
+            for r, c, p in enemy_pieces:
+                if our_king_pos in p.get_valid_moves(board, (r, c)):
+                    threat_score += 200
 
+        explosion_threat = self.is_in_explosion_threat(board, self.color)
         return int(score - threat_score - explosion_threat)
-
     # ====================================================
     # Move Ordering Methods
     # ====================================================
     def evaluate_move(self, board, move):
-        """Heuristic to evaluate the quality of a move for move ordering."""
         start, end = move
         piece = board[start[0]][start[1]]
         target = board[end[0]][end[1]]
 
-        # Base score for captures
         if target:
-            # Prioritize capturing higher-value pieces
-            piece_values = {
-                Pawn: 100,
-                Knight: 700,
-                Bishop: 600,
-                Rook: 500,
-                Queen: 900,
-                King: 100000
-            }
-            capture_score = piece_values.get(type(target), 0)
-            return 1000 + capture_score  # Base capture bonus + piece value
+            return 1000 + self.PIECE_VALUES.get(type(target), 0)
 
-        # Bonus for moving to central squares
-        center_squares = {(3, 3), (3, 4), (4, 3), (4, 4)}
-        if end in center_squares:
-            return 50  # Small bonus for central control
+        if end in self.CENTER_SQUARES:
+            return 50
 
-        # Bonus for pawn advancement
         if isinstance(piece, Pawn):
-            if piece.color == "white":
-                return end[0]  # Higher score for advancing white pawns
-            else:
-                return 7 - end[0]  # Higher score for advancing black pawns
+            return end[0] if piece.color == "white" else 7 - end[0]
 
-        return 0  # Default score for non-captures
-
+        return 0
+    
     def order_moves(self, board, moves, maximizing_player=True):
         """
         Order moves using a heuristic evaluation and transposition table (TT) best move.
@@ -283,7 +261,6 @@ class ChessBot:
         return best_value
 
 
-
     def make_move(self):
         """Make the best move found by the bot."""
         best_move = None
@@ -328,13 +305,28 @@ class ChessBot:
         return False
 
     # ====================================================
-    # Helper Methods
+    # Hashing and Helper Methods
     # ====================================================
+    def initialize_zobrist_table(self):
+        import random
+        random.seed(42)
+        return {
+            (r, c, piece_type, color): random.getrandbits(64)
+            for r in range(ROWS)
+            for c in range(COLS)
+            for piece_type in [Pawn, Knight, Bishop, Rook, Queen, King, None]
+            for color in ['white', 'black', None]
+        }
+
     def board_hash(self, board):
-        board_str = ''.join(
-            piece.symbol() if piece else '.' for row in board for piece in row
-        )
-        return hash(board_str)
+        hash_val = 0
+        for r in range(ROWS):
+            for c in range(COLS):
+                piece = board[r][c]
+                key = (r, c, type(piece) if piece else None, 
+                      piece.color if piece else None)
+                hash_val ^= self.zobrist_table.get(key, 0)
+        return hash_val
 
     def get_adjacent_squares(self, pos):
         r, c = pos
