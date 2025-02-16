@@ -1,8 +1,9 @@
 # Jungle_Chess/ai.py
 import time
 from GameLogic import *
+from AI import ChessBot
 
-class ChessBot:
+class OpponentAI(ChessBot):
     search_depth = 3
 
     def __init__(self, board, color, app):
@@ -312,13 +313,13 @@ class ChessBot:
 
             iteration_time = time.time() - iteration_start
             reported_value = -current_best_value if self.color == 'black' else current_best_value
-            print(f"AI Depth {current_depth}: {iteration_time:.3f}s, AI nodes: {self.nodes_searched}, AI Eval: {reported_value}")
+            print(f"OP Depth {current_depth}: {iteration_time:.3f}s, OP nodes: {self.nodes_searched}, OP Eval: {reported_value}")
 
             self.app.master.after(0, lambda: self.app.draw_eval_bar(reported_value))
             best_move = current_best_move
             best_value = current_best_value
 
-        print(f"AI Total time: {(time.time() - total_start):.3f}s")
+        print(f"OP Total time: {(time.time() - total_start):.3f}s")
         if best_move:
             start, end = best_move
             moving_piece = self.board[start[0]][start[1]]
