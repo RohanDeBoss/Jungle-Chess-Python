@@ -17,12 +17,17 @@ class EnhancedChessApp:
         self.master.configure(bg=self.COLORS['bg_dark'])
         self.position_history = []  # Track positions for threefold repetition
         self.ai_series_running = False
+        self.board_orientation = "white"  # Track which color is at the bottom
 
         # Initialize AI vs OP series counters
         self.ai_game_count = 0
-        self.white_wins = 0
-        self.black_wins = 0
+        self.my_ai_wins = 0
+        self.op_ai_wins = 0
         self.draws = 0
+        self.ai_series_running = False
+        self.ai_white_bot = None  # Bot currently playing white in AI vs. AI mode
+        self.ai_black_bot = None  # Bot currently playing black in AI vs. AI mode
+        self.ai_bot_colors = {"white": "main", "black": "op"}  # Track bot roles (main or op)
 
         # Window setup
         screen_w = self.master.winfo_screenwidth()
@@ -180,7 +185,7 @@ class EnhancedChessApp:
 
     # Coordinate conversion helpers:
     def board_to_canvas(self, r, c):
-        if self.human_color == "white":
+        if self.board_orientation == "white":
             x1 = c * SQUARE_SIZE
             y1 = r * SQUARE_SIZE
         else:
@@ -189,7 +194,7 @@ class EnhancedChessApp:
         return x1, y1
 
     def canvas_to_board(self, x, y):
-        if self.human_color == "white":
+        if self.board_orientation == "white":
             row = y // SQUARE_SIZE
             col = x // SQUARE_SIZE
         else:
@@ -473,24 +478,39 @@ class EnhancedChessApp:
         if isinstance(outcome, tuple):
             result, winner = outcome
             if result == "checkmate":
-                if winner == "white":
-                    self.white_wins += 1
-                elif winner == "black":
-                    self.black_wins += 1
-                self.turn_label.config(text=f"Checkmate! {winner.capitalize()} wins!")
+                # Convert color-based win to bot-based win
+                winning_bot = "main" if (winner == "white" and self.white_playing_bot == "main") or \
+                                      (winner == "black" and self.white_playing_bot == "op") else "op"
+                
+                if winning_bot == "main":
+                    self.my_ai_wins += 1
+                    self.turn_label.config(text="Checkmate! Your AI wins!")
+                else:
+                    self.op_ai_wins += 1
+                    self.turn_label.config(text="Checkmate! Opponent AI wins!")
+            
             elif result == "stalemate":
                 self.draws += 1
                 self.turn_label.config(text="Stalemate! It's a draw.")
         else:
-            # Outcome is a string indicating the winning color (via king capture)
+            # Handle king capture outcomes
             winner = outcome
-            if winner == "white":
-                self.white_wins += 1
-            elif winner == "black":
-                self.black_wins += 1
-            self.turn_label.config(text=f"{winner.capitalize()} wins by king capture!")
+            winning_bot = "main" if (winner == "white" and self.white_playing_bot == "main") or \
+                                  (winner == "black" and self.white_playing_bot == "op") else "op"
+            
+            if winning_bot == "main":
+                self.my_ai_wins += 1
+                self.turn_label.config(text="Your AI wins by king capture!")
+            else:
+                self.op_ai_wins += 1
+                self.turn_label.config(text="Opponent AI wins by king capture!")
 
         self.update_scoreboard()
+
+        # Swap sides and board orientation for next game
+        self.white_playing_bot = "op" if self.white_playing_bot == "main" else "main"
+        self.board_orientation = "black" if self.white_playing_bot == "main" else "white"
+        self.update_bot_labels()
 
         # Restart the game after a delay if the series is not complete
         if self.ai_game_count < 100:
@@ -535,23 +555,31 @@ class EnhancedChessApp:
 
 
     def start_ai_series(self):
-        # Set mode to AI vs OP series and reset counters.
         self.game_mode.set("ai_vs_ai")
         self.ai_game_count = 0
-        self.white_wins = 0
-        self.black_wins = 0
+        self.my_ai_wins = 0
+        self.op_ai_wins = 0
         self.draws = 0
+        self.white_playing_bot = "main"  # Start with main bot as white
+        self.board_orientation = "white"  # Start with white at bottom
         self.update_scoreboard()
-        # Display bot names with proper order:
-        self.top_bot_label.config(text="Black: OpponentAI")
-        self.bottom_bot_label.config(text="White: ChessBot")
+        self.update_bot_labels()
         self.reset_game()
 
     def update_scoreboard(self):
         self.scoreboard_label.config(
-            text=f"AI vs OP Score:\nWhite: {self.white_wins}\nBlack: {self.black_wins}\nDraws: {self.draws}\nGames: {self.ai_game_count}/100"
+            text=f"AI vs OP Score:\nYour AI: {self.my_ai_wins}\nOpponent AI: {self.op_ai_wins}\n"
+                 f"Draws: {self.draws}\nGames: {self.ai_game_count}/100"
         )
 
+    def update_bot_labels(self):
+        if self.board_orientation == "white":
+            self.bottom_bot_label.config(text="ChessBot (White)")
+            self.top_bot_label.config(text="OpponentAI (Black)")
+        else:
+            self.bottom_bot_label.config(text="ChessBot (Black)")
+            self.top_bot_label.config(text="OpponentAI (White)")
+            
     def reset_game(self):
         self.board = create_initial_board()
         self.turn = "white"
@@ -562,10 +590,19 @@ class EnhancedChessApp:
         self.drag_piece = None
         self.drag_start = None
         self.position_history.append(self.get_position_key())
+        
         if self.game_mode.get() == "ai_vs_ai":
-            # Instantiate both bots for AI vs OP series.
-            self.white_bot = ChessBot(self.board, "white", self)
-            self.black_bot = OpponentAI(self.board, "black", self)
+            # Assign bots based on white_playing_bot
+            if self.white_playing_bot == "main":
+                self.white_bot = ChessBot(self.board, "white", self)
+                self.black_bot = OpponentAI(self.board, "black", self)
+            else:
+                self.white_bot = OpponentAI(self.board, "white", self)
+                self.black_bot = ChessBot(self.board, "black", self)
+            
+            # Set board orientation so your AI is always at bottom
+            self.board_orientation = "white" if self.white_playing_bot == "main" else "black"
+            
             self.turn_label.config(text="AI vs OP Series: Starting...")
             self.master.after(500, self.make_ai_move)
         elif self.game_mode.get() == "bot":
