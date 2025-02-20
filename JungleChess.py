@@ -2,9 +2,12 @@ import tkinter as tk
 from tkinter import ttk
 import time
 import math
-from GameLogic import create_initial_board, ROWS, COLS, SQUARE_SIZE, BOARD_COLOR_1, BOARD_COLOR_2, generate_position_key, King, is_in_check, has_legal_moves, validate_move, check_game_over, check_evaporation
+from GameLogic import (create_initial_board, ROWS, COLS, SQUARE_SIZE, 
+                         BOARD_COLOR_1, BOARD_COLOR_2, generate_position_key, 
+                         King, is_in_check, has_legal_moves, validate_move, 
+                         check_game_over, check_evaporation)
 from AI import ChessBot
-
+from OpponentAI import OpponentAI  # Ensure OpponentAI is implemented
 
 class EnhancedChessApp:
     def __init__(self, master):
@@ -13,6 +16,13 @@ class EnhancedChessApp:
         self.COLORS = self.setup_styles()
         self.master.configure(bg=self.COLORS['bg_dark'])
         self.position_history = []  # Track positions for threefold repetition
+        self.ai_series_running = False
+
+        # Initialize AI vs OP series counters
+        self.ai_game_count = 0
+        self.white_wins = 0
+        self.black_wins = 0
+        self.draws = 0
 
         # Window setup
         screen_w = self.master.winfo_screenwidth()
@@ -33,9 +43,9 @@ class EnhancedChessApp:
         
         # Header label
         ttk.Label(self.left_panel, text="JUNGLE CHESS", style='Header.TLabel',
-                font=('Helvetica', 24, 'bold')).pack(pady=(0,10))
+                  font=('Helvetica', 24, 'bold')).pack(pady=(0,10))
         
-        # Game mode frame setup
+        # Game mode frame setup (only Human vs Bot and Human vs Human)
         self.game_mode = tk.StringVar(value="bot")
         game_mode_frame = ttk.Frame(self.left_panel, style='Left.TFrame')
         game_mode_frame.pack(fill=tk.X, pady=(0,9))
@@ -45,24 +55,27 @@ class EnhancedChessApp:
         ttk.Radiobutton(game_mode_frame, text="Human vs Human", variable=self.game_mode,
                         value="human", command=self.reset_game, style='Custom.TRadiobutton').pack(anchor=tk.W)
         
-       # Controls frame setup
+        # Controls frame setup
         controls_frame = ttk.Frame(self.left_panel, style='Left.TFrame')
         controls_frame.pack(fill=tk.X, pady=4)
         ttk.Button(controls_frame, text="NEW GAME", command=self.reset_game,
-                   style='Control.TButton').pack(fill=tk.X, pady=5)
-        # Remove the BOT SETTINGS button
+           style='Control.TButton').pack(fill=tk.X, pady=3)
         ttk.Button(controls_frame, text="SWAP SIDES", command=self.swap_sides,
-                   style='Control.TButton').pack(fill=tk.X, pady=5)
+                style='Control.TButton').pack(fill=tk.X, pady=3)
+        ttk.Button(controls_frame, text="AI vs OP start", command=self.start_ai_series,
+                style='Control.TButton').pack(fill=tk.X, pady=3)
         ttk.Button(controls_frame, text="QUIT", command=self.master.quit,
-                   style='Control.TButton').pack(fill=tk.X, pady=5)
+                style='Control.TButton').pack(fill=tk.X, pady=3)
+
+
         # Inline Bot settings with a Bot Depth slider
-        ttk.Label(controls_frame, text="Bot Depth:", style='Header.TLabel').pack(anchor=tk.W, pady=(10,0))
+        ttk.Label(controls_frame, text="Bot Depth:", style='Header.TLabel').pack(anchor=tk.W, pady=(9,0))
         self.bot_depth_slider = tk.Scale(controls_frame, from_=1, to=6, orient=tk.HORIZONTAL,
                                          command=self.update_bot_depth,
                                          bg=self.COLORS['bg_dark'], fg=self.COLORS['text_light'],
                                          highlightthickness=0)
         self.bot_depth_slider.set(ChessBot.search_depth)
-        self.bot_depth_slider.pack(fill=tk.X, pady=(0,4))
+        self.bot_depth_slider.pack(fill=tk.X, pady=(0,3))
         
         # Add an Instant Move checkmark
         self.instant_move = tk.BooleanVar(value=False)
@@ -75,40 +88,57 @@ class EnhancedChessApp:
         self.turn_label = ttk.Label(self.turn_frame, text="WHITE'S TURN", style='Status.TLabel')
         self.turn_label.pack(fill=tk.X)
         
-        # Updated Evaluation frame setup
+        # Evaluation frame setup
         self.eval_frame = ttk.Frame(self.left_panel, style='Left.TFrame')
-        # Remove horizontal padding so it matches the other elements
-        self.eval_frame.pack(side=tk.TOP, fill=tk.X, padx=0, pady=(5,5))
-
+        self.eval_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=0, pady=(5,5))
         self.eval_score_label = ttk.Label(self.eval_frame, text="Even", style='Status.TLabel', anchor="center")
-        # Pack without extra fill or vertical padding
         self.eval_score_label.pack(pady=(7,5))
-
-        # The eval canvas remains the same:
         self.eval_bar_canvas = tk.Canvas(self.eval_frame, height=26,
                                         bg=self.COLORS['bg_light'], highlightthickness=0)
-        self.eval_bar_canvas.pack(side=tk.BOTTOM, fill=tk.X, expand=True)
+        self.eval_bar_canvas.pack(fill=tk.X, expand=True)
         self.eval_bar_canvas.bind("<Configure>", lambda event: self.draw_eval_bar(0))
         self.draw_eval_bar(0)
         self.eval_bar_visible = True
+
+        
         # Right panel (main game board)
         self.right_panel = ttk.Frame(self.main_frame, style='Right.TFrame')
         self.right_panel.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=15, pady=15)
         self.canvas_container = ttk.Frame(self.right_panel, style='Canvas.TFrame')
-        self.canvas_container.pack(expand=True)
+        self.canvas_container.pack(expand=True, fill=tk.BOTH)
         self.canvas_container.grid_rowconfigure(0, weight=1)
         self.canvas_container.grid_columnconfigure(0, weight=1)
         self.canvas_frame = ttk.Frame(self.canvas_container, style='Canvas.TFrame')
         self.canvas_frame.grid(row=0, column=0)
-        # In the __init__ method of EnhancedChessApp, change the canvas creation:
         self.canvas = tk.Canvas(self.canvas_frame,
                                 width=COLS * SQUARE_SIZE,
                                 height=ROWS * SQUARE_SIZE,
                                 bg=self.COLORS['bg_light'],
-                                highlightthickness=0)  # Remove built-in highlight border
+                                highlightthickness=0)
         self.canvas.pack()
-
-        # Initial game state initialization
+        
+        # Scoreboard for AI vs OP series (overlayed at top-right)
+        self.scoreboard_frame = ttk.Frame(self.right_panel, style='Right.TFrame')
+        self.scoreboard_frame.place(relx=1.0, rely=0.0, anchor='ne', x=-15, y=15)
+        self.scoreboard_label = ttk.Label(self.scoreboard_frame,
+                                          text="AI vs OP Score:\nWhite: 0\nBlack: 0\nDraws: 0\nGames: 0/100",
+                                          font=("Helvetica", 10),
+                                          background=self.COLORS['bg_medium'],
+                                          foreground=self.COLORS['text_light'])
+        self.scoreboard_label.pack()
+        
+        # Bot name labels (displayed at top and bottom of the right panel)
+        # Swapped: Top label shows Black's bot; Bottom label shows White's bot.
+        self.top_bot_label = ttk.Label(self.right_panel, text="", font=("Helvetica", 12),
+                                       background=self.COLORS['bg_medium'],
+                                       foreground=self.COLORS['text_light'])
+        self.top_bot_label.place(relx=0.5, rely=0.02, anchor='n')
+        self.bottom_bot_label = ttk.Label(self.right_panel, text="", font=("Helvetica", 12),
+                                          background=self.COLORS['bg_medium'],
+                                          foreground=self.COLORS['text_light'])
+        self.bottom_bot_label.place(relx=0.5, rely=0.98, anchor='s')
+        
+        # Initial game state
         self.human_color = "white"
         self.board = create_initial_board()
         self.turn = "white"
@@ -118,7 +148,8 @@ class EnhancedChessApp:
         self.dragging = False
         self.drag_piece = None
         self.drag_start = None
-        bot_color = "black"  # Opponent always plays opposite
+        # In human vs bot mode, bot plays the opposite color.
+        bot_color = "black" if self.human_color == "white" else "white"
         self.bot = ChessBot(self.board, bot_color, self)
         
         # Bind canvas events and initial drawing
@@ -131,24 +162,24 @@ class EnhancedChessApp:
         new_depth = int(value)
         ChessBot.search_depth = new_depth
         self.bot.search_depth = new_depth
-    
-    # Update EnhancedChessApp's get_position_key method
+        if hasattr(self, 'white_bot'):
+            self.white_bot.search_depth = new_depth
+        if hasattr(self, 'black_bot'):
+            self.black_bot.search_depth = new_depth
+
     def get_position_key(self):
         return generate_position_key(self.board, self.turn)
 
     def swap_sides(self):
-        # Swap which color the human plays. After swapping, the board is redrawn from the new perspective.
         self.human_color = "black" if self.human_color == "white" else "white"
-        # Force human to play the new color; bot gets the opposite.
         bot_color = "black" if self.human_color == "white" else "white"
         self.bot = ChessBot(self.board, bot_color, self)
-        self.turn = self.human_color  # Let human start.
+        self.turn = self.human_color
         self.turn_label.config(text=f"Turn: {self.human_color.capitalize()}")
         self.draw_board()
 
     # Coordinate conversion helpers:
     def board_to_canvas(self, r, c):
-        # For a 180° rotated view when playing as black.
         if self.human_color == "white":
             x1 = c * SQUARE_SIZE
             y1 = r * SQUARE_SIZE
@@ -158,7 +189,6 @@ class EnhancedChessApp:
         return x1, y1
 
     def canvas_to_board(self, x, y):
-        # Convert canvas coordinates to board indices based on current perspective.
         if self.human_color == "white":
             row = y // SQUARE_SIZE
             col = x // SQUARE_SIZE
@@ -205,12 +235,8 @@ class EnhancedChessApp:
         self.eval_bar_canvas.delete("all")
         bar_width = self.eval_bar_canvas.winfo_width() or 235
         bar_height = 30
-        max_eval = 10.0
-        # Picking a scaling factor such that tanh(62/scaling) is nearly 1.
-        # For example, tanh(62/23.4) ~ 0.99.
         scaling = 23.4
         normalized_score = math.tanh(eval_score / scaling)
-        # Clamp to the interval [-1, 1]
         normalized_score = max(min(normalized_score, 1.0), -1.0)
     
         for x in range(bar_width):
@@ -223,7 +249,7 @@ class EnhancedChessApp:
     
         marker_x = int((normalized_score + 1) / 2 * bar_width)
         accent_color = self.COLORS.get('accent', '#e94560')
-        marker_width = 1  # Reduced marker outline thickness
+        marker_width = 1
         self.eval_bar_canvas.create_rectangle(marker_x - marker_width, 0,
                                               marker_x + marker_width, bar_height,
                                               fill=accent_color, outline=accent_color)
@@ -239,7 +265,6 @@ class EnhancedChessApp:
             else:
                 self.eval_score_label.config(text=f"-{display_score:.2f}", font=("Helvetica", 10))
         self.master.update_idletasks()
-
 
     def setup_styles(self):
         style = ttk.Style()
@@ -260,20 +285,18 @@ class EnhancedChessApp:
                         foreground=COLORS['text_light'],
                         font=('Helvetica', 14, 'bold'),
                         padding=(0, 10))
-        # Reduced padding makes the label box slimmer
         style.configure('Status.TLabel',
                         background=COLORS['bg_light'],
                         foreground=COLORS['text_light'],
                         font=('Helvetica', 16, 'bold'),
-                        padding=(11, 4),   # Reduced from (18, 10)
+                        padding=(11, 4),
                         relief='flat',
                         borderwidth=0)
-        # Adjusted button style: reduced padding for a skinnier red button look.
         style.configure('Control.TButton',
                         background=COLORS['accent'],
                         foreground=COLORS['text_light'],
                         font=('Helvetica', 11, 'bold'),
-                        padding=(10, 8),   # Reduced padding from (15, 12)
+                        padding=(10, 8),
                         borderwidth=0,
                         relief='flat')
         style.map('Control.TButton',
@@ -299,18 +322,16 @@ class EnhancedChessApp:
 
     def draw_board(self):
         self.canvas.delete("all")
-        # Draw squares
+        # Draw board squares
         for r in range(ROWS):
             for c in range(COLS):
                 x1, y1 = self.board_to_canvas(r, c)
                 x2, y2 = x1 + SQUARE_SIZE, y1 + SQUARE_SIZE
                 color = BOARD_COLOR_1 if (r + c) % 2 == 0 else BOARD_COLOR_2
                 self.canvas.create_rectangle(x1, y1, x2, y2, fill=color, outline="")
-                # highlight valid moves if needed
                 if (r, c) in self.valid_moves:
                     self.canvas.create_oval(x1 + 19, y1 + 19, x2 - 19, y2 - 19,
-                                            fill="#1E90FF", outline="#1E90FF", width=3)
-
+                                             fill="#1E90FF", outline="#1E90FF", width=3)
         # Highlight kings if in check or checkmated
         for r in range(ROWS):
             for c in range(COLS):
@@ -321,8 +342,7 @@ class EnhancedChessApp:
                         x1, y1 = self.board_to_canvas(r, c)
                         x2, y2 = x1 + SQUARE_SIZE, y1 + SQUARE_SIZE
                         self.canvas.create_rectangle(x1, y1, x2, y2, outline=highlight_color, width=3)
-
-        # Draw pieces (existing code)
+        # Draw pieces
         for r in range(ROWS):
             for c in range(COLS):
                 piece = self.board[r][c]
@@ -335,26 +355,25 @@ class EnhancedChessApp:
                         shadow_offset = 2
                         shadow_color = "#444444"
                         self.canvas.create_text(x_center + shadow_offset, y_center + shadow_offset,
-                                                text=symbol, font=("Arial", 39),
-                                                fill=shadow_color, tags="piece")
+                                                  text=symbol, font=("Arial", 39),
+                                                  fill=shadow_color, tags="piece")
                         self.canvas.create_text(x_center, y_center,
-                                                text=symbol, font=("Arial Unicode MS", 39),
-                                                fill="white", tags="piece")
+                                                  text=symbol, font=("Arial Unicode MS", 39),
+                                                  fill="white", tags="piece")
                     else:
                         self.canvas.create_text(x_center, y_center, text=symbol,
-                                                font=("Arial", 39), fill="black", tags="piece")
-
+                                                  font=("Arial", 39), fill="black", tags="piece")
         # Draw dragging piece if any
         if self.dragging and self.drag_piece and self.drag_start is not None:
             piece = self.board[self.drag_start[0]][self.drag_start[1]]
             if piece is not None:
                 self.canvas.create_text(self.drag_piece[0], self.drag_piece[1],
                                         text=piece.symbol(), font=("Arial", 36), tags="drag")
-        
-        # Draw an even border around the chess board
+        # Draw board border
         board_width = COLS * SQUARE_SIZE
         board_height = ROWS * SQUARE_SIZE
-        self.canvas.create_rectangle(0, 0, board_width, board_height, outline=self.COLORS['accent'], width=4)
+        self.canvas.create_rectangle(0, 0, board_width, board_height,
+                                     outline=self.COLORS['accent'], width=4)
 
     def draw_piece(self, r, c):
         piece = self.board[r][c]
@@ -366,14 +385,14 @@ class EnhancedChessApp:
                 shadow_offset = 2
                 shadow_color = "#444444"
                 self.canvas.create_text(x + shadow_offset, y + shadow_offset, text=symbol,
-                                        font=("Arial", 39), fill=shadow_color, tags="piece")
+                                          font=("Arial", 39), fill=shadow_color, tags="piece")
                 self.canvas.create_text(x, y, text=symbol,
-                                        font=("Arial Unicode MS", 39),
-                                        fill="white", tags="piece")
+                                          font=("Arial Unicode MS", 39),
+                                          fill="white", tags="piece")
             else:
                 self.canvas.create_text(x, y, text=symbol,
-                                        font=("Arial", 39),
-                                        fill="black", tags="piece")
+                                          font=("Arial", 39),
+                                          fill="black", tags="piece")
 
     def on_drag_start(self, event):
         if self.game_over:
@@ -395,21 +414,15 @@ class EnhancedChessApp:
     def on_drag_end(self, event):
         if not self.dragging:
             return
-
         row, col = self.canvas_to_board(event.x, event.y)
         end_pos = (row, col)
-
         if end_pos in self.valid_moves:
             if validate_move(self.board, self.turn, self.drag_start, end_pos):
                 moving_piece = self.board[self.drag_start[0]][self.drag_start[1]]
                 self.board = moving_piece.move(self.board, self.drag_start, end_pos)
                 check_evaporation(self.board)
-                
-                # Redraw board and force an update so the capture animation completes
                 self.draw_board()
-                self.master.update_idletasks()  # Ensure canvas refresh
-
-                # Check for game over conditions
+                self.master.update_idletasks()
                 result, winner = check_game_over(self.board)
                 if result == "checkmate":
                     self.game_over = True
@@ -418,17 +431,13 @@ class EnhancedChessApp:
                     self.game_over = True
                     self.turn_label.config(text="Stalemate! It's a draw.")
                 else:
-                    # Switch turns and record position history
                     self.turn = "black" if self.turn == "white" else "white"
                     self.position_history.append(self.get_position_key())
-                    
-                    # Use a minimal delay (20ms) to let board animation finalize if instant move is on
                     if self.game_mode.get() == "bot" and self.turn != self.human_color:
                         delay = 20 if self.instant_move.get() else 500
                         self.master.after(delay, self.make_bot_move)
             else:
                 print("Illegal move!")
-        # Reset dragging state
         self.dragging = False
         self.drag_piece = None
         self.drag_start = None
@@ -438,16 +447,9 @@ class EnhancedChessApp:
     def make_bot_move(self):
         if self.game_over:
             return
-
-        # Start timing for debug output
         start_time = time.time()
-
-        # Make the bot's move
         if self.bot.make_move():
-            # Update the board display immediately
             self.draw_board()
-
-            # Check for game over conditions
             result, winner = check_game_over(self.board)
             if result == "checkmate":
                 self.game_over = True
@@ -456,43 +458,133 @@ class EnhancedChessApp:
                 self.game_over = True
                 self.turn_label.config(text="Stalemate! It's a draw.")
             else:
-                # Switch turns back to the human player
                 self.turn = self.human_color
-                # Update position history after switching turns
                 self.position_history.append(self.get_position_key())
-
         else:
-            # If the bot cannot make a move, the human wins
             self.game_over = True
-            self.turn_label.config(text=f"{self.human_color.capitalize()} wins!")    
+            self.turn_label.config(text=f"{self.human_color.capitalize()} wins!")
     
-    def swap_sides(self):
-        self.human_color = "black" if self.human_color == "white" else "white"
+    def process_ai_series_result(self):
+        # Get the game result using game logic
+        outcome = check_game_over(self.board)
+        self.ai_game_count += 1
+
+        # The outcome may be a tuple or a string (king capture)
+        if isinstance(outcome, tuple):
+            result, winner = outcome
+            if result == "checkmate":
+                if winner == "white":
+                    self.white_wins += 1
+                elif winner == "black":
+                    self.black_wins += 1
+                self.turn_label.config(text=f"Checkmate! {winner.capitalize()} wins!")
+            elif result == "stalemate":
+                self.draws += 1
+                self.turn_label.config(text="Stalemate! It's a draw.")
+        else:
+            # Outcome is a string indicating the winning color (via king capture)
+            winner = outcome
+            if winner == "white":
+                self.white_wins += 1
+            elif winner == "black":
+                self.black_wins += 1
+            self.turn_label.config(text=f"{winner.capitalize()} wins by king capture!")
+
+        self.update_scoreboard()
+
+        # Restart the game after a delay if the series is not complete
+        if self.ai_game_count < 100:
+            self.master.after(1000, self.reset_game)
+        else:
+            self.turn_label.config(text="100 Games Complete!")
+
+    def make_ai_move(self):
+        if self.game_over:
+            if self.game_mode.get() == "ai_vs_ai":
+                self.process_ai_series_result()
+            return
+
+        if self.game_mode.get() == "ai_vs_ai":
+            current_bot = self.white_bot if self.turn == "white" else self.black_bot
+        elif self.game_mode.get() == "bot":
+            current_bot = self.bot
+        else:
+            return
+
+        move_made = current_bot.make_move()
+        self.draw_board()
+        outcome, winner = check_game_over(self.board)
+
+        if outcome or winner:
+            # Game-ending condition detected.
+            self.game_over = True
+            if self.game_mode.get() == "ai_vs_ai":
+                self.process_ai_series_result()
+            else:
+                if outcome == "checkmate":
+                    self.turn_label.config(text=f"Checkmate! {winner.capitalize()} wins!")
+                elif outcome == "stalemate":
+                    self.turn_label.config(text="Stalemate! It's a draw.")
+        else:
+            # If no move was made, log and try switching turns before retrying.
+            if not move_made:
+                print(f"{self.turn} bot did not make a move. Switching turn.")
+            self.turn = "black" if self.turn == "white" else "white"
+            self.position_history.append(self.get_position_key())
+            self.master.after(500, self.make_ai_move)
+
+
+    def start_ai_series(self):
+        # Set mode to AI vs OP series and reset counters.
+        self.game_mode.set("ai_vs_ai")
+        self.ai_game_count = 0
+        self.white_wins = 0
+        self.black_wins = 0
+        self.draws = 0
+        self.update_scoreboard()
+        # Display bot names with proper order:
+        self.top_bot_label.config(text="Black: OpponentAI")
+        self.bottom_bot_label.config(text="White: ChessBot")
         self.reset_game()
+
+    def update_scoreboard(self):
+        self.scoreboard_label.config(
+            text=f"AI vs OP Score:\nWhite: {self.white_wins}\nBlack: {self.black_wins}\nDraws: {self.draws}\nGames: {self.ai_game_count}/100"
+        )
 
     def reset_game(self):
         self.board = create_initial_board()
-        # Always start with white's turn.
-        self.turn = "white"  
+        self.turn = "white"
         self.selected = None
         self.valid_moves = []
         self.game_over = False
         self.dragging = False
         self.drag_piece = None
         self.drag_start = None
-        # Bot takes the color that is not chosen by the human.
-        bot_color = "black" if self.human_color == "white" else "white"
-        self.bot = ChessBot(self.board, bot_color, self)
-        self.turn_label.config(text=f"Turn: {self.turn.capitalize()}")
+        self.position_history.append(self.get_position_key())
+        if self.game_mode.get() == "ai_vs_ai":
+            # Instantiate both bots for AI vs OP series.
+            self.white_bot = ChessBot(self.board, "white", self)
+            self.black_bot = OpponentAI(self.board, "black", self)
+            self.turn_label.config(text="AI vs OP Series: Starting...")
+            self.master.after(500, self.make_ai_move)
+        elif self.game_mode.get() == "bot":
+            bot_color = "black" if self.human_color == "white" else "white"
+            self.bot = ChessBot(self.board, bot_color, self)
+            self.turn_label.config(text=f"Turn: {self.turn.capitalize()}")
+            if self.turn != self.human_color:
+                self.master.after(500, self.make_bot_move)
+        else:
+            self.turn_label.config(text=f"Turn: {self.turn.capitalize()}")
         self.draw_board()
-        # If playing in bot mode and it's not the human's turn, let the bot move.
-        if self.game_mode.get() == "bot" and self.turn != self.human_color:
-            self.master.after(500, self.make_bot_move)
+
+    def main(self):
+        self.master.mainloop()
 
 def main():
     root = tk.Tk()
     app = EnhancedChessApp(root)
-    root.mainloop()
+    app.main()
 
 if __name__ == "__main__":
     main()

@@ -3,7 +3,7 @@ import time
 from GameLogic import *
 
 class ChessBot:
-    search_depth = 3
+    search_depth = 2
     CENTER_SQUARES = {(3, 3), (3, 4), (4, 3), (4, 4)}
     PIECE_VALUES = {
         Pawn: 100,

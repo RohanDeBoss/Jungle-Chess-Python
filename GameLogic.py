@@ -367,23 +367,16 @@ def create_initial_board():
     return board
 
 def has_legal_moves(board, color):
-    """
-    Check if any piece of the given color can make a move that
-    does not leave the king in check.
-    """
     for r in range(ROWS):
         for c in range(COLS):
             piece = board[r][c]
             if piece and piece.color == color:
                 moves = piece.get_valid_moves(board, (r, c))
                 for move in moves:
-                    # Create a temporary copy and simulate the move.
-                    new_board = copy_board(board)
-                    # NOTE: Use the piece from the copied board.
-                    temp_piece = new_board[r][c]
-                    new_board = temp_piece.move(new_board, (r, c), move)
-                    if not is_in_check(new_board, color):
+                    if validate_move(board, color, (r, c), move):
+                        print(f"Legal move found for {color}: {piece.symbol()} from {(r, c)} to {move}")
                         return True
+    print(f"No legal moves found for {color}")
     return False
 
 def check_game_over(board):
@@ -441,11 +434,31 @@ def is_in_check(board, color):
     )
     if not king_pos:
         return False
-    return any(
-        king_pos in piece.get_valid_moves(board, (r, c))
-        for r in range(ROWS) for c in range(COLS)
-        if (piece := board[r][c]) and piece.color != color
-    )
+
+    enemy_color = 'black' if color == 'white' else 'white'
+    for r in range(ROWS):
+        for c in range(COLS):
+            piece = board[r][c]
+            if piece and piece.color == enemy_color:
+                # Check standard threats
+                if king_pos in piece.get_valid_moves(board, (r, c)):
+                    return True
+                # Check explosion threats
+                if isinstance(piece, Queen):
+                    for move in piece.get_valid_moves(board, (r, c)):
+                        if max(abs(move[0] - king_pos[0]), abs(move[1] - king_pos[1])) == 1:
+                            target = board[move[0]][move[1]]
+                            if target and target.color == color:
+                                return True
+                # Check evaporation threats
+                if isinstance(piece, Knight):
+                    valid_moves = piece.get_valid_moves(board, (r, c))
+                    for move in valid_moves:
+                        for dr, dc in DIRECTIONS['knight']:
+                            kr, kc = king_pos
+                            if (move[0] + dr) == kr and (move[1] + dc) == kc:
+                                return True
+    return False
 
 def is_in_explosion_threat(board, color):
     king_pos = None
@@ -476,11 +489,17 @@ def validate_move(board, color, start, end):
     piece = simulated[start[0]][start[1]]
     if not piece or piece.color != color:
         return False
-    
+
+    # Check if the move is in the piece's valid moves
+    valid_moves = piece.get_valid_moves(board, start)
+    if end not in valid_moves:
+        return False
+
+    # Simulate the move
     simulated = piece.move(simulated, start, end)
     check_evaporation(simulated)
-    
-    # NEW: Ensure the king still exists after the move (i.e. wasn't evaporated)
+
+    # Ensure the king still exists after the move (e.g., wasn't evaporated)
     king_exists = any(
         isinstance(simulated[r][c], King) and simulated[r][c].color == color 
         for r in range(ROWS) for c in range(COLS)
@@ -488,18 +507,21 @@ def validate_move(board, color, start, end):
     if not king_exists:
         return False
 
+    # Check if the move leaves the king in check
     if is_in_check(simulated, color):
         return False
-    
+
+    # Check for immediate threats from special mechanics
     if is_in_explosion_threat(simulated, color):
         return False
-    
+
     if is_king_in_knight_evaporation_danger(simulated, color):
         return False
-    
+
     if isinstance(piece, King) and is_king_attacked_by_knight(simulated, color, end):
         return False
-    
+
+    # Allow the move, even if it leads to checkmate on the next turn
     return True
 
 def is_king_attacked_by_knight(board, color, king_pos):
@@ -563,4 +585,3 @@ def is_stalemate(board, color):
                     if validate_move(board, color, (r, c), move):
                         return False
     return True
-
