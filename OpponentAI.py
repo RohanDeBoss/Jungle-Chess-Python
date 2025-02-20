@@ -4,7 +4,7 @@ from GameLogic import *
 from AI import ChessBot
 
 class OpponentAI(ChessBot):
-    search_depth = 1
+    search_depth = 2
 
     def __init__(self, board, color, app):
         self.board = board
