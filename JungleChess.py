@@ -451,34 +451,23 @@ class EnhancedChessApp:
                 moving_piece = self.board[self.drag_start[0]][self.drag_start[1]]
                 self.board = moving_piece.move(self.board, self.drag_start, end_pos)
                 check_evaporation(self.board)
-                # Append the new position to history *after* the move and evaporation
-                self.position_history.append(self.get_position_key())
                 self.draw_board()
                 self.master.update_idletasks()
-                # Use the updated check_game_over with position_history
-                result, winner = check_game_over(self.board, self.position_history)
+                result, winner = check_game_over(self.board)
                 if result == "checkmate":
                     self.game_over = True
                     self.turn_label.config(text=f"Checkmate! {winner.capitalize()} wins!")
                 elif result == "stalemate":
                     self.game_over = True
                     self.turn_label.config(text="Stalemate! It's a draw.")
-                elif result == "draw_repetition":
-                    self.game_over = True
-                    self.turn_label.config(text="Draw by threefold repetition!")
-                elif result == "king_capture":
-                    self.game_over = True
-                    self.turn_label.config(text=f"{winner.capitalize()} wins by king capture!")
                 else:
-                    # No game-ending condition met, switch turns
                     self.turn = "black" if self.turn == "white" else "white"
-                    self.turn_label.config(text=f"Turn: {self.turn.capitalize()}")
+                    self.position_history.append(self.get_position_key())
                     if self.game_mode.get() == "bot" and self.turn != self.human_color:
                         delay = 20 if self.instant_move.get() else 500
                         self.master.after(delay, self.make_bot_move)
             else:
                 print("Illegal move!")
-        # Reset dragging state regardless of move validity
         self.dragging = False
         self.drag_piece = None
         self.drag_start = None
@@ -509,29 +498,42 @@ class EnhancedChessApp:
             self.game_over = True
             self.turn_label.config(text=f"{self.human_color.capitalize()} wins!")
     
-    def process_ai_series_result(self, outcome, winner):
+    def process_ai_series_result(self):
         """
         Process the result of an AI vs AI game.
         Updates scores and bot labels, then resets the game for the next round.
         """
+        outcome = check_game_over(self.board)
         self.ai_game_count += 1
 
-        # Update scores based on outcome and winner
-        if outcome in ["checkmate", "king_capture", "no_legal_moves"]:
-            # Determine which bot won based on white_playing_bot
-            if winner == "white" and self.white_playing_bot == "main" or \
-            winner == "black" and self.white_playing_bot == "op":
+        # Outcome might be a tuple (result, winner) or a string (for king capture)
+        if isinstance(outcome, tuple):
+            result, winner = outcome
+            if result == "checkmate":
+                # Determine which bot won based on their assigned roles.
+                winning_bot = "main" if (winner == "white" and self.white_playing_bot == "main") or \
+                                      (winner == "black" and self.white_playing_bot == "op") else "op"
+                if winning_bot == "main":
+                    self.my_ai_wins += 1
+                    self.turn_label.config(text="Checkmate! Your AI wins!")
+                else:
+                    self.op_ai_wins += 1
+                    self.turn_label.config(text="Checkmate! Opponent AI wins!")
+            elif result == "stalemate":
+                self.draws += 1
+                self.turn_label.config(text="Stalemate! It's a draw.")
+        else:
+            # Handle king capture outcomes
+            winner = outcome
+            winning_bot = "main" if (winner == "white" and self.white_playing_bot == "main") or \
+                                  (winner == "black" and self.white_playing_bot == "op") else "op"
+            if winning_bot == "main":
                 self.my_ai_wins += 1
-                self.turn_label.config(text=f"Your AI wins ({outcome})!")
-            elif winner == "black" and self.white_playing_bot == "main" or \
-                winner == "white" and self.white_playing_bot == "op":
+                self.turn_label.config(text="Your AI wins by king capture!")
+            else:
                 self.op_ai_wins += 1
-                self.turn_label.config(text=f"Opponent AI wins ({outcome})!")
-        elif outcome in ["stalemate", "draw_repetition"]:
-            self.draws += 1
-            self.turn_label.config(text=f"Draw ({outcome})!")
+                self.turn_label.config(text="Opponent AI wins by king capture!")
 
-        # Update the scoreboard display
         self.update_scoreboard()
 
         # Swap roles for the next game
@@ -539,7 +541,7 @@ class EnhancedChessApp:
         self.board_orientation = "black" if self.white_playing_bot == "main" else "white"
         self.update_bot_labels()
 
-        # Restart the game if series isn’t complete
+        # Restart the game after a delay if the series is not complete
         if self.ai_game_count < 100:
             self.master.after(1000, self.reset_game)
         else:
@@ -548,60 +550,39 @@ class EnhancedChessApp:
     def make_ai_move(self):
         """
         In AI vs AI mode, alternate moves between the two bots.
-        Checks for game-ending conditions after each move and processes results.
+        Checks for game-ending conditions after each move.
         """
         if self.game_over:
             if self.game_mode.get() == "ai_vs_ai":
-                self.process_ai_series_result(None, None)  # Handle cleanup if game already ended
+                self.process_ai_series_result()
             return
 
-        # Determine which bot makes the move based on the current turn
         if self.game_mode.get() == "ai_vs_ai":
             current_bot = self.white_bot if self.turn == "white" else self.black_bot
         elif self.game_mode.get() == "bot":
             current_bot = self.bot
         else:
-            return  # Exit if not in an AI-driven mode
-
-        # Attempt to make the move
-        move_made = current_bot.make_move()
-        if not move_made:
-            print(f"{self.turn} bot failed to make a move.")
-            self.game_over = True
-            winner = "black" if self.turn == "white" else "white"  # Opponent wins if no moves
-            if self.game_mode.get() == "ai_vs_ai":
-                self.process_ai_series_result("no_legal_moves", winner)
-            else:
-                self.turn_label.config(text=f"{winner.capitalize()} wins due to no legal moves!")
             return
 
-        # Update position history after the move
-        self.position_history.append(self.get_position_key())
+        move_made = current_bot.make_move()
         self.draw_board()
+        outcome, winner = check_game_over(self.board)
 
-        # Check game-ending conditions
-        outcome, winner = check_game_over(self.board, self.position_history)
-
-        if outcome:
+        if outcome or winner:
             self.game_over = True
-            # Update UI based on outcome
-            if outcome == "checkmate":
-                self.turn_label.config(text=f"Checkmate! {winner.capitalize()} wins!")
-            elif outcome == "stalemate":
-                self.turn_label.config(text="Stalemate! It's a draw.")
-            elif outcome == "draw_repetition":
-                self.turn_label.config(text="Draw by threefold repetition!")
-            elif outcome == "king_capture":
-                self.turn_label.config(text=f"{winner.capitalize()} wins by king capture!")
-            
-            # Process series result if in AI vs AI mode
             if self.game_mode.get() == "ai_vs_ai":
-                self.process_ai_series_result(outcome, winner)
+                self.process_ai_series_result()
+            else:
+                if outcome == "checkmate":
+                    self.turn_label.config(text=f"Checkmate! {winner.capitalize()} wins!")
+                elif outcome == "stalemate":
+                    self.turn_label.config(text="Stalemate! It's a draw.")
         else:
-            # Continue the game by switching turns
+            if not move_made:
+                print(f"{self.turn} bot did not make a move. Switching turn.")
             self.turn = "black" if self.turn == "white" else "white"
-            self.turn_label.config(text=f"Turn: {self.turn.capitalize()}")
-            self.master.after(500, self.make_ai_move)  # Schedule next move
+            self.position_history.append(self.get_position_key())
+            self.master.after(500, self.make_ai_move)
 
     def start_ai_series(self):
         """
@@ -669,31 +650,34 @@ class EnhancedChessApp:
         """
         self.board = create_initial_board()
         self.turn = "white"
-        self.position_history = []  # Reset position history
-        self.position_history.append(self.get_position_key())  # Add initial position
         
         # NEW: If in AI vs AI mode, execute a random opening move for white.
         if self.game_mode.get() == "ai_vs_ai":
             self.randomize_white_opening()
-        
+            
         self.selected = None
         self.valid_moves = []
         self.game_over = False
         self.dragging = False
         self.drag_piece = None
         self.drag_start = None
+        self.position_history.append(self.get_position_key())
         
         if self.game_mode.get() == "ai_vs_ai":
+            # Assign bots based on which bot is playing white.
             if self.white_playing_bot == "main":
                 self.white_bot = ChessBot(self.board, "white", self)
                 self.black_bot = OpponentAI(self.board, "black", self)
             else:
                 self.white_bot = OpponentAI(self.board, "white", self)
                 self.black_bot = ChessBot(self.board, "black", self)
+            
+            # Set board orientation so that your AI is always at the bottom.
             self.board_orientation = "white" if self.white_playing_bot == "main" else "black"
             self.turn_label.config(text="AI vs OP Series: Starting...")
             self.master.after(500, self.make_ai_move)
         elif self.game_mode.get() == "bot":
+            # In Human vs Bot mode, assign the bot to the opposite color of the human.
             bot_color = "black" if self.human_color == "white" else "white"
             self.bot = ChessBot(self.board, bot_color, self)
             self.turn_label.config(text=f"Turn: {self.turn.capitalize()}")

@@ -113,7 +113,6 @@ class ChessBot:
 
         explosion_threat = self.is_in_explosion_threat(board, self.color)
         return int(score - threat_score - explosion_threat)
-
     # ====================================================
     # Move Ordering Methods
     # ====================================================
@@ -132,7 +131,7 @@ class ChessBot:
             return end[0] if piece.color == "white" else 7 - end[0]
 
         return 0
-
+    
     def order_moves(self, board, moves, maximizing_player=True):
         """
         Order moves using a heuristic evaluation and transposition table (TT) best move.
@@ -144,32 +143,39 @@ class ChessBot:
         board_key = self.board_hash(board)
         best_tt_move = None
 
+        # Check if TT entry exists and has a best move stored (assumes TT entries are stored as (depth, best_value, best_move))
         if board_key in self.tt and len(self.tt[board_key]) > 2:
             best_tt_move = self.tt[board_key][2]
 
+        # If the TT best move is among our moves, promote it to the front.
         if best_tt_move and best_tt_move in moves:
             moves.remove(best_tt_move)
             moves.insert(0, best_tt_move)
 
+        # Evaluate all moves in one pass.
         scored_moves = [(self.evaluate_move(board, move), move) for move in moves]
 
+        # Sort only if there are multiple moves with different scores.
         if len(set(score for score, _ in scored_moves)) > 1:
             scored_moves.sort(reverse=maximizing_player, key=lambda x: x[0])
 
+        # Return only the moves (without scores).
         return [move for _, move in scored_moves]
+
 
     # ====================================================
     # Search Methods (Minimax & Move Selection)
     # ====================================================
     def minimax(self, board, depth, maximizing_player, alpha, beta):
-        """Optimized minimax with alpha-beta pruning and various pruning techniques."""
+        """Optimized minimax with alpha-beta pruning, null move pruning, LMR, and PVS."""
         self.nodes_searched += 1
 
         current_turn = self.color if maximizing_player else ('black' if self.color == 'white' else 'white')
         
-        # Threefold repetition check using game_logic's function.
-        if is_threefold_repetition(self.app.position_history):
-            return 0
+        # Threefold repetition check
+        current_key = generate_position_key(board, current_turn)
+        if self.app.position_history.count(current_key) >= 2:
+            return 0  # Evaluate repeated position as draw
 
         if is_stalemate(board, current_turn):
             return 0
@@ -181,9 +187,10 @@ class ChessBot:
         if depth == 0:
             return self.evaluate_board(board, depth, current_turn)
 
-        # Null Move Pruning
+        # -------- Null Move Pruning --------
+        # Only apply if not in check and depth is sufficiently high
         if depth >= 3 and not is_in_check(board, current_turn):
-            null_move_reduction = 2
+            null_move_reduction = 2  # Reduction factor for null moves
             if maximizing_player:
                 null_value = self.minimax(board, depth - 1 - null_move_reduction, False, alpha, beta)
                 if null_value >= beta:
@@ -192,6 +199,7 @@ class ChessBot:
                 null_value = self.minimax(board, depth - 1 - null_move_reduction, True, alpha, beta)
                 if null_value <= alpha:
                     return null_value
+        # ------------------------------------
 
         moves = self.get_all_moves(board, current_turn)
         if not moves:
@@ -209,20 +217,25 @@ class ChessBot:
             start, end = move
             piece = board[start[0]][start[1]]
             target = board[end[0]][end[1]]
+            # Determine if the move is tactical (capture or promotion)
             is_tactical = (target is not None)
+            # Also consider a pawn promotion as a tactical move.
             if not is_tactical and isinstance(piece, Pawn) and (end[0] == 0 or end[0] == ROWS - 1):
                 is_tactical = True
 
             reduction = 0
             if not is_tactical and i >= 3 and depth >= 4:
-                reduction = 1
+                reduction = 1  # Reduction factor (adjustable)
 
             new_depth = depth - 1 - reduction
+            # ----------------------------------------------
+            # Then continue with move simulation and scoring
             new_board = self.simulate_move(board, start, end)
             if first_move:
                 score = self.minimax(new_board, new_depth, not maximizing_player, alpha, beta)
                 first_move = False
             else:
+                # Principal Variation Search (PVS) with LMR applied:
                 if maximizing_player:
                     score = self.minimax(new_board, new_depth, not maximizing_player, alpha, alpha + 1)
                     if score > alpha and score < beta:
@@ -242,10 +255,11 @@ class ChessBot:
                 beta = min(beta, best_value)
 
             if beta <= alpha:
-                break
+                break  # Beta cut-off
 
         self.tt[board_key] = (depth, best_value)
         return best_value
+
 
     def make_move(self):
         """Make the best move found by the bot."""
@@ -282,11 +296,6 @@ class ChessBot:
             best_value = current_best_value
 
         print(f"AI Total time: {(time.time() - total_start):.3f}s")
-
-        # Before applying the best move, check if the game history shows threefold repetition.
-        if is_threefold_repetition(self.app.position_history):
-            self.app.turn_label.config(text="Draw detected: Threefold repetition imminent!")
-
         if best_move:
             start, end = best_move
             moving_piece = self.board[start[0]][start[1]]

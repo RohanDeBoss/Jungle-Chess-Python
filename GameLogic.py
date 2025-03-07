@@ -374,16 +374,13 @@ def has_legal_moves(board, color):
                 moves = piece.get_valid_moves(board, (r, c))
                 for move in moves:
                     if validate_move(board, color, (r, c), move):
+                        print(f"Legal move found for {color}: {piece.symbol()} from {(r, c)} to {move}")
                         return True
     print(f"No legal moves found for {color}")
     return False
 
-def check_game_over(board, position_history):
-    """Check if the game is over due to checkmate, stalemate, king capture, or threefold repetition."""
-    # Check for threefold repetition
-    if is_threefold_repetition(position_history):
-        return "draw_repetition", None
-    
+def check_game_over(board):
+    """Check if the game is over due to checkmate, stalemate, or king capture."""
     # Check if kings are still on the board
     white_king_found = False
     black_king_found = False
@@ -397,15 +394,14 @@ def check_game_over(board, position_history):
     
     # If a king is missing, the other player wins
     if not white_king_found:
-        return "king_capture", "black"
+        return "black"
     if not black_king_found:
-        return "king_capture", "white"
+        return "white"
     
     # Check for checkmate
     for color in ["white", "black"]:
         if is_in_check(board, color) and not has_legal_moves(board, color):
-            winner = "black" if color == "white" else "white"
-            return "checkmate", winner
+            return "checkmate", "black" if color == "white" else "white"
     
     # Check for stalemate
     for color in ["white", "black"]:
@@ -571,11 +567,11 @@ def generate_position_key(board, turn):
         for piece in row:
             if piece:
                 key_parts.append(piece.symbol())
+                key_parts.append('1' if piece.has_moved else '0')
             else:
                 key_parts.append('..')
     key_parts.append(turn)
     return ''.join(key_parts)
-
 
 def is_stalemate(board, color):
     if is_in_check(board, color):
@@ -589,11 +585,3 @@ def is_stalemate(board, color):
                     if validate_move(board, color, (r, c), move):
                         return False
     return True
-
-def is_threefold_repetition(position_history):
-    """Check if the current position has occurred three times in the game history."""
-    if len(position_history) < 3:
-        return False
-    current_key = position_history[-1]
-    count = position_history.count(current_key)
-    return count >= 3
