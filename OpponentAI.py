@@ -213,7 +213,7 @@ class OpponentAI(ChessBot):
         # -------- Null Move Pruning --------
         # Only apply if not in check and depth is sufficiently high
         if depth >= 3 and not is_in_check(board, current_turn):
-            null_move_reduction = 2  # Reduction factor for null moves
+            null_move_reduction = 1  # Reduction factor for null moves
             if maximizing_player:
                 null_value = self.minimax(board, depth - 1 - null_move_reduction, False, alpha, beta)
                 if null_value >= beta:
