@@ -2,10 +2,7 @@ import tkinter as tk
 from tkinter import ttk
 import math
 import random  # Used for randomizing white's opening move
-from GameLogic import (create_initial_board, ROWS, COLS, SQUARE_SIZE, 
-                       BOARD_COLOR_1, BOARD_COLOR_2, generate_position_key, 
-                       King, is_in_check, has_legal_moves, validate_move, 
-                       check_game_over, check_evaporation)
+from GameLogic import *
 from AI import ChessBot
 from OpponentAI import OpponentAI  # Ensure OpponentAI is implemented
 from enum import Enum
