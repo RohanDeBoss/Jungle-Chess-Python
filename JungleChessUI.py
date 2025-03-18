@@ -200,16 +200,20 @@ class EnhancedChessApp:
     def swap_sides(self):
         """Swap sides based on the current game mode and reset the game."""
         if self.game_mode.get() == GameMode.HUMAN_VS_BOT.value:
-            # Human vs AI: Swap human's color and set orientation to human's side
+            # Swap human's color and orient the board to human's side
             self.human_color = "black" if self.human_color == "white" else "white"
             self.board_orientation = self.human_color
         elif self.game_mode.get() == GameMode.AI_VS_AI.value:
-            # AI vs AI: Swap which AI plays white and adjust orientation
+            # Swap which bot plays white
             self.white_playing_bot = "op" if self.white_playing_bot == "main" else "main"
+            # Set board orientation based on the new white-playing bot
             self.board_orientation = "white" if self.white_playing_bot == "main" else "black"
+            # Update the labels to show the new bot assignments
+            self.update_bot_labels()
         elif self.game_mode.get() == GameMode.HUMAN_VS_HUMAN.value:
-            # Human vs Human: Swap board orientation
+            # Flip board orientation for visual purposes
             self.board_orientation = "black" if self.board_orientation == "white" else "white"
+        # Reset the game with the new settings
         self.reset_game()
 
     # Coordinate conversion helpers
@@ -506,7 +510,7 @@ class EnhancedChessApp:
         result, winner = self.game_result
         if result in ["stalemate", "repetition"]:
             self.ai_series_stats['draws'] += 1
-            self.turn_label.config(text="Draw by three-fold repetition!" if result == "repetition" else "Stalemate! It's a draw.")
+            self.turn_label.config(text="Draw, 3-fold repetition!" if result == "repetition" else "Stalemate! It's a draw.")
         elif result in ["checkmate", "king_capture"]:
             winning_bot = "main" if (winner == "white" and self.white_playing_bot == "main") or \
                                 (winner == "black" and self.white_playing_bot == "op") else "op"
@@ -521,6 +525,7 @@ class EnhancedChessApp:
         self.white_playing_bot = "op" if self.white_playing_bot == "main" else "main"
         self.board_orientation = "black" if self.white_playing_bot == "main" else "white"
         self.update_bot_labels()
+        
         if self.ai_series_stats['game_count'] < 100:
             self.master.after(1000, self.reset_game)
         else:
@@ -528,6 +533,9 @@ class EnhancedChessApp:
 
     def make_ai_move(self):
         """Execute AI move in AI vs AI or Bot mode."""
+        if self.game_mode.get() != "ai_vs_ai":
+            return
+                
         if self.game_over:
             if self.game_mode.get() == "ai_vs_ai":
                 self.process_ai_series_result()
@@ -596,10 +604,10 @@ class EnhancedChessApp:
     def update_bot_labels(self):
         """Update bot labels for AI vs AI mode."""
         if self.board_orientation == "white":
-            self.bottom_bot_label.config(text="ChessBot (White)")
+            self.bottom_bot_label.config(text="MyAIBot (White)")
             self.top_bot_label.config(text="OpponentAI (Black)")
         else:
-            self.bottom_bot_label.config(text="ChessBot (Black)")
+            self.bottom_bot_label.config(text="MyAIBot (Black)")
             self.top_bot_label.config(text="OpponentAI (White)")
 
     def randomize_white_opening(self):
@@ -651,7 +659,7 @@ class EnhancedChessApp:
                 self.white_bot = OpponentAI(self.board, "white", self)
                 self.black_bot = ChessBot(self.board, "black", self)
             self.board_orientation = "white" if self.white_playing_bot == "main" else "black"
-            self.turn_label.config(text="AI vs OP Series: Starting...")
+            self.turn_label.config(text="AI vs OP: Starting...")
             self.master.after(500, self.make_ai_move)
         elif self.game_mode.get() == "bot":
             bot_color = "black" if self.human_color == "white" else "white"
@@ -662,7 +670,7 @@ class EnhancedChessApp:
         else:
             self.turn_label.config(text=f"Turn: {self.turn.capitalize()}")
         self.draw_board()
-        self.set_interactivity()  # Update interactivity after reset
+        self.set_interactivity()
 
     def main(self):
         """Enter Tkinter main event loop."""
