@@ -374,9 +374,7 @@ def has_legal_moves(board, color):
                 moves = piece.get_valid_moves(board, (r, c))
                 for move in moves:
                     if validate_move(board, color, (r, c), move):
-                        print(f"Legal move found for {color}")
                         return True
-    print(f"No legal moves found for {color}")
     return False
 
 def check_game_over(board):
