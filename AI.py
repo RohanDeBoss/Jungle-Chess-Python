@@ -1,4 +1,3 @@
-# Jungle_Chess/ai.py
 import time
 from GameLogic import *
 
@@ -21,6 +20,9 @@ class ChessBot:
         self.nodes_searched = 0
         self.app = app
         self.zobrist_table = self.initialize_zobrist_table()
+        # Add local copies of position tracking for search
+        self.position_history = []
+        self.position_counts = {}
 
     # ====================================================
     # Threat Checking Methods
@@ -143,7 +145,7 @@ class ChessBot:
         board_key = self.board_hash(board)
         best_tt_move = None
 
-        # Check if TT entry exists and has a best move stored (assumes TT entries are stored as (depth, best_value, best_move))
+        # Check if TT entry exists and has a best move stored
         if board_key in self.tt and len(self.tt[board_key]) > 2:
             best_tt_move = self.tt[board_key][2]
 
@@ -162,20 +164,25 @@ class ChessBot:
         # Return only the moves (without scores).
         return [move for _, move in scored_moves]
 
-
     # ====================================================
     # Search Methods (Minimax & Move Selection)
     # ====================================================
-    def minimax(self, board, depth, maximizing_player, alpha, beta):
+    def minimax(self, board, depth, maximizing_player, alpha, beta, position_history=None, position_counts=None):
         """Optimized minimax with alpha-beta pruning, null move pruning, LMR, and PVS."""
         self.nodes_searched += 1
 
+        # Initialize position tracking for this search branch if not provided
+        if position_history is None:
+            position_history = self.app.position_history.copy()
+            position_counts = {k: v for k, v in self.app.position_counts.items()}
+
         current_turn = self.color if maximizing_player else ('black' if self.color == 'white' else 'white')
         
-        # Threefold repetition check
+        # Check if the current position would result in a threefold repetition
         current_key = generate_position_key(board, current_turn)
-        if self.app.position_history.count(current_key) >= 2:
-            return 0  # Evaluate repeated position as draw
+        if current_key in position_counts and position_counts[current_key] >= 2:
+            # This position has appeared twice, so a third appearance would be threefold repetition
+            return 0  # Evaluate as draw (neutral)
 
         if is_stalemate(board, current_turn):
             return 0
@@ -192,11 +199,11 @@ class ChessBot:
         if depth >= 3 and not is_in_check(board, current_turn):
             null_move_reduction = 1  # Reduction factor for null moves
             if maximizing_player:
-                null_value = self.minimax(board, depth - 1 - null_move_reduction, False, alpha, beta)
+                null_value = self.minimax(board, depth - 1 - null_move_reduction, False, alpha, beta, position_history, position_counts)
                 if null_value >= beta:
                     return null_value
             else:
-                null_value = self.minimax(board, depth - 1 - null_move_reduction, True, alpha, beta)
+                null_value = self.minimax(board, depth - 1 - null_move_reduction, True, alpha, beta, position_history, position_counts)
                 if null_value <= alpha:
                     return null_value
         # ------------------------------------
@@ -211,6 +218,7 @@ class ChessBot:
         moves = self.order_moves(board, moves, maximizing_player)
 
         best_value = float('-inf') if maximizing_player else float('inf')
+        best_move = None
         first_move = True
 
         for i, move in enumerate(moves):
@@ -229,43 +237,58 @@ class ChessBot:
 
             new_depth = depth - 1 - reduction
             # ----------------------------------------------
-            # Then continue with move simulation and scoring
+            # Simulate the move
             new_board = self.simulate_move(board, start, end)
+            
+            # Clone position history and counts for this branch
+            new_position_history = position_history.copy()
+            new_position_counts = position_counts.copy()
+            
+            # Update position tracking for this simulated move
+            new_position_key = generate_position_key(new_board, 'black' if current_turn == 'white' else 'white')
+            new_position_history.append(new_position_key)
+            new_position_counts[new_position_key] = new_position_counts.get(new_position_key, 0) + 1
+            
             if first_move:
-                score = self.minimax(new_board, new_depth, not maximizing_player, alpha, beta)
+                score = self.minimax(new_board, new_depth, not maximizing_player, alpha, beta, new_position_history, new_position_counts)
                 first_move = False
             else:
                 # Principal Variation Search (PVS) with LMR applied:
                 if maximizing_player:
-                    score = self.minimax(new_board, new_depth, not maximizing_player, alpha, alpha + 1)
+                    score = self.minimax(new_board, new_depth, not maximizing_player, alpha, alpha + 1, new_position_history, new_position_counts)
                     if score > alpha and score < beta:
-                        score = self.minimax(new_board, new_depth, not maximizing_player, score, beta)
+                        score = self.minimax(new_board, new_depth, not maximizing_player, score, beta, new_position_history, new_position_counts)
                 else:
-                    score = self.minimax(new_board, new_depth, not maximizing_player, beta - 1, beta)
+                    score = self.minimax(new_board, new_depth, not maximizing_player, beta - 1, beta, new_position_history, new_position_counts)
                     if score < beta and score > alpha:
-                        score = self.minimax(new_board, new_depth, not maximizing_player, alpha, score)
+                        score = self.minimax(new_board, new_depth, not maximizing_player, alpha, score, new_position_history, new_position_counts)
 
             if maximizing_player:
                 if score > best_value:
                     best_value = score
+                    best_move = move
                 alpha = max(alpha, best_value)
             else:
                 if score < best_value:
                     best_value = score
+                    best_move = move
                 beta = min(beta, best_value)
 
             if beta <= alpha:
                 break  # Beta cut-off
 
-        self.tt[board_key] = (depth, best_value)
+        self.tt[board_key] = (depth, best_value, best_move)
         return best_value
-
 
     def make_move(self):
         """Make the best move found by the bot."""
         best_move = None
         best_value = float('-inf')
         total_start = time.time()
+
+        # Get current position data from the app
+        position_history = self.app.position_history.copy()
+        position_counts = {k: v for k, v in self.app.position_counts.items()}
 
         for current_depth in range(1, self.search_depth + 1):
             self.nodes_searched = 0
@@ -282,7 +305,28 @@ class ChessBot:
             for move in moves:
                 start, end = move
                 new_board = self.simulate_move(self.board, start, end)
-                value = self.minimax(new_board, current_depth - 1, False, float('-inf'), float('inf'))
+                
+                # Clone position tracking for this simulation
+                new_position_history = position_history.copy()
+                new_position_counts = position_counts.copy()
+                
+                # Update position tracking for this simulated move
+                new_position_key = generate_position_key(new_board, 'black' if self.color == 'white' else 'white')
+                new_position_history.append(new_position_key)
+                new_position_counts[new_position_key] = new_position_counts.get(new_position_key, 0) + 1
+                
+                # Penalize moves that cause threefold repetition
+                if new_position_counts[new_position_key] >= 3:
+                    # We want to avoid causing threefold repetition unless we're losing
+                    draw_value = 0
+                    # Only consider repetition if it's not already the best move
+                    if draw_value > current_best_value:
+                        current_best_value = draw_value
+                        current_best_move = move
+                    continue  # Skip regular evaluation
+                
+                value = self.minimax(new_board, current_depth - 1, False, float('-inf'), float('inf'), 
+                                     new_position_history, new_position_counts)
                 if value > current_best_value:
                     current_best_value = value
                     current_best_move = move
@@ -301,6 +345,19 @@ class ChessBot:
             moving_piece = self.board[start[0]][start[1]]
             self.board = moving_piece.move(self.board, start, end)
             check_evaporation(self.board)
+            
+            # Update app's position history and counts
+            new_position_key = generate_position_key(self.board, 'black' if self.color == 'white' else 'white')
+            self.app.position_history.append(new_position_key)
+            self.app.position_counts[new_position_key] = self.app.position_counts.get(new_position_key, 0) + 1
+            
+            # Check for threefold repetition
+            if self.app.position_counts[new_position_key] >= 3:
+                self.app.game_over = True
+                self.app.game_result = ("repetition", None)
+                if hasattr(self.app, 'turn_label') and self.app.turn_label:
+                    self.app.turn_label.config(text="Draw by three-fold repetition!")
+            
             return True
         return False
 
