@@ -2,7 +2,7 @@ import time
 from GameLogic import *
 import random
 
-#v0.4 testing
+#v0.4 Actually works!!
 
 class ChessBot:
     search_depth = 2
