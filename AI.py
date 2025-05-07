@@ -2,6 +2,8 @@ import time
 from GameLogic import *
 import random
 
+#v0.3 - Fully working, slow ai with 6s for depth 4, but low node count
+
 class ChessBot:
     search_depth = 2
     CENTER_SQUARES = {(3, 3), (3, 4), (4, 3), (4, 4)}
