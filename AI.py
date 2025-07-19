@@ -13,7 +13,7 @@ class ChessBot:
     }
     MATE_SCORE = 1000000 # Use a large number for mate, distinct from evaluation bounds
     DRAW_SCORE = 0
-    # QSEARCH_MAX_DEPTH = 6 # Optional: Limit depth of qsearch itself to prevent infinite loops in rare cases
+    QSEARCH_MAX_DEPTH = 6 # Optional: Limit depth of qsearch itself to prevent infinite loops in rare cases
 
     def __init__(self, board, color, app):
         self.board = board
