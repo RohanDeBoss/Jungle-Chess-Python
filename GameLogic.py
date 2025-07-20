@@ -354,7 +354,7 @@ def create_initial_board():
     for i in range(COLS): board[6][i] = Pawn("white")
     return board
 
-def _find_king_pos(board, color): # Internal helper
+def find_king_pos(board, color): # Internal helper
     for r_idx in range(ROWS):
         for c_idx in range(COLS):
             piece = board[r_idx][c_idx]
@@ -376,9 +376,9 @@ def has_legal_moves(board, color):
 def check_game_over(board, turn_color_who_just_moved): # Parameter name changed for clarity
     """Check if game is over. Returns (reason_str/None, winner_color/None)."""
     # 1. King Capture (highest priority)
-    if not _find_king_pos(board, "white"):
+    if not find_king_pos(board, "white"):
         return "king_capture", "black" # Black wins if white king missing
-    if not _find_king_pos(board, "black"):
+    if not find_king_pos(board, "black"):
         return "king_capture", "white" # White wins if black king missing
 
     # 2. Checkmate or Stalemate for the *next* player
@@ -418,7 +418,7 @@ def check_evaporation(board):
 #     return abs(pos1[0] - pos2[0]) + abs(pos1[1] - pos2[1])
 
 def is_in_check(board, color): # 'color' is the king's color
-    king_pos = _find_king_pos(board, color)
+    king_pos = find_king_pos(board, color)
     if not king_pos:
         # This implies king was captured or removed, which check_game_over handles.
         # For is_in_check purposes, if king is gone, not in check by this definition.
@@ -458,7 +458,7 @@ def is_in_check(board, color): # 'color' is the king's color
 # The following three functions are specific threat types from your original code.
 # They are used by validate_move.
 def is_in_explosion_threat(board, color): # 'color' is the potential victim's color
-    king_pos = _find_king_pos(board, color)
+    king_pos = find_king_pos(board, color)
     if not king_pos: return False
 
     enemy_color = 'black' if color == 'white' else 'white'
@@ -487,7 +487,7 @@ def is_king_attacked_by_knight(board, color, king_pos_to_check): # 'color' is ki
     return False
 
 def is_king_in_knight_evaporation_danger(board, color): # 'color' is king's color
-    king_pos = _find_king_pos(board, color)
+    king_pos = find_king_pos(board, color)
     if not king_pos: return False
 
     enemy_color = 'black' if color == 'white' else 'white'
@@ -505,51 +505,36 @@ def is_king_in_knight_evaporation_danger(board, color): # 'color' is king's colo
     return False
 
 
-def validate_move(board, color, start, end): # 'color' is the moving piece's color
-    # 1. Check basic validity: piece exists, belongs to player.
+def validate_move(board, color, start, end):
+    # Basic check: Piece exists, belongs to the player, and the move is pseudo-legal.
     piece_to_move = board[start[0]][start[1]]
     if not piece_to_move or piece_to_move.color != color:
         return False
-
-    # 2. Check if 'end' is in the piece's generated pseudo-legal moves.
-    #    get_valid_moves should ensure 'end' is empty or has an opponent.
     if end not in piece_to_move.get_valid_moves(board, start):
         return False
 
-    # 3. Simulate the move on a temporary board.
+    # Create a deep copy of the board to safely simulate the move and its consequences.
     simulated_board = copy_board(board)
-    piece_on_sim_board = simulated_board[start[0]][start[1]] # Get the cloned piece
     
-    # Execute the move, this will apply piece-specific effects (Queen explode, Pawn promote)
-    # and Knight's own evaporate.
-    piece_on_sim_board.move(simulated_board, start, end) 
+    # Get the corresponding piece on the simulated board.
+    piece_on_sim_board = simulated_board[start[0]][start[1]]
     
-    # After the piece's specific move, apply any global effects like evaporation from other knights
-    # if that's the rule (original 'check_evaporation' was global).
-    check_evaporation(simulated_board) # This will check all knights on sim_board
-
-    # 4. Post-simulation checks:
-    # 4a. Ensure the king of 'color' still exists (wasn't captured/evaporated by its own move's side effects)
-    current_king_pos_sim = _find_king_pos(simulated_board, color)
-    if not current_king_pos_sim:
-        return False # King disappeared, illegal move
-
-    # 4b. Check if the move leaves 'color's king in check.
+    # *** CRITICAL FIX ***
+    # Execute the piece's special move() method on the simulated board.
+    # This will correctly handle Queen explosions, Rook path clearing, Knight evaporation, etc.
+    # BEFORE we check for king safety.
+    piece_on_sim_board.move(simulated_board, start, end)
+    
+    # Some moves (like a Knight moving next to an enemy Knight) can trigger a chain reaction.
+    # We must simulate this global effect as well.
+    check_evaporation(simulated_board)
+    
+    # After all consequences have been applied, check if the player's own king is in check.
+    # If the king is in check, the move was illegal.
     if is_in_check(simulated_board, color):
         return False
 
-    # 4c. Original variant-specific threat checks on the simulated board state.
-    # These check if the *resulting position* is immediately dangerous in a way not covered by standard check.
-    if is_in_explosion_threat(simulated_board, color): # Checks if king of 'color' is now threatened by explosion
-        return False
-    if is_king_in_knight_evaporation_danger(simulated_board, color): # Checks if king of 'color' is now in evap danger
-        return False
-    
-    # This checks if a King made the move AND landed on a square directly attacked by an enemy knight.
-    # is_in_check should cover this, but kept for explicitness matching original.
-    if isinstance(piece_to_move, King) and is_king_attacked_by_knight(simulated_board, color, end):
-        return False
-
+    # The move is legal.
     return True
 
 
