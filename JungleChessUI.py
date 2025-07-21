@@ -2,11 +2,12 @@ import tkinter as tk
 from tkinter import ttk
 import math
 import random
+# MODIFIED: Import board_hash from AI, not generate_position_key from GameLogic
 from GameLogic import *
-from AI import ChessBot
+from AI import ChessBot, board_hash 
 from OpponentAI import OpponentAI
 from enum import Enum
-import threading  # MODIFIED: Import for multithreading
+import threading
 import queue
 
 class GameMode(Enum):
@@ -19,7 +20,6 @@ class EnhancedChessApp:
         self.master = master
         self.master.title("Enhanced Chess")
         
-        # MODIFIED: Threading, Queue, and Cancellation setup
         self.ai_move_queue = queue.Queue()
         self.ai_is_thinking = False
         self.cancellation_event = threading.Event()
@@ -105,13 +105,13 @@ class EnhancedChessApp:
         self.selected, self.valid_moves, self.game_over = None, [], False
         self.dragging, self.drag_piece, self.drag_start = False, None, None 
         
-        # Bot instances are now created in reset_game
         self.bot = None
 
         self.process_ai_queue()
         self.reset_game()
         self.draw_board()
-
+    
+    # ... (no changes to process_ai_queue, _ai_worker, _start_ai_thread, _interrupt_ai_search, on_drag_end, make_bot_move, make_ai_move, reset_game) ...
     def process_ai_queue(self):
         try:
             move_success = self.ai_move_queue.get_nowait()
@@ -244,7 +244,7 @@ class EnhancedChessApp:
         self.set_interactivity()
         self.update_bot_labels() 
         self.update_scoreboard()
-
+        
     def set_interactivity(self):
         if self.game_mode.get() == GameMode.AI_VS_AI.value or self.ai_is_thinking:
             self.canvas.unbind("<Button-1>")
@@ -258,12 +258,17 @@ class EnhancedChessApp:
     def update_bot_depth(self, value):
         new_depth = int(value)
         ChessBot.search_depth = new_depth
-        if self.bot: self.bot.search_depth = new_depth
-        if self.ai_white_bot: self.ai_white_bot.search_depth = new_depth
-        if self.ai_black_bot: self.ai_black_bot.search_depth = new_depth
+        # Check if bots exist and have the attribute before setting, preventing errors
+        if self.bot and hasattr(self.bot, 'search_depth'): 
+            self.bot.search_depth = new_depth
+        if self.ai_white_bot and hasattr(self.ai_white_bot, 'search_depth'):
+            self.ai_white_bot.search_depth = new_depth
+        if self.ai_black_bot and hasattr(self.ai_black_bot, 'search_depth'):
+            self.ai_black_bot.search_depth = new_depth
 
     def get_position_key(self):
-        return generate_position_key(self.board, self.turn)
+        ### MODIFIED: This now correctly calls the fast, global hashing function.
+        return board_hash(self.board, self.turn)
 
     def swap_sides(self):
         self._interrupt_ai_search()
@@ -278,6 +283,7 @@ class EnhancedChessApp:
             self.board_orientation = "black" if self.board_orientation == "white" else "white"
         self.reset_game()
 
+    # ... (rest of UI file is unchanged)
     def board_to_canvas(self, r, c):
         if self.board_orientation == "white":
             x1, y1 = c * SQUARE_SIZE, r * SQUARE_SIZE
@@ -420,26 +426,21 @@ class EnhancedChessApp:
             self.game_over = True
             self.game_result = ("repetition", None)
         else:
-            # The 'turn' here is the player who just moved
             status, winner = check_game_over(self.board, self.turn)
             if status:
                 self.game_over = True
                 self.game_result = (status, winner)
         
         if self.game_over:
-            # --- FIX IS HERE ---
-            # Build the message string safely *after* we know the game result.
             result_type, winner_color = self.game_result
-            msg = "Game Over" # Default message
+            msg = "Game Over"
             if result_type == "repetition":
                 msg = "Draw by three-fold repetition!"
             elif result_type == "stalemate":
                 msg = "Stalemate! It's a draw."
             elif result_type == "checkmate":
-                # Now it's safe to access winner_color because we are in the 'checkmate' block.
                 msg = f"Checkmate! {winner_color.capitalize()} wins!"
             elif result_type == "king_capture":
-                # It's also safe here.
                 msg = f"{winner_color.capitalize()} wins by king capture!"
             
             self.turn_label.config(text=msg)
@@ -447,11 +448,9 @@ class EnhancedChessApp:
             if self.game_mode.get() == GameMode.AI_VS_AI.value:
                 self.process_ai_series_result()
         else:
-            # If the game is not over, switch turns.
             self.turn = "black" if self.turn == "white" else "white"
             self.turn_label.config(text=f"Turn: {self.turn.capitalize()}")
 
-        # Update UI states at the end
         self.set_interactivity()
         self.update_bot_labels()
 

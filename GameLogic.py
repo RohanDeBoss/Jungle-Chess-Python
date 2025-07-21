@@ -538,17 +538,18 @@ def validate_move(board, color, start, end):
     return True
 
 
-def generate_position_key(board, turn):
-    key_parts = []
-    for row in board:
-        for piece in row:
-            if piece:
-                key_parts.append(piece.symbol())
-                key_parts.append('1' if piece.has_moved else '0')
-            else:
-                key_parts.append('..')
-    key_parts.append(turn[0]) # 'w' or 'b'
-    return ''.join(key_parts)
+# THIS FUNCTION IS SLOW AND HAS BEEN REPLACED BY ZOBRIST HASHING IN AI.PY
+# def generate_position_key(board, turn):
+#     key_parts = []
+#     for row in board:
+#         for piece in row:
+#             if piece:
+#                 key_parts.append(piece.symbol())
+#                 key_parts.append('1' if piece.has_moved else '0')
+#             else:
+#                 key_parts.append('..')
+#     key_parts.append(turn[0]) # 'w' or 'b'
+#     return ''.join(key_parts)
 
 # Original is_stalemate function (not directly used if check_game_over is comprehensive)
 def is_stalemate(board, color): # 'color' is the player whose turn it is

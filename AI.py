@@ -4,9 +4,45 @@ import time
 from GameLogic import *
 import random
 import threading
+from collections import namedtuple
 
 # Import the public find_king_pos function
 from GameLogic import find_king_pos
+
+### NEW: Zobrist Hashing moved to global scope for shared use by UI and AI
+def initialize_zobrist_table():
+    """Creates a table of random numbers for each piece/square combination."""
+    random.seed(42)
+    table = {
+        (r, c, piece_type, color): random.getrandbits(64)
+        for r in range(ROWS) for c in range(COLS)
+        for piece_type in [Pawn, Knight, Bishop, Rook, Queen, King, None]
+        for color in ['white', 'black', None]
+    }
+    # Add a key to hash whose turn it is
+    table['turn'] = random.getrandbits(64)
+    return table
+
+# Create a single, global Zobrist table to be used by the entire application.
+ZOBRIST_TABLE = initialize_zobrist_table()
+
+def board_hash(board, turn):
+    """Calculates the Zobrist hash for a given board state and turn."""
+    hash_val = 0
+    for r in range(ROWS):
+        for c in range(COLS):
+            piece = board[r][c]
+            key = (r, c, type(piece) if piece else None, piece.color if piece else None)
+            hash_val ^= ZOBRIST_TABLE.get(key, 0)
+    if turn == 'black':
+        hash_val ^= ZOBRIST_TABLE['turn']
+    return hash_val
+
+
+TTEntry = namedtuple('TTEntry', ['score', 'depth', 'flag', 'best_move'])
+TT_FLAG_EXACT = 0
+TT_FLAG_LOWERBOUND = 1
+TT_FLAG_UPPERBOUND = 2
 
 class SearchCancelledException(Exception):
     """Exception raised when the AI search is cancelled by the UI."""
@@ -22,13 +58,12 @@ class ChessBot:
     MATE_SCORE = 1000000
     DRAW_SCORE = 0
     
-    # MODIFIED: Renamed QSEARCH_MAX_DEPTH to be more descriptive
-    QSEARCH_CHECKS_MAX_DEPTH = 4  # Max ply for non-capture checks in qsearch
-    
-    # NEW: Move ordering scores for tactical moves
+    QSEARCH_CHECKS_MAX_DEPTH = 4
+
     CAPTURE_SCORE_BONUS = 10000
     PROMOTION_SCORE_BONUS = 9000
     CHECK_SCORE_BONUS = 5000
+    HASH_MOVE_SCORE_BONUS = 100000
 
     def __init__(self, board, color, app, cancellation_event):
         self.board = board
@@ -38,29 +73,16 @@ class ChessBot:
         self.cancellation_event = cancellation_event
         self.tt = {}
         self.nodes_searched = 0
-        self.zobrist_table = self.initialize_zobrist_table()
+        ### MODIFIED: Zobrist table is now global, no longer an instance attribute.
+        # self.zobrist_table = self.initialize_zobrist_table() # This line is removed.
         self.MAX_PLY_KILLERS = 30
         self.killer_moves = [[None, None] for _ in range(self.MAX_PLY_KILLERS)]
         self.position_history = []
         self.position_counts = {}
 
-    def initialize_zobrist_table(self):
-        random.seed(42)
-        return {
-            (r, c, piece_type, color): random.getrandbits(64)
-            for r in range(ROWS) for c in range(COLS)
-            for piece_type in [Pawn, Knight, Bishop, Rook, Queen, King, None]
-            for color in ['white', 'black', None]
-        }
-
-    def board_hash(self, board):
-        hash_val = 0
-        for r in range(ROWS):
-            for c in range(COLS):
-                piece = board[r][c]
-                key = (r, c, type(piece) if piece else None, piece.color if piece else None)
-                hash_val ^= self.zobrist_table.get(key, 0)
-        return hash_val
+    ### MODIFIED: These methods are removed from the class and are now global.
+    # def initialize_zobrist_table(self): ...
+    # def board_hash(self, board): ...
 
     def is_in_explosion_threat(self, board, color):
         king_pos = find_king_pos(board, color)
@@ -139,7 +161,6 @@ class ChessBot:
         return int(final_score * perspective_multiplier)
 
     def is_move_a_check(self, board, move, moving_player_color):
-        """Helper to determine if a move results in a check."""
         sim_board = self.simulate_move(board, move[0], move[1])
         opponent_color = 'black' if moving_player_color == 'white' else 'white'
         return is_in_check(sim_board, opponent_color)
@@ -154,20 +175,22 @@ class ChessBot:
             score += self.CHECK_SCORE_BONUS
         return score
 
-    def order_moves(self, board, moves, moving_player_color, ply_searched=0):
-        # Your killer move logic integrated with the new scoring
+    def order_moves(self, board, moves, moving_player_color, ply_searched=0, hash_move=None):
         move_scores = {}
         for move in moves:
             move_scores[move] = self.evaluate_move(board, move, moving_player_color)
         
+        if hash_move and hash_move in move_scores:
+            move_scores[hash_move] += self.HASH_MOVE_SCORE_BONUS
+            
         if ply_searched < self.MAX_PLY_KILLERS:
             killers = self.killer_moves[ply_searched]
             if killers[0] and killers[0] in move_scores:
-                move_scores[killers[0]] += 50000 # Boost killer 1
+                move_scores[killers[0]] += 50000
             if killers[1] and killers[1] in move_scores:
-                move_scores[killers[1]] += 40000 # Boost killer 2
+                move_scores[killers[1]] += 40000
 
-        return sorted(moves, key=lambda m: move_scores[m], reverse=True)
+        return sorted(moves, key=lambda m: move_scores.get(m, 0), reverse=True)
 
     def qsearch(self, board, alpha, beta, turn_multiplier, depth):
         if self.cancellation_event.is_set(): raise SearchCancelledException()
@@ -185,7 +208,7 @@ class ChessBot:
         for move in all_moves:
             is_capture = board[move[1][0]][move[1][1]] is not None
             is_check = False
-            if depth > 0: # Only consider checks if we have depth left
+            if depth > 0:
                 is_check = self.is_move_a_check(board, move, current_turn)
             if is_capture or is_check:
                 tactical_moves.append(move)
@@ -206,13 +229,25 @@ class ChessBot:
         self.nodes_searched += 1
         
         current_turn = self.color if turn_multiplier == 1 else self.opponent_color
+        original_alpha = alpha
         
-        key = generate_position_key(board, current_turn)
-        if self.app.position_counts.get(key, 0) >= 2: return self.DRAW_SCORE
+        ### MODIFIED: Call the global board_hash function
+        hash_val = board_hash(board, current_turn)
+
+        if ply > 0 and self.app.position_counts.get(hash_val, 0) >= 2:
+            return self.DRAW_SCORE
+
+        hash_move = None
+        tt_entry = self.tt.get(hash_val)
+        if tt_entry and tt_entry.depth >= depth:
+            if tt_entry.flag == TT_FLAG_EXACT: return tt_entry.score
+            elif tt_entry.flag == TT_FLAG_LOWERBOUND: alpha = max(alpha, tt_entry.score)
+            elif tt_entry.flag == TT_FLAG_UPPERBOUND: beta = min(beta, tt_entry.score)
+            if alpha >= beta: return tt_entry.score
+            hash_move = tt_entry.best_move
 
         is_in_check_now = is_in_check(board, current_turn)
-        if is_in_check_now:
-            depth += 1 # Check extension
+        if is_in_check_now: depth += 1
 
         if depth <= 0:
             return self.qsearch(board, alpha, beta, turn_multiplier, self.QSEARCH_CHECKS_MAX_DEPTH)
@@ -221,18 +256,34 @@ class ChessBot:
         if not moves:
             return -self.MATE_SCORE + ply if is_in_check_now else self.DRAW_SCORE
 
-        for move in self.order_moves(board, moves, current_turn, ply):
+        ordered_moves = self.order_moves(board, moves, current_turn, ply, hash_move=hash_move)
+        best_move_for_node = None
+        
+        for move in ordered_moves:
             child_board = self.simulate_move(board, move[0], move[1])
             child_turn = self.opponent_color if turn_multiplier == 1 else self.color
-            child_key = generate_position_key(child_board, child_turn)
+            ### MODIFIED: Call the global board_hash function
+            child_hash = board_hash(child_board, child_turn)
             
-            self.app.position_counts[child_key] = self.app.position_counts.get(child_key, 0) + 1
+            self.app.position_counts[child_hash] = self.app.position_counts.get(child_hash, 0) + 1
             score = -self.negamax(child_board, depth - 1, -beta, -alpha, -turn_multiplier, ply + 1)
-            self.app.position_counts[child_key] -= 1
+            self.app.position_counts[child_hash] -= 1
             
-            if score >= beta:
+            if score > alpha:
+                alpha = score
+                best_move_for_node = move
+            
+            if alpha >= beta:
+                is_capture = board[move[1][0]][move[1][1]] is not None
+                if not is_capture and ply < self.MAX_PLY_KILLERS and self.killer_moves[ply][0] != move:
+                    self.killer_moves[ply][1] = self.killer_moves[ply][0]
+                    self.killer_moves[ply][0] = move
+                
+                self.tt[hash_val] = TTEntry(beta, depth, TT_FLAG_LOWERBOUND, move)
                 return beta
-            alpha = max(alpha, score)
+            
+        flag = TT_FLAG_UPPERBOUND if alpha <= original_alpha else TT_FLAG_EXACT
+        self.tt[hash_val] = TTEntry(alpha, depth, flag, best_move_for_node)
         return alpha
 
     def make_move(self):
@@ -240,6 +291,7 @@ class ChessBot:
             best_move_found = None
             total_start_time = time.time()
             self.killer_moves = [[None, None] for _ in range(self.MAX_PLY_KILLERS)]
+            self.tt.clear()
 
             for current_depth in range(1, self.search_depth + 1):
                 if self.cancellation_event.is_set(): raise SearchCancelledException()
@@ -248,31 +300,33 @@ class ChessBot:
                 root_moves = self.get_all_moves(self.board, self.color)
                 if not root_moves: return False
                 
-                ordered_root_moves = self.order_moves(self.board, root_moves, self.color, 0)
+                ### MODIFIED: Call the global board_hash function
+                root_hash = board_hash(self.board, self.color)
+                hash_move = self.tt.get(root_hash, None)
+                if hash_move: hash_move = hash_move.best_move
+
+                ordered_root_moves = self.order_moves(self.board, root_moves, self.color, 0, hash_move=hash_move)
                 
                 best_score = -float('inf')
-                best_move_this_iter = None
                 alpha, beta = -float('inf'), float('inf')
 
-                for move in ordered_root_moves:
+                for i, move in enumerate(ordered_root_moves):
                     if self.cancellation_event.is_set(): raise SearchCancelledException()
 
                     child_board = self.simulate_move(self.board, move[0], move[1])
-                    key = generate_position_key(child_board, self.opponent_color)
-                    self.app.position_counts[key] = self.app.position_counts.get(key, 0) + 1
+                    ### MODIFIED: Call the global board_hash function
+                    child_hash = board_hash(child_board, self.opponent_color)
+                    self.app.position_counts[child_hash] = self.app.position_counts.get(child_hash, 0) + 1
                     
                     score = -self.negamax(child_board, current_depth - 1, -beta, -alpha, -1, 1)
                     
-                    self.app.position_counts[key] -= 1
+                    self.app.position_counts[child_hash] -= 1
 
                     if score > best_score:
                         best_score = score
-                        best_move_this_iter = move
+                        best_move_found = move
                     alpha = max(alpha, best_score)
 
-                if best_move_this_iter:
-                    best_move_found = best_move_this_iter
-                
                 if not self.cancellation_event.is_set():
                     eval_for_ui = best_score * (1 if self.color == 'white' else -1)
                     print(f"Depth {current_depth}: Best={best_move_found}, Eval={eval_for_ui/100:.2f}, Nodes={self.nodes_searched}")
