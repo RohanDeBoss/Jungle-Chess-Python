@@ -1,8 +1,9 @@
+# JungleChessUI.py v1.0
+
 import tkinter as tk
 from tkinter import ttk
 import math
 import random
-# MODIFIED: Import board_hash from AI, not generate_position_key from GameLogic
 from GameLogic import *
 from AI import ChessBot, board_hash 
 from OpponentAI import OpponentAI
@@ -37,6 +38,9 @@ class EnhancedChessApp:
         self.ai_white_bot = None
         self.ai_black_bot = None
         self.white_playing_bot = "main"
+
+        ### NEW: State variable to store the opening move for a game pair.
+        self.current_opening_move = None
 
         screen_w = self.master.winfo_screenwidth()
         screen_h = self.master.winfo_screenheight()
@@ -110,8 +114,7 @@ class EnhancedChessApp:
         self.process_ai_queue()
         self.reset_game()
         self.draw_board()
-    
-    # ... (no changes to process_ai_queue, _ai_worker, _start_ai_thread, _interrupt_ai_search, on_drag_end, make_bot_move, make_ai_move, reset_game) ...
+
     def process_ai_queue(self):
         try:
             move_success = self.ai_move_queue.get_nowait()
@@ -205,16 +208,18 @@ class EnhancedChessApp:
         self.selected = None; self.valid_moves = []; self.game_over = False
         self.game_result = None; self.dragging = False; self.drag_piece = None; self.drag_start = None
         
+        # We handle history *after* the potential opening move is made
         self.position_history = [] 
         self.position_counts = {}  
-        initial_key = self.get_position_key()
-        self.position_history.append(initial_key)
-        self.position_counts[initial_key] = 1
-
+        
         current_mode = self.game_mode.get()
         delay = 20 if self.instant_move.get() else 500
 
         if current_mode == GameMode.AI_VS_AI.value:
+            # Swap who plays which AI every two games (a full pair)
+            if self.ai_series_stats['game_count'] % 2 == 0:
+                self.white_playing_bot = "main" if self.white_playing_bot == "op" else "op"
+            
             if self.white_playing_bot == "main":
                 self.ai_white_bot = ChessBot(self.board, "white", self, self.cancellation_event)
                 self.ai_black_bot = OpponentAI(self.board, "black", self, self.cancellation_event)
@@ -224,7 +229,8 @@ class EnhancedChessApp:
             
             self.update_bot_depth(self.bot_depth_slider.get())
             if self.ai_series_running:
-                 self.randomize_white_opening()
+                 ### MODIFIED: Call the new stateful opening move handler
+                 self.apply_series_opening_move()
             
             self.turn_label.config(text=f"Turn: {self.turn.capitalize()} (AI vs AI)")
             if not self.game_over:
@@ -240,11 +246,16 @@ class EnhancedChessApp:
         else: # Human vs Human
             self.turn_label.config(text=f"Turn: {self.turn.capitalize()}")
 
+        # Record initial position *after* any opening move is made
+        initial_key = self.get_position_key()
+        self.position_history.append(initial_key)
+        self.position_counts[initial_key] = 1
+
         self.draw_board()
         self.set_interactivity()
         self.update_bot_labels() 
         self.update_scoreboard()
-        
+
     def set_interactivity(self):
         if self.game_mode.get() == GameMode.AI_VS_AI.value or self.ai_is_thinking:
             self.canvas.unbind("<Button-1>")
@@ -258,16 +269,11 @@ class EnhancedChessApp:
     def update_bot_depth(self, value):
         new_depth = int(value)
         ChessBot.search_depth = new_depth
-        # Check if bots exist and have the attribute before setting, preventing errors
-        if self.bot and hasattr(self.bot, 'search_depth'): 
-            self.bot.search_depth = new_depth
-        if self.ai_white_bot and hasattr(self.ai_white_bot, 'search_depth'):
-            self.ai_white_bot.search_depth = new_depth
-        if self.ai_black_bot and hasattr(self.ai_black_bot, 'search_depth'):
-            self.ai_black_bot.search_depth = new_depth
+        if self.bot and hasattr(self.bot, 'search_depth'): self.bot.search_depth = new_depth
+        if self.ai_white_bot and hasattr(self.ai_white_bot, 'search_depth'): self.ai_white_bot.search_depth = new_depth
+        if self.ai_black_bot and hasattr(self.ai_black_bot, 'search_depth'): self.ai_black_bot.search_depth = new_depth
 
     def get_position_key(self):
-        ### MODIFIED: This now correctly calls the fast, global hashing function.
         return board_hash(self.board, self.turn)
 
     def swap_sides(self):
@@ -283,7 +289,6 @@ class EnhancedChessApp:
             self.board_orientation = "black" if self.board_orientation == "white" else "white"
         self.reset_game()
 
-    # ... (rest of UI file is unchanged)
     def board_to_canvas(self, r, c):
         if self.board_orientation == "white":
             x1, y1 = c * SQUARE_SIZE, r * SQUARE_SIZE
@@ -418,7 +423,9 @@ class EnhancedChessApp:
     def execute_move_and_check_state(self):
         if self.game_over: return
         
-        key = self.get_position_key()
+        # Switched turn is now the key's turn
+        next_turn = "black" if self.turn == "white" else "white"
+        key = board_hash(self.board, next_turn)
         self.position_history.append(key)
         self.position_counts[key] = self.position_counts.get(key, 0) + 1
         
@@ -448,7 +455,7 @@ class EnhancedChessApp:
             if self.game_mode.get() == GameMode.AI_VS_AI.value:
                 self.process_ai_series_result()
         else:
-            self.turn = "black" if self.turn == "white" else "white"
+            self.turn = next_turn
             self.turn_label.config(text=f"Turn: {self.turn.capitalize()}")
 
         self.set_interactivity()
@@ -477,9 +484,11 @@ class EnhancedChessApp:
         self.game_mode.set(GameMode.AI_VS_AI.value)
         self.ai_series_stats = {'game_count': 0, 'my_ai_wins': 0, 'op_ai_wins': 0, 'draws': 0}
         self.ai_series_running = True 
-        self.white_playing_bot = "main"  
-        self.board_orientation = "white" 
-        self.reset_game() 
+        self.white_playing_bot = "main"
+        self.board_orientation = "white"
+        ### MODIFIED: Clear the stored opening move for a fresh series start
+        self.current_opening_move = None
+        self.reset_game()
 
     def update_scoreboard(self):
         if self.game_mode.get() == GameMode.AI_VS_AI.value and self.ai_series_running:
@@ -527,25 +536,37 @@ class EnhancedChessApp:
         self.top_bot_label.config(text=top_text)
         self.bottom_bot_label.config(text=bottom_text)
 
-    def randomize_white_opening(self):
-        if self.turn != "white": return
-        moves = []
-        for r in range(ROWS):
-            for c in range(COLS):
-                piece = self.board[r][c]
-                if piece and piece.color == "white":
-                    for move in piece.get_valid_moves(self.board, (r, c)):
-                        if validate_move(self.board, "white", (r,c), move):
-                            moves.append(((r,c), move))
-        if moves:
-            start, end = random.choice(moves)
+    ### MODIFIED: Replaced randomize_white_opening with this stateful method ###
+    def apply_series_opening_move(self):
+        """
+        Generates and stores a random opening for the first game of a pair,
+        and re-uses the stored opening for the second game.
+        """
+        # A new opening is chosen at the start of a pair (game 0, 2, 4...)
+        if self.ai_series_stats['game_count'] % 2 == 0:
+            print("--- Generating new opening for game pair ---")
+            moves = []
+            for r in range(ROWS):
+                for c in range(COLS):
+                    piece = self.board[r][c]
+                    if piece and piece.color == "white":
+                        for move in piece.get_valid_moves(self.board, (r, c)):
+                            if validate_move(self.board, "white", (r,c), move):
+                                moves.append(((r,c), move))
+            if moves:
+                self.current_opening_move = random.choice(moves)
+            else:
+                self.current_opening_move = None # No legal moves, should not happen
+
+        # Apply the stored move if it exists
+        if self.current_opening_move:
+            print(f"Applying opening move: {self.current_opening_move}")
+            start, end = self.current_opening_move
             piece = self.board[start[0]][start[1]]
-            self.board = piece.move(self.board, start, end)
-            check_evaporation(self.board)
-            self.turn = "black" 
-            key = self.get_position_key()
-            self.position_history.append(key)
-            self.position_counts[key] = 1
+            if piece: # Safety check
+                self.board = piece.move(self.board, start, end)
+                check_evaporation(self.board)
+                self.turn = "black" # It's now black's turn
 
 def main_app():
     root = tk.Tk()

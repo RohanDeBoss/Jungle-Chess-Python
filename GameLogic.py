@@ -1,4 +1,4 @@
-# game_logic.py
+# game_logic.py v1.0
 
 # -----------------------------
 # Global Constants
@@ -413,9 +413,94 @@ def check_evaporation(board):
         if board[pos[0]][pos[1]] is knight_instance:
              knight_instance.evaporate(board, pos)
 
-# manhattan_distance is not used by other functions here, can be removed if not used elsewhere.
-# def manhattan_distance(pos1, pos2):
-#     return abs(pos1[0] - pos2[0]) + abs(pos1[1] - pos2[1])
+def _is_rook_path_capture(board, start_pos, end_pos, piece_color):
+    """Checks if a Rook move captures any piece along its path."""
+    if start_pos[0] == end_pos[0]: d = (0, 1 if end_pos[1] > start_pos[1] else -1)
+    else: d = (1 if end_pos[0] > start_pos[0] else -1, 0)
+    
+    cr, cc = start_pos[0] + d[0], start_pos[1] + d[1]
+    while (cr, cc) != end_pos:
+        target = board[cr][cc]
+        if target and target.color != piece_color:
+            return True
+        cr += d[0]
+        cc += d[1]
+    return False
+
+def _is_knight_evaporation_move(board, piece, end_pos):
+    """Checks if a Knight's move to end_pos will cause any evaporation."""
+    # 1. Check if it evaporates an adjacent enemy piece
+    for dr, dc in DIRECTIONS['knight']:
+        nr, nc = end_pos[0] + dr, end_pos[1] + dc
+        if 0 <= nr < ROWS and 0 <= nc < COLS:
+            target = board[nr][nc]
+            # Must check that the target isn't the knight's old square
+            if target and target.color != piece.color and (nr, nc) != (piece.r, piece.c):
+                return True 
+    
+    # 2. Check if the knight itself evaporates by moving next to an enemy knight
+    for dr_adj, dc_adj in ADJACENT_DIRS:
+        adj_r, adj_c = end_pos[0] + dr_adj, end_pos[1] + dc_adj
+        if 0 <= adj_r < ROWS and 0 <= adj_c < COLS:
+             target = board[adj_r][adj_c]
+             if isinstance(target, Knight) and target.color != piece.color:
+                 return True
+    return False
+
+### NEW: The centralized function for the AI to use ###
+def is_move_tactical(board, move, is_qsearch_check=False):
+    """
+    Determines if a move is "tactical" (non-quiet).
+    This is the single source of truth for the AI's quiescence search.
+    A move is tactical if it's a:
+    1. Capture at the destination.
+    2. Pawn promotion.
+    3. Rook path-clearing capture.
+    4. Knight evaporation move.
+    5. A check (but only if we ask for it, to prevent infinite loops in qsearch).
+    """
+    start_pos, end_pos = move
+    piece = board[start_pos[0]][start_pos[1]]
+    if not piece: return False
+
+    # Rule 1: Capture at destination
+    if board[end_pos[0]][end_pos[1]] is not None:
+        return True
+
+    # Rule 2: Pawn Promotion
+    if isinstance(piece, Pawn):
+        promo_rank = 0 if piece.color == 'white' else ROWS - 1
+        if end_pos[0] == promo_rank:
+            return True
+
+    # Rule 3: Rook Path Clearing
+    if isinstance(piece, Rook):
+        if _is_rook_path_capture(board, start_pos, end_pos, piece.color):
+            return True
+
+    # Rule 4: Knight Evaporation
+    if isinstance(piece, Knight):
+        # Temporarily assign position to piece for the check
+        piece.r, piece.c = start_pos
+        if _is_knight_evaporation_move(board, piece, end_pos):
+            # Clean up temporary assignment
+            del piece.r
+            del piece.c
+            return True
+        del piece.r
+        del piece.c
+
+    # Rule 5: Is the move a check? (Optional)
+    if is_qsearch_check:
+        sim_board = copy_board(board)
+        sim_piece = sim_board[start_pos[0]][start_pos[1]]
+        sim_piece.move(sim_board, start_pos, end_pos)
+        check_evaporation(sim_board)
+        opponent_color = 'black' if piece.color == 'white' else 'white'
+        if is_in_check(sim_board, opponent_color):
+            return True
+            
+    return False
 
 def is_in_check(board, color): # 'color' is the king's color
     king_pos = find_king_pos(board, color)
@@ -536,20 +621,6 @@ def validate_move(board, color, start, end):
 
     # The move is legal.
     return True
-
-
-# THIS FUNCTION IS SLOW AND HAS BEEN REPLACED BY ZOBRIST HASHING IN AI.PY
-# def generate_position_key(board, turn):
-#     key_parts = []
-#     for row in board:
-#         for piece in row:
-#             if piece:
-#                 key_parts.append(piece.symbol())
-#                 key_parts.append('1' if piece.has_moved else '0')
-#             else:
-#                 key_parts.append('..')
-#     key_parts.append(turn[0]) # 'w' or 'b'
-#     return ''.join(key_parts)
 
 # Original is_stalemate function (not directly used if check_game_over is comprehensive)
 def is_stalemate(board, color): # 'color' is the player whose turn it is
