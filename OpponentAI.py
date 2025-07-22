@@ -1,13 +1,17 @@
+# OpponentAI.py
+
+# --- Versioning ---
+# v1.4 (Debug-Fix)
+# - This is the stable, high-performance version *without* Piece-Square Tables.
+# - Fixed TypeError by updating __init__ to accept the bot_name from the UI.
+# - Implemented enhanced debug output to show this bot's name and performance (KNPS).
+
 import time
 from GameLogic import *
 import random
 import threading
 from collections import namedtuple
-from AI import ChessBot
-
-# AI.py v1.4
-# - This version includes the major performance optimization.
-# - No PST's yet
+from AI import ChessBot # This import is needed for the TypeError to be possible
 
 # --- Global Zobrist Hashing ---
 def initialize_zobrist_table():
@@ -46,8 +50,14 @@ class SearchCancelledException(Exception):
     """Exception raised when the AI search is cancelled by the UI."""
     pass
 
-class OpponentAI(ChessBot):
+class OpponentAI:
     search_depth = 3
+    
+    # --- Piece Values ---
+    PIECE_VALUES = {
+        Pawn: 100, Knight: 700, Bishop: 600,
+        Rook: 500, Queen: 900, King: 100000
+    }
     
     # --- Search Constants ---
     MATE_SCORE = 1000000
@@ -58,34 +68,33 @@ class OpponentAI(ChessBot):
     CHECK_SCORE_BONUS = 5000
     HASH_MOVE_SCORE_BONUS = 100000
 
-    def __init__(self, board, color, app, cancellation_event):
+    def __init__(self, board, color, app, cancellation_event, bot_name="Opponent AI"):
         self.board = board
         self.color = color
         self.opponent_color = 'black' if color == 'white' else 'white'
         self.app = app
         self.cancellation_event = cancellation_event
+        self.bot_name = bot_name # Store the bot's name
         self.tt = {}
         self.nodes_searched = 0
         self.MAX_PLY_KILLERS = 30
         self.killer_moves = [[None, None] for _ in range(self.MAX_PLY_KILLERS)]
     
     def evaluate_board(self, board, current_turn):
+        """
+        Evaluates the board based on Material plus simple mobility/threat bonuses.
+        This version intentionally does NOT use Piece-Square Tables for testing purposes.
+        """
         perspective_multiplier = 1 if current_turn == self.color else -1
         score_relative_to_ai = 0
+        
+        # Critical base cases: if a king is missing, it's checkmate.
         our_king_pos = find_king_pos(board, self.color)
         enemy_king_pos = find_king_pos(board, self.opponent_color)
-        
         if not enemy_king_pos: return self.MATE_SCORE * perspective_multiplier
         if not our_king_pos: return -self.MATE_SCORE * perspective_multiplier
 
-        total_material = 0
-        for r in range(ROWS):
-            for c in range(COLS):
-                p = board[r][c]
-                if p and not isinstance(p, King):
-                    total_material += PIECE_VALUES.get(type(p), 0)
-        is_endgame = total_material < ENDGAME_MATERIAL_THRESHOLD
-
+        # Calculate score by iterating through all pieces
         for r_eval in range(ROWS):
             for c_eval in range(COLS):
                 piece_eval = board[r_eval][c_eval]
@@ -93,8 +102,11 @@ class OpponentAI(ChessBot):
                     continue
                 
                 is_our_piece = (piece_eval.color == self.color)
-                value = PIECE_VALUES.get(type(piece_eval), 0)
+                
+                # Base material value
+                value = self.PIECE_VALUES.get(type(piece_eval), 0)
 
+                # Add simple mobility/threat bonuses (no PSTs)
                 if isinstance(piece_eval, Knight):
                     value += len(piece_eval.get_valid_moves(board, (r_eval, c_eval))) * 5
                 
@@ -106,11 +118,15 @@ class OpponentAI(ChessBot):
                             if enemy_king_pos and max(abs(move_q[0] - enemy_king_pos[0]), abs(move_q[1] - enemy_king_pos[1])) == 1:
                                 atomic_threats += 1
                     value += atomic_threats * 15
-
-                score_relative_to_ai += value if is_our_piece else -value
+                
+                # Add score to the total (subtract if it's an enemy piece)
+                if is_our_piece:
+                    score_relative_to_ai += value
+                else:
+                    score_relative_to_ai -= value
             
         return int(score_relative_to_ai * perspective_multiplier)
-
+    
     def is_move_a_check(self, board, move, moving_player_color):
         sim_board = self.simulate_move(board, move[0], move[1])
         opponent_color = 'black' if moving_player_color == 'white' else 'white'
@@ -122,7 +138,7 @@ class OpponentAI(ChessBot):
         target = board[end[0]][end[1]]
         score = 0
         if target:
-            score = self.CAPTURE_SCORE_BONUS + (PIECE_VALUES.get(type(target), 0) - PIECE_VALUES.get(type(piece), 0))
+            score = self.CAPTURE_SCORE_BONUS + (self.PIECE_VALUES.get(type(target), 0) - self.PIECE_VALUES.get(type(piece), 0))
         if isinstance(piece, Pawn) and (end[0] == 0 or end[0] == ROWS - 1):
             score += self.PROMOTION_SCORE_BONUS
         if self.is_move_a_check(board, move, moving_player_color):
@@ -230,8 +246,10 @@ class OpponentAI(ChessBot):
             self.killer_moves = [[None, None] for _ in range(self.MAX_PLY_KILLERS)]
             self.tt.clear()
             for current_depth in range(1, self.search_depth + 1):
+                iter_start_time = time.time()
                 if self.cancellation_event.is_set(): raise SearchCancelledException()
                 self.nodes_searched = 0
+                
                 root_moves = generate_pseudo_legal_moves(self.board, self.color)
                 if not root_moves: return False
                 
@@ -260,8 +278,12 @@ class OpponentAI(ChessBot):
                     alpha = max(alpha, best_score)
 
                 if not self.cancellation_event.is_set():
+                    iter_duration = time.time() - iter_start_time
+                    knps = (self.nodes_searched / iter_duration / 1000) if iter_duration > 0 else 0
                     eval_for_ui = best_score * (1 if self.color == 'white' else -1)
-                    print(f"Depth {current_depth}: Best={best_move_found}, Eval={eval_for_ui/100:.2f}, Nodes={self.nodes_searched}")
+                    
+                    print(f"{self.bot_name}: Depth {current_depth}, Eval={eval_for_ui/100:.2f}, Nodes={self.nodes_searched}, KNPS={knps:.1f}")
+                    
                     if self.app: self.app.master.after(0, self.app.draw_eval_bar, eval_for_ui)
 
             if best_move_found:
@@ -291,11 +313,3 @@ class OpponentAI(ChessBot):
             new_board = piece.move(new_board, start, end)
             check_evaporation(new_board)
         return new_board
-
-PIECE_VALUES = {
-    Pawn: 100, Knight: 700, Bishop: 600,
-    Rook: 500, Queen: 900, King: 100000
-}
-ENDGAME_MATERIAL_THRESHOLD = (PIECE_VALUES[Rook] * 2 + PIECE_VALUES[Knight] * 2 + PIECE_VALUES[Bishop] * 2 + PIECE_VALUES[Queen])
-
-PIECE_SQUARE_TABLES = {}

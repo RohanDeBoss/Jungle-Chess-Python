@@ -465,7 +465,6 @@ def _is_rook_path_capture(board, start_pos, end_pos, piece_color):
 
 
 def _is_knight_evaporation_move(board, start_pos, end_pos, piece_color):
-    # Check if knight's move to end_pos will evaporate an adjacent enemy
     for dr, dc in DIRECTIONS['knight']:
         nr, nc = end_pos[0] + dr, end_pos[1] + dc
         if 0 <= nr < ROWS and 0 <= nc < COLS and (nr, nc) != start_pos:
@@ -473,7 +472,6 @@ def _is_knight_evaporation_move(board, start_pos, end_pos, piece_color):
             if target and target.color != piece_color:
                 return True
                 
-    # Check if the knight itself will be evaporated by an enemy knight
     for dr_adj, dc_adj in ADJACENT_DIRS:
         adj_r, adj_c = end_pos[0] + dr_adj, end_pos[1] + dc_adj
         if 0 <= adj_r < ROWS and 0 <= adj_c < COLS:
@@ -490,11 +488,9 @@ def is_move_tactical(board, move, is_qsearch_check=False):
     if not piece:
         return False
 
-    # A move is always tactical if it's a capture at the destination
     if board[end_pos[0]][end_pos[1]] is not None:
         return True
         
-    # Check for variant-specific tactical moves
     if isinstance(piece, Pawn):
         promo_rank = 0 if piece.color == 'white' else ROWS - 1
         if end_pos[0] == promo_rank:
@@ -506,7 +502,6 @@ def is_move_tactical(board, move, is_qsearch_check=False):
         if _is_knight_evaporation_move(board, start_pos, end_pos, piece.color):
             return True
     
-    # Finally, check if the move delivers a check (optional)
     if is_qsearch_check:
         sim_board = copy_board(board)
         sim_piece = sim_board[start_pos[0]][start_pos[1]]

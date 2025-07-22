@@ -1,7 +1,15 @@
+# JungleChessUI.py
+
+# --- Versioning ---
+# v1.9
+# - Added a timer to calculate and print the total search time for each AI move.
+# - The output now appears in the console right before the blank line for readability.
+
 import tkinter as tk
 from tkinter import ttk
 import math
 import random
+import time # Import the time module
 from GameLogic import *
 from AI import ChessBot, board_hash
 from OpponentAI import OpponentAI
@@ -9,24 +17,14 @@ from enum import Enum
 import threading
 import queue
 
-# JungleChessUI.py
-
-# --- Versioning ---
-# v1.6
-# - MAJOR UI OPTIMIZATION: Move generation for the human player is now targeted.
-#   Instead of validating moves for all pieces on click, it now only validates
-#   moves for the single piece that was selected, making the UI much more responsive.
-# - Fixed critical UI text color bug.
-# - All previous fixes for scoreboard, board orientation, and piece dragging are included.
-
 class GameMode(Enum):
     HUMAN_VS_BOT = "bot"
     HUMAN_VS_HUMAN = "human"
     AI_VS_AI = "ai_vs_ai"
 
 class EnhancedChessApp:
-    MAIN_AI_NAME = "AI Bot"
-    OPPONENT_AI_NAME = "OP Bot"
+    MAIN_AI_NAME = "AI Bot" #Just this is Good
+    OPPONENT_AI_NAME = "OP Bot" # No need for version in title
     
     def __init__(self, master):
         self.master = master
@@ -36,6 +34,7 @@ class EnhancedChessApp:
         self.ai_move_queue = queue.Queue()
         self.ai_is_thinking = False
         self.cancellation_event = threading.Event()
+        self.ai_search_start_time = None # Variable to hold the start time of a search
 
         # --- Game State ---
         self.board = create_initial_board()
@@ -48,8 +47,7 @@ class EnhancedChessApp:
         self.game_mode = tk.StringVar(value=GameMode.HUMAN_VS_BOT.value)
         self.ai_series_running = False
         self.ai_series_stats = {'game_count': 0, 'my_ai_wins': 0, 'op_ai_wins': 0, 'draws': 0}
-        self.ai_white_bot = None
-        self.ai_black_bot = None
+        self.ai_white_bot, self.ai_black_bot = None, None
         self.white_playing_bot = "main"
         self.current_opening_move = None
         self.human_color = "white"
@@ -132,6 +130,16 @@ class EnhancedChessApp:
     def process_ai_queue(self):
         try:
             move_success = self.ai_move_queue.get_nowait()
+            
+            # Stop the timer and print the duration
+            if self.ai_search_start_time:
+                duration = time.time() - self.ai_search_start_time
+                print(f"Search completed in {duration:.2f} seconds.")
+                self.ai_search_start_time = None # Reset for the next turn
+            
+            # Print a blank line for readability
+            print() 
+
             self.ai_is_thinking = False
             self.update_bot_labels()
             if move_success:
@@ -156,6 +164,7 @@ class EnhancedChessApp:
         if self.ai_is_thinking or self.game_over: return
         self.cancellation_event.clear()
         self.ai_is_thinking = True
+        self.ai_search_start_time = time.time() # Start the timer
         self.update_bot_labels()
         thread = threading.Thread(target=self._ai_worker, args=(bot_instance,), daemon=True)
         thread.start()
@@ -224,9 +233,11 @@ class EnhancedChessApp:
             self.white_playing_bot = "op" if self.ai_series_stats['game_count'] % 2 == 1 else "main"
             self.board_orientation = "white" if self.white_playing_bot == "main" else "black"
             if self.white_playing_bot == "main":
-                self.ai_white_bot, self.ai_black_bot = ChessBot(self.board, "white", self, self.cancellation_event), OpponentAI(self.board, "black", self, self.cancellation_event)
+                self.ai_white_bot = ChessBot(self.board, "white", self, self.cancellation_event, self.MAIN_AI_NAME)
+                self.ai_black_bot = OpponentAI(self.board, "black", self, self.cancellation_event, self.OPPONENT_AI_NAME)
             else:
-                self.ai_white_bot, self.ai_black_bot = OpponentAI(self.board, "white", self, self.cancellation_event), ChessBot(self.board, "black", self, self.cancellation_event)
+                self.ai_white_bot = OpponentAI(self.board, "white", self, self.cancellation_event, self.OPPONENT_AI_NAME)
+                self.ai_black_bot = ChessBot(self.board, "black", self, self.cancellation_event, self.MAIN_AI_NAME)
             self.update_bot_depth(self.bot_depth_slider.get())
             if self.ai_series_running: self.apply_series_opening_move()
             self.turn_label.config(text=f"Turn: {self.turn.capitalize()} ({self.MAIN_AI_NAME} vs {self.OPPONENT_AI_NAME})")
@@ -234,7 +245,7 @@ class EnhancedChessApp:
 
         elif current_mode == GameMode.HUMAN_VS_BOT.value:
             bot_color = "black" if self.human_color == "white" else "white"
-            self.bot = ChessBot(self.board, bot_color, self, self.cancellation_event)
+            self.bot = ChessBot(self.board, bot_color, self, self.cancellation_event, "Main Bot")
             self.update_bot_depth(self.bot_depth_slider.get())
             self.turn_label.config(text=f"Turn: {self.turn.capitalize()}")
             if self.turn != self.human_color and not self.game_over:
@@ -365,16 +376,12 @@ class EnhancedChessApp:
             piece = self.board[r][c]
             if piece and piece.color == self.turn:
                 self.selected, self.dragging, self.drag_start = (r, c), True, (r, c)
-                
-                ### OPTIMIZED: Only generate moves for the selected piece ###
                 self.valid_moves = [end_pos for end_pos in piece.get_valid_moves(self.board, (r, c)) 
                                     if validate_move(self.board, self.turn, (r, c), end_pos)]
-                
                 self.canvas.delete("drag_ghost")
                 font, color = ("Arial Unicode MS", 36), "white" if piece.color == "white" else "black"
                 self.drag_piece_ghost = self.canvas.create_text(event.x, event.y, text=piece.symbol(), font=font, fill=color, tags="drag_ghost")
-                
-                self.draw_board() # Redraws to show highlights and hide original piece
+                self.draw_board()
                 self.canvas.tag_raise("drag_ghost")
 
     def on_drag_motion(self, event):

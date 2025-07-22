@@ -1,12 +1,17 @@
+# AI.py
+
 import time
 from GameLogic import *
 import random
 import threading
 from collections import namedtuple
 
-# AI.py v1.4
-# - This version includes the major performance optimization.
-# - No PST's yet
+# --- Versioning ---
+# v1.8
+# - Finalized architecture for clean inheritance.
+# - The bot's name is now an instance attribute set in __init__.
+# - The make_move function now uses self.bot_name for its debug output,
+#   allowing OpponentAI to inherit it perfectly without modification.
 
 # --- Global Zobrist Hashing ---
 def initialize_zobrist_table():
@@ -57,26 +62,33 @@ class ChessBot:
     CHECK_SCORE_BONUS = 5000
     HASH_MOVE_SCORE_BONUS = 100000
 
-    def __init__(self, board, color, app, cancellation_event):
+    def __init__(self, board, color, app, cancellation_event, bot_name="AI Bot"):
         self.board = board
         self.color = color
         self.opponent_color = 'black' if color == 'white' else 'white'
         self.app = app
         self.cancellation_event = cancellation_event
+        self.bot_name = bot_name  # Store the bot's name
         self.tt = {}
         self.nodes_searched = 0
         self.MAX_PLY_KILLERS = 30
         self.killer_moves = [[None, None] for _ in range(self.MAX_PLY_KILLERS)]
     
     def evaluate_board(self, board, current_turn):
+        """
+        Evaluates the board based on Material and Piece-Square Tables (PSTs).
+        This provides a strong positional understanding.
+        """
         perspective_multiplier = 1 if current_turn == self.color else -1
         score_relative_to_ai = 0
+        
+        # Critical base cases: if a king is missing, it's checkmate.
         our_king_pos = find_king_pos(board, self.color)
         enemy_king_pos = find_king_pos(board, self.opponent_color)
-        
         if not enemy_king_pos: return self.MATE_SCORE * perspective_multiplier
         if not our_king_pos: return -self.MATE_SCORE * perspective_multiplier
 
+        # Determine if the game is in an endgame phase to use the correct King PST
         total_material = 0
         for r in range(ROWS):
             for c in range(COLS):
@@ -85,28 +97,33 @@ class ChessBot:
                     total_material += PIECE_VALUES.get(type(p), 0)
         is_endgame = total_material < ENDGAME_MATERIAL_THRESHOLD
 
+        # Calculate score by iterating through all pieces
         for r_eval in range(ROWS):
             for c_eval in range(COLS):
                 piece_eval = board[r_eval][c_eval]
                 if not piece_eval:
                     continue
                 
-                is_our_piece = (piece_eval.color == self.color)
+                # Base material value
                 value = PIECE_VALUES.get(type(piece_eval), 0)
 
-                if isinstance(piece_eval, Knight):
-                    value += len(piece_eval.get_valid_moves(board, (r_eval, c_eval))) * 5
+                # Positional value from PSTs
+                pst = None
+                if isinstance(piece_eval, King):
+                    pst = PIECE_SQUARE_TABLES['king_endgame'] if is_endgame else PIECE_SQUARE_TABLES['king_midgame']
+                else:
+                    pst = PIECE_SQUARE_TABLES.get(type(piece_eval))
                 
-                elif isinstance(piece_eval, Queen) and is_our_piece:
-                    atomic_threats = 0
-                    for move_q in piece_eval.get_valid_moves(board, (r_eval, c_eval)):
-                        target_piece = board[move_q[0]][move_q[1]]
-                        if target_piece and target_piece.color == self.opponent_color:
-                            if enemy_king_pos and max(abs(move_q[0] - enemy_king_pos[0]), abs(move_q[1] - enemy_king_pos[1])) == 1:
-                                atomic_threats += 1
-                    value += atomic_threats * 15
+                if pst:
+                    # White's score is read directly; Black's is from the flipped perspective
+                    pst_score = pst[r_eval][c_eval] if piece_eval.color == 'white' else pst[ROWS - 1 - r_eval][c_eval]
+                    value += pst_score
 
-                score_relative_to_ai += value if is_our_piece else -value
+                # Add score to the total (subtract if it's an enemy piece)
+                if piece_eval.color == self.color:
+                    score_relative_to_ai += value
+                else:
+                    score_relative_to_ai -= value
             
         return int(score_relative_to_ai * perspective_multiplier)
 
@@ -229,8 +246,10 @@ class ChessBot:
             self.killer_moves = [[None, None] for _ in range(self.MAX_PLY_KILLERS)]
             self.tt.clear()
             for current_depth in range(1, self.search_depth + 1):
+                iter_start_time = time.time()
                 if self.cancellation_event.is_set(): raise SearchCancelledException()
                 self.nodes_searched = 0
+                
                 root_moves = generate_pseudo_legal_moves(self.board, self.color)
                 if not root_moves: return False
                 
@@ -259,8 +278,12 @@ class ChessBot:
                     alpha = max(alpha, best_score)
 
                 if not self.cancellation_event.is_set():
+                    iter_duration = time.time() - iter_start_time
+                    knps = (self.nodes_searched / iter_duration / 1000) if iter_duration > 0 else 0
                     eval_for_ui = best_score * (1 if self.color == 'white' else -1)
-                    print(f"Depth {current_depth}: Best={best_move_found}, Eval={eval_for_ui/100:.2f}, Nodes={self.nodes_searched}")
+                    
+                    print(f"{self.bot_name}: Depth {current_depth}, Eval={eval_for_ui/100:.2f}, Nodes={self.nodes_searched}, KNPS={knps:.1f}")
+                    
                     if self.app: self.app.master.after(0, self.app.draw_eval_bar, eval_for_ui)
 
             if best_move_found:
@@ -291,10 +314,103 @@ class ChessBot:
             check_evaporation(new_board)
         return new_board
 
+# -----------------------------------------------------------------------------
+# Piece-Square Tables (PSTs) and Material Values
+# -----------------------------------------------------------------------------
+
 PIECE_VALUES = {
     Pawn: 100, Knight: 700, Bishop: 600,
     Rook: 500, Queen: 900, King: 100000
 }
 ENDGAME_MATERIAL_THRESHOLD = (PIECE_VALUES[Rook] * 2 + PIECE_VALUES[Knight] * 2 + PIECE_VALUES[Bishop] * 2 + PIECE_VALUES[Queen])
 
-PIECE_SQUARE_TABLES = {}
+# NOTE: Tables are written from White's perspective.
+# The 8th rank is at index 0, the 1st rank is at index 7.
+# The bottom-left square in the table (a1) corresponds to pst[7][0].
+
+pawn_pst = [
+    [  0,   0,   0,   0,   0,   0,   0,   0],  # Rank 8
+    [100, 100, 100, 100, 100, 100, 100, 100],  # Rank 7 (Promotion)
+    [ 20,  20,  30,  40,  40,  30,  20,  20],  # Rank 6
+    [ 10,  10,  20,  30,  30,  20,  10,  10],  # Rank 5
+    [  5,   5,  10,  25,  25,  10,   5,   5],  # Rank 4
+    [  0,   0,   0,  10,  10,   0,   0,   0],  # Rank 3
+    [  0,   0,   0,   0,   0,   0,   0,   0],  # Rank 2
+    [  0,   0,   0,   0,   0,   0,   0,   0]   # Rank 1
+]
+
+knight_pst = [
+    [-50, -40, -30, -30, -30, -30, -40, -50],
+    [-40, -20,   0,   5,   5,   0, -20, -40],
+    [-30,   5,  10,  15,  15,  10,   5, -30],
+    [-30,   5,  20,  30,  30,  20,   5, -30],
+    [-30,   5,  20,  30,  30,  20,   5, -30],
+    [-30,   0,  10,  15,  15,  10,   0, -30],
+    [-40, -20,   0,   0,   0,   0, -20, -40],
+    [-50, -40, -30, -30, -30, -30, -40, -50]
+]
+
+bishop_pst = [
+    [-20, -10, -10, -10, -10, -10, -10, -20],
+    [-10,   5,   0,   0,   0,   0,   5, -10],
+    [-10,  10,  10,  10,  10,  10,  10, -10],
+    [-10,   0,  10,  10,  10,  10,   0, -10],
+    [-10,   5,   5,  10,  10,   5,   5, -10],
+    [-10,   0,   5,  10,  10,   5,   0, -10],
+    [-10,   0,   0,   0,   0,   0,   0, -10],
+    [-20, -10, -10, -10, -10, -10, -10, -20]
+]
+
+rook_pst = [
+    [  0,   5,   5,  10,  10,   5,   5,   0],
+    [ -5,   0,   0,   5,   5,   0,   0,  -5],
+    [ -5,   0,   0,   5,   5,   0,   0,  -5],
+    [ -5,   0,   0,   5,   5,   0,   0,  -5],
+    [ -5,   0,   0,   5,   5,   0,   0,  -5],
+    [ -5,   0,   0,   5,   5,   0,   0,  -5],
+    [  5,  10,  10,  20,  20,  10,  10,   5],
+    [  0,   0,   0,  10,  10,   0,   0,   0]
+]
+
+queen_pst = [
+    [-20, -10, -10,  -5,  -5, -10, -10, -20],
+    [-10,   0,   5,   0,   0,   0,   5, -10],
+    [-10,   5,   5,   5,   5,   5,   5, -10],
+    [ -5,   0,   5,   5,   5,   5,   0,  -5],
+    [  0,   0,   5,   5,   5,   5,   0,  -5],
+    [-10,   0,   5,   5,   5,   5,   0, -10],
+    [-10,   0,   0,   0,   0,   0,   0, -10],
+    [-20, -10, -10,  -5,  -5, -10, -10, -20]
+]
+
+king_midgame_pst = [
+    [ 20,  30,  10,   0,   0,  10,  30,  20],
+    [ 20,  20,   0,   0,   0,   0,  20,  20],
+    [-10, -20, -20, -20, -20, -20, -20, -10],
+    [-20, -30, -30, -40, -40, -30, -30, -20],
+    [-30, -40, -40, -50, -50, -40, -40, -30],
+    [-30, -40, -40, -50, -50, -40, -40, -30],
+    [-30, -40, -40, -50, -50, -40, -40, -30],
+    [-30, -40, -40, -50, -50, -40, -40, -30]
+]
+
+king_endgame_pst = [
+    [-50, -30, -30, -30, -30, -30, -30, -50],
+    [-30, -30,   0,   0,   0,   0, -30, -30],
+    [-30, -10,  20,  30,  30,  20, -10, -30],
+    [-30, -10,  30,  40,  40,  30, -10, -30],
+    [-30, -10,  30,  40,  40,  30, -10, -30],
+    [-30, -10,  20,  30,  30,  20, -10, -30],
+    [-30, -20, -10,   0,   0, -10, -20, -30],
+    [-50, -40, -30, -20, -20, -30, -40, -50]
+]
+
+PIECE_SQUARE_TABLES = {
+    Pawn: pawn_pst, 
+    Knight: knight_pst, 
+    Bishop: bishop_pst, 
+    Rook: rook_pst, 
+    Queen: queen_pst,
+    'king_midgame': king_midgame_pst, 
+    'king_endgame': king_endgame_pst
+}
