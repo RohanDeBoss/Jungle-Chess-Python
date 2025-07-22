@@ -7,8 +7,9 @@ import threading
 from collections import namedtuple
 
 # --- Versioning ---
-# v4.3 (Robust Q-Search)
+# v4.4 (Robust Q-Search + Bugfixes for refractor support)
 # - Added a MAX_Q_SEARCH_DEPTH limit to prevent pathologically long tactical searches.
+# - Now working for the Jungle Chess game with refractor support.
 
 # --- Global Zobrist Hashing ---
 def initialize_zobrist_table():
@@ -25,10 +26,11 @@ def initialize_zobrist_table():
 ZOBRIST_TABLE = initialize_zobrist_table()
 
 def board_hash(board, turn):
+    """Calculates the Zobrist hash for a given board state and turn."""
     hash_val = 0
     for r in range(ROWS):
         for c in range(COLS):
-            piece = board[r][c]
+            piece = board.grid[r][c] # <--- THE FIX
             key = (r, c, type(piece) if piece else None, piece.color if piece else None)
             hash_val ^= ZOBRIST_TABLE.get(key, 0)
     if turn == 'black':
@@ -81,7 +83,7 @@ class ChessBot:
         total_material = 0
         for r in range(ROWS):
             for c in range(COLS):
-                p = board[r][c]
+                p = board.grid[r][c]
                 if p and not isinstance(p, King):
                     total_material += PIECE_VALUES.get(type(p), 0)
         return total_material < ENDGAME_MATERIAL_THRESHOLD
@@ -89,14 +91,14 @@ class ChessBot:
     def evaluate_board(self, board, current_turn):
         perspective_multiplier = 1 if current_turn == self.color else -1
         score_relative_to_ai = 0
-        our_king_pos = find_king_pos(board, self.color)
-        enemy_king_pos = find_king_pos(board, self.opponent_color)
+        our_king_pos = board.find_king_pos(self.color)
+        enemy_king_pos = board.find_king_pos(self.opponent_color)
         if not enemy_king_pos: return self.MATE_SCORE * perspective_multiplier
         if not our_king_pos: return -self.MATE_SCORE * perspective_multiplier
         in_endgame = self.is_endgame(board)
         for r_eval in range(ROWS):
             for c_eval in range(COLS):
-                piece_eval = board[r_eval][c_eval]
+                piece_eval = board.grid[r_eval][c_eval]
                 if not piece_eval: continue
                 value = PIECE_VALUES.get(type(piece_eval), 0)
                 pst = None
@@ -120,8 +122,8 @@ class ChessBot:
         for move in moves:
             score = 0
             start_pos, end_pos = move
-            moving_piece = board[start_pos[0]][start_pos[1]]
-            target_piece = board[end_pos[0]][end_pos[1]]
+            moving_piece = board.grid[start_pos[0]][start_pos[1]]
+            target_piece = board.grid[end_pos[0]][end_pos[1]]
             if move == hash_move:
                 score = self.BONUS_PV_MOVE
                 move_scores[move] = score
@@ -162,8 +164,8 @@ class ChessBot:
             child_board = self.simulate_move(board, move[0], move[1])
             is_check = is_in_check(child_board, opponent_color)
             if not is_check:
-                moving_piece = board[move[0][0]][move[0][1]]
-                target_piece = board[move[1][0]][move[1][1]]
+                moving_piece = board.grid[move[0][0]][move[0][1]] # <-- FIX
+                target_piece = board.grid[move[1][0]][move[1][1]] # <-- FIX
                 material_gain = 0
                 if target_piece:
                     material_gain += PIECE_VALUES.get(type(target_piece), 0)
@@ -289,22 +291,21 @@ class ChessBot:
                     eval_for_ui = best_score * (1 if self.color == 'white' else -1)
                     print(f"{self.bot_name}: Depth {current_depth}, Eval={eval_for_ui/100:.2f}, Nodes={self.nodes_searched}, KNPS={knps:.1f}")
                     if self.app: self.app.master.after(0, self.app.draw_eval_bar, eval_for_ui)
+            
+            # --- THE FIX IS HERE ---
             if best_move_found:
-                piece = self.board[best_move_found[0][0]][best_move_found[0][1]]
-                self.board = piece.move(self.board, best_move_found[0], best_move_found[1])
-                check_evaporation(self.board)
+                self.board.make_move(best_move_found[0], best_move_found[1])
                 return True
             return False
+            # --- END OF FIX ---
+            
         except SearchCancelledException:
             print(f"AI ({self.color}): Search cancelled.")
             return False
 
     def simulate_move(self, board, start, end):
-        new_board = copy_board(board)
-        piece = new_board[start[0]][start[1]]
-        if piece:
-            new_board = piece.move(new_board, start, end)
-            check_evaporation(new_board)
+        new_board = board.clone()
+        new_board.make_move(start, end)
         return new_board
     
 # -----------------------------------------------------------------------------

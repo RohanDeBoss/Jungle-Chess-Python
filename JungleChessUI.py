@@ -1,10 +1,9 @@
 # JungleChessUI.py
 
 # --- Versioning ---
-# v2.0
-# - Added a "Forced Opening" UI section for testing specific game starts.
-# - Includes an enable/disable checkbox and a text entry for the move string.
-# - Logic is applied on "New Game" if the feature is enabled.
+# v2.3 (Refactor Compatibility Fix)
+# - Updated all board access to use `self.board.grid` instead of `self.board`.
+# - This completes the compatibility changes for the new high-performance Board class.
 
 import tkinter as tk
 from tkinter import ttk
@@ -46,7 +45,7 @@ class EnhancedChessApp:
         self.ai_series_running = False
         self.ai_series_stats = {'game_count': 0, 'my_ai_wins': 0, 'op_ai_wins': 0, 'draws': 0}
         self.ai_white_bot, self.ai_black_bot = None, None
-        self.white_playing_bot = ""
+        self.white_playing_bot = "main"
         self.current_opening_move = None
         self.human_color = "white"
         self.board_orientation = "white"
@@ -176,14 +175,12 @@ class EnhancedChessApp:
             if not (isinstance(start_pos, tuple) and isinstance(end_pos, tuple) and
                     len(start_pos) == 2 and len(end_pos) == 2):
                 raise ValueError("Move must be a tuple of two tuples, e.g., ((r1, c1), (r2, c2))")
-            piece = self.board[start_pos[0]][start_pos[1]]
-            if piece:
-                print(f"--- Applying FORCED opening move: {move_str} ---")
-                self.board = piece.move(self.board, start_pos, end_pos)
-                check_evaporation(self.board)
-                self.switch_turn()
-            else:
-                print(f"Error: No piece found at start position {start_pos} for forced opening.")
+            
+            # Use the new Board class method to make the move
+            self.board.make_move(start_pos, end_pos)
+            print(f"--- Applying FORCED opening move: {move_str} ---")
+            self.switch_turn()
+
         except Exception as e:
             print(f"Error parsing forced opening move '{move_str}': {e}")
             print("Please use the format: ((row1, col1), (row2, col2))")
@@ -212,11 +209,14 @@ class EnhancedChessApp:
             else:
                 self.ai_white_bot = OpponentAI(self.board, "white", self, self.cancellation_event, self.OPPONENT_AI_NAME)
                 self.ai_black_bot = ChessBot(self.board, "black", self, self.cancellation_event, self.MAIN_AI_NAME)
+            
             self.update_bot_depth(self.bot_depth_slider.get())
             if self.ai_series_running and not self.force_opening_var.get():
                 self.apply_series_opening_move()
+            
             self.turn_label.config(text=f"Turn: {self.turn.capitalize()} ({self.MAIN_AI_NAME} vs {self.OPPONENT_AI_NAME})")
             if not self.game_over: self.master.after(delay, self.make_ai_move)
+
         elif current_mode == GameMode.HUMAN_VS_BOT.value:
             bot_color = "black" if self.human_color == "white" else "white"
             self.bot = ChessBot(self.board, bot_color, self, self.cancellation_event, "Main Bot")
@@ -246,9 +246,7 @@ class EnhancedChessApp:
             return
         start_pos, end_pos = self.drag_start, (row, col)
         if end_pos in self.valid_moves:
-            moving_piece = self.board[start_pos[0]][start_pos[1]]
-            self.board = moving_piece.move(self.board, start_pos, end_pos)
-            check_evaporation(self.board)
+            self.board.make_move(start_pos, end_pos)
             self.execute_move_and_check_state()
             if not self.game_over and self.game_mode.get() == GameMode.HUMAN_VS_BOT.value and self.turn != self.human_color:
                 delay = 20 if self.instant_move.get() else 500
@@ -275,7 +273,7 @@ class EnhancedChessApp:
     def update_bot_depth(self, value):
         new_depth = int(value)
         ChessBot.search_depth = new_depth
-        OpponentAI.search_depth = new_depth
+        if OpponentAI: OpponentAI.search_depth = new_depth
         for bot in [self.bot, self.ai_white_bot, self.ai_black_bot]:
             if bot and hasattr(bot, 'search_depth'):
                 bot.search_depth = new_depth
@@ -352,7 +350,7 @@ class EnhancedChessApp:
             self.canvas.create_oval(center_x-radius, center_y-radius, center_x+radius, center_y+radius, fill="#1E90FF", outline="", tags="highlight")
         for r in range(ROWS):
             for c in range(COLS):
-                piece = self.board[r][c]
+                piece = self.board.grid[r][c] # <-- FIX
                 if piece:
                     if isinstance(piece, King) and is_in_check(self.board, piece.color):
                         color = "darkred" if not has_legal_moves(self.board, piece.color) else "red"
@@ -374,7 +372,7 @@ class EnhancedChessApp:
         if self.game_over: return
         r, c = self.canvas_to_board(event.x, event.y)
         if r != -1:
-            piece = self.board[r][c]
+            piece = self.board.grid[r][c] # <-- FIX
             if piece and piece.color == self.turn:
                 self.selected, self.dragging, self.drag_start = (r, c), True, (r, c)
                 self.valid_moves = [end_pos for end_pos in piece.get_valid_moves(self.board, (r, c)) if validate_move(self.board, self.turn, (r, c), end_pos)]
@@ -471,14 +469,14 @@ class EnhancedChessApp:
         if self.ai_series_stats['game_count'] % 2 == 0:
             print("--- Generating new opening for game pair ---")
             moves = [((r, c), m) for r in range(ROWS) for c in range(COLS) 
-                     if (p := self.board[r][c]) and p.color == "white" 
+                     if (p := self.board.grid[r][c]) and p.color == "white" 
                      for m in p.get_valid_moves(self.board, (r, c)) if validate_move(self.board, "white", (r, c), m)]
             self.current_opening_move = random.choice(moves) if moves else None
         if self.current_opening_move:
-            print(f"Applying opening move: {self.current_opening_move}")
             start, end = self.current_opening_move
-            piece = self.board[start[0]][start[1]]
-            if piece: self.board = piece.move(self.board, start, end); check_evaporation(self.board); self.switch_turn()
+            print(f"Applying opening move: {start} -> {end}")
+            self.board.make_move(start, end)
+            self.switch_turn()
 
 def main_app():
     root = tk.Tk(); app = EnhancedChessApp(root); root.mainloop()
