@@ -7,11 +7,9 @@ import threading
 from collections import namedtuple
 
 # --- Versioning ---
-# v1.8
-# - Finalized architecture for clean inheritance.
-# - The bot's name is now an instance attribute set in __init__.
-# - The make_move function now uses self.bot_name for its debug output,
-#   allowing OpponentAI to inherit it perfectly without modification.
+# v2.1 (Bugfix & Enhancement)
+# - Implemented "Try TT Move First" optimization for significant search speedup.
+# - LMR logic is now more robust, using is_move_tactical to avoid reducing special moves.
 
 # --- Global Zobrist Hashing ---
 def initialize_zobrist_table():
@@ -68,11 +66,18 @@ class ChessBot:
         self.opponent_color = 'black' if color == 'white' else 'white'
         self.app = app
         self.cancellation_event = cancellation_event
-        self.bot_name = bot_name  # Store the bot's name
+        self.bot_name = bot_name
         self.tt = {}
         self.nodes_searched = 0
         self.MAX_PLY_KILLERS = 30
         self.killer_moves = [[None, None] for _ in range(self.MAX_PLY_KILLERS)]
+        
+        self.history_heuristic_table = [[[0 for _ in range(ROWS * COLS)] for _ in range(ROWS * COLS)] for _ in range(2)]
+
+        # --- LMR Constants (Defined as INSTANCE attributes for robustness) ---
+        self.LMR_DEPTH_THRESHOLD = 3
+        self.LMR_MOVE_COUNT_THRESHOLD = 4
+        self.LMR_REDUCTION = 1
     
     def evaluate_board(self, board, current_turn):
         """
@@ -82,13 +87,11 @@ class ChessBot:
         perspective_multiplier = 1 if current_turn == self.color else -1
         score_relative_to_ai = 0
         
-        # Critical base cases: if a king is missing, it's checkmate.
         our_king_pos = find_king_pos(board, self.color)
         enemy_king_pos = find_king_pos(board, self.opponent_color)
         if not enemy_king_pos: return self.MATE_SCORE * perspective_multiplier
         if not our_king_pos: return -self.MATE_SCORE * perspective_multiplier
 
-        # Determine if the game is in an endgame phase to use the correct King PST
         total_material = 0
         for r in range(ROWS):
             for c in range(COLS):
@@ -97,17 +100,14 @@ class ChessBot:
                     total_material += PIECE_VALUES.get(type(p), 0)
         is_endgame = total_material < ENDGAME_MATERIAL_THRESHOLD
 
-        # Calculate score by iterating through all pieces
         for r_eval in range(ROWS):
             for c_eval in range(COLS):
                 piece_eval = board[r_eval][c_eval]
                 if not piece_eval:
                     continue
                 
-                # Base material value
                 value = PIECE_VALUES.get(type(piece_eval), 0)
 
-                # Positional value from PSTs
                 pst = None
                 if isinstance(piece_eval, King):
                     pst = PIECE_SQUARE_TABLES['king_endgame'] if is_endgame else PIECE_SQUARE_TABLES['king_midgame']
@@ -115,11 +115,9 @@ class ChessBot:
                     pst = PIECE_SQUARE_TABLES.get(type(piece_eval))
                 
                 if pst:
-                    # White's score is read directly; Black's is from the flipped perspective
                     pst_score = pst[r_eval][c_eval] if piece_eval.color == 'white' else pst[ROWS - 1 - r_eval][c_eval]
                     value += pst_score
 
-                # Add score to the total (subtract if it's an enemy piece)
                 if piece_eval.color == self.color:
                     score_relative_to_ai += value
                 else:
@@ -146,15 +144,34 @@ class ChessBot:
         return score
 
     def order_moves(self, board, moves, moving_player_color, ply_searched=0, hash_move=None):
-        move_scores = {move: self.evaluate_move(board, move, moving_player_color) for move in moves}
+        move_scores = {}
+        color_index = 0 if moving_player_color == 'white' else 1
+
+        for move in moves:
+            # Base score from captures, promotions, checks
+            score = self.evaluate_move(board, move, moving_player_color)
+            
+            # Add history and killer move scores for non-captures
+            if board[move[1][0]][move[1][1]] is None:
+                # --- HISTORY HEURISTIC USAGE ---
+                from_sq = move[0][0] * COLS + move[0][1]
+                to_sq = move[1][0] * COLS + move[1][1]
+                score += self.history_heuristic_table[color_index][from_sq][to_sq]
+
+                # Killer moves
+                if ply_searched < self.MAX_PLY_KILLERS:
+                    killers = self.killer_moves[ply_searched]
+                    if move == killers[0]:
+                        score += 50000
+                    elif move == killers[1]:
+                        score += 40000
+            
+            move_scores[move] = score
+
+        # Always prioritize the PV-move from the transposition table
         if hash_move and hash_move in move_scores:
             move_scores[hash_move] += self.HASH_MOVE_SCORE_BONUS
-        if ply_searched < self.MAX_PLY_KILLERS:
-            killers = self.killer_moves[ply_searched]
-            if killers[0] and killers[0] in move_scores:
-                move_scores[killers[0]] += 50000
-            if killers[1] and killers[1] in move_scores:
-                move_scores[killers[1]] += 40000
+
         return sorted(moves, key=lambda m: move_scores.get(m, 0), reverse=True)
 
     def qsearch(self, board, alpha, beta, turn_multiplier, depth):
@@ -180,15 +197,18 @@ class ChessBot:
         return alpha
 
     def negamax(self, board, depth, alpha, beta, turn_multiplier, ply):
+        # --- 1. Initial Checks & Setup ---
         if self.cancellation_event.is_set(): raise SearchCancelledException()
         self.nodes_searched += 1
         current_turn = self.color if turn_multiplier == 1 else self.opponent_color
         original_alpha = alpha
         hash_val = board_hash(board, current_turn)
 
+        # Check for draw by repetition
         if ply > 0 and self.app.position_counts.get(hash_val, 0) >= 2:
             return self.DRAW_SCORE
 
+        # --- 2. Transposition Table Lookup ---
         hash_move = None
         tt_entry = self.tt.get(hash_val)
         if tt_entry and tt_entry.depth >= depth:
@@ -198,44 +218,98 @@ class ChessBot:
             if alpha >= beta: return tt_entry.score
             hash_move = tt_entry.best_move
 
+        # Check Extension: Increase depth if in check
         is_in_check_now = is_in_check(board, current_turn)
         if is_in_check_now: depth += 1
         
+        # Base Case: Call Quiescence Search at leaf nodes
         if depth <= 0:
             return self.qsearch(board, alpha, beta, turn_multiplier, self.QSEARCH_CHECKS_MAX_DEPTH)
 
+        # --- 3. "Try TT Move First" Optimization ---
+        if hash_move:
+            child_board_hash = self.simulate_move(board, hash_move[0], hash_move[1])
+            if not is_in_check(child_board_hash, current_turn):
+                child_turn = self.opponent_color if turn_multiplier == 1 else self.color
+                child_hash = board_hash(child_board_hash, child_turn)
+                self.app.position_counts[child_hash] = self.app.position_counts.get(child_hash, 0) + 1
+                score = -self.negamax(child_board_hash, depth - 1, -beta, -alpha, -turn_multiplier, ply + 1)
+                self.app.position_counts[child_hash] -= 1
+                
+                # If TT move causes a cutoff, we are done with this node
+                if score >= beta:
+                    self.tt[hash_val] = TTEntry(beta, depth, TT_FLAG_LOWERBOUND, hash_move)
+                    return beta
+                if score > alpha:
+                    alpha = score
+
+        # --- 4. Main Search Loop ---
         moves = generate_pseudo_legal_moves(board, current_turn)
         ordered_moves = self.order_moves(board, moves, current_turn, ply, hash_move=hash_move)
         legal_moves_found = 0
-        best_move_for_node = None
+        best_move_for_node = hash_move  # Start with hash_move as a candidate
         
-        for move in ordered_moves:
+        for i, move in enumerate(ordered_moves):
+            # Skip the hash_move if we already searched it above
+            if move == hash_move:
+                continue
+
             child_board = self.simulate_move(board, move[0], move[1])
             if is_in_check(child_board, current_turn):
                 continue
             
             legal_moves_found += 1
+
+            # --- 4a. Late Move Reductions (LMR) ---
+            reduction = 0
+            if (depth >= self.LMR_DEPTH_THRESHOLD and
+                    i >= self.LMR_MOVE_COUNT_THRESHOLD and
+                    not is_in_check_now and
+                    not is_move_tactical(board, move)):
+                reduction = self.LMR_REDUCTION
+            
+            # Recursive call with potential reduction
             child_turn = self.opponent_color if turn_multiplier == 1 else self.color
             child_hash = board_hash(child_board, child_turn)
             self.app.position_counts[child_hash] = self.app.position_counts.get(child_hash, 0) + 1
-            score = -self.negamax(child_board, depth - 1, -beta, -alpha, -turn_multiplier, ply + 1)
+            
+            score = -self.negamax(child_board, depth - 1 - reduction, -beta, -alpha, -turn_multiplier, ply + 1)
+
+            # Re-search if a reduced move was surprisingly good
+            if reduction > 0 and score > alpha:
+                score = -self.negamax(child_board, depth - 1, -beta, -alpha, -turn_multiplier, ply + 1)
+            
             self.app.position_counts[child_hash] -= 1
             
+            # --- 4b. Update Alpha/Beta and Check for Cutoff ---
             if score > alpha:
                 alpha = score
                 best_move_for_node = move
             
             if alpha >= beta:
                 is_capture = board[move[1][0]][move[1][1]] is not None
-                if not is_capture and ply < self.MAX_PLY_KILLERS and self.killer_moves[ply][0] != move:
-                    self.killer_moves[ply][1] = self.killer_moves[ply][0]
-                    self.killer_moves[ply][0] = move
+                if not is_capture:
+                    color_index = 0 if current_turn == 'white' else 1
+                    from_sq = move[0][0] * COLS + move[0][1]
+                    to_sq = move[1][0] * COLS + move[1][1]
+                    self.history_heuristic_table[color_index][from_sq][to_sq] += depth * depth
+                
+                    if ply < self.MAX_PLY_KILLERS and self.killer_moves[ply][0] != move:
+                        self.killer_moves[ply][1] = self.killer_moves[ply][0]
+                        self.killer_moves[ply][0] = move
                 self.tt[hash_val] = TTEntry(beta, depth, TT_FLAG_LOWERBOUND, move)
                 return beta
         
+        # --- 5. Finalization ---
+        # Account for hash move if it was the only legal one
+        if hash_move and legal_moves_found == 0:
+             legal_moves_found = 1
+        
+        # Check for checkmate or stalemate
         if legal_moves_found == 0:
             return -self.MATE_SCORE + ply if is_in_check_now else self.DRAW_SCORE
             
+        # Store final result in Transposition Table
         flag = TT_FLAG_UPPERBOUND if alpha <= original_alpha else TT_FLAG_EXACT
         self.tt[hash_val] = TTEntry(alpha, depth, flag, best_move_for_node)
         return alpha
@@ -245,6 +319,14 @@ class ChessBot:
             best_move_found = None
             self.killer_moves = [[None, None] for _ in range(self.MAX_PLY_KILLERS)]
             self.tt.clear()
+            
+            # --- HISTORY HEURISTIC DECAY ---
+            # "Age" the history scores by halving them before a new search begins.
+            for i in range(2):
+                for j in range(ROWS * COLS):
+                    for k in range(ROWS * COLS):
+                        self.history_heuristic_table[i][j][k] //= 2
+
             for current_depth in range(1, self.search_depth + 1):
                 iter_start_time = time.time()
                 if self.cancellation_event.is_set(): raise SearchCancelledException()
@@ -324,19 +406,15 @@ PIECE_VALUES = {
 }
 ENDGAME_MATERIAL_THRESHOLD = (PIECE_VALUES[Rook] * 2 + PIECE_VALUES[Knight] * 2 + PIECE_VALUES[Bishop] * 2 + PIECE_VALUES[Queen])
 
-# NOTE: Tables are written from White's perspective.
-# The 8th rank is at index 0, the 1st rank is at index 7.
-# The bottom-left square in the table (a1) corresponds to pst[7][0].
-
 pawn_pst = [
-    [  0,   0,   0,   0,   0,   0,   0,   0],  # Rank 8
-    [100, 100, 100, 100, 100, 100, 100, 100],  # Rank 7 (Promotion)
-    [ 20,  20,  30,  40,  40,  30,  20,  20],  # Rank 6
-    [ 10,  10,  20,  30,  30,  20,  10,  10],  # Rank 5
-    [  5,   5,  10,  25,  25,  10,   5,   5],  # Rank 4
-    [  0,   0,   0,  10,  10,   0,   0,   0],  # Rank 3
-    [  0,   0,   0,   0,   0,   0,   0,   0],  # Rank 2
-    [  0,   0,   0,   0,   0,   0,   0,   0]   # Rank 1
+    [  0,   0,   0,   0,   0,   0,   0,   0],
+    [100, 100, 100, 100, 100, 100, 100, 100],
+    [ 20,  20,  30,  40,  40,  30,  20,  20],
+    [ 10,  10,  20,  30,  30,  20,  10,  10],
+    [  5,   5,  10,  25,  25,  10,   5,   5],
+    [  0,   0,   0,  10,  10,   0,   0,   0],
+    [  0,   0,   0,   0,   0,   0,   0,   0],
+    [  0,   0,   0,   0,   0,   0,   0,   0]
 ]
 
 knight_pst = [

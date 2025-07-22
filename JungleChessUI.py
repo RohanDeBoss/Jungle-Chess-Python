@@ -480,6 +480,9 @@ class EnhancedChessApp:
             self.current_opening_move = random.choice(moves) if moves else None
         if self.current_opening_move:
             print(f"Applying opening move: {self.current_opening_move}")
+            # Print a blank line for readability
+            print() 
+
             start, end = self.current_opening_move
             piece = self.board[start[0]][start[1]]
             if piece: self.board = piece.move(self.board, start, end); check_evaporation(self.board); self.switch_turn()
