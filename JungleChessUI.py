@@ -1,4 +1,4 @@
-# JungleChessUI.py (v3.2 - Refactored for Checkmate Model, Larger Board)
+# JungleChessUI.py (v3.3 - Improved debugging)
 
 import tkinter as tk
 from tkinter import ttk
@@ -48,6 +48,7 @@ class EnhancedChessApp:
         self.human_color = "white"
         self.board_orientation = "white"
         self.bot = None
+        self.last_move_timestamp = None # New
 
         self.COLORS = self.setup_styles()
         self.master.configure(bg=self.COLORS['bg_dark'])
@@ -147,6 +148,17 @@ class EnhancedChessApp:
             self.ai_is_thinking = False; self.update_bot_labels()
 
     def reset_game(self):
+        print("\n" + "="*60)
+        mode = self.game_mode.get()
+        if mode == GameMode.HUMAN_VS_BOT.value:
+            bot_color = "black" if self.human_color == "white" else "white"
+            print(f"NEW GAME: Human vs. Bot (AI is {bot_color.capitalize()})")
+        elif mode == GameMode.AI_VS_AI.value:
+            print("NEW GAME: AI vs. OP")
+        else: # Human vs Human
+            print("NEW GAME: Human vs. Human")
+        print("="*60)
+        # END OF ADDED LINES
         self._interrupt_ai_search()
         self.board = create_initial_board(); self.turn = "white"
         self.selected, self.valid_moves, self.game_over, self.game_result = None, [], False, None
@@ -173,6 +185,8 @@ class EnhancedChessApp:
             self.update_bot_depth(self.bot_depth_slider.get())
             if self.turn != self.human_color and not self.game_over: self.master.after(delay, self.make_bot_move)
         self.update_turn_label(); self.draw_board(); self.set_interactivity(); self.update_bot_labels(); self.update_scoreboard()
+        
+        self.last_move_timestamp = time.time() # ADD THIS LINE AT THE END of the method to start the timer
 
     def on_drag_end(self, event):
         if not self.dragging: self.valid_moves = []; self.draw_board(); return
@@ -317,6 +331,14 @@ class EnhancedChessApp:
         if self.dragging: self.canvas.coords(self.drag_piece_ghost, event.x, event.y)
 
     def execute_move_and_check_state(self):
+        # ADD THIS BLOCK to print turn info and move duration
+        if self.last_move_timestamp:
+            move_duration = time.time() - self.last_move_timestamp
+            print(f"\n--- Turn {len(self.position_history)} ({self.turn.capitalize()}) | Time: {move_duration:.2f}s ---")
+        else: # First move of the game
+            print(f"\n--- Turn {len(self.position_history)} ({self.turn.capitalize()}) ---")
+        # END OF ADDED BLOCK
+
         if self.game_over: return
         key = board_hash(self.board, self.turn)
         self.position_history.append(key)
@@ -332,17 +354,24 @@ class EnhancedChessApp:
         self.draw_board()
         self.set_interactivity()
         self.update_bot_labels()
+        self.last_move_timestamp = time.time() # ADD THIS LINE to reset timer for next move
         if self.game_over and self.game_mode.get() == GameMode.AI_VS_AI.value: self.process_ai_series_result()
-
+        
     def update_turn_label(self):
         if self.game_over and self.game_result:
             r_type, winner = self.game_result
             if r_type == "repetition": msg = "Draw by three-fold repetition!"
             elif r_type == "stalemate": msg = "Stalemate! It's a draw."
             elif r_type == "checkmate": 
-                # Winner is the player who made the last move
                 msg = f"Checkmate! {winner.capitalize()} wins!"
             else: msg = "Game Over"
+            
+            # ADD THIS BLOCK for the console game over message
+            print("-" * 60)
+            print(f"GAME OVER: {msg}")
+            print("-" * 60)
+            # END OF ADDED BLOCK
+
             self.turn_label.config(text=msg)
         else: self.turn_label.config(text=f"Turn: {self.turn.capitalize()}")
         
@@ -400,6 +429,7 @@ class EnhancedChessApp:
         if self.current_opening_move:
             start, end = self.current_opening_move
             print(f"Applying opening move: {start} -> {end}")
+            print()
             self.board.make_move(start, end); self.switch_turn()
 
 if __name__ == "__main__":

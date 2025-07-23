@@ -339,7 +339,8 @@ class ChessBot:
                     iter_duration = time.time() - iter_start_time
                     knps = (self.nodes_searched / iter_duration / 1000) if iter_duration > 0 else 0
                     eval_for_ui = best_score_this_iter * (1 if self.color == 'white' else -1)
-                    print(f"{self.bot_name}: Depth {current_depth}, Eval={eval_for_ui/100:.2f}, Move={best_move_overall}, Nodes={self.nodes_searched}, KNPS={knps:.1f}")
+                    # NEW: Cleaner, indented printout without the move tuple. Eval now shows +/-.
+                    print(f"  > {self.bot_name} (Depth {current_depth}): Eval={eval_for_ui/100:+.2f}, Nodes={self.nodes_searched}, KNPS={knps:.1f}")
                     if self.app: self.app.master.after(0, self.app.draw_eval_bar, eval_for_ui)
             
             if best_move_overall:
