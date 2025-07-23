@@ -1,19 +1,19 @@
-# JungleChessUI.py (v3.5 - Synchronized Logging)
+# JungleChessUI.py (v3.7 - Final Bot Name & Logging Fix)
 
 import tkinter as tk
 from tkinter import ttk
 import math
 import random
 import time
-from GameLogic import * # Uses the new game logic with checkmate rules
+from GameLogic import *
 from AI import ChessBot, board_hash
-from OpponentAI import OpponentAI # Kept for testing purposes
+from OpponentAI import OpponentAI
 from enum import Enum
 import threading
 import queue
 
-# --- UI Constants (Adjustable) ---
-SQUARE_SIZE = 75 # Increased from 65 for a larger board
+# --- UI Constants ---
+SQUARE_SIZE = 75
 
 class GameMode(Enum):
     HUMAN_VS_BOT = "bot"
@@ -186,23 +186,33 @@ class EnhancedChessApp:
         initial_key = board_hash(self.board, self.turn)
         self.position_history.append(initial_key); self.position_counts[initial_key] = 1
         current_mode = self.game_mode.get(); delay = 20 if self.instant_move.get() else 500
+        
         if current_mode == GameMode.AI_VS_AI.value:
             self.white_playing_bot = "op" if self.ai_series_running and self.ai_series_stats['game_count'] % 2 == 1 else "main"
             self.board_orientation = "white" if self.white_playing_bot == "main" else "black"
+            
+            # --- THE DEFINITIVE FIX: Assign names and classes based on who is playing white ---
             if self.white_playing_bot == "main":
-                self.ai_white_bot = ChessBot(self.board, "white", self, self.cancellation_event, self.MAIN_AI_NAME)
-                self.ai_black_bot = OpponentAI(self.board, "black", self, self.cancellation_event, self.OPPONENT_AI_NAME)
-            else:
-                self.ai_white_bot = OpponentAI(self.board, "white", self, self.cancellation_event, self.OPPONENT_AI_NAME)
-                self.ai_black_bot = ChessBot(self.board, "black", self, self.cancellation_event, self.MAIN_AI_NAME)
+                white_class, white_name = ChessBot, self.MAIN_AI_NAME
+                black_class, black_name = OpponentAI, self.OPPONENT_AI_NAME
+            else: # "op" is playing white
+                white_class, white_name = OpponentAI, self.OPPONENT_AI_NAME
+                black_class, black_name = ChessBot, self.MAIN_AI_NAME
+            
+            self.ai_white_bot = white_class(self.board, "white", self, self.cancellation_event, white_name)
+            self.ai_black_bot = black_class(self.board, "black", self, self.cancellation_event, black_name)
+            # --- END OF FIX ---
+            
             self.update_bot_depth(self.bot_depth_slider.get())
             if self.ai_series_running and not self.force_opening_var.get(): self.apply_series_opening_move()
             if not self.game_over: self.master.after(delay, self.make_ai_move)
+
         elif current_mode == GameMode.HUMAN_VS_BOT.value:
             bot_color = "black" if self.human_color == "white" else "white"
             self.bot = ChessBot(self.board, bot_color, self, self.cancellation_event, "AI Bot")
             self.update_bot_depth(self.bot_depth_slider.get())
             if self.turn != self.human_color and not self.game_over: self.master.after(delay, self.make_bot_move)
+        
         self.update_turn_label(); self.draw_board(); self.set_interactivity(); self.update_bot_labels(); self.update_scoreboard()
 
     def on_drag_end(self, event):
@@ -353,15 +363,18 @@ class EnhancedChessApp:
             print(f"\n--- Turn {len(self.position_history)} ({self.turn.capitalize()}) ---")
 
         if self.game_over: return
+
+        player_who_moved = self.turn
+        if not self.game_over: self.switch_turn()
+        
         key = board_hash(self.board, self.turn)
         self.position_history.append(key)
         self.position_counts[key] = self.position_counts.get(key, 0) + 1
         
-        status, winner = check_game_over(self.board, self.turn)
+        status, winner = check_game_over(self.board, player_who_moved)
         if status: self.game_over, self.game_result = True, (status, winner)
         elif self.position_counts.get(key, 0) >= 3: self.game_over, self.game_result = True, ("repetition", None)
         
-        if not self.game_over: self.switch_turn()
         self.update_turn_label()
         self.draw_board()
         self.set_interactivity()
@@ -419,17 +432,30 @@ class EnhancedChessApp:
     def update_bot_labels(self):
         thinking = " (Thinking...)" if self.ai_is_thinking else ""
         mode = self.game_mode.get()
+        
         if mode == GameMode.HUMAN_VS_BOT.value:
             white_l, black_l = ("Human", f"Bot{thinking}") if self.human_color == "white" else (f"Bot{thinking}", "Human")
+        
         elif mode == GameMode.AI_VS_AI.value:
-            main, op = self.MAIN_AI_NAME, self.OPPONENT_AI_NAME
-            white_name = main if self.white_playing_bot == "main" else op
-            black_name = op if self.white_playing_bot == "main" else main
+            # --- THE DEFINITIVE FIX ---
+            # Get the name directly from the bot instance, which was set correctly in reset_game.
+            # Do not recalculate it here.
+            white_name = self.ai_white_bot.bot_name
+            black_name = self.ai_black_bot.bot_name
+            
             white_l = f"{white_name}{thinking if self.turn == 'white' else ''}"
             black_l = f"{black_name}{thinking if self.turn == 'black' else ''}"
-        else: white_l, black_l = "Human (White)", "Human (Black)"
-        if self.board_orientation == "white": self.bottom_bot_label.config(text=white_l); self.top_bot_label.config(text=black_l)
-        else: self.bottom_bot_label.config(text=black_l); self.top_bot_label.config(text=white_l)
+            # --- END OF FIX ---
+            
+        else: # Human vs Human
+            white_l, black_l = "Human (White)", "Human (Black)"
+
+        if self.board_orientation == "white":
+            self.bottom_bot_label.config(text=white_l)
+            self.top_bot_label.config(text=black_l)
+        else:
+            self.bottom_bot_label.config(text=black_l)
+            self.top_bot_label.config(text=white_l)
 
     def apply_series_opening_move(self):
         if self.ai_series_stats['game_count'] % 2 == 0:
