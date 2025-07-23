@@ -1,9 +1,4 @@
-# JungleChessUI.py
-
-# --- Versioning ---
-# v2.3 (Refactor Compatibility Fix)
-# - Updated all board access to use `self.board.grid` instead of `self.board`.
-# - This completes the compatibility changes for the new high-performance Board class.
+# JungleChessUI.py (v3.1 - Final, Synchronized, Respects AI Testing Workflow)
 
 import tkinter as tk
 from tkinter import ttk
@@ -12,7 +7,7 @@ import random
 import time
 from GameLogic import *
 from AI import ChessBot, board_hash
-from OpponentAI import OpponentAI
+from OpponentAI import OpponentAI # Kept for testing purposes
 from enum import Enum
 import threading
 import queue
@@ -28,7 +23,7 @@ class EnhancedChessApp:
     
     def __init__(self, master):
         self.master = master
-        self.master.title("Enhanced Chess")
+        self.master.title("Jungle Chess")
         
         self.ai_move_queue = queue.Queue()
         self.ai_is_thinking = False
@@ -57,7 +52,6 @@ class EnhancedChessApp:
         
         self.process_ai_queue()
         self.reset_game()
-        self.draw_board()
 
     def build_ui(self):
         screen_w, screen_h = self.master.winfo_screenwidth(), self.master.winfo_screenheight()
@@ -78,6 +72,7 @@ class EnhancedChessApp:
         self.board_image_white = self.create_board_image("white"); self.board_image_black = self.create_board_image("black")
         self.board_image_id = self.canvas.create_image(0, 0, image=self.board_image_white, anchor='nw', tags="board"); self.canvas.pack()
         self._build_scoreboard_and_labels()
+        self.draw_board()
 
     def _build_control_widgets(self):
         game_mode_frame = ttk.Frame(self.left_panel, style='Left.TFrame')
@@ -86,32 +81,27 @@ class EnhancedChessApp:
         for mode in GameMode:
             text = mode.name.replace("_", " ").title()
             ttk.Radiobutton(game_mode_frame, text=text, variable=self.game_mode, value=mode.value, command=self.reset_game, style='Custom.TRadiobutton').pack(anchor=tk.W, pady=(5,0))
-
         controls_frame = ttk.Frame(self.left_panel, style='Left.TFrame')
         controls_frame.pack(fill=tk.X, pady=4)
         ttk.Button(controls_frame, text="NEW GAME", command=self.reset_game, style='Control.TButton').pack(fill=tk.X, pady=3)
         ttk.Button(controls_frame, text="SWAP SIDES", command=self.swap_sides, style='Control.TButton').pack(fill=tk.X, pady=3)
-        ttk.Button(controls_frame, text="AI vs OP start", command=self.start_ai_series, style='Control.TButton').pack(fill=tk.X, pady=3)
+        ttk.Button(controls_frame, text="AI vs AI Series", command=self.start_ai_series, style='Control.TButton').pack(fill=tk.X, pady=3)
         ttk.Button(controls_frame, text="QUIT", command=self.master.quit, style='Control.TButton').pack(fill=tk.X, pady=3)
-
         ttk.Label(controls_frame, text="Bot Depth:", style='Header.TLabel').pack(anchor=tk.W, pady=(9,0))
-        self.bot_depth_slider = tk.Scale(controls_frame, from_=1, to=6, orient=tk.HORIZONTAL, command=self.update_bot_depth, bg=self.COLORS['bg_dark'], fg=self.COLORS['text_light'], highlightthickness=0)
+        self.bot_depth_slider = tk.Scale(controls_frame, from_=1, to=6, orient=tk.HORIZONTAL, command=self.update_bot_depth, bg=self.COLORS['bg_dark'], fg=self.COLORS['text_light'], highlightthickness=0, relief='flat')
         self.bot_depth_slider.set(getattr(ChessBot, 'search_depth', 3)); self.bot_depth_slider.pack(fill=tk.X, pady=(0,3))
         self.instant_move = tk.BooleanVar(value=False)
-        ttk.Checkbutton(controls_frame, text="Instant Move", variable=self.instant_move, style='Custom.TCheckbutton').pack(anchor=tk.W, pady=(3,3))
-
+        ttk.Checkbutton(controls_frame, text="Instant Moves", variable=self.instant_move, style='Custom.TCheckbutton').pack(anchor=tk.W, pady=(3,3))
         opening_frame = ttk.Frame(self.left_panel, style='Left.TFrame')
         opening_frame.pack(fill=tk.X, pady=(15, 0))
-        ttk.Label(opening_frame, text="FORCED OPENING", style='Header.TLabel').pack(anchor=tk.W)
+        #ttk.Label(opening_frame, text="FORCED OPENING", style='Header.TLabel').pack(anchor=tk.W)
         self.force_opening_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(opening_frame, text="Enable for New Game", variable=self.force_opening_var, style='Custom.TCheckbutton').pack(anchor=tk.W)
-        self.forced_opening_entry_var = tk.StringVar(value="((6, 4), (5, 4))")
-        self.forced_opening_entry = tk.Entry(opening_frame, textvariable=self.forced_opening_entry_var, bg=self.COLORS['bg_light'], fg=self.COLORS['text_light'], insertbackground=self.COLORS['text_light'], relief='flat', borderwidth=5)
-        self.forced_opening_entry.pack(fill=tk.X, pady=(5,0), ipady=2)
-
+        #ttk.Checkbutton(opening_frame, text="Enable for New Game", variable=self.force_opening_var, style='Custom.TCheckbutton').pack(anchor=tk.W)
+        #self.forced_opening_entry_var = tk.StringVar(value="((6, 4), (5, 4))")
+        #self.forced_opening_entry = tk.Entry(opening_frame, textvariable=self.forced_opening_entry_var, bg=self.COLORS['bg_light'], fg=self.COLORS['text_light'], insertbackground=self.COLORS['text_light'], relief='flat', borderwidth=5)
+        #self.forced_opening_entry.pack(fill=tk.X, pady=(5,0), ipady=2)
         self.turn_frame = ttk.Frame(self.left_panel, style='Left.TFrame'); self.turn_frame.pack(fill=tk.X, pady=(9,0))
         self.turn_label = ttk.Label(self.turn_frame, text="WHITE'S TURN", style='Status.TLabel'); self.turn_label.pack(fill=tk.X)
-
         self.eval_frame = ttk.Frame(self.left_panel, style='Left.TFrame'); self.eval_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=0, pady=(5,5))
         self.eval_score_label = ttk.Label(self.eval_frame, text="Even", style='Status.TLabel', anchor="center"); self.eval_score_label.pack(pady=(7,5))
         self.eval_bar_canvas = tk.Canvas(self.eval_frame, height=26, bg=self.COLORS['bg_light'], highlightthickness=0); self.eval_bar_canvas.pack(fill=tk.X, expand=True)
@@ -119,7 +109,7 @@ class EnhancedChessApp:
 
     def _build_scoreboard_and_labels(self):
         self.scoreboard_frame = ttk.Frame(self.right_panel, style='Right.TFrame')
-        self.scoreboard_label = ttk.Label(self.scoreboard_frame, text="", font=("Helvetica", 10), background=self.COLORS['bg_medium'], foreground=self.COLORS['text_light']); self.scoreboard_label.pack()
+        self.scoreboard_label = ttk.Label(self.scoreboard_frame, text="", font=("Helvetica", 10), justify=tk.LEFT, background=self.COLORS['bg_medium'], foreground=self.COLORS['text_light']); self.scoreboard_label.pack()
         self.top_bot_label = ttk.Label(self.right_panel, text="", font=("Helvetica", 12), background=self.COLORS['bg_medium'], foreground=self.COLORS['text_light']); self.top_bot_label.place(relx=0.5, rely=0.02, anchor='n')
         self.bottom_bot_label = ttk.Label(self.right_panel, text="", font=("Helvetica", 12), background=self.COLORS['bg_medium'], foreground=self.COLORS['text_light']); self.bottom_bot_label.place(relx=0.5, rely=0.98, anchor='s')
 
@@ -130,78 +120,55 @@ class EnhancedChessApp:
                 duration = time.time() - self.ai_search_start_time
                 print(f"Search completed in {duration:.2f} seconds.")
                 self.ai_search_start_time = None
-            print() 
             self.ai_is_thinking = False
             self.update_bot_labels()
             if move_success:
-                self.draw_board()
                 self.execute_move_and_check_state()
                 if not self.game_over and self.game_mode.get() == GameMode.AI_VS_AI.value:
                     delay = 20 if self.instant_move.get() else 500
                     self.master.after(delay, self.make_ai_move)
             else:
                 print("AI reported no valid move was made (or was cancelled).")
-        except queue.Empty:
-            pass
-        finally:
-            self.master.after(100, self.process_ai_queue)
+                self.set_interactivity()
+        except queue.Empty: pass
+        finally: self.master.after(100, self.process_ai_queue)
 
     def _ai_worker(self, bot_instance):
         success = bot_instance.make_move()
-        if not self.cancellation_event.is_set():
-            self.ai_move_queue.put(success)
+        if not self.cancellation_event.is_set(): self.ai_move_queue.put(success)
 
     def _start_ai_thread(self, bot_instance):
         if self.ai_is_thinking or self.game_over: return
-        self.cancellation_event.clear()
-        self.ai_is_thinking = True
-        self.ai_search_start_time = time.time()
-        self.update_bot_labels()
-        thread = threading.Thread(target=self._ai_worker, args=(bot_instance,), daemon=True)
-        thread.start()
+        self.cancellation_event.clear(); self.ai_is_thinking = True; self.ai_search_start_time = time.time()
+        self.update_bot_labels(); self.set_interactivity()
+        thread = threading.Thread(target=self._ai_worker, args=(bot_instance,), daemon=True); thread.start()
         
     def _interrupt_ai_search(self):
         if self.ai_is_thinking:
-            print("UI: Sending cancellation signal to AI...")
-            self.cancellation_event.set()
-            self.ai_is_thinking = False
-            self.update_bot_labels()
+            print("UI: Sending cancellation signal to AI..."); self.cancellation_event.set()
+            self.ai_is_thinking = False; self.update_bot_labels()
 
     def _apply_forced_opening(self):
-        move_str = self.forced_opening_entry_var.get()
         try:
-            move = eval(move_str)
-            start_pos, end_pos = move
-            if not (isinstance(start_pos, tuple) and isinstance(end_pos, tuple) and
-                    len(start_pos) == 2 and len(end_pos) == 2):
-                raise ValueError("Move must be a tuple of two tuples, e.g., ((r1, c1), (r2, c2))")
-            
-            # Use the new Board class method to make the move
+            move = eval(self.forced_opening_entry_var.get()); start_pos, end_pos = move
+            if not (isinstance(start_pos, tuple) and len(start_pos) == 2 and isinstance(end_pos, tuple) and len(end_pos) == 2): raise ValueError("Invalid format")
             self.board.make_move(start_pos, end_pos)
-            print(f"--- Applying FORCED opening move: {move_str} ---")
+            print(f"--- Applying FORCED opening move: {start_pos} -> {end_pos} ---")
             self.switch_turn()
-
-        except Exception as e:
-            print(f"Error parsing forced opening move '{move_str}': {e}")
-            print("Please use the format: ((row1, col1), (row2, col2))")
+        except Exception as e: print(f"Error parsing forced opening move: {e}. Use format ((r1, c1), (r2, c2))")
 
     def reset_game(self):
         self._interrupt_ai_search()
-        self.board = create_initial_board()
-        self.turn = "white"
-
-        if self.force_opening_var.get():
-            self._apply_forced_opening()
-
-        self.selected, self.valid_moves, self.game_over = None, [], False
-        self.game_result, self.dragging, self.drag_piece_ghost, self.drag_start = None, False, None, None
+        self.board = create_initial_board(); self.turn = "white"
+        if self.force_opening_var.get(): self._apply_forced_opening()
+        self.selected, self.valid_moves, self.game_over, self.game_result = None, [], False, None
+        self.dragging, self.drag_piece_ghost, self.drag_start = False, None, None
         self.position_history, self.position_counts = [], {}
-        
-        current_mode = self.game_mode.get()
-        delay = 20 if self.instant_move.get() else 500
-
+        initial_key = board_hash(self.board, self.turn)
+        self.position_history.append(initial_key); self.position_counts[initial_key] = 1
+        current_mode = self.game_mode.get(); delay = 20 if self.instant_move.get() else 500
         if current_mode == GameMode.AI_VS_AI.value:
-            self.white_playing_bot = "op" if self.ai_series_stats['game_count'] % 2 == 1 else "main"
+            self.white_playing_bot = "op" if self.ai_series_running and self.ai_series_stats['game_count'] % 2 == 1 else "main"
             self.board_orientation = "white" if self.white_playing_bot == "main" else "black"
             if self.white_playing_bot == "main":
                 self.ai_white_bot = ChessBot(self.board, "white", self, self.cancellation_event, self.MAIN_AI_NAME)
@@ -209,41 +176,22 @@ class EnhancedChessApp:
             else:
                 self.ai_white_bot = OpponentAI(self.board, "white", self, self.cancellation_event, self.OPPONENT_AI_NAME)
                 self.ai_black_bot = ChessBot(self.board, "black", self, self.cancellation_event, self.MAIN_AI_NAME)
-            
             self.update_bot_depth(self.bot_depth_slider.get())
-            if self.ai_series_running and not self.force_opening_var.get():
-                self.apply_series_opening_move()
-            
-            self.turn_label.config(text=f"Turn: {self.turn.capitalize()} ({self.MAIN_AI_NAME} vs {self.OPPONENT_AI_NAME})")
+            if self.ai_series_running and not self.force_opening_var.get(): self.apply_series_opening_move()
             if not self.game_over: self.master.after(delay, self.make_ai_move)
-
         elif current_mode == GameMode.HUMAN_VS_BOT.value:
             bot_color = "black" if self.human_color == "white" else "white"
-            self.bot = ChessBot(self.board, bot_color, self, self.cancellation_event, "Main Bot")
+            self.bot = ChessBot(self.board, bot_color, self, self.cancellation_event, "AI Bot")
             self.update_bot_depth(self.bot_depth_slider.get())
-            self.turn_label.config(text=f"Turn: {self.turn.capitalize()}")
-            if self.turn != self.human_color and not self.game_over:
-                self.master.after(delay, self.make_bot_move)
-        else:
-            self.turn_label.config(text=f"Turn: {self.turn.capitalize()}")
-
-        initial_key = self.get_position_key()
-        self.position_history.append(initial_key)
-        self.position_counts[initial_key] = 1
-        self.draw_board(); self.set_interactivity(); self.update_bot_labels(); self.update_scoreboard()
+            if self.turn != self.human_color and not self.game_over: self.master.after(delay, self.make_bot_move)
+        self.update_turn_label(); self.draw_board(); self.set_interactivity(); self.update_bot_labels(); self.update_scoreboard()
 
     def on_drag_end(self, event):
-        if not self.dragging:
-            self.valid_moves = []
-            self.draw_board()
-            return
-        self.dragging = False
-        self.canvas.delete("drag_ghost")
+        if not self.dragging: self.valid_moves = []; self.draw_board(); return
+        self.dragging = False; self.canvas.delete("drag_ghost")
         row, col = self.canvas_to_board(event.x, event.y)
         if row == -1 or not self.drag_start:
-            self.drag_start, self.selected, self.valid_moves = None, None, []
-            self.draw_board(); self.set_interactivity()
-            return
+            self.drag_start, self.selected, self.valid_moves = None, None, []; self.draw_board(); self.set_interactivity(); return
         start_pos, end_pos = self.drag_start, (row, col)
         if end_pos in self.valid_moves:
             self.board.make_move(start_pos, end_pos)
@@ -255,64 +203,54 @@ class EnhancedChessApp:
         self.draw_board(); self.set_interactivity()
 
     def make_bot_move(self):
-        if self.game_over or not self.bot or self.ai_is_thinking: return
-        self._start_ai_thread(self.bot)
+        if not self.game_over and self.bot: self._start_ai_thread(self.bot)
 
     def make_ai_move(self):
-        if self.game_mode.get() != GameMode.AI_VS_AI.value or self.game_over or self.ai_is_thinking: return
-        current_bot = self.ai_white_bot if self.turn == "white" else self.ai_black_bot
-        if not current_bot: return
-        self._start_ai_thread(current_bot)
+        if self.game_mode.get() == GameMode.AI_VS_AI.value and not self.game_over:
+            current_bot = self.ai_white_bot if self.turn == "white" else self.ai_black_bot
+            if current_bot: self._start_ai_thread(current_bot)
 
     def set_interactivity(self):
-        if self.game_mode.get() == GameMode.AI_VS_AI.value or self.ai_is_thinking:
-            self.canvas.unbind("<Button-1>"); self.canvas.unbind("<B1-Motion>"); self.canvas.unbind("<ButtonRelease-1>")
-        else:
+        is_interactive = self.game_mode.get() != GameMode.AI_VS_AI.value and not self.ai_is_thinking
+        if is_interactive:
             self.canvas.bind("<Button-1>", self.on_drag_start); self.canvas.bind("<B1-Motion>", self.on_drag_motion); self.canvas.bind("<ButtonRelease-1>", self.on_drag_end)
+        else:
+            self.canvas.unbind("<Button-1>"); self.canvas.unbind("<B1-Motion>"); self.canvas.unbind("<ButtonRelease-1>")
 
     def update_bot_depth(self, value):
         new_depth = int(value)
-        ChessBot.search_depth = new_depth
-        if OpponentAI: OpponentAI.search_depth = new_depth
+        ChessBot.search_depth = new_depth; OpponentAI.search_depth = new_depth
         for bot in [self.bot, self.ai_white_bot, self.ai_black_bot]:
-            if bot and hasattr(bot, 'search_depth'):
-                bot.search_depth = new_depth
+            if bot: bot.search_depth = new_depth
 
-    def get_position_key(self):
-        return board_hash(self.board, self.turn)
-
-    def switch_turn(self):
-        self.turn = "black" if self.turn == "white" else "white"
+    def switch_turn(self): self.turn = "black" if self.turn == "white" else "white"
 
     def swap_sides(self):
         self._interrupt_ai_search()
         if self.game_mode.get() == GameMode.HUMAN_VS_BOT.value:
             self.human_color = "black" if self.human_color == "white" else "white"
-            self.board_orientation = self.human_color
-        elif self.game_mode.get() == GameMode.HUMAN_VS_HUMAN.value:
-            self.board_orientation = "black" if self.board_orientation == "white" else "white"
+        self.board_orientation = "black" if self.board_orientation == "white" else "white"
         self.reset_game()
 
     def board_to_canvas(self, r, c):
-        x, y = (c * SQUARE_SIZE, r * SQUARE_SIZE) if self.board_orientation == "white" else ((COLS - 1 - c) * SQUARE_SIZE, (ROWS - 1 - r) * SQUARE_SIZE)
+        x = (COLS - 1 - c) * SQUARE_SIZE if self.board_orientation == "black" else c * SQUARE_SIZE
+        y = (ROWS - 1 - r) * SQUARE_SIZE if self.board_orientation == "black" else r * SQUARE_SIZE
         return x, y
 
     def canvas_to_board(self, x, y):
-        r, c = (y // SQUARE_SIZE, x // SQUARE_SIZE) if self.board_orientation == "white" else ((ROWS - 1) - (y // SQUARE_SIZE), (COLS - 1) - (x // SQUARE_SIZE))
+        c = (COLS - 1) - (x // SQUARE_SIZE) if self.board_orientation == "black" else (x // SQUARE_SIZE)
+        r = (ROWS - 1) - (y // SQUARE_SIZE) if self.board_orientation == "black" else (y // SQUARE_SIZE)
         return (r, c) if 0 <= r < ROWS and 0 <= c < COLS else (-1, -1)
 
     def draw_eval_bar(self, eval_score):
-        score = eval_score / 100.0
-        self.eval_bar_canvas.delete("all")
-        w, h = self.eval_bar_canvas.winfo_width(), self.eval_bar_canvas.winfo_height()
+        score = eval_score / 100.0; w, h = self.eval_bar_canvas.winfo_width(), self.eval_bar_canvas.winfo_height()
+        self.eval_bar_canvas.delete("all");
         if w <= 1 or h <= 1: self.eval_score_label.config(text="Eval: ..."); return
-        scale = 20.0
-        marker_score = max(-1.0, min(1.0, math.tanh(score / scale)))
+        marker_score = max(-1.0, min(1.0, math.tanh(score / 20.0)))
         marker_x = int(((marker_score + 1) / 2.0) * w)
         for x_pixel in range(w):
-            ratio = x_pixel / float(w - 1 if w > 1 else 1)
-            intensity = int(255 * ratio)
-            self.eval_bar_canvas.create_line(x_pixel, 0, x_pixel, h, fill=f"#{intensity:02x}{intensity:02x}{intensity:02x}", width=1)
+            intensity = int(255 * (x_pixel / float(w - 1 if w > 1 else 1)))
+            self.eval_bar_canvas.create_line(x_pixel, 0, x_pixel, h, fill=f"#{intensity:02x}{intensity:02x}{intensity:02x}")
         self.eval_bar_canvas.create_line(marker_x, 0, marker_x, h, fill=self.COLORS['accent'], width=3)
         self.eval_bar_canvas.create_line(w//2, 0, w//2, h, fill="#666666", width=1)
         self.eval_score_label.config(text="Even" if abs(score) < 0.05 else f"{'+' if score > 0 else ''}{score:.2f}")
@@ -320,11 +258,12 @@ class EnhancedChessApp:
     def setup_styles(self):
         style = ttk.Style(); style.theme_use('clam')
         C = {'bg_dark':'#1a1a2e','bg_medium':'#16213e','bg_light':'#0f3460','accent':'#e94560','text_light':'#ffffff','text_dark':'#a2a2a2'}
-        style.configure('Left.TFrame', background=C['bg_dark']); style.configure('Right.TFrame', background=C['bg_medium']); style.configure('Canvas.TFrame', background=C['bg_medium'])
+        style.configure('.', background=C['bg_dark'], foreground=C['text_light'])
+        style.configure('TFrame', background=C['bg_dark']); style.configure('Left.TFrame', background=C['bg_dark']); style.configure('Right.TFrame', background=C['bg_medium']); style.configure('Canvas.TFrame', background=C['bg_medium'])
         style.configure('Header.TLabel', background=C['bg_dark'], foreground=C['text_light'], font=('Helvetica',14,'bold'), padding=(0,10))
-        style.configure('Status.TLabel', background=C['bg_light'], foreground=C['text_light'], font=('Helvetica',16,'bold'), padding=(11,4), relief='flat', borderwidth=0)
+        style.configure('Status.TLabel', background=C['bg_light'], foreground=C['text_light'], font=('Helvetica',16,'bold'), padding=(11,4), relief='flat')
         style.configure('Control.TButton', background=C['accent'], foreground=C['text_light'], font=('Helvetica',11,'bold'), padding=(10,8), borderwidth=0, relief='flat')
-        style.map('Control.TButton', background=[('active',C['accent']), ('pressed','#d13550')], relief=[('pressed','flat'), ('!pressed','flat')])
+        style.map('Control.TButton', background=[('active',C['accent']), ('pressed','#d13550')])
         style.configure('Custom.TRadiobutton', background=C['bg_dark'], foreground=C['text_light'], font=('Helvetica',11), padding=(5,8))
         style.map('Custom.TRadiobutton', background=[('active',C['bg_dark'])], indicatorcolor=[('selected',C['accent'])], foreground=[('active',C['accent'])])
         style.configure('Custom.TCheckbutton', background=C['bg_dark'], foreground=C['text_light'], font=('Helvetica',11), padding=(5,8))
@@ -333,10 +272,10 @@ class EnhancedChessApp:
 
     def create_board_image(self, orientation):
         img = tk.PhotoImage(width=COLS*SQUARE_SIZE, height=ROWS*SQUARE_SIZE)
-        for r in range(ROWS):
-            for c in range(COLS):
-                color = BOARD_COLOR_1 if (r+c)%2==0 else BOARD_COLOR_2
-                x1, y1 = (c*SQUARE_SIZE, r*SQUARE_SIZE) if orientation=="white" else self.board_to_canvas(r, c)
+        for r_draw in range(ROWS):
+            for c_draw in range(COLS):
+                color = BOARD_COLOR_1 if (r_draw+c_draw)%2==0 else BOARD_COLOR_2
+                x1, y1 = c_draw*SQUARE_SIZE, r_draw*SQUARE_SIZE
                 img.put(color, to=(x1, y1, x1+SQUARE_SIZE, y1+SQUARE_SIZE))
         return img
 
@@ -346,83 +285,81 @@ class EnhancedChessApp:
         for r_move, c_move in self.valid_moves:
             x1, y1 = self.board_to_canvas(r_move, c_move)
             center_x, center_y = x1 + SQUARE_SIZE//2, y1 + SQUARE_SIZE//2
-            radius = SQUARE_SIZE * 0.15
-            self.canvas.create_oval(center_x-radius, center_y-radius, center_x+radius, center_y+radius, fill="#1E90FF", outline="", tags="highlight")
+            self.canvas.create_oval(center_x-8, center_y-8, center_x+8, center_y+8, fill="#1E90FF", outline="", tags="highlight")
         for r in range(ROWS):
             for c in range(COLS):
-                piece = self.board.grid[r][c] # <-- FIX
+                piece = self.board.grid[r][c]
                 if piece:
                     if isinstance(piece, King) and is_in_check(self.board, piece.color):
-                        color = "darkred" if not has_legal_moves(self.board, piece.color) else "red"
+                        is_mate = self.game_over and self.game_result[0] == "checkmate"
+                        color = "darkred" if is_mate else "red"
                         x1, y1 = self.board_to_canvas(r, c); x2, y2 = x1+SQUARE_SIZE, y1+SQUARE_SIZE
                         self.canvas.create_rectangle(x1, y1, x2, y2, outline=color, width=3, tags="check_highlight")
                     if (r, c) != self.drag_start: self.draw_piece_at_canvas_coords(piece, r, c)
 
     def draw_piece_at_canvas_coords(self, piece, r, c):
-        x, y = self.board_to_canvas(r, c)
-        x_center, y_center = x + SQUARE_SIZE//2, y + SQUARE_SIZE//2
-        symbol, font, shadow = piece.symbol(), ("Arial Unicode MS", 39), ("Arial", 39)
+        x, y = self.board_to_canvas(r, c); x_center, y_center = x + SQUARE_SIZE//2, y + SQUARE_SIZE//2
+        symbol, font, shadow_font = piece.symbol(), ("Arial Unicode MS", 39), ("Arial", 39)
         if piece.color == "white":
-            self.canvas.create_text(x_center+2, y_center+2, text=symbol, font=shadow, fill="#444444", tags="piece")
+            self.canvas.create_text(x_center+2, y_center+2, text=symbol, font=shadow_font, fill="#444444", tags="piece")
             self.canvas.create_text(x_center, y_center, text=symbol, font=font, fill="white", tags="piece")
-        else:
-            self.canvas.create_text(x_center, y_center, text=symbol, font=font, fill="black", tags="piece")
+        else: self.canvas.create_text(x_center, y_center, text=symbol, font=font, fill="black", tags="piece")
 
     def on_drag_start(self, event):
         if self.game_over: return
         r, c = self.canvas_to_board(event.x, event.y)
         if r != -1:
-            piece = self.board.grid[r][c] # <-- FIX
-            if piece and piece.color == self.turn:
+            piece = self.board.grid[r][c]
+            if piece and piece.color == self.turn and (self.game_mode.get() != GameMode.HUMAN_VS_BOT.value or self.turn == self.human_color):
                 self.selected, self.dragging, self.drag_start = (r, c), True, (r, c)
-                self.valid_moves = [end_pos for end_pos in piece.get_valid_moves(self.board, (r, c)) if validate_move(self.board, self.turn, (r, c), end_pos)]
+                self.valid_moves = [m[1] for m in generate_pseudo_legal_moves(self.board, self.turn) if m[0] == self.selected and validate_move(self.board, self.turn, m[0], m[1])]
                 self.canvas.delete("drag_ghost")
-                font, color = ("Arial Unicode MS", 36), "white" if piece.color == "white" else "black"
+                font, color = ("Arial Unicode MS", 40), "white" if piece.color == "white" else "black"
                 self.drag_piece_ghost = self.canvas.create_text(event.x, event.y, text=piece.symbol(), font=font, fill=color, tags="drag_ghost")
                 self.draw_board()
                 self.canvas.tag_raise("drag_ghost")
 
     def on_drag_motion(self, event):
-        if self.dragging:
-            self.canvas.coords(self.drag_piece_ghost, event.x, event.y)
-            self.canvas.tag_raise("drag_ghost")
+        if self.dragging: self.canvas.coords(self.drag_piece_ghost, event.x, event.y)
 
     def execute_move_and_check_state(self):
         if self.game_over: return
-        next_turn = "black" if self.turn == "white" else "white"
-        key = board_hash(self.board, next_turn)
+        key = board_hash(self.board, self.turn)
         self.position_history.append(key)
         self.position_counts[key] = self.position_counts.get(key, 0) + 1
-        if self.position_counts.get(key, 0) >= 3:
-            self.game_over, self.game_result = True, ("repetition", None)
-        else:
-            status, winner = check_game_over(self.board, self.turn)
-            if status: self.game_over, self.game_result = True, (status, winner)
+        status, winner = check_game_over(self.board, self.turn)
+        if status: self.game_over, self.game_result = True, (status, winner)
+        elif self.position_counts.get(key, 0) >= 3: self.game_over, self.game_result = True, ("repetition", None)
+        if not self.game_over: self.switch_turn()
+        self.update_turn_label()
+        self.draw_board()
+        self.set_interactivity()
+        self.update_bot_labels()
+        if self.game_over and self.game_mode.get() == GameMode.AI_VS_AI.value: self.process_ai_series_result()
+
+    def update_turn_label(self):
         if self.game_over:
             r_type, winner = self.game_result
-            msg = "Game Over"
             if r_type == "repetition": msg = "Draw by three-fold repetition!"
             elif r_type == "stalemate": msg = "Stalemate! It's a draw."
             elif r_type == "checkmate": msg = f"Checkmate! {winner.capitalize()} wins!"
             elif r_type == "king_capture": msg = f"{winner.capitalize()} wins by king capture!"
+            else: msg = "Game Over"
             self.turn_label.config(text=msg)
-            if self.game_mode.get() == GameMode.AI_VS_AI.value: self.process_ai_series_result()
-        else:
-            self.switch_turn(); self.turn_label.config(text=f"Turn: {self.turn.capitalize()}")
-        self.set_interactivity(); self.update_bot_labels()
-
+        else: self.turn_label.config(text=f"Turn: {self.turn.capitalize()}")
+        
     def process_ai_series_result(self):
         if not self.game_result: return
         self.ai_series_stats['game_count'] += 1
-        result_type, winner_color = self.game_result
+        _, winner_color = self.game_result
         if winner_color:
             winning_ai = self.white_playing_bot if winner_color == "white" else ("op" if self.white_playing_bot == "main" else "main")
             if winning_ai == "main": self.ai_series_stats['my_ai_wins'] += 1
             else: self.ai_series_stats['op_ai_wins'] += 1
         else: self.ai_series_stats['draws'] += 1
         self.update_scoreboard()
-        if self.ai_series_stats['game_count'] < 100: self.master.after(1000, self.reset_game)
-        else: self.turn_label.config(text="AI Series: 100 Games Complete!"); self.ai_series_running = False
+        if self.ai_series_running and self.ai_series_stats['game_count'] < 100: self.master.after(1000, self.reset_game)
+        else: self.turn_label.config(text="AI Series Complete!"); self.ai_series_running = False
 
     def start_ai_series(self):
         self._interrupt_ai_search(); random.seed()
@@ -434,52 +371,38 @@ class EnhancedChessApp:
     def update_scoreboard(self):
         if self.game_mode.get() == GameMode.AI_VS_AI.value and self.ai_series_running:
             stats = self.ai_series_stats
-            score_text = (f"{self.MAIN_AI_NAME} vs {self.OPPONENT_AI_NAME} (Game {stats['game_count']}/100):\n"
-                          f"  {self.MAIN_AI_NAME}: {stats['my_ai_wins']}\n"
-                          f"  {self.OPPONENT_AI_NAME}: {stats['op_ai_wins']}\n"
+            score_text = (f"{self.MAIN_AI_NAME} vs {self.OPPONENT_AI_NAME} (Game {stats['game_count']+1}/100)\n"
+                          f"  {self.MAIN_AI_NAME} Wins: {stats['my_ai_wins']}\n"
+                          f"  {self.OPPONENT_AI_NAME} Wins: {stats['op_ai_wins']}\n"
                           f"  Draws: {stats['draws']}")
             self.scoreboard_label.config(text=score_text)
-            if not self.scoreboard_frame.winfo_ismapped(): self.scoreboard_frame.place(relx=1.0, rely=0.0, anchor='ne', x=-15, y=15)
-        else:
-            if self.scoreboard_frame.winfo_ismapped(): self.scoreboard_frame.place_forget()
+            self.scoreboard_frame.place(relx=1.0, rely=0.0, anchor='ne', x=-15, y=15)
+        else: self.scoreboard_frame.place_forget()
 
     def update_bot_labels(self):
-        thinking_text = " (Thinking...)" if self.ai_is_thinking else ""
-        current_mode = self.game_mode.get()
-        white_label, black_label = "", ""
-        if current_mode == GameMode.HUMAN_VS_BOT.value:
-            if self.human_color == "white":
-                white_label, black_label = "Human (White)", f"Bot (Black){thinking_text if self.turn == 'black' else ''}"
-            else:
-                white_label, black_label = f"Bot (White){thinking_text if self.turn == 'white' else ''}", "Human (Black)"
-        elif current_mode == GameMode.AI_VS_AI.value:
+        thinking = " (Thinking...)" if self.ai_is_thinking else ""
+        mode = self.game_mode.get()
+        if mode == GameMode.HUMAN_VS_BOT.value:
+            white_l, black_l = ("Human", f"Bot{thinking}") if self.human_color == "white" else (f"Bot{thinking}", "Human")
+        elif mode == GameMode.AI_VS_AI.value:
             main, op = self.MAIN_AI_NAME, self.OPPONENT_AI_NAME
             white_name = main if self.white_playing_bot == "main" else op
             black_name = op if self.white_playing_bot == "main" else main
-            white_label = f"{white_name} (White){thinking_text if self.turn == 'white' else ''}"
-            black_label = f"{black_name} (Black){thinking_text if self.turn == 'black' else ''}"
-        elif current_mode == GameMode.HUMAN_VS_HUMAN.value:
-            white_label, black_label = "White", "Black"
-        if self.board_orientation == "white":
-            self.bottom_bot_label.config(text=white_label); self.top_bot_label.config(text=black_label)
-        else:
-            self.bottom_bot_label.config(text=black_label); self.top_bot_label.config(text=white_label)
+            white_l = f"{white_name}{thinking if self.turn == 'white' else ''}"
+            black_l = f"{black_name}{thinking if self.turn == 'black' else ''}"
+        else: white_l, black_l = "Human (White)", "Human (Black)"
+        if self.board_orientation == "white": self.bottom_bot_label.config(text=white_l); self.top_bot_label.config(text=black_l)
+        else: self.bottom_bot_label.config(text=black_l); self.top_bot_label.config(text=white_l)
 
     def apply_series_opening_move(self):
         if self.ai_series_stats['game_count'] % 2 == 0:
             print("--- Generating new opening for game pair ---")
-            moves = [((r, c), m) for r in range(ROWS) for c in range(COLS) 
-                     if (p := self.board.grid[r][c]) and p.color == "white" 
-                     for m in p.get_valid_moves(self.board, (r, c)) if validate_move(self.board, "white", (r, c), m)]
+            moves = [((r, c), m) for r in range(ROWS) for c in range(COLS) if self.board.grid[r][c] and self.board.grid[r][c].color == "white" for m in self.board.grid[r][c].get_valid_moves(self.board, (r, c)) if validate_move(self.board, "white", (r, c), m)]
             self.current_opening_move = random.choice(moves) if moves else None
         if self.current_opening_move:
             start, end = self.current_opening_move
             print(f"Applying opening move: {start} -> {end}")
-            self.board.make_move(start, end)
-            self.switch_turn()
-
-def main_app():
-    root = tk.Tk(); app = EnhancedChessApp(root); root.mainloop()
+            self.board.make_move(start, end); self.switch_turn()
 
 if __name__ == "__main__":
-    main_app()
+    root = tk.Tk(); app = EnhancedChessApp(root); root.mainloop()
