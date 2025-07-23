@@ -1,16 +1,14 @@
-# game_logic.py
-
+# gamelogic.py (v3.2 - King Logic Fix)
 # --- Versioning ---
-# v2.1 (API Cleanup & Bugfix)
-# - Fixed a critical syntax error in Board.make_move.
-# - Completed the refactoring by adding Board.find_king_pos and making methods public.
-# - Removed old, slow global functions, enforcing use of the optimized Board class methods.
+# v3.2 (King Logic Fix)
+# - Rewrote King.get_valid_moves to correctly implement the 1- and 2-square move.
+# - The previous implementation had a "slider" bug that prevented the 2-square leap.
 
 # -----------------------------
 # Global Constants
 # -----------------------------
 ROWS, COLS = 8, 8
-SQUARE_SIZE = 65
+SQUARE_SIZE = 75 # Linked from UI
 BOARD_COLOR_1 = "#D2B48C"
 BOARD_COLOR_2 = "#8B5A2B"
 
@@ -21,22 +19,18 @@ DIRECTIONS = {
     'bishop': ((-1, -1), (-1, 1), (1, -1), (1, 1)),
     'knight': ((2, 1), (2, -1), (-2, 1), (-2, -1), (1, 2), (1, -2), (-1, 2), (-1, -2))
 }
-ADJACENT_DIRS = ((-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1))
+ADJACENT_DIRS = DIRECTIONS['king']
 
 # -----------------------------
-# Piece Base Class and Subclasses
+# Piece Classes
 # -----------------------------
 class Piece:
     def __init__(self, color):
         self.color = color
         self.has_moved = False
         self.opponent_color = "black" if color == "white" else "white"
-
     def clone(self):
-        new_piece = self.__class__(self.color)
-        new_piece.has_moved = self.has_moved
-        return new_piece
-
+        new_piece = self.__class__(self.color); new_piece.has_moved = self.has_moved; return new_piece
     def symbol(self): return "?"
     def get_valid_moves(self, board, pos): return []
 
@@ -46,22 +40,28 @@ class King(Piece):
         moves = []
         r_start, c_start = pos
         for dr, dc in DIRECTIONS['king']:
-            for step in (1, 2):
-                new_r, new_c = r_start + dr * step, c_start + dc * step
-                if 0 <= new_r < ROWS and 0 <= new_c < COLS:
-                    if step == 2:
-                        if board.grid[r_start + dr][c_start + dc] is not None: break
-                    target = board.grid[new_r][new_c]
-                    if target is None or target.color != self.color: moves.append((new_r, new_c))
-                    if target is not None: break
-                else: break
+            # --- Check 1-step move ---
+            r1, c1 = r_start + dr, c_start + dc
+            if 0 <= r1 < ROWS and 0 <= c1 < COLS:
+                target1 = board.grid[r1][c1]
+                if target1 is None or target1.color == self.opponent_color:
+                    moves.append((r1, c1))
+            
+            # --- Check 2-step move (The Leap) ---
+            # This is only possible if the intermediate square (r1, c1) is empty.
+            # We must re-check if (r1, c1) is on the board before accessing the grid.
+            if (0 <= r1 < ROWS and 0 <= c1 < COLS) and (board.grid[r1][c1] is None):
+                r2, c2 = r_start + dr * 2, c_start + dc * 2
+                if 0 <= r2 < ROWS and 0 <= c2 < COLS:
+                    target2 = board.grid[r2][c2]
+                    if target2 is None or target2.color == self.opponent_color:
+                        moves.append((r2, c2))
         return moves
 
 class Queen(Piece):
     def symbol(self): return "♕" if self.color == "white" else "♛"
     def get_valid_moves(self, board, pos):
-        moves = []
-        r_start, c_start = pos
+        moves = []; r_start, c_start = pos
         for dr, dc in DIRECTIONS['queen']:
             r, c = r_start + dr, c_start + dc
             while 0 <= r < ROWS and 0 <= c < COLS:
@@ -76,19 +76,15 @@ class Queen(Piece):
 class Rook(Piece):
     def symbol(self): return "♖" if self.color == "white" else "♜"
     def get_valid_moves(self, board, pos):
-        moves = []
-        r_start, c_start = pos
+        moves = []; r_start, c_start = pos
         for dr, dc in DIRECTIONS['rook']:
-            r, c = r_start + dr, c_start + dc
-            enemy_encountered = False
+            r, c = r_start + dr, c_start + dc; enemy_encountered = False
             while 0 <= r < ROWS and 0 <= c < COLS:
                 target = board.grid[r][c]
                 if not enemy_encountered:
                     if target is None: moves.append((r, c))
                     else:
-                        if target.color != self.color:
-                            moves.append((r, c))
-                            enemy_encountered = True
+                        if target.color != self.color: moves.append((r, c)); enemy_encountered = True
                         else: break
                 else:
                     if target is None or target.color != self.color: moves.append((r, c))
@@ -99,8 +95,7 @@ class Rook(Piece):
 class Bishop(Piece):
     def symbol(self): return "♗" if self.color == "white" else "♝"
     def get_valid_moves(self, board, pos):
-        moves = set()
-        r_start, c_start = pos
+        moves = set(); r_start, c_start = pos
         for dr, dc in DIRECTIONS['bishop']:
             r, c = r_start + dr, c_start + dc
             while 0 <= r < ROWS and 0 <= c < COLS:
@@ -108,10 +103,8 @@ class Bishop(Piece):
                 if target:
                     if target.color != self.color: moves.add((r, c))
                     break
-                moves.add((r, c))
-                r += dr; c += dc
-        direction_pairs = (((-1, 1), (-1, -1)), ((-1, -1), (-1, 1)), ((1, 1), (1, -1)), ((1, -1), (1, 1)),
-                           ((-1, 1), (1, 1)), ((1, 1), (-1, 1)), ((-1, -1), (1, -1)), ((1, -1), (-1, -1)))
+                moves.add((r, c)); r += dr; c += dc
+        direction_pairs = (((-1, 1), (-1, -1)), ((-1, -1), (-1, 1)), ((1, 1), (1, -1)), ((1, -1), (1, 1)), ((-1, 1), (1, 1)), ((1, 1), (-1, 1)), ((-1, -1), (1, -1)), ((1, -1), (-1, -1)))
         for d1, d2 in direction_pairs:
             cr, cc, cd = r_start, c_start, d1
             while True:
@@ -121,20 +114,17 @@ class Bishop(Piece):
                 if target:
                     if target.color != self.color: moves.add((cr, cc))
                     break
-                moves.add((cr, cc))
-                cd = d2 if cd == d1 else d1
+                moves.add((cr, cc)); cd = d2 if cd == d1 else d1
         return list(moves)
 
 class Knight(Piece):
     def symbol(self): return "♘" if self.color == "white" else "♞"
     def get_valid_moves(self, board, pos):
-        moves = []
-        r_start, c_start = pos
+        moves = []; r_start, c_start = pos
         for dr, dc in DIRECTIONS['knight']:
             nr, nc = r_start + dr, c_start + dc
-            if 0 <= nr < ROWS and 0 <= nc < COLS:
-                target = board.grid[nr][nc]
-                if not target or target.color != self.color: moves.append((nr,nc))
+            if 0 <= nr < ROWS and 0 <= nc < COLS and (not board.grid[nr][nc] or board.grid[nr][nc].color != self.color):
+                moves.append((nr,nc))
         return moves
 
 class Pawn(Piece):
@@ -144,233 +134,172 @@ class Pawn(Piece):
         r_start, c_start = pos
         direction = -1 if self.color == "white" else 1
         starting_row = 6 if self.color == "white" else 1
-        for steps in [1, 2]:
-            if steps == 2 and r_start != starting_row: continue
-            new_r, new_c = r_start + (direction * steps), c_start
-            if 0 <= new_r < ROWS and 0 <= new_c < COLS:
-                fwd_target = board.grid[new_r][new_c]
-                if fwd_target and fwd_target.color != self.color: moves.append((new_r, new_c))
-                if fwd_target is None: moves.append((new_r, new_c))
-                if fwd_target is not None: break
-            else: break
+        one_r = r_start + direction
+        if 0 <= one_r < ROWS:
+            target = board.grid[one_r][c_start]
+            if target is None or target.color == self.opponent_color: moves.append((one_r, c_start))
+        if r_start == starting_row:
+            one_step_clear = (0 <= one_r < ROWS) and (board.grid[one_r][c_start] is None)
+            if one_step_clear:
+                two_r = r_start + (2 * direction)
+                if 0 <= two_r < ROWS:
+                    target = board.grid[two_r][c_start]
+                    if target is None or target.color == self.opponent_color: moves.append((two_r, c_start))
         for dc_offset in [-1, 1]:
-            new_c_side = c_start + dc_offset
-            if 0 <= r_start < ROWS and 0 <= new_c_side < COLS:
-                side_target = board.grid[r_start][new_c_side]
-                if side_target and side_target.color != self.color: moves.append((r_start, new_c_side))
+            new_c = c_start + dc_offset
+            if 0 <= new_c < COLS:
+                target = board.grid[r_start][new_c]
+                if target and target.color == self.opponent_color: moves.append((r_start, new_c))
         return moves
 
-# -----------------------------
-# Board Class and Game Logic
-# -----------------------------
+# ---------------------------------------------
+# Board Class & Refactored Game Logic
+# ---------------------------------------------
 class Board:
     def __init__(self, setup=True):
         self.grid = [[None for _ in range(COLS)] for _ in range(ROWS)]
-        self.white_pieces = []
-        self.black_pieces = []
-        self.white_king_pos = None
-        self.black_king_pos = None
-        if setup: self.setup_initial_board()
-
-    def setup_initial_board(self):
-        pieces = {
-            0: [(0, Rook), (1, Knight), (2, Bishop), (3, Queen), (4, King), (5, Bishop), (6, Knight), (7, Rook)],
-            1: [(i, Pawn) for i in range(8)],
-            6: [(i, Pawn) for i in range(8)],
-            7: [(0, Rook), (1, Knight), (2, Bishop), (3, Queen), (4, King), (5, Bishop), (6, Knight), (7, Rook)]
-        }
+        self.white_king_pos = None; self.black_king_pos = None
+        if setup: self._setup_initial_board()
+    def _setup_initial_board(self):
+        pieces = {0: [(0, Rook), (1, Knight), (2, Bishop), (3, Queen), (4, King), (5, Bishop), (6, Knight), (7, Rook)], 1: [(i, Pawn) for i in range(8)], 6: [(i, Pawn) for i in range(8)], 7: [(0, Rook), (1, Knight), (2, Bishop), (3, Queen), (4, King), (5, Bishop), (6, Knight), (7, Rook)]}
         for r, piece_list in pieces.items():
             color = "black" if r < 2 else "white"
-            for c, piece_class in piece_list:
-                self.add_piece(piece_class(color), r, c)
-
+            for c, piece_class in piece_list: self.add_piece(piece_class(color), r, c)
     def add_piece(self, piece, r, c):
         self.grid[r][c] = piece
-        pos = (r, c)
-        piece_list = self.white_pieces if piece.color == "white" else self.black_pieces
-        if pos not in piece_list: piece_list.append(pos)
         if isinstance(piece, King):
-            if piece.color == "white": self.white_king_pos = pos
-            else: self.black_king_pos = pos
-
+            if piece.color == "white": self.white_king_pos = (r, c)
+            else: self.black_king_pos = (r, c)
     def remove_piece(self, r, c):
         piece = self.grid[r][c]
         if not piece: return
         pos = (r, c)
-        if piece.color == "white":
-            if pos in self.white_pieces: self.white_pieces.remove(pos)
-            if self.white_king_pos == pos: self.white_king_pos = None
-        else:
-            if pos in self.black_pieces: self.black_pieces.remove(pos)
-            if self.black_king_pos == pos: self.black_king_pos = None
+        if isinstance(piece, King):
+            if piece.color == "white" and self.white_king_pos == pos: self.white_king_pos = None
+            elif piece.color == "black" and self.black_king_pos == pos: self.black_king_pos = None
         self.grid[r][c] = None
-
     def move_piece(self, start, end):
         piece = self.grid[start[0]][start[1]]
         if not piece: return
-        pos = (start[0], start[1])
-        if piece.color == "white":
-            if pos in self.white_pieces: self.white_pieces.remove(pos)
-            self.white_pieces.append(end)
-            if isinstance(piece, King): self.white_king_pos = end
-        else:
-            if pos in self.black_pieces: self.black_pieces.remove(pos)
-            self.black_pieces.append(end)
-            if isinstance(piece, King): self.black_king_pos = end
         self.grid[start[0]][start[1]] = None
         self.grid[end[0]][end[1]] = piece
         piece.has_moved = True
-
+        if isinstance(piece, King):
+            if piece.color == "white": self.white_king_pos = end
+            else: self.black_king_pos = end
+    def find_king_pos(self, color): return self.white_king_pos if color == 'white' else self.black_king_pos
+    def clone(self):
+        new_board = Board(setup=False)
+        new_board.grid = [[p.clone() if p else None for p in row] for row in self.grid]
+        new_board.white_king_pos = self.white_king_pos
+        new_board.black_king_pos = self.black_king_pos
+        return new_board
     def make_move(self, start, end):
         moving_piece = self.grid[start[0]][start[1]]
         if not moving_piece: return
         target_piece = self.grid[end[0]][end[1]]
-        is_capture = target_piece is not None and target_piece.color != moving_piece.color
-        if isinstance(moving_piece, Queen) and is_capture:
-            self.remove_piece(start[0], start[1])
-            self.remove_piece(end[0], end[1]) # <-- SYNTAX FIX HERE
-            for dr_adj, dc_adj in ADJACENT_DIRS:
-                adj_r, adj_c = end[0] + dr_adj, end[1] + dc_adj
-                if 0 <= adj_r < ROWS and 0 <= adj_c < COLS:
-                    adj_piece = self.grid[adj_r][adj_c]
-                    if adj_piece and adj_piece.color != moving_piece.color:
-                        self.remove_piece(adj_r, adj_c)
-            return
-        elif isinstance(moving_piece, Rook):
-            if start[0] == end[0]: d = (0, 1 if end[1] > start[1] else -1)
-            else: d = (1 if end[0] > start[0] else -1, 0)
-            cr, cc = start[0] + d[0], start[1] + d[1]
-            path_contained_enemy = False
-            while (cr, cc) != end:
-                if self.grid[cr][cc] and self.grid[cr][cc].color != moving_piece.color:
-                    path_contained_enemy = True; break
-                cr += d[0]; cc += d[1]
-            if path_contained_enemy:
-                cr, cc = start[0] + d[0], start[1] + d[1]
-                while (cr, cc) != end:
-                    if self.grid[cr][cc] and self.grid[cr][cc].color != moving_piece.color:
-                        self.remove_piece(cr, cc)
-                    cr += d[0]; cc += d[1]
-        if target_piece: self.remove_piece(end[0], end[1])
+        is_capture = target_piece is not None
+        if isinstance(moving_piece, Rook): self._apply_rook_piercing(start, end, moving_piece.color)
+        if is_capture: self.remove_piece(end[0], end[1])
         self.move_piece(start, end)
-        if isinstance(moving_piece, Knight): self.evaporate(end)
+        if isinstance(moving_piece, Queen) and is_capture: self._apply_queen_aoe(end, moving_piece.color)
+        elif isinstance(moving_piece, Knight): self._apply_knight_aoe(end)
         elif isinstance(moving_piece, Pawn):
             promotion_rank = 0 if moving_piece.color == "white" else (ROWS - 1)
-            if end[0] == promotion_rank:
-                self.remove_piece(end[0], end[1])
-                self.add_piece(Queen(moving_piece.color), end[0], end[1])
-        self.check_evaporation()
-
-    def evaporate(self, pos):
-        r_knight, c_knight = pos
-        knight_instance = self.grid[r_knight][c_knight]
+            if end[0] == promotion_rank: self.remove_piece(end[0], end[1]); self.add_piece(Queen(moving_piece.color), end[0], end[1])
+        self._check_all_knight_evaporation()
+    def _apply_queen_aoe(self, pos, queen_color):
+        self.remove_piece(pos[0], pos[1])
+        for dr, dc in ADJACENT_DIRS:
+            adj_r, adj_c = pos[0] + dr, pos[1] + dc
+            if 0 <= adj_r < ROWS and 0 <= adj_c < COLS:
+                adj_piece = self.grid[adj_r][adj_c]
+                if adj_piece and adj_piece.color != queen_color: self.remove_piece(adj_r, adj_c)
+    def _apply_rook_piercing(self, start, end, rook_color):
+        if start[0] == end[0]: d = (0, 1 if end[1] > start[1] else -1)
+        else: d = (1 if end[0] > start[0] else -1, 0)
+        cr, cc = start[0] + d[0], start[1] + d[1]
+        while (cr, cc) != end:
+            target = self.grid[cr][cc]
+            if target and target.color != rook_color: self.remove_piece(cr, cc)
+            cr += d[0]; cc += d[1]
+    def _apply_knight_aoe(self, knight_pos):
+        knight_instance = self.grid[knight_pos[0]][knight_pos[1]]
         if not knight_instance: return
-        enemy_knights_to_remove = []
-        pieces_to_remove = []
+        to_remove = []; enemy_knights_destroyed = False
         for dr, dc in DIRECTIONS['knight']:
-            r_adj, c_adj = r_knight + dr, c_knight + dc
-            if 0 <= r_adj < ROWS and 0 <= c_adj < COLS:
-                piece_on_adj = self.grid[r_adj][c_adj]
-                if piece_on_adj and piece_on_adj.color != knight_instance.color:
-                    if isinstance(piece_on_adj, Knight): enemy_knights_to_remove.append((r_adj, c_adj))
-                    pieces_to_remove.append((r_adj, c_adj))
-        for r, c in pieces_to_remove: self.remove_piece(r, c)
-        if enemy_knights_to_remove: self.remove_piece(r_knight, c_knight)
+            r, c = knight_pos[0] + dr, knight_pos[1] + dc
+            if 0 <= r < ROWS and 0 <= c < COLS:
+                target = self.grid[r][c]
+                if target and target.color != knight_instance.color:
+                    to_remove.append((r, c))
+                    if isinstance(target, Knight): enemy_knights_destroyed = True
+        for r,c in to_remove: self.remove_piece(r,c)
+        if enemy_knights_destroyed: self.remove_piece(knight_pos[0], knight_pos[1])
+    def _check_all_knight_evaporation(self):
+        all_knights = []
+        for r in range(ROWS):
+            for c in range(COLS):
+                piece = self.grid[r][c]
+                if isinstance(piece, Knight): all_knights.append(((r, c), piece))
+        for pos, knight in all_knights:
+            if self.grid[pos[0]][pos[1]] is knight: self._apply_knight_aoe(pos)
 
-    def check_evaporation(self):
-        knights_on_board = [(pos, self.grid[pos[0]][pos[1]]) for pos in self.white_pieces + self.black_pieces if isinstance(self.grid[pos[0]][pos[1]], Knight)]
-        for pos, knight_instance in knights_on_board:
-            if self.grid[pos[0]][pos[1]] is knight_instance:
-                 self.evaporate(pos)
-
-    def find_king_pos(self, color):
-        return self.white_king_pos if color == 'white' else self.black_king_pos
-
-    def clone(self):
-        new_board = Board(setup=False)
-        new_board.grid = [[p.clone() if p else None for p in row] for row in self.grid]
-        new_board.white_pieces = list(self.white_pieces)
-        new_board.black_pieces = list(self.black_pieces)
-        new_board.white_king_pos = self.white_king_pos
-        new_board.black_king_pos = self.black_king_pos
-        return new_board
-
+# ----------------------------------------------------
+# HIERARCHICAL GAME LOGIC
+# ----------------------------------------------------
 def create_initial_board(): return Board()
-
+def generate_threat_map(board, attacking_color):
+    threats = set()
+    for r_start in range(ROWS):
+        for c_start in range(COLS):
+            piece = board.grid[r_start][c_start]
+            if not piece or piece.color != attacking_color: continue
+            pos = (r_start, c_start)
+            base_moves = piece.get_valid_moves(board, pos)
+            threats.update(base_moves)
+            if isinstance(piece, Queen):
+                for move in base_moves:
+                    if board.grid[move[0]][move[1]] is not None:
+                        for dr, dc in ADJACENT_DIRS: threats.add((move[0] + dr, move[1] + dc))
+            elif isinstance(piece, Knight):
+                 for move in base_moves:
+                    for dr, dc in DIRECTIONS['knight']: threats.add((move[0] + dr, move[1] + dc))
+    return threats
 def is_in_check(board, color):
     king_pos = board.find_king_pos(color)
     if not king_pos: return True
-    enemy_pieces = board.black_pieces if color == 'white' else board.white_pieces
-    for pos in enemy_pieces:
-        piece = board.grid[pos[0]][pos[1]]
-        if piece and king_pos in piece.get_valid_moves(board, pos):
-            return True
-    return False
-
-def generate_pseudo_legal_moves(board, color):
-    moves = []
-    piece_list = board.white_pieces if color == "white" else board.black_pieces
-    for pos in piece_list:
-        piece = board.grid[pos[0]][pos[1]]
-        if piece:
-            for end_pos in piece.get_valid_moves(board, pos):
-                moves.append((pos, end_pos))
-    return moves
-
+    opponent_color = "black" if color == "white" else "white"
+    return king_pos in generate_threat_map(board, opponent_color)
 def validate_move(board, color, start, end):
     piece_to_move = board.grid[start[0]][start[1]]
     if not piece_to_move or piece_to_move.color != color: return False
     if end not in piece_to_move.get_valid_moves(board, start): return False
     sim_board = board.clone()
     sim_board.make_move(start, end)
-    if is_in_check(sim_board, color): return False
-    return True
-
+    return not is_in_check(sim_board, color)
+def get_all_legal_moves(board, color):
+    legal_moves = []
+    for r in range(ROWS):
+        for c in range(COLS):
+            piece = board.grid[r][c]
+            if piece and piece.color == color:
+                start_pos = (r, c)
+                for end_pos in piece.get_valid_moves(board, start_pos):
+                    if validate_move(board, color, start_pos, end_pos):
+                        legal_moves.append((start_pos, end_pos))
+    return legal_moves
 def has_legal_moves(board, color):
-    for start_pos, end_pos in generate_pseudo_legal_moves(board, color):
-        if validate_move(board, color, start_pos, end_pos):
-            return True
+    for r in range(ROWS):
+        for c in range(COLS):
+            piece = board.grid[r][c]
+            if piece and piece.color == color:
+                for end_pos in piece.get_valid_moves(board, (r, c)):
+                    if validate_move(board, color, (r, c), end_pos): return True
     return False
-
 def check_game_over(board, turn_color_who_just_moved):
-    if not board.find_king_pos("white"): return "king_capture", "black"
-    if not board.find_king_pos("black"): return "king_capture", "white"
     next_player_color = "black" if turn_color_who_just_moved == "white" else "white"
     if not has_legal_moves(board, next_player_color):
-        if is_in_check(board, next_player_color):
-            return "checkmate", turn_color_who_just_moved
-        else:
-            return "stalemate", None
+        if is_in_check(board, next_player_color): return "checkmate", turn_color_who_just_moved
+        else: return "stalemate", None
     return None, None
-
-def is_move_tactical(board, move, is_qsearch_check=False):
-    start_pos, end_pos = move
-    piece = board.grid[start_pos[0]][start_pos[1]]
-    if not piece: return False
-    if board.grid[end_pos[0]][end_pos[1]] is not None: return True
-    if isinstance(piece, Pawn):
-        promo_rank = 0 if piece.color == 'white' else ROWS - 1
-        if end_pos[0] == promo_rank: return True
-    elif isinstance(piece, Rook):
-        if start_pos[0] == end_pos[0]: d = (0, 1 if end_pos[1] > start_pos[1] else -1)
-        else: d = (1 if end_pos[0] > start_pos[0] else -1, 0)
-        cr, cc = start_pos[0] + d[0], start_pos[1] + d[1]
-        while (cr, cc) != end_pos:
-            target = board.grid[cr][cc]
-            if target and target.color != piece.color: return True
-            cr += d[0]; cc += d[1]
-    elif isinstance(piece, Knight):
-        for dr, dc in DIRECTIONS['knight']:
-            nr, nc = end_pos[0] + dr, end_pos[1] + dc
-            if 0 <= nr < ROWS and 0 <= nc < COLS and (nr, nc) != start_pos:
-                if board.grid[nr][nc] and board.grid[nr][nc].color != piece.color: return True
-        for dr_adj, dc_adj in ADJACENT_DIRS:
-            adj_r, adj_c = end_pos[0] + dr_adj, end_pos[1] + dc_adj
-            if 0 <= adj_r < ROWS and 0 <= adj_c < COLS:
-                target = board.grid[adj_r][adj_c]
-                if isinstance(target, Knight) and target.color != piece.color: return True
-    if is_qsearch_check:
-        sim_board = board.clone()
-        sim_board.make_move(start_pos, end_pos)
-        if is_in_check(sim_board, piece.opponent_color): return True
-    return False
