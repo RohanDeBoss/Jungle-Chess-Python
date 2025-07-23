@@ -1,4 +1,4 @@
-# JungleChessUI.py (v3.4 - First Move Start)
+# JungleChessUI.py (v3.5 - Synchronized Logging)
 
 import tkinter as tk
 from tkinter import ttk
@@ -28,6 +28,7 @@ class EnhancedChessApp:
         self.master = master
         self.master.title("Jungle Chess")
         
+        self.log_queue = queue.Queue()
         self.ai_move_queue = queue.Queue()
         self.ai_is_thinking = False
         self.cancellation_event = threading.Event()
@@ -55,6 +56,7 @@ class EnhancedChessApp:
         self.master.configure(bg=self.COLORS['bg_dark'])
         self.build_ui()
         
+        self.process_log_queue()
         self.process_ai_queue()
         self.reset_game()
 
@@ -126,17 +128,22 @@ class EnhancedChessApp:
             else: # Human vs Human
                 print("NEW GAME: Human vs. Human")
             print("="*60)
-            # Start the timer on the very first move
             self.last_move_timestamp = time.time()
+
+    def process_log_queue(self):
+        try:
+            while not self.log_queue.empty():
+                message = self.log_queue.get_nowait()
+                print(message)
+        except queue.Empty:
+            pass
+        finally:
+            self.master.after(100, self.process_log_queue)
 
     def process_ai_queue(self):
         try:
             move_success = self.ai_move_queue.get_nowait()
             if self.ai_search_start_time:
-                # The detailed search time is now printed by the AI itself.
-                # We can remove this one to avoid duplicate messages.
-                # duration = time.time() - self.ai_search_start_time
-                # print(f"Search completed in {duration:.2f} seconds.")
                 self.ai_search_start_time = None
             self.ai_is_thinking = False
             self.update_bot_labels()

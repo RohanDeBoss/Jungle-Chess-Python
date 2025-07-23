@@ -1,4 +1,4 @@
-# AI.py (v5.0 - Logic Overhaul for Checkmate Model)
+# AI.py (v5.3 - Repetition Detection Fix)
 
 import time
 from GameLogic import * # Uses the new, robust gamelogic
@@ -7,16 +7,11 @@ import threading
 from collections import namedtuple
 
 # --- Versioning ---
-# v5.0 (Logic Overhaul for Checkmate Model)
-# - AI now exclusively uses the new `get_all_legal_moves()` function. This is a critical
-#   fix that ensures the AI only considers fully legal moves, eliminating self-check bugs.
-# - Removed all internal usage of `generate_pseudo_legal_moves` and `validate_move`.
-# - `is_move_tactical` has been deprecated and its logic simplified/integrated directly
-#   into move ordering (a move is tactical if it's a capture or promotion).
-# - Rewrote `qsearch` and `negamax` to be cleaner, faster, and bug-free by leveraging
-#   the pre-validated legal moves.
-# - Fixed `make_move` loop to correctly handle iterative deepening results.
-# - Adjusted pawn PST to better reflect pawn value in this variant.
+# v5.3 (Repetition Detection Fix)
+# - The `negamax` function now takes a `search_path` set to track positions
+#   within its own search, preventing it from choosing drawing lines when winning.
+# - This fixes the critical bug where the AI would blunder into a three-fold repetition.
+# - Based on the clean v5.0 code.
 
 # --- Global Zobrist Hashing ---
 def initialize_zobrist_table():
@@ -59,7 +54,6 @@ class ChessBot:
     MATE_SCORE = 1000000
     DRAW_SCORE = 0
     MAX_Q_SEARCH_DEPTH = 6      # Safety limit for Quiescence Search depth
-    QSEARCH_CHECKS_MAX_DEPTH = 2 # How deep to search for checks from a quiet position (less needed now)
     DELTA_PRUNING_MARGIN = 200  # Material value of a minor piece
     BONUS_PV_MOVE = 2_000_000
     BONUS_GOOD_CAPTURE = 1_500_000
@@ -68,7 +62,6 @@ class ChessBot:
     BONUS_KILLER_2 = 850_000
     BONUS_LOSING_CAPTURE = 300_000
     
-    # Heuristics for pruning and extensions
     NMP_DEPTH_THRESHOLD = 3
     NMP_REDUCTION = 3
     LMR_DEPTH_THRESHOLD = 3
@@ -98,9 +91,7 @@ class ChessBot:
         return total_material < ENDGAME_MATERIAL_THRESHOLD
     
     def evaluate_board(self, board):
-        # Evaluation is always from the perspective of the current player to move.
-        # The sign is flipped in negamax.
-        status, winner = check_game_over(board, self.opponent_color) # Check if prev move ended game
+        status, winner = check_game_over(board, self.opponent_color)
         if status == "checkmate": return -self.MATE_SCORE
         if status == "stalemate": return self.DRAW_SCORE
 
@@ -129,31 +120,23 @@ class ChessBot:
         return score
 
     def order_moves(self, board, moves, ply, hash_move=None):
-        # --- THE FIX: Handle the case where there are no moves to order ---
         if not moves:
             return []
-        # --- END FIX ---
-
         move_scores = {}
-        # This line is now safe because we've confirmed the 'moves' list is not empty.
         color_index = 0 if board.grid[moves[0][0][0]][moves[0][0][1]].color == 'white' else 1
         killers = self.killer_moves[ply] if ply < self.MAX_PLY_KILLERS else [None, None]
 
         for move in moves:
             score = 0
             start_pos, end_pos = move
-            # We need to get the piece from the board, not create a new instance
             moving_piece = board.grid[start_pos[0]][start_pos[1]]
             target_piece = board.grid[end_pos[0]][end_pos[1]]
-            
             is_capture = target_piece is not None
-            # The piece type needs to be checked from the actual piece on the board
             is_promotion = isinstance(moving_piece, Pawn) and (end_pos[0] == 0 or end_pos[0] == ROWS - 1)
 
             if move == hash_move:
                 score = self.BONUS_PV_MOVE
             elif is_capture:
-                # Most Valuable Victim - Least Valuable Aggressor (MVV-LVA)
                 mvv_lva_score = PIECE_VALUES.get(type(target_piece), 0) - PIECE_VALUES.get(type(moving_piece), 0)
                 score = (self.BONUS_GOOD_CAPTURE if mvv_lva_score >= 0 else self.BONUS_LOSING_CAPTURE) + mvv_lva_score
             elif is_promotion:
@@ -161,7 +144,6 @@ class ChessBot:
             elif move in killers:
                 score = self.BONUS_KILLER_1 if move == killers[0] else self.BONUS_KILLER_2
             else:
-                # History Heuristic for quiet moves
                 from_sq = start_pos[0] * COLS + start_pos[1]
                 to_sq = end_pos[0] * COLS + end_pos[1]
                 score = self.history_heuristic_table[color_index][from_sq][to_sq]
@@ -180,8 +162,6 @@ class ChessBot:
         alpha = max(alpha, stand_pat)
 
         legal_moves = get_all_legal_moves(board, turn)
-        
-        # In Q-search, only consider tactical moves (captures, promotions)
         tactical_moves = [
             m for m in legal_moves 
             if board.grid[m[1][0]][m[1][1]] is not None or 
@@ -201,14 +181,18 @@ class ChessBot:
         
         return alpha
 
-    def negamax(self, board, depth, alpha, beta, turn, ply):
+    def negamax(self, board, depth, alpha, beta, turn, ply, search_path):
         self.nodes_searched += 1
         if self.cancellation_event.is_set(): raise SearchCancelledException()
 
-        original_alpha = alpha
         hash_val = board_hash(board, turn)
         
-        # Transposition Table lookup
+        # --- NEW: Check for repetition within the current search path ---
+        if hash_val in search_path:
+            return self.DRAW_SCORE
+
+        original_alpha = alpha
+        
         tt_entry = self.tt.get(hash_val)
         if tt_entry and tt_entry.depth >= depth:
             if tt_entry.flag == TT_FLAG_EXACT: return tt_entry.score
@@ -219,28 +203,29 @@ class ChessBot:
         if depth <= 0:
             return self.qsearch(board, alpha, beta, turn, ply)
 
-        # Repetition Draw Check
         if ply > 0 and self.app.position_counts.get(hash_val, 0) >= 2:
             return self.DRAW_SCORE
 
         opponent_turn = 'black' if turn == 'white' else 'white'
         is_check_now = is_in_check(board, turn)
         
-        # Check Extension
         if is_check_now: depth += 1
 
         legal_moves = get_all_legal_moves(board, turn)
 
-        # Game Over Check
         if not legal_moves:
-            if is_check_now: return -self.MATE_SCORE + ply  # Mated, score is worse the deeper we are
-            return self.DRAW_SCORE  # Stalemate
+            if is_check_now: return -self.MATE_SCORE + ply
+            return self.DRAW_SCORE
 
-        # Move Ordering
         hash_move = tt_entry.best_move if tt_entry else None
         ordered_moves = self.order_moves(board, legal_moves, ply, hash_move)
 
         best_move_for_node = None
+
+        # --- NEW: Add current position to the new path for recursive calls ---
+        new_search_path = search_path.copy()
+        new_search_path.add(hash_val)
+
         for i, move in enumerate(ordered_moves):
             child_board = board.clone()
             child_board.make_move(move[0], move[1])
@@ -248,17 +233,16 @@ class ChessBot:
             child_hash = board_hash(child_board, opponent_turn)
             self.app.position_counts[child_hash] = self.app.position_counts.get(child_hash, 0) + 1
 
-            # Late Move Reduction (LMR)
             reduction = 0
             if (depth >= self.LMR_DEPTH_THRESHOLD and i >= self.LMR_MOVE_COUNT_THRESHOLD and 
                 not is_check_now and not (board.grid[move[1][0]][move[1][1]] is not None)):
                 reduction = self.LMR_REDUCTION
 
-            score = -self.negamax(child_board, depth - 1 - reduction, -beta, -alpha, opponent_turn, ply + 1)
+            # --- Pass the new_search_path to the recursive call ---
+            score = -self.negamax(child_board, depth - 1 - reduction, -beta, -alpha, opponent_turn, ply + 1, new_search_path)
             
-            # Re-search if LMR was too optimistic
             if reduction > 0 and score > alpha:
-                score = -self.negamax(child_board, depth - 1, -beta, -alpha, opponent_turn, ply + 1)
+                score = -self.negamax(child_board, depth - 1, -beta, -alpha, opponent_turn, ply + 1, new_search_path)
 
             self.app.position_counts[child_hash] -= 1
 
@@ -266,9 +250,7 @@ class ChessBot:
                 alpha = score
                 best_move_for_node = move
             
-            if alpha >= beta: # Beta cutoff
-                # This move caused a cutoff, so it's a good "quiet" move.
-                # Update Killer and History Heuristics.
+            if alpha >= beta:
                 is_capture = board.grid[move[1][0]][move[1][1]] is not None
                 if not is_capture:
                     if ply < self.MAX_PLY_KILLERS and self.killer_moves[ply][0] != move:
@@ -283,7 +265,6 @@ class ChessBot:
                 self.tt[hash_val] = TTEntry(beta, depth, TT_FLAG_LOWERBOUND, move)
                 return beta
         
-        # Store result in Transposition Table
         flag = TT_FLAG_EXACT if alpha > original_alpha else TT_FLAG_UPPERBOUND
         self.tt[hash_val] = TTEntry(alpha, depth, flag, best_move_for_node)
         
@@ -299,10 +280,12 @@ class ChessBot:
                     for k in range(ROWS * COLS):
                         self.history_heuristic_table[i][j][k] //= 2
             
-            # Initial check for moves
             root_moves = get_all_legal_moves(self.board, self.color)
-            if not root_moves: return False # No legal moves, game should be over
-            best_move_overall = root_moves[0] # Pick a default
+            if not root_moves: return False
+            best_move_overall = root_moves[0]
+
+            # --- NEW: The initial path contains only the current root position ---
+            root_hash = board_hash(self.board, self.color)
 
             for current_depth in range(1, self.search_depth + 1):
                 iter_start_time = time.time()
@@ -312,7 +295,6 @@ class ChessBot:
                 best_move_this_iter = None
                 alpha, beta = -float('inf'), float('inf')
 
-                # Re-get and order moves for each iteration
                 ordered_root_moves = self.order_moves(self.board, root_moves, 0, best_move_overall)
 
                 for move in ordered_root_moves:
@@ -320,11 +302,12 @@ class ChessBot:
                     
                     child_board = self.board.clone()
                     child_board.make_move(move[0], move[1])
-                    
                     child_hash = board_hash(child_board, self.opponent_color)
                     self.app.position_counts[child_hash] = self.app.position_counts.get(child_hash, 0) + 1
                     
-                    score = -self.negamax(child_board, current_depth - 1, -beta, -alpha, self.opponent_color, 1)
+                    # --- Pass the initial search_path to the first negamax call ---
+                    search_path = {root_hash}
+                    score = -self.negamax(child_board, current_depth - 1, -beta, -alpha, self.opponent_color, 1, search_path)
 
                     self.app.position_counts[child_hash] -= 1
 
@@ -339,8 +322,7 @@ class ChessBot:
                     iter_duration = time.time() - iter_start_time
                     knps = (self.nodes_searched / iter_duration / 1000) if iter_duration > 0 else 0
                     eval_for_ui = best_score_this_iter * (1 if self.color == 'white' else -1)
-                    # NEW: Cleaner, indented printout without the move tuple. Eval now shows +/-.
-                    print(f"  > {self.bot_name} (Depth {current_depth}): Eval={eval_for_ui/100:+.2f}, Nodes={self.nodes_searched}, KNPS={knps:.1f}")
+                    self.app.log_queue.put(f"  > {self.bot_name} (Depth {current_depth}): Eval={eval_for_ui/100:+.2f}, Nodes={self.nodes_searched}, KNPS={knps:.1f}")
                     if self.app: self.app.master.after(0, self.app.draw_eval_bar, eval_for_ui)
             
             if best_move_overall:
@@ -351,7 +333,7 @@ class ChessBot:
         except SearchCancelledException:
             print(f"AI ({self.color}): Search cancelled.")
             return False
-
+        
 # -----------------------------------------------------------------------------
 # Piece-Square Tables (PSTs) and Material Values for this Variant
 # -----------------------------------------------------------------------------
