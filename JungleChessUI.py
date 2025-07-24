@@ -1,4 +1,4 @@
-# JungleChessUI.py (v3.7 - Final Bot Name & Logging Fix)
+# JungleChessUI.py (v3.8 - Analysis Mode)
 
 import tkinter as tk
 from tkinter import ttk
@@ -33,6 +33,14 @@ class EnhancedChessApp:
         self.ai_is_thinking = False
         self.cancellation_event = threading.Event()
         self.ai_search_start_time = None
+        
+        ### --- ANALYSIS MODE --- ###
+        # Dedicated thread and event for analysis to avoid conflict with game AI
+        self.analysis_mode_var = tk.BooleanVar(value=False)
+        self.analysis_cancellation_event = threading.Event()
+        self.analysis_bot = None
+        self.analysis_thread = None
+        ### --- END ANALYSIS MODE --- ###
 
         self.board = create_initial_board()
         self.turn = "white"
@@ -99,6 +107,9 @@ class EnhancedChessApp:
         self.bot_depth_slider.set(getattr(ChessBot, 'search_depth', 3)); self.bot_depth_slider.pack(fill=tk.X, pady=(0,3))
         self.instant_move = tk.BooleanVar(value=False)
         ttk.Checkbutton(controls_frame, text="Instant Moves", variable=self.instant_move, style='Custom.TCheckbutton').pack(anchor=tk.W, pady=(3,3))
+        ### --- ANALYSIS MODE --- ###
+        ttk.Checkbutton(controls_frame, text="Analysis Mode (H-vs-H)", variable=self.analysis_mode_var, style='Custom.TCheckbutton', command=self.toggle_analysis_mode).pack(anchor=tk.W, pady=(3,3))
+        ### --- END ANALYSIS MODE --- ###
         opening_frame = ttk.Frame(self.left_panel, style='Left.TFrame')
         opening_frame.pack(fill=tk.X, pady=(15, 0))
         self.force_opening_var = tk.BooleanVar(value=False)
@@ -114,6 +125,46 @@ class EnhancedChessApp:
         self.scoreboard_label = ttk.Label(self.scoreboard_frame, text="", font=("Helvetica", 10), justify=tk.LEFT, background=self.COLORS['bg_medium'], foreground=self.COLORS['text_light']); self.scoreboard_label.pack()
         self.top_bot_label = ttk.Label(self.right_panel, text="", font=("Helvetica", 12), background=self.COLORS['bg_medium'], foreground=self.COLORS['text_light']); self.top_bot_label.place(relx=0.5, rely=0.02, anchor='n')
         self.bottom_bot_label = ttk.Label(self.right_panel, text="", font=("Helvetica", 12), background=self.COLORS['bg_medium'], foreground=self.COLORS['text_light']); self.bottom_bot_label.place(relx=0.5, rely=0.98, anchor='s')
+
+    ### --- ANALYSIS MODE --- ###
+    def toggle_analysis_mode(self):
+        """Called when the analysis checkbox is clicked."""
+        if self.analysis_mode_var.get():
+            self.start_analysis_if_needed()
+        else:
+            self.stop_analysis()
+
+    def stop_analysis(self):
+        """Stops any running analysis thread and resets the eval bar."""
+        if self.analysis_thread and self.analysis_thread.is_alive():
+            # print("UI: Sending cancellation signal to analysis thread...")
+            self.analysis_cancellation_event.set()
+        self.analysis_bot = None
+        self.analysis_thread = None
+        # Reset the evaluation display to neutral
+        self.draw_eval_bar(0)
+        self.eval_score_label.config(text="Even")
+
+    def start_analysis_if_needed(self):
+        """Starts the background analysis if conditions are met."""
+        self.stop_analysis() # Always stop any previous analysis first
+        
+        # Conditions to start analysis: checkbox is on, mode is Human vs Human, and game is not over.
+        if not self.analysis_mode_var.get() or self.game_mode.get() != GameMode.HUMAN_VS_HUMAN.value or self.game_over:
+            return
+
+        print("UI: Starting background analysis...")
+        self.analysis_cancellation_event.clear()
+        
+        # Create a new bot instance for analysis. It needs its own board clone to not interfere.
+        # It also gets its own cancellation event.
+        self.analysis_bot = ChessBot(self.board.clone(), self.turn, self, self.analysis_cancellation_event, "Analysis Bot")
+        self.analysis_bot.search_depth = 99 # Effectively unlimited depth for pondering
+        
+        # Run the pondering in a separate, daemonic thread
+        self.analysis_thread = threading.Thread(target=self.analysis_bot.ponder_indefinitely, daemon=True)
+        self.analysis_thread.start()
+    ### --- END ANALYSIS MODE --- ###
 
     def _start_game_if_needed(self):
         if not self.game_started:
@@ -175,6 +226,10 @@ class EnhancedChessApp:
 
     def reset_game(self):
         self._interrupt_ai_search()
+        ### --- ANALYSIS MODE --- ###
+        self.stop_analysis() # Stop any analysis when game is reset
+        ### --- END ANALYSIS MODE --- ###
+        
         self.board = create_initial_board()
         self.turn = "white"
         self.game_started = False
@@ -191,17 +246,15 @@ class EnhancedChessApp:
             self.white_playing_bot = "op" if self.ai_series_running and self.ai_series_stats['game_count'] % 2 == 1 else "main"
             self.board_orientation = "white" if self.white_playing_bot == "main" else "black"
             
-            # --- THE DEFINITIVE FIX: Assign names and classes based on who is playing white ---
             if self.white_playing_bot == "main":
                 white_class, white_name = ChessBot, self.MAIN_AI_NAME
                 black_class, black_name = OpponentAI, self.OPPONENT_AI_NAME
-            else: # "op" is playing white
+            else:
                 white_class, white_name = OpponentAI, self.OPPONENT_AI_NAME
                 black_class, black_name = ChessBot, self.MAIN_AI_NAME
             
             self.ai_white_bot = white_class(self.board, "white", self, self.cancellation_event, white_name)
             self.ai_black_bot = black_class(self.board, "black", self, self.cancellation_event, black_name)
-            # --- END OF FIX ---
             
             self.update_bot_depth(self.bot_depth_slider.get())
             if self.ai_series_running and not self.force_opening_var.get(): self.apply_series_opening_move()
@@ -214,6 +267,11 @@ class EnhancedChessApp:
             if self.turn != self.human_color and not self.game_over: self.master.after(delay, self.make_bot_move)
         
         self.update_turn_label(); self.draw_board(); self.set_interactivity(); self.update_bot_labels(); self.update_scoreboard()
+        
+        ### --- ANALYSIS MODE --- ###
+        # Start analysis for the new game if conditions are right
+        self.start_analysis_if_needed()
+        ### --- END ANALYSIS MODE --- ###
 
     def on_drag_end(self, event):
         if not self.dragging: self.valid_moves = []; self.draw_board(); return
@@ -274,18 +332,34 @@ class EnhancedChessApp:
         r = (ROWS - 1) - (y // SQUARE_SIZE) if self.board_orientation == "black" else (y // SQUARE_SIZE)
         return (r, c) if 0 <= r < ROWS and 0 <= c < COLS else (-1, -1)
 
-    def draw_eval_bar(self, eval_score):
-        score = eval_score / 100.0; w, h = self.eval_bar_canvas.winfo_width(), self.eval_bar_canvas.winfo_height()
-        self.eval_bar_canvas.delete("all");
-        if w <= 1 or h <= 1: self.eval_score_label.config(text="Eval: ..."); return
+    ### --- ANALYSIS MODE --- ###
+    def draw_eval_bar(self, eval_score, depth=None):
+        """Draws the evaluation bar, optionally with the search depth."""
+        score = eval_score / 100.0
+        w, h = self.eval_bar_canvas.winfo_width(), self.eval_bar_canvas.winfo_height()
+        self.eval_bar_canvas.delete("all")
+        if w <= 1 or h <= 1: 
+            self.eval_score_label.config(text="Eval: ...")
+            return
+            
         marker_score = max(-1.0, min(1.0, math.tanh(score / 20.0)))
         marker_x = int(((marker_score + 1) / 2.0) * w)
+        
         for x_pixel in range(w):
             intensity = int(255 * (x_pixel / float(w - 1 if w > 1 else 1)))
             self.eval_bar_canvas.create_line(x_pixel, 0, x_pixel, h, fill=f"#{intensity:02x}{intensity:02x}{intensity:02x}")
+        
         self.eval_bar_canvas.create_line(marker_x, 0, marker_x, h, fill=self.COLORS['accent'], width=3)
         self.eval_bar_canvas.create_line(w//2, 0, w//2, h, fill="#666666", width=1)
-        self.eval_score_label.config(text="Even" if abs(score) < 0.05 else f"{'+' if score > 0 else ''}{score:.2f}")
+        
+        # Update label text
+        if depth:
+            eval_text = f"{'+' if score > 0 else ''}{score:.2f} (D{depth})"
+        else:
+            eval_text = "Even" if abs(score) < 0.05 else f"{'+' if score > 0 else ''}{score:.2f}"
+        
+        self.eval_score_label.config(text=eval_text)
+    ### --- END ANALYSIS MODE --- ###
 
     def setup_styles(self):
         style = ttk.Style(); style.theme_use('clam')
@@ -380,6 +454,15 @@ class EnhancedChessApp:
         self.set_interactivity()
         self.update_bot_labels()
         self.last_move_timestamp = time.time()
+        
+        ### --- ANALYSIS MODE --- ###
+        if self.game_over:
+            self.stop_analysis() # Stop analysis on game over
+        else:
+            # After a move, restart analysis for the new position
+            self.start_analysis_if_needed()
+        ### --- END ANALYSIS MODE --- ###
+
         if self.game_over and self.game_mode.get() == GameMode.AI_VS_AI.value: self.process_ai_series_result()
         
     def update_turn_label(self):
@@ -437,17 +520,13 @@ class EnhancedChessApp:
             white_l, black_l = ("Human", f"Bot{thinking}") if self.human_color == "white" else (f"Bot{thinking}", "Human")
         
         elif mode == GameMode.AI_VS_AI.value:
-            # --- THE DEFINITIVE FIX ---
-            # Get the name directly from the bot instance, which was set correctly in reset_game.
-            # Do not recalculate it here.
             white_name = self.ai_white_bot.bot_name
             black_name = self.ai_black_bot.bot_name
-            
             white_l = f"{white_name}{thinking if self.turn == 'white' else ''}"
             black_l = f"{black_name}{thinking if self.turn == 'black' else ''}"
-            # --- END OF FIX ---
             
         else: # Human vs Human
+            # The analysis bot does not change the "Human" label
             white_l, black_l = "Human (White)", "Human (Black)"
 
         if self.board_orientation == "white":

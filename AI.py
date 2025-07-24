@@ -199,7 +199,6 @@ class ChessBot:
     def make_move(self):
         try:
             best_move_overall = None
-            # self.tt.clear() # --- THIS LINE IS REMOVED ---
             self.killer_moves = [[None, None] for _ in range(self.MAX_PLY_KILLERS)]
             for i in range(2):
                 for j in range(ROWS*COLS):
@@ -249,6 +248,74 @@ class ChessBot:
         except SearchCancelledException:
             print(f"AI ({self.color}): Search cancelled.")
             return False
+    
+    ### --- ANALYSIS MODE --- ###
+    def ponder_indefinitely(self):
+        """
+        An infinite search loop for analysis mode.
+        It runs iterative deepening and updates the UI after each depth,
+        but never makes a move. It runs until cancelled.
+        """
+        try:
+            best_move_overall = None
+            self.killer_moves = [[None, None] for _ in range(self.MAX_PLY_KILLERS)]
+            for i in range(2):
+                for j in range(ROWS * COLS):
+                    for k in range(ROWS * COLS):
+                        self.history_heuristic_table[i][j][k] //= 2
+
+            root_moves = get_all_legal_moves(self.board, self.color)
+            if not root_moves:
+                return
+
+            best_move_overall = root_moves[0]
+            root_hash = board_hash(self.board, self.color)
+
+            # Loop "forever" (or to a very high depth), checking for cancellation
+            for current_depth in range(1, self.search_depth + 1):
+                if self.cancellation_event.is_set(): raise SearchCancelledException()
+
+                self.nodes_searched = 0
+                best_score_this_iter, best_move_this_iter = -float('inf'), None
+                alpha, beta = -float('inf'), float('inf')
+                ordered_root_moves = self.order_moves(self.board, root_moves, 0, best_move_overall)
+
+                for move in ordered_root_moves:
+                    if self.cancellation_event.is_set(): raise SearchCancelledException()
+                    child_board = self.board.clone()
+                    child_board.make_move(move[0], move[1])
+                    child_hash = board_hash(child_board, self.opponent_color)
+
+                    # Use a temporary position count for this search path to avoid polluting the main game state
+                    temp_position_counts = self.app.position_counts.copy()
+                    temp_position_counts[child_hash] = temp_position_counts.get(child_hash, 0) + 1
+
+                    search_path = {root_hash}
+                    score = -self.negamax(child_board, current_depth - 1, -beta, -alpha, self.opponent_color, 1, search_path)
+                    
+                    if score > best_score_this_iter:
+                        best_score_this_iter = score
+                        best_move_this_iter = move
+                    alpha = max(alpha, best_score_this_iter)
+                
+                if not self.cancellation_event.is_set():
+                    best_move_overall = best_move_this_iter
+                    
+                    # This is the key part: update the UI with the latest findings
+                    # The turn color for analysis is always the current turn on the board
+                    eval_for_ui = best_score_this_iter if self.color == 'white' else -best_score_this_iter
+                    
+                    if self.app:
+                        self.app.log_queue.put(f"  > Analysis (D{current_depth}): Eval={eval_for_ui/100:+.2f}")
+                        # Update the eval bar, passing the current depth
+                        self.app.master.after(0, self.app.draw_eval_bar, eval_for_ui, current_depth)
+
+        except SearchCancelledException:
+            # This is expected when the user makes a move or toggles analysis off
+            pass
+        finally:
+            print(f"{self.bot_name} ({self.color}): Pondering stopped.")
+    ### --- END ANALYSIS MODE --- ###
         
 # -----------------------------------------------------------------------------
 # Piece-Square Tables (PSTs) and Material Values for this Variant
