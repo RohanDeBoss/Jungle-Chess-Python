@@ -1,6 +1,4 @@
 # gamelogic.py (v3.2 - King Logic Fix)
-# --- Versioning ---
-# v3.2 (King Logic Fix)
 # - Rewrote King.get_valid_moves to correctly implement the 1- and 2-square move.
 # - The previous implementation had a "slider" bug that prevented the 2-square leap.
 
