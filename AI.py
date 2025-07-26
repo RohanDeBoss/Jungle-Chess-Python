@@ -1,8 +1,7 @@
-# AI.py (v7.3 - Adaptive NMP)
-# - Implemented Adaptive Null-Move Pruning. The reduction amount now increases
-#   with search depth (e.g., R=2 at low depths, R=3 at higher depths), allowing
-#   for more aggressive and deeper searches where it is safer to do so.
-# - Replaced fixed NMP_REDUCTION with NMP_BASE_REDUCTION and NMP_DEPTH_DIVISOR.
+# AI.py (v7.5 - LMR + NMP!)
+# - Re-enabled NMP to its full strength, which is critical for other heuristics like
+#   LMR to function correctly in a properly pruned search tree.
+# - Restored the search loop to the simpler, more stable structure from v7.4.
 
 import time
 from GameLogic import *
@@ -48,11 +47,8 @@ class ChessBot:
     MATE_SCORE, DRAW_SCORE, DRAW_PENALTY = 1000000, 0, -10
     MAX_Q_SEARCH_DEPTH = 8
     DELTA_PRUNING_MARGIN = 200
-    LMR_DEPTH_THRESHOLD, LMR_MOVE_COUNT_THRESHOLD, LMR_REDUCTION = 3, 4, 1
-    # --- [NEW] Adaptive Null-Move Pruning Constants ---
-    NMP_MIN_DEPTH = 3
-    NMP_BASE_REDUCTION = 2
-    NMP_DEPTH_DIVISOR = 6
+    LMR_DEPTH_THRESHOLD, LMR_MOVE_COUNT_THRESHOLD, LMR_REDUCTION = 3, 4, 2
+    NMP_MIN_DEPTH, NMP_BASE_REDUCTION, NMP_DEPTH_DIVISOR = 3, 2, 6
     BONUS_PV_MOVE, BONUS_GOOD_CAPTURE, BONUS_PROMOTION = 2_000_000, 1_500_000, 1_200_000
     BONUS_CHECKING_MOVE, BONUS_KILLER_1, BONUS_KILLER_2 = 1_000_000, 900_000, 850_000
     BONUS_LOSING_CAPTURE = 300_000
@@ -137,6 +133,7 @@ class ChessBot:
         best_score_this_iter, best_move_this_iter = -float('inf'), None
         alpha, beta = -float('inf'), float('inf')
         ordered_root_moves = self.order_moves(self.board, root_moves, 0, pv_move)
+        
         for i, move in enumerate(ordered_root_moves):
             if self.cancellation_event.is_set(): raise SearchCancelledException()
             
@@ -154,6 +151,7 @@ class ChessBot:
             if score > best_score_this_iter:
                 best_score_this_iter = score
                 best_move_this_iter = move
+            
             alpha = max(alpha, best_score_this_iter)
             
         return best_score_this_iter, best_move_this_iter
@@ -163,11 +161,12 @@ class ChessBot:
         if self.cancellation_event.is_set(): raise SearchCancelledException()
         
         hash_val = board_hash(board, turn)
-        if hash_val in search_path:
+        if ply > 0 and hash_val in search_path:
             return self.DRAW_PENALTY
 
         original_alpha = alpha
         tt_entry = self.tt.get(hash_val)
+
         if ply > 0 and tt_entry and tt_entry.depth >= depth:
             if tt_entry.flag == TT_FLAG_EXACT: return tt_entry.score
             elif tt_entry.flag == TT_FLAG_LOWERBOUND: alpha = max(alpha, tt_entry.score)
@@ -186,16 +185,12 @@ class ChessBot:
         if is_in_check_flag:
             depth += 1
         
-        # --- [UPDATED] Adaptive Null-Move Pruning ---
-        if (depth >= self.NMP_MIN_DEPTH and
-            ply > 0 and
-            not is_in_check_flag and
-            beta < self.MATE_SCORE - 200 and
+        # --- [CRITICAL FIX] Removed the self-sabotaging `not is_pv_node` condition ---
+        if (depth >= self.NMP_MIN_DEPTH and ply > 0 and not is_in_check_flag and
+            beta < self.MATE_SCORE - 200 and 
             any(not isinstance(p, (Pawn, King)) for r in board.grid for p in r if p and p.color == turn)):
             
-            # Calculate reduction based on depth
             nmp_reduction = self.NMP_BASE_REDUCTION + (depth // self.NMP_DEPTH_DIVISOR)
-            
             nmp_search_path = search_path | {hash_val}
             score = -self.negamax(board, depth - 1 - nmp_reduction, -beta, -beta + 1, opponent_turn, ply + 1, nmp_search_path)
             
@@ -204,7 +199,6 @@ class ChessBot:
                 return beta 
 
         new_search_path = search_path | {hash_val}
-
         legal_moves = get_all_legal_moves(board, turn)
         if not legal_moves:
             return -self.MATE_SCORE + ply if is_in_check_flag else self.DRAW_SCORE
@@ -253,7 +247,6 @@ class ChessBot:
         self.tt[hash_val] = TTEntry(alpha, depth, flag, best_move_for_node)
         return alpha
         
-    # ... The rest of the file (qsearch, order_moves, evaluate_board, PSTs) is unchanged ...
     def qsearch(self, board, alpha, beta, turn, ply):
         self.nodes_searched += 1
         if self.cancellation_event.is_set(): raise SearchCancelledException()
@@ -341,12 +334,16 @@ class ChessBot:
                     score -= value
         return score
 
-# (PSTs and Material Values are unchanged)
+# -----------------------------------------------------------------------------
+# Piece-Square Tables (PSTs) and Material Values for this Variant
+# -----------------------------------------------------------------------------
+
 PIECE_VALUES = {
     Pawn: 100, Knight: 800, Bishop: 700,
     Rook: 650, Queen: 900, King: 30000
 }
 ENDGAME_MATERIAL_THRESHOLD = (PIECE_VALUES[Rook] * 2 + PIECE_VALUES[Bishop] + PIECE_VALUES[Knight])
+
 pawn_pst = [
     [0, 0, 0, 0, 0, 0, 0, 0],
     [100, 100, 100, 100, 100, 100, 100, 100],
@@ -357,6 +354,7 @@ pawn_pst = [
     [0, 0, 0, 0, 0, 0, 0, 0],
     [0, 0, 0, 0, 0, 0, 0, 0]
 ]
+
 knight_pst = [
     [-50, -40, -30, -30, -30, -30, -40, -50],
     [-40, -20,   5,  10,  10,   5, -20, -40],
@@ -367,6 +365,7 @@ knight_pst = [
     [-40, -20,   5,  10,  10,   5, -20, -40],
     [-50, -40, -30, -30, -30, -30, -40, -50]
 ]
+
 bishop_pst = [
     [-20, -10, -10, -10, -10, -10, -10, -20],
     [-10,   0,   0,   0,   0,   0,   0, -10],
@@ -377,6 +376,7 @@ bishop_pst = [
     [-10,   5,   0,   0,   0,   0,   5, -10],
     [-20, -10, -10, -10, -10, -10, -10, -20]
 ]
+
 rook_pst = [
     [  0,   0,   0,  10,  10,   0,   0,   0],
     [  5,  10,  10,  20,  20,  10,  10,   5],
@@ -387,6 +387,7 @@ rook_pst = [
     [ -5,   0,   0,   5,   5,   0,   0,  -5],
     [  0,   5,   5,  10,  10,   5,   5,   0]
 ]
+
 queen_pst = [
     [-20, -10, -10,  -5,  -5, -10, -10, -20],
     [-10,   0,   0,   0,   0,   0,   0, -10],
@@ -397,6 +398,7 @@ queen_pst = [
     [-10,   0,   5,   0,   0,   0,   5, -10],
     [-20, -10, -10,  -5,  -5, -10, -10, -20]
 ]
+
 king_midgame_pst = [
     [-30, -40, -40, -50, -50, -40, -40, -30],
     [-30, -40, -40, -50, -50, -40, -40, -30],
@@ -407,6 +409,7 @@ king_midgame_pst = [
     [ 20,  20,   0,   0,   0,   0,  20,  20],
     [ 20,  30,  10,   0,   0,  10,  30,  20]
 ]
+
 king_endgame_pst = [
     [-50, -40, -30, -20, -20, -30, -40, -50],
     [-30, -20, -10,   0,   0, -10, -20, -30],
@@ -417,6 +420,7 @@ king_endgame_pst = [
     [-30, -30,   0,   0,   0,   0, -30, -30],
     [-50, -30, -30, -30, -30, -30, -30, -50]
 ]
+
 PIECE_SQUARE_TABLES = {
     Pawn: pawn_pst, Knight: knight_pst, Bishop: bishop_pst, Rook: rook_pst, 
     Queen: queen_pst, 'king_midgame': king_midgame_pst, 'king_endgame': king_endgame_pst
