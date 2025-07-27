@@ -1,9 +1,8 @@
-# AI.py (v14.0 - Final Performance Build)
-# - Fixed a major performance bottleneck where the tactical estimation function
-#   was called unnecessarily for quiet moves.
-# - Move ordering now performs a fast check to identify potentially tactical moves
-#   (captures or Knight moves) before running the expensive variant-aware
-#   calculation. This drastically reduces overhead and improves overall KNPS.
+# AI.py (v15.1 - Bugfix and Final Build)
+# - Fixed a critical crash in `qsearch` where the `board` argument was
+#   missing in the call to `order_moves`.
+# - This version now correctly implements the fully optimized architecture,
+#   including the efficient `qsearch` and variant-aware move ordering.
 
 import time
 from GameLogic import *
@@ -89,7 +88,6 @@ class ChessBot:
         return f"{'abcdefgh'[c1]}{'87654321'[r1]}-{'abcdefgh'[c2]}{'87654321'[r2]}"
 
     def _get_piece_value(self, piece):
-        # A helper to get a consistent piece value for ordering
         return PIECE_VALUES_MG.get(type(piece), 0)
 
     def _estimate_capture_value(self, board, move):
@@ -108,13 +106,13 @@ class ChessBot:
                         value += self._get_piece_value(adj_piece)
 
         elif isinstance(moving_piece, Rook):
-            if start_pos[0] == end_pos[0]: # Horizontal move
+            if start_pos[0] == end_pos[0]:
                 d = 1 if end_pos[1] > start_pos[1] else -1
                 for c in range(start_pos[1] + d, end_pos[1], d):
                     pierced_piece = board.grid[start_pos[0]][c]
                     if pierced_piece and pierced_piece.color == self.opponent_color:
                         value += self._get_piece_value(pierced_piece)
-            else: # Vertical move
+            else:
                 d = 1 if end_pos[0] > start_pos[0] else -1
                 for r in range(start_pos[0] + d, end_pos[0], d):
                     pierced_piece = board.grid[r][start_pos[1]]
@@ -160,16 +158,15 @@ class ChessBot:
                 moving_piece = board.grid[move[0][0]][move[0][1]]
                 target_piece = board.grid[move[1][0]][move[1][1]]
                 
-                # OPTIMIZATION: Only run expensive estimation on tactical moves
                 is_tactical = (target_piece is not None) or isinstance(moving_piece, Knight)
                 
                 if is_tactical:
                     tactical_value = self._estimate_capture_value(board, move)
                     if tactical_value > 0:
                         score = self.BONUS_GOOD_CAPTURE + tactical_value
-                    else: # Bad or neutral trades, treat like quiet moves for now
+                    else:
                         score = self.history_heuristic_table[color_index][move[0][0]*COLS+move[0][1]][move[1][0]*COLS+move[1][1]]
-                else: # It's a quiet move
+                else:
                     if move == killers[0]: score = self.BONUS_KILLER_1
                     elif move == killers[1]: score = self.BONUS_KILLER_2
                     else: score = self.history_heuristic_table[color_index][move[0][0]*COLS+move[0][1]][move[1][0]*COLS+move[1][1]]
@@ -374,25 +371,22 @@ class ChessBot:
         
         alpha = max(alpha, stand_pat)
 
-        all_pseudo_moves = []
-        for r in range(ROWS):
-            for c in range(COLS):
-                piece = board.grid[r][c]
-                if piece and piece.color == turn:
-                    for end_pos in piece.get_valid_moves(board, (r, c)):
-                        all_pseudo_moves.append(((r, c), end_pos))
+        legal_tactical_moves_with_boards = [
+            (move, board_state)
+            for move, board_state in _generate_legal_moves(board, turn, yield_boards=True)
+            if self._estimate_capture_value(board, move) > 0
+        ]
 
-        tactical_moves = [m for m in all_pseudo_moves if self._estimate_capture_value(board, m) > 0]
-                          
-        ordered_tactical_moves = self.order_moves(board, tactical_moves, ply, in_qsearch=True)
+        moves_only = [m for m, b in legal_tactical_moves_with_boards]
+        ordered_moves = self.order_moves(board, moves_only, ply, in_qsearch=True)
         
-        for move in ordered_tactical_moves:
-            sim_board = board.clone()
-            sim_board.make_move(move[0], move[1])
-            if not is_in_check(sim_board, turn):
-                score = -self.qsearch(sim_board, -beta, -alpha, 'black' if turn == 'white' else 'white', ply + 1)
-                if score >= beta: return beta
-                alpha = max(alpha, score)
+        board_map = dict(legal_tactical_moves_with_boards)
+
+        for move in ordered_moves:
+            child_board = board_map[move]
+            score = -self.qsearch(child_board, -beta, -alpha, 'black' if turn == 'white' else 'white', ply + 1)
+            if score >= beta: return beta
+            alpha = max(alpha, score)
             
         return alpha
         
