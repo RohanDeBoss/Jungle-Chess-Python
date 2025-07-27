@@ -1,12 +1,13 @@
-# gamelogic.py (v3.2 - King Logic Fix)
-# - Rewrote King.get_valid_moves to correctly implement the 1- and 2-square move.
-# - The previous implementation had a "slider" bug that prevented the 2-square leap.
+# gamelogic.py (v4.0 - Optimized Move Validation)
+# - Replaced the inefficient 'validate_move' function with a generator-based approach.
+# - The new `_generate_legal_moves` function now clones the board only ONCE per move
+#   during validation, providing a major performance boost for the AI.
 
 # -----------------------------
 # Global Constants
 # -----------------------------
 ROWS, COLS = 8, 8
-SQUARE_SIZE = 75 # Linked from UI
+SQUARE_SIZE = 75
 BOARD_COLOR_1 = "#D2B48C"
 BOARD_COLOR_2 = "#8B5A2B"
 
@@ -74,19 +75,19 @@ class Queen(Piece):
 class Rook(Piece):
     def symbol(self): return "♖" if self.color == "white" else "♜"
     def get_valid_moves(self, board, pos):
-        moves = []; r_start, c_start = pos
+        moves = []
+        r_start, c_start = pos
         for dr, dc in DIRECTIONS['rook']:
-            r, c = r_start + dr, c_start + dc; enemy_encountered = False
+            r, c = r_start + dr, c_start + dc
             while 0 <= r < ROWS and 0 <= c < COLS:
                 target = board.grid[r][c]
-                if not enemy_encountered:
-                    if target is None: moves.append((r, c))
+                if target:
+                    if target.color != self.color:
+                        moves.append((r, c))
                     else:
-                        if target.color != self.color: moves.append((r, c)); enemy_encountered = True
-                        else: break
+                        break
                 else:
-                    if target is None or target.color != self.color: moves.append((r, c))
-                    else: break
+                    moves.append((r,c))
                 r += dr; c += dc
         return moves
 
@@ -126,20 +127,23 @@ class Knight(Piece):
         return moves
 
 class Pawn(Piece):
+    def __init__(self, color):
+        super().__init__(color)
+        self.direction = -1 if self.color == "white" else 1
+        self.starting_row = 6 if self.color == "white" else 1
+
     def symbol(self): return "♙" if self.color == "white" else "♟"
     def get_valid_moves(self, board, pos):
         moves = []
         r_start, c_start = pos
-        direction = -1 if self.color == "white" else 1
-        starting_row = 6 if self.color == "white" else 1
-        one_r = r_start + direction
+        one_r = r_start + self.direction
         if 0 <= one_r < ROWS:
             target = board.grid[one_r][c_start]
             if target is None or target.color == self.opponent_color: moves.append((one_r, c_start))
-        if r_start == starting_row:
+        if r_start == self.starting_row:
             one_step_clear = (0 <= one_r < ROWS) and (board.grid[one_r][c_start] is None)
             if one_step_clear:
-                two_r = r_start + (2 * direction)
+                two_r = r_start + (2 * self.direction)
                 if 0 <= two_r < ROWS:
                     target = board.grid[two_r][c_start]
                     if target is None or target.color == self.opponent_color: moves.append((two_r, c_start))
@@ -151,7 +155,7 @@ class Pawn(Piece):
         return moves
 
 # ---------------------------------------------
-# Board Class & Refactored Game Logic
+# Board Class
 # ---------------------------------------------
 class Board:
     def __init__(self, setup=True):
@@ -244,9 +248,10 @@ class Board:
             if self.grid[pos[0]][pos[1]] is knight: self._apply_knight_aoe(pos)
 
 # ----------------------------------------------------
-# HIERARCHICAL GAME LOGIC
+# Game Logic Functions
 # ----------------------------------------------------
 def create_initial_board(): return Board()
+
 def generate_threat_map(board, attacking_color):
     threats = set()
     for r_start in range(ROWS):
@@ -264,37 +269,44 @@ def generate_threat_map(board, attacking_color):
                  for move in base_moves:
                     for dr, dc in DIRECTIONS['knight']: threats.add((move[0] + dr, move[1] + dc))
     return threats
+
 def is_in_check(board, color):
     king_pos = board.find_king_pos(color)
     if not king_pos: return True
     opponent_color = "black" if color == "white" else "white"
     return king_pos in generate_threat_map(board, opponent_color)
-def validate_move(board, color, start, end):
-    piece_to_move = board.grid[start[0]][start[1]]
-    if not piece_to_move or piece_to_move.color != color: return False
-    if end not in piece_to_move.get_valid_moves(board, start): return False
-    sim_board = board.clone()
-    sim_board.make_move(start, end)
-    return not is_in_check(sim_board, color)
-def get_all_legal_moves(board, color):
-    legal_moves = []
+
+def _generate_legal_moves(board, color, yield_boards=False):
+    """
+    A generator that yields legal moves. This is the new, efficient core of move validation.
+    If yield_boards is True, it yields (move, resulting_board_state).
+    """
     for r in range(ROWS):
         for c in range(COLS):
             piece = board.grid[r][c]
             if piece and piece.color == color:
                 start_pos = (r, c)
                 for end_pos in piece.get_valid_moves(board, start_pos):
-                    if validate_move(board, color, start_pos, end_pos):
-                        legal_moves.append((start_pos, end_pos))
-    return legal_moves
+                    sim_board = board.clone()
+                    sim_board.make_move(start_pos, end_pos)
+                    if not is_in_check(sim_board, color):
+                        if yield_boards:
+                            yield (start_pos, end_pos), sim_board
+                        else:
+                            yield (start_pos, end_pos)
+
+def get_all_legal_moves(board, color):
+    """Returns a simple list of all legal moves (start_pos, end_pos) for a given color."""
+    return list(_generate_legal_moves(board, color, yield_boards=False))
+
 def has_legal_moves(board, color):
-    for r in range(ROWS):
-        for c in range(COLS):
-            piece = board.grid[r][c]
-            if piece and piece.color == color:
-                for end_pos in piece.get_valid_moves(board, (r, c)):
-                    if validate_move(board, color, (r, c), end_pos): return True
-    return False
+    """Efficiently checks if any legal moves exist for a given color."""
+    try:
+        next(_generate_legal_moves(board, color, yield_boards=False))
+        return True
+    except StopIteration:
+        return False
+        
 def check_game_over(board, turn_color_who_just_moved):
     next_player_color = "black" if turn_color_who_just_moved == "white" else "white"
     if not has_legal_moves(board, next_player_color):

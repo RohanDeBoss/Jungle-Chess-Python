@@ -1,40 +1,25 @@
-# AI.py (v7.8 - Tapered Queen/Rook Eval)
-# - Implemented Tapered Evaluation for the Queen and Rook to test a new strategic hypothesis.
-#   -Testing new rook and queen values for midgame and endgame:
-# - Replaced the static is_endgame() function with a dynamic 'phase' calculation.
+# AI.py (v9.1 - Massive Optimization)
+# - Implemented a highly optimized quiescence search (qsearch).
+# - Modified to send a log message with eval at every depth, for all modes.
 
 import time
 from GameLogic import *
 import random
 from collections import namedtuple
 
-# --- [NEW] Tapered Piece Values for Jungle Chess ---
-# Midgame values - Reflecting the start of the game
+from GameLogic import _generate_legal_moves
+
+# --- Tapered Piece Values for Jungle Chess ---
 PIECE_VALUES_MG = {
-    Pawn: 100,
-    Knight: 800,
-    Bishop: 700,
-    Rook: 600,      # Starts trapped, less valuable.
-    Queen: 850,     # High potential for devastating explosions.
-    King: 20000
+    Pawn: 100, Knight: 800, Bishop: 700, Rook: 600, Queen: 850, King: 20000
 }
-
-# Endgame values - Reflecting an open board with fewer pieces
 PIECE_VALUES_EG = {
-    Pawn: 100,      # Pawn value remains the baseline.
-    Knight: 800,
-    Bishop: 650,
-    Rook: 850,      # Dominates an open board.
-    Queen: 550,     # Fewer targets, value drops significantly.
-    King: 20000
+    Pawn: 100, Knight: 800, Bishop: 650, Rook: 850, Queen: 550, King: 20000
 }
-
-# Total non-pawn/king material value at the start of the game, used to determine game phase.
 INITIAL_GAME_PHASE = (PIECE_VALUES_MG[Rook] * 4 + PIECE_VALUES_MG[Knight] * 4 +
                       PIECE_VALUES_MG[Bishop] * 4 + PIECE_VALUES_MG[Queen] * 2)
 
-
-# (Zobrist/TT setup is unchanged)
+# Zobrist/TT setup
 ZOBRIST_TABLE = None
 def initialize_zobrist_table():
     global ZOBRIST_TABLE
@@ -102,7 +87,6 @@ class ChessBot:
 
     def make_move(self):
         try:
-            best_move_overall = None
             root_moves = get_all_legal_moves(self.board, self.color)
             if not root_moves:
                 self._report_move(None)
@@ -120,22 +104,23 @@ class ChessBot:
                     iter_duration = time.time() - iter_start_time
                     knps = (self.nodes_searched / iter_duration / 1000) if iter_duration > 0 else 0
                     eval_for_ui = best_score_this_iter if self.color == 'white' else -best_score_this_iter
+                    move_str = self._format_move(best_move_this_iter)
                     
-                    # [NEW] Reordered log message format
-                    log_msg = f"  > {self.bot_name} (Depth {current_depth}): Eval={eval_for_ui/100:+.2f}, Nodes={self.nodes_searched}, KNPS={knps:.1f}, Time={iter_duration:.2f}s"
+                    log_msg = f"  > {self.bot_name} (D{current_depth}): {move_str}, Eval={eval_for_ui/100:+.2f}, Nodes={self.nodes_searched}, KNPS={knps:.1f}, Time={iter_duration:.2f}s"
                     
                     self._report_log(log_msg)
                     self._report_eval(best_score_this_iter, None)
                 else:
                     raise SearchCancelledException()
+            
             self._report_move(best_move_overall)
+
         except SearchCancelledException:
             self._report_log(f"AI ({self.color}): Search cancelled.")
             self._report_move(None)
 
     def ponder_indefinitely(self):
         try:
-            best_move_overall = None
             root_moves = get_all_legal_moves(self.board, self.color)
             if not root_moves: return
             best_move_overall = root_moves[0]
@@ -148,8 +133,11 @@ class ChessBot:
                     best_move_overall = best_move_this_iter
                     iter_duration = time.time() - iter_start_time
                     knps = (self.nodes_searched / iter_duration / 1000) if iter_duration > 0 else 0
+                    eval_for_ui = best_score_this_iter if self.color == 'white' else -best_score_this_iter
                     move_str = self._format_move(best_move_this_iter)
-                    log_msg = f"  > Analysis (D{current_depth}): {move_str}, Time={iter_duration:.2f}s, Nodes={self.nodes_searched}, KNPS={knps:.1f}"
+                    
+                    log_msg = f"  > {self.bot_name} (D{current_depth}): {move_str}, Eval={eval_for_ui/100:+.2f}, Nodes={self.nodes_searched}, KNPS={knps:.1f}, Time={iter_duration:.2f}s"
+
                     self._report_log(log_msg)
                     self._report_eval(best_score_this_iter, current_depth)
                 else:
@@ -161,14 +149,16 @@ class ChessBot:
         self.nodes_searched = 0
         best_score_this_iter, best_move_this_iter = -float('inf'), None
         alpha, beta = -float('inf'), float('inf')
-        ordered_root_moves = self.order_moves(self.board, root_moves, 0, pv_move)
         
+        ordered_root_moves = self.order_moves(self.board, root_moves, 0, pv_move)
+        move_to_board_map = {m: b for m, b in _generate_legal_moves(self.board, self.color, yield_boards=True)}
+
         for i, move in enumerate(ordered_root_moves):
             if self.cancellation_event.is_set(): raise SearchCancelledException()
             
-            child_board = self.board.clone()
-            child_board.make_move(move[0], move[1])
-            
+            child_board = move_to_board_map.get(move)
+            if not child_board: continue
+
             search_path = {root_hash}
             child_hash = board_hash(child_board, self.opponent_color)
             self.position_counts[child_hash] = self.position_counts.get(child_hash, 0) + 1
@@ -227,19 +217,22 @@ class ChessBot:
                 return beta 
 
         new_search_path = search_path | {hash_val}
-        legal_moves = get_all_legal_moves(board, turn)
-        if not legal_moves:
+        
+        legal_moves_list = get_all_legal_moves(board, turn)
+        if not legal_moves_list:
             return -self.MATE_SCORE + ply if is_in_check_flag else self.DRAW_SCORE
 
         hash_move = tt_entry.best_move if tt_entry else None
-        ordered_moves = self.order_moves(board, legal_moves, ply, hash_move)
+        ordered_moves = self.order_moves(board, legal_moves_list, ply, hash_move)
+        move_to_board_map = {m: b for m, b in _generate_legal_moves(board, turn, yield_boards=True)}
+        
         best_move_for_node = None
         
         for i, move in enumerate(ordered_moves):
             is_capture = board.grid[move[1][0]][move[1][1]] is not None
-            child_board = board.clone()
-            child_board.make_move(move[0], move[1])
-            
+            child_board = move_to_board_map.get(move)
+            if not child_board: continue
+
             child_hash = board_hash(child_board, opponent_turn)
             self.position_counts[child_hash] = self.position_counts.get(child_hash, 0) + 1
             
@@ -283,39 +276,46 @@ class ChessBot:
         stand_pat = self.evaluate_board(board, turn)
         if stand_pat >= beta: return beta
         
-        # Use the highest possible piece value for delta pruning margin
         biggest_gain = PIECE_VALUES_MG[Queen] + self.DELTA_PRUNING_MARGIN
         if stand_pat + biggest_gain < alpha: return alpha
         
         alpha = max(alpha, stand_pat)
 
-        legal_moves = get_all_legal_moves(board, turn)
-        tactical_moves = [m for m in legal_moves if board.grid[m[1][0]][m[1][1]] is not None or 
-                          (isinstance(board.grid[m[0][0]][m[0][1]], Pawn) and (m[1][0] in [0, ROWS - 1])) or
-                          self._is_checking_move(board, m, turn)]
+        all_pseudo_moves = []
+        for r in range(ROWS):
+            for c in range(COLS):
+                piece = board.grid[r][c]
+                if piece and piece.color == turn:
+                    for end_pos in piece.get_valid_moves(board, (r, c)):
+                        all_pseudo_moves.append(((r, c), end_pos))
+
+        tactical_moves = [m for m in all_pseudo_moves if board.grid[m[1][0]][m[1][1]] is not None or 
+                          (isinstance(board.grid[m[0][0]][m[0][1]], Pawn) and (m[1][0] in [0, ROWS - 1]))]
                           
         ordered_tactical_moves = self.order_moves(board, tactical_moves, ply, in_qsearch=True)
+        
         for move in ordered_tactical_moves:
-            child_board = board.clone()
-            child_board.make_move(move[0], move[1])
-            score = -self.qsearch(child_board, -beta, -alpha, 'black' if turn == 'white' else 'white', ply + 1)
-            if score >= beta: return beta
-            alpha = max(alpha, score)
+            sim_board = board.clone()
+            sim_board.make_move(move[0], move[1])
+            if not is_in_check(sim_board, turn):
+                score = -self.qsearch(sim_board, -beta, -alpha, 'black' if turn == 'white' else 'white', ply + 1)
+                if score >= beta: return beta
+                alpha = max(alpha, score)
+            
         return alpha
 
-    def _is_checking_move(self, board, move, turn):
-        sim_board = board.clone()
-        sim_board.make_move(move[0], move[1])
-        return is_in_check(sim_board, 'black' if turn == 'white' else 'white')
-
     def order_moves(self, board, moves, ply, hash_move=None, in_qsearch=False):
-        if not moves:
-            return []
-
+        if not moves: return []
         scores = {}
         killers = self.killer_moves[ply] if ply < len(self.killer_moves) else [None, None]
         
-        moving_color = board.grid[moves[0][0][0]][moves[0][0][1]].color
+        first_piece = None
+        for m in moves:
+            p = board.grid[m[0][0]][m[0][1]]
+            if p: first_piece = p; break
+        if not first_piece: return []
+        
+        moving_color = first_piece.color
         color_index = 0 if moving_color == 'white' else 1
         
         for move in moves:
@@ -324,10 +324,11 @@ class ChessBot:
             moving_piece = board.grid[start_pos[0]][start_pos[1]]
             target_piece = board.grid[end_pos[0]][end_pos[1]]
             
+            if not moving_piece: continue
+
             if move == hash_move:
                 score = self.BONUS_PV_MOVE
             elif target_piece is not None:
-                # MVV-LVA now uses MG values as a default, since most captures happen earlier
                 mvv_lva_score = PIECE_VALUES_MG.get(type(target_piece), 0) - PIECE_VALUES_MG.get(type(moving_piece), 0)
                 score = self.BONUS_GOOD_CAPTURE + mvv_lva_score
             else:
@@ -340,7 +341,6 @@ class ChessBot:
         return moves
         
     def evaluate_board(self, board, turn_to_move):
-        # --- 1. Calculate Game Phase ---
         current_phase_val = 0
         for r in range(ROWS):
             for c in range(COLS):
@@ -350,13 +350,11 @@ class ChessBot:
 
         phase = min(1.0, current_phase_val / INITIAL_GAME_PHASE) if INITIAL_GAME_PHASE > 0 else 0
 
-        # --- 2. Calculate Tapered Score ---
         score = 0
         for r in range(ROWS):
             for c in range(COLS):
                 piece = board.grid[r][c]
-                if not piece:
-                    continue
+                if not piece: continue
 
                 mg_value = PIECE_VALUES_MG.get(type(piece), 0)
                 eg_value = PIECE_VALUES_EG.get(type(piece), 0)
@@ -364,31 +362,21 @@ class ChessBot:
 
                 pst = PIECE_SQUARE_TABLES.get(type(piece))
                 if isinstance(piece, King):
-                    is_endgame_phase = phase < 0.4 # Threshold for switching king safety logic
+                    is_endgame_phase = phase < 0.4
                     pst = PIECE_SQUARE_TABLES['king_endgame'] if is_endgame_phase else PIECE_SQUARE_TABLES['king_midgame']
 
                 if pst:
-                    piece_value += pst[r][c] if piece.color == 'white' else pst[ROWS - 1 - r][c]
-                
-                if piece.color == turn_to_move:
+                    pst_value = pst[r][c] if piece.color == 'white' else pst[ROWS - 1 - r][c]
+                    piece_value += pst_value
+
+                if piece.color == 'white':
                     score += piece_value
                 else:
                     score -= piece_value
-                    
-        return int(score)
+        
+        return int(score) if turn_to_move == 'white' else int(-score)
 
-# -----------------------------------------------------------------------------
-# Piece-Square Tables (PSTs) and Material Values for this Variant
-# -----------------------------------------------------------------------------
-# THIS SECTION IS NOW OBSOLETE AND REPLACED BY THE TAPERED VALUES AT THE TOP,
-# BUT IS KEPT FOR REFERENCE. THE PSTs ARE STILL USED.
-#
-# PIECE_VALUES = {
-#     Pawn: 100, Knight: 800, Bishop: 700,
-#     Rook: 650, Queen: 900, King: 30000
-# }
-# ENDGAME_MATERIAL_THRESHOLD = (PIECE_VALUES[Rook] * 2 + PIECE_VALUES[Bishop] + PIECE_VALUES[Knight])
-
+# Piece-Square Tables (PSTs)
 pawn_pst = [
     [0, 0, 0, 0, 0, 0, 0, 0],
     [100, 100, 100, 100, 100, 100, 100, 100],
