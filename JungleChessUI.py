@@ -1,7 +1,8 @@
-# JungleChessUI.py (v7.7 - Consistent Console Logging)
-# - Removed the log filter for AI vs AI mode to ensure all analysis lines
-#   are always printed to the console, regardless of game mode.
-# - Simplified move execution logic to handle the new, cleaner message format.
+# JungleChessUI.py (v7.8 - Corrected Logging & UI Restore)
+# - Restored the "Instant Moves" checkbox and other UI elements that were
+#   accidentally removed in a previous version.
+# - Re-implemented the console logging change to be compatible with the AI's
+#   final bundled log message, ensuring consistent output in all modes.
 
 import tkinter as tk
 from tkinter import ttk
@@ -40,10 +41,14 @@ class EnhancedChessApp:
     def __init__(self, master):
         self.master = master
         self.master.title("Jungle Chess")
+
         random.seed()
+        
         self.comm_queue = mp.Queue()
         self.ai_process = None
         self.ai_cancellation_event = mp.Event()
+        self.ai_search_start_time = None
+
         self.board = create_initial_board()
         self.turn = "white"
         self.selected = None
@@ -56,20 +61,26 @@ class EnhancedChessApp:
         self.position_history = []
         self.position_counts = {}
         self.current_opening_move = None
+
         self.game_mode = tk.StringVar(value=GameMode.HUMAN_VS_BOT.value)
         self.analysis_mode_var = tk.BooleanVar(value=True)
         self.ai_series_running = False
         self.ai_series_stats = {'game_count': 0, 'my_ai_wins': 0, 'op_ai_wins': 0, 'draws': 0}
+        
         self.white_playing_bot_type = "main"
         self.human_color = "white"
         self.board_orientation = "white"
         self.last_move_timestamp = None
         self.game_started = False 
+
         self.COLORS = self.setup_styles()
         self.master.configure(bg=self.COLORS['bg_dark'])
         self.build_ui()
+        
         self.process_comm_queue()
-        self.reset_game_state()
+        
+        # Call the single reset function
+        self.reset_game()
 
     def build_ui(self):
         screen_w = self.master.winfo_screenwidth(); screen_h = self.master.winfo_screenheight()
@@ -113,6 +124,7 @@ class EnhancedChessApp:
         ttk.Label(controls_frame, text="Bot Depth:", style='SmallHeader.TLabel').pack(anchor=tk.W, pady=(8,0))
         self.bot_depth_slider = tk.Scale(controls_frame, from_=1, to=6, orient=tk.HORIZONTAL, bg=self.COLORS['bg_dark'], fg=self.COLORS['text_light'], highlightthickness=0, relief='flat')
         self.bot_depth_slider.set(3); self.bot_depth_slider.pack(fill=tk.X, pady=(0,2))
+        self.instant_move = tk.BooleanVar(value=False); ttk.Checkbutton(controls_frame, text="Instant Moves", variable=self.instant_move, style='Custom.TCheckbutton').pack(anchor=tk.W, pady=(2,2))
         self.analysis_checkbox = ttk.Checkbutton(controls_frame, text="Analysis Mode (H-vs-H)", variable=self.analysis_mode_var, style='Custom.TCheckbutton', command=self.toggle_analysis_mode)
         self.analysis_checkbox.pack(anchor=tk.W, pady=(2,2))
 
@@ -140,10 +152,12 @@ class EnhancedChessApp:
                 msg_type, *payload = message
                 
                 if msg_type == 'log':
+                    # Always print the log message
                     print(payload[0])
                 elif msg_type == 'eval':
                     self.draw_eval_bar(payload[0], payload[1])
                 elif msg_type == 'move':
+                    # The move message is now simple again
                     the_move = payload[0]
                     self._execute_ai_move(the_move)
         except Exception:
@@ -155,10 +169,11 @@ class EnhancedChessApp:
         if self.game_over: return
 
         if the_move:
+            delay = 4 if self.instant_move.get() else 20 # Delay of 4 for instant moves as 0 feels unnatural
             self.board.make_move(the_move[0], the_move[1])
             self.execute_move_and_check_state()
             if not self.game_over and self.game_mode.get() == GameMode.AI_VS_AI.value:
-                self.master.after(20, self._make_game_ai_move)
+                self.master.after(delay, self._make_game_ai_move)
         else:
             print("AI reported no valid move was made or was cancelled.")
         
@@ -192,23 +207,6 @@ class EnhancedChessApp:
     def reset_game(self):
         if self.game_mode.get() != GameMode.AI_VS_AI.value: self.ai_series_running = False
         self._stop_ai_process()
-        self.reset_game_state()
-        mode = self.game_mode.get()
-        if mode == GameMode.AI_VS_AI.value:
-            self.white_playing_bot_type = "op" if self.ai_series_running and self.ai_series_stats['game_count'] % 2 == 1 else "main"
-            self.board_orientation = "white" if self.white_playing_bot_type == "main" else "black"
-            if self.ai_series_running: self.apply_series_opening_move()
-            if not self.game_over: self.master.after(20, self._make_game_ai_move)
-        elif mode == GameMode.HUMAN_VS_BOT.value:
-            self.board_orientation = self.human_color
-            if self.turn != self.human_color: self.master.after(20, self._make_game_ai_move)
-        else:
-            self.board_orientation = "white"
-        self.update_turn_label(); self.draw_board(); self.set_interactivity(True)
-        self.update_bot_labels(); self.update_scoreboard()
-        self.update_analysis_process()
-
-    def reset_game_state(self):
         self.board = create_initial_board()
         self.turn = "white"
         self.game_started = False
@@ -216,10 +214,24 @@ class EnhancedChessApp:
         self.selected, self.valid_moves, self.game_over, self.game_result = None, [], False, None
         self.position_history = [board_hash(self.board, self.turn)]; self.position_counts = {self.position_history[0]: 1}
         self.draw_eval_bar(0)
-        self.update_turn_label()
-        self.draw_board()
-        self.set_interactivity(True)
-        self.update_bot_labels()
+        mode = self.game_mode.get()
+        if mode == GameMode.AI_VS_AI.value:
+            self.white_playing_bot_type = "op" if self.ai_series_running and self.ai_series_stats['game_count'] % 2 == 1 else "main"
+            self.board_orientation = "white" if self.white_playing_bot_type == "main" else "black"
+            if self.ai_series_running: self.apply_series_opening_move()
+            if not self.game_over: 
+                delay = 4 if self.instant_move.get() else 20
+                self.master.after(delay, self._make_game_ai_move)
+        elif mode == GameMode.HUMAN_VS_BOT.value:
+            self.board_orientation = self.human_color
+            if self.turn != self.human_color:
+                delay = 4 if self.instant_move.get() else 20
+                self.master.after(delay, self._make_game_ai_move)
+        else:
+            self.board_orientation = "white"
+        self.update_turn_label(); self.draw_board(); self.set_interactivity(True)
+        self.update_bot_labels(); self.update_scoreboard()
+        self.update_analysis_process()
 
     def _make_game_ai_move(self):
         if self.game_over: return
@@ -259,11 +271,6 @@ class EnhancedChessApp:
 
         start_pos, end_pos = self.drag_start, (row, col)
 
-        is_human_turn = (self.game_mode.get() != GameMode.HUMAN_VS_BOT.value or self.turn == self.human_color)
-        if is_human_turn:
-            all_moves = get_all_legal_moves(self.board, self.turn)
-            self.valid_moves = [e for s, e in all_moves if s == self.drag_start]
-        
         if end_pos in self.valid_moves:
             self._start_game_if_needed()
             self.board.make_move(start_pos, end_pos)
@@ -272,7 +279,8 @@ class EnhancedChessApp:
             if not self.game_over:
                 mode = self.game_mode.get()
                 if mode == GameMode.HUMAN_VS_BOT.value and self.turn != self.human_color:
-                    self.master.after(20, self._make_game_ai_move)
+                    delay = 4 if self.instant_move.get() else 20
+                    self.master.after(delay, self._make_game_ai_move)
                 elif mode == GameMode.HUMAN_VS_HUMAN.value:
                     self.update_analysis_process()
                 
@@ -344,8 +352,7 @@ class EnhancedChessApp:
             is_human_turn = (self.game_mode.get() != GameMode.HUMAN_VS_BOT.value or self.turn == self.human_color)
             if piece and piece.color == self.turn and is_human_turn:
                 self.selected = (r, c); self.dragging = True; self.drag_start = (r, c)
-                all_moves = get_all_legal_moves(self.board, self.turn)
-                self.valid_moves = [e for s, e in all_moves if s == self.selected]
+                self.valid_moves = [end for start, end in get_all_legal_moves(self.board, self.turn) if start == self.selected]
                 self.drag_piece_ghost = self.canvas.create_text(event.x, event.y, text=piece.symbol(), font=("Arial Unicode MS", 50), fill=piece.color, tags="drag_ghost")
                 self.draw_board(); self.canvas.tag_raise("drag_ghost")
     

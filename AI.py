@@ -1,6 +1,9 @@
-# AI.py (v9.1 - Massive Optimization)
-# - Implemented a highly optimized quiescence search (qsearch).
-# - Modified to send a log message with eval at every depth, for all modes.
+# AI.py (v14.0 - Final Performance Build)
+# - Fixed a major performance bottleneck where the tactical estimation function
+#   was called unnecessarily for quiet moves.
+# - Move ordering now performs a fast check to identify potentially tactical moves
+#   (captures or Knight moves) before running the expensive variant-aware
+#   calculation. This drastically reduces overhead and improves overall KNPS.
 
 import time
 from GameLogic import *
@@ -84,6 +87,96 @@ class ChessBot:
         if not move: return "None"
         (r1, c1), (r2, c2) = move
         return f"{'abcdefgh'[c1]}{'87654321'[r1]}-{'abcdefgh'[c2]}{'87654321'[r2]}"
+
+    def _get_piece_value(self, piece):
+        # A helper to get a consistent piece value for ordering
+        return PIECE_VALUES_MG.get(type(piece), 0)
+
+    def _estimate_capture_value(self, board, move):
+        start_pos, end_pos = move
+        moving_piece = board.grid[start_pos[0]][start_pos[1]]
+        captured_piece = board.grid[end_pos[0]][end_pos[1]]
+        
+        value = self._get_piece_value(captured_piece) if captured_piece else 0
+        
+        if isinstance(moving_piece, Queen):
+            for dr, dc in ADJACENT_DIRS:
+                adj_r, adj_c = end_pos[0] + dr, end_pos[1] + dc
+                if 0 <= adj_r < ROWS and 0 <= adj_c < COLS:
+                    adj_piece = board.grid[adj_r][adj_c]
+                    if adj_piece and adj_piece.color == self.opponent_color:
+                        value += self._get_piece_value(adj_piece)
+
+        elif isinstance(moving_piece, Rook):
+            if start_pos[0] == end_pos[0]: # Horizontal move
+                d = 1 if end_pos[1] > start_pos[1] else -1
+                for c in range(start_pos[1] + d, end_pos[1], d):
+                    pierced_piece = board.grid[start_pos[0]][c]
+                    if pierced_piece and pierced_piece.color == self.opponent_color:
+                        value += self._get_piece_value(pierced_piece)
+            else: # Vertical move
+                d = 1 if end_pos[0] > start_pos[0] else -1
+                for r in range(start_pos[0] + d, end_pos[0], d):
+                    pierced_piece = board.grid[r][start_pos[1]]
+                    if pierced_piece and pierced_piece.color == self.opponent_color:
+                        value += self._get_piece_value(pierced_piece)
+        
+        elif isinstance(moving_piece, Knight):
+            enemy_knight_destroyed = False
+            for dr, dc in DIRECTIONS['knight']:
+                r, c = end_pos[0] + dr, end_pos[1] + dc
+                if 0 <= r < ROWS and 0 <= c < COLS:
+                    target = board.grid[r][c]
+                    if target and target.color == self.opponent_color:
+                        value += self._get_piece_value(target)
+                        if isinstance(target, Knight):
+                            enemy_knight_destroyed = True
+            
+            if enemy_knight_destroyed:
+                value -= self._get_piece_value(moving_piece)
+                        
+        return value
+
+    def order_moves(self, board, moves, ply, hash_move=None, in_qsearch=False):
+        if not moves: return []
+        scores = {}
+        killers = self.killer_moves[ply] if ply < len(self.killer_moves) else [None, None]
+        
+        first_piece = None
+        for m in moves:
+            p = board.grid[m[0][0]][m[0][1]]
+            if p: first_piece = p; break
+        if not first_piece: return []
+        
+        moving_color = first_piece.color
+        color_index = 0 if moving_color == 'white' else 1
+        
+        for move in moves:
+            score = 0
+            
+            if move == hash_move:
+                score = self.BONUS_PV_MOVE
+            else:
+                moving_piece = board.grid[move[0][0]][move[0][1]]
+                target_piece = board.grid[move[1][0]][move[1][1]]
+                
+                # OPTIMIZATION: Only run expensive estimation on tactical moves
+                is_tactical = (target_piece is not None) or isinstance(moving_piece, Knight)
+                
+                if is_tactical:
+                    tactical_value = self._estimate_capture_value(board, move)
+                    if tactical_value > 0:
+                        score = self.BONUS_GOOD_CAPTURE + tactical_value
+                    else: # Bad or neutral trades, treat like quiet moves for now
+                        score = self.history_heuristic_table[color_index][move[0][0]*COLS+move[0][1]][move[1][0]*COLS+move[1][1]]
+                else: # It's a quiet move
+                    if move == killers[0]: score = self.BONUS_KILLER_1
+                    elif move == killers[1]: score = self.BONUS_KILLER_2
+                    else: score = self.history_heuristic_table[color_index][move[0][0]*COLS+move[0][1]][move[1][0]*COLS+move[1][1]]
+            scores[move] = score
+            
+        moves.sort(key=lambda m: scores.get(m, 0), reverse=True)
+        return moves
 
     def make_move(self):
         try:
@@ -289,8 +382,7 @@ class ChessBot:
                     for end_pos in piece.get_valid_moves(board, (r, c)):
                         all_pseudo_moves.append(((r, c), end_pos))
 
-        tactical_moves = [m for m in all_pseudo_moves if board.grid[m[1][0]][m[1][1]] is not None or 
-                          (isinstance(board.grid[m[0][0]][m[0][1]], Pawn) and (m[1][0] in [0, ROWS - 1]))]
+        tactical_moves = [m for m in all_pseudo_moves if self._estimate_capture_value(board, m) > 0]
                           
         ordered_tactical_moves = self.order_moves(board, tactical_moves, ply, in_qsearch=True)
         
@@ -303,42 +395,6 @@ class ChessBot:
                 alpha = max(alpha, score)
             
         return alpha
-
-    def order_moves(self, board, moves, ply, hash_move=None, in_qsearch=False):
-        if not moves: return []
-        scores = {}
-        killers = self.killer_moves[ply] if ply < len(self.killer_moves) else [None, None]
-        
-        first_piece = None
-        for m in moves:
-            p = board.grid[m[0][0]][m[0][1]]
-            if p: first_piece = p; break
-        if not first_piece: return []
-        
-        moving_color = first_piece.color
-        color_index = 0 if moving_color == 'white' else 1
-        
-        for move in moves:
-            score = 0
-            start_pos, end_pos = move
-            moving_piece = board.grid[start_pos[0]][start_pos[1]]
-            target_piece = board.grid[end_pos[0]][end_pos[1]]
-            
-            if not moving_piece: continue
-
-            if move == hash_move:
-                score = self.BONUS_PV_MOVE
-            elif target_piece is not None:
-                mvv_lva_score = PIECE_VALUES_MG.get(type(target_piece), 0) - PIECE_VALUES_MG.get(type(moving_piece), 0)
-                score = self.BONUS_GOOD_CAPTURE + mvv_lva_score
-            else:
-                if move == killers[0]: score = self.BONUS_KILLER_1
-                elif move == killers[1]: score = self.BONUS_KILLER_2
-                else: score = self.history_heuristic_table[color_index][start_pos[0]*COLS+start_pos[1]][end_pos[0]*COLS+end_pos[1]]
-            scores[move] = score
-            
-        moves.sort(key=lambda m: scores.get(m, 0), reverse=True)
-        return moves
         
     def evaluate_board(self, board, turn_to_move):
         current_phase_val = 0
@@ -346,7 +402,7 @@ class ChessBot:
             for c in range(COLS):
                 piece = board.grid[r][c]
                 if piece and not isinstance(piece, (Pawn, King)):
-                    current_phase_val += PIECE_VALUES_MG.get(type(piece), 0)
+                    current_phase_val += self._get_piece_value(piece)
 
         phase = min(1.0, current_phase_val / INITIAL_GAME_PHASE) if INITIAL_GAME_PHASE > 0 else 0
 
