@@ -1,7 +1,4 @@
-# OPAI.py (v7.0 - Final Search Stability)
-# - Fixed critical bug in repetition tracking that caused stalls at higher depths.
-# - Stabilized the search algorithm by removing Null-Move Pruning which triggered the bug.
-# - Standardized engine logic to ensure perfect compatibility when used as OpponentAI.
+# OPAI.py (v7.5 - LMR + NMP!)
 
 import time
 from GameLogic import *
@@ -47,7 +44,8 @@ class OpponentAI:
     MATE_SCORE, DRAW_SCORE, DRAW_PENALTY = 1000000, 0, -10
     MAX_Q_SEARCH_DEPTH = 8
     DELTA_PRUNING_MARGIN = 200
-    LMR_DEPTH_THRESHOLD, LMR_MOVE_COUNT_THRESHOLD, LMR_REDUCTION = 3, 4, 1
+    LMR_DEPTH_THRESHOLD, LMR_MOVE_COUNT_THRESHOLD, LMR_REDUCTION = 3, 4, 2
+    NMP_MIN_DEPTH, NMP_BASE_REDUCTION, NMP_DEPTH_DIVISOR = 3, 2, 6
     BONUS_PV_MOVE, BONUS_GOOD_CAPTURE, BONUS_PROMOTION = 2_000_000, 1_500_000, 1_200_000
     BONUS_CHECKING_MOVE, BONUS_KILLER_1, BONUS_KILLER_2 = 1_000_000, 900_000, 850_000
     BONUS_LOSING_CAPTURE = 300_000
@@ -132,6 +130,7 @@ class OpponentAI:
         best_score_this_iter, best_move_this_iter = -float('inf'), None
         alpha, beta = -float('inf'), float('inf')
         ordered_root_moves = self.order_moves(self.board, root_moves, 0, pv_move)
+        
         for i, move in enumerate(ordered_root_moves):
             if self.cancellation_event.is_set(): raise SearchCancelledException()
             
@@ -149,6 +148,7 @@ class OpponentAI:
             if score > best_score_this_iter:
                 best_score_this_iter = score
                 best_move_this_iter = move
+            
             alpha = max(alpha, best_score_this_iter)
             
         return best_score_this_iter, best_move_this_iter
@@ -158,11 +158,12 @@ class OpponentAI:
         if self.cancellation_event.is_set(): raise SearchCancelledException()
         
         hash_val = board_hash(board, turn)
-        if hash_val in search_path:
+        if ply > 0 and hash_val in search_path:
             return self.DRAW_PENALTY
 
         original_alpha = alpha
         tt_entry = self.tt.get(hash_val)
+
         if ply > 0 and tt_entry and tt_entry.depth >= depth:
             if tt_entry.flag == TT_FLAG_EXACT: return tt_entry.score
             elif tt_entry.flag == TT_FLAG_LOWERBOUND: alpha = max(alpha, tt_entry.score)
@@ -181,8 +182,20 @@ class OpponentAI:
         if is_in_check_flag:
             depth += 1
         
-        new_search_path = search_path | {hash_val}
+        # --- [CRITICAL FIX] Removed the self-sabotaging `not is_pv_node` condition ---
+        if (depth >= self.NMP_MIN_DEPTH and ply > 0 and not is_in_check_flag and
+            beta < self.MATE_SCORE - 200 and 
+            any(not isinstance(p, (Pawn, King)) for r in board.grid for p in r if p and p.color == turn)):
+            
+            nmp_reduction = self.NMP_BASE_REDUCTION + (depth // self.NMP_DEPTH_DIVISOR)
+            nmp_search_path = search_path | {hash_val}
+            score = -self.negamax(board, depth - 1 - nmp_reduction, -beta, -beta + 1, opponent_turn, ply + 1, nmp_search_path)
+            
+            if score >= beta:
+                self.tt[hash_val] = TTEntry(beta, depth, TT_FLAG_LOWERBOUND, None)
+                return beta 
 
+        new_search_path = search_path | {hash_val}
         legal_moves = get_all_legal_moves(board, turn)
         if not legal_moves:
             return -self.MATE_SCORE + ply if is_in_check_flag else self.DRAW_SCORE
@@ -264,12 +277,8 @@ class OpponentAI:
         return is_in_check(sim_board, 'black' if turn == 'white' else 'white')
 
     def order_moves(self, board, moves, ply, hash_move=None, in_qsearch=False):
-        # This first line correctly handles an empty move list.
         if not moves:
             return []
-
-        # <<< BUG FIX: The faulty 'get_pieces_for_color' block has been removed from here. >>>
-        # The check above is sufficient and correct.
 
         scores = {}
         killers = self.killer_moves[ply] if ply < len(self.killer_moves) else [None, None]
@@ -326,7 +335,6 @@ class OpponentAI:
 # Piece-Square Tables (PSTs) and Material Values for this Variant
 # -----------------------------------------------------------------------------
 
-# Values reflect the destructive power of the pieces
 PIECE_VALUES = {
     Pawn: 100, Knight: 800, Bishop: 700,
     Rook: 650, Queen: 900, King: 30000

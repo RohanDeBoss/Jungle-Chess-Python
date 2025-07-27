@@ -1,7 +1,7 @@
-# JungleChessUI.py (v7.1 - Final Logging Polish)
-# - Relocated the "Stopping process..." log message to make the console output
-#   for analysis restarts more linear and intuitive.
-# - The core game logic is now stable and correct across all modes.
+# JungleChessUI.py (v7.5 - Eval Bar Fix)
+# - Fixed a bug where the evaluation bar would incorrectly reset to 0 between AI moves.
+#   The bar now correctly holds the final evaluation of the previous turn until the next
+#   search begins.
 
 import tkinter as tk
 from tkinter import ttk
@@ -62,7 +62,7 @@ class EnhancedChessApp:
         self.current_opening_move = None
 
         self.game_mode = tk.StringVar(value=GameMode.HUMAN_VS_BOT.value)
-        self.analysis_mode_var = tk.BooleanVar(value=True) # Default to true on startup
+        self.analysis_mode_var = tk.BooleanVar(value=True)
         self.ai_series_running = False
         self.ai_series_stats = {'game_count': 0, 'my_ai_wins': 0, 'op_ai_wins': 0, 'draws': 0}
         
@@ -78,7 +78,6 @@ class EnhancedChessApp:
         
         self.process_comm_queue()
         
-        # Initialize board state without calling reset_game
         self.board = create_initial_board()
         self.turn = "white"
         self.last_move_timestamp = time.time()
@@ -152,17 +151,17 @@ class EnhancedChessApp:
         self.bottom_bot_label = ttk.Label(self.right_panel, text="", font=("Helvetica", 12), background=self.COLORS['bg_medium'], foreground=self.COLORS['text_light']); self.bottom_bot_label.place(relx=0.5, rely=0.98, anchor='s')
 
     def toggle_analysis_mode(self):
-        if self.game_mode.get() == GameMode.HUMAN_VS_HUMAN.value:
-            if self.analysis_mode_var.get():
-                self._restart_analysis_process()
-            else:
-                self._stop_ai_process()
+        self.update_analysis_process()
 
     def process_comm_queue(self):
         try:
             while not self.comm_queue.empty():
                 message = self.comm_queue.get_nowait()
                 msg_type, *payload = message
+                
+                if msg_type == 'log' and self.game_mode.get() == GameMode.AI_VS_AI.value:
+                    continue
+                
                 if msg_type == 'log': print(payload[0])
                 elif msg_type == 'eval': self.draw_eval_bar(payload[0], payload[1])
                 elif msg_type == 'move': self._execute_ai_move(payload[0])
@@ -173,7 +172,11 @@ class EnhancedChessApp:
         if self.game_over: return
 
         if the_move:
-            # The AI now prints its own timing logs, so we remove the one here.
+            if self.game_mode.get() == GameMode.AI_VS_AI.value:
+                move_str = self._format_move(the_move)
+                print(f"  > {self.ai_process.name} chose: {move_str}")
+                # [FIX] The line that incorrectly reset the eval bar has been removed.
+
             self.board.make_move(the_move[0], the_move[1])
             self.execute_move_and_check_state()
             if not self.game_over and self.game_mode.get() == GameMode.AI_VS_AI.value:
@@ -197,6 +200,7 @@ class EnhancedChessApp:
 
     def _stop_ai_process(self):
         if self.ai_process and self.ai_process.is_alive():
+            print(f"Stopping process: {self.ai_process.name} (PID: {self.ai_process.pid})...")
             self.ai_cancellation_event.set()
             self.ai_process.join(timeout=0.5)
             if self.ai_process.is_alive(): self.ai_process.terminate()
@@ -210,11 +214,10 @@ class EnhancedChessApp:
 
     def reset_game(self):
         if self.game_mode.get() != GameMode.AI_VS_AI.value: self.ai_series_running = False
-
         self._stop_ai_process()
         self.board = create_initial_board()
         self.turn = "white"
-        self.game_started = False  # Reset game_started before showing the new game message
+        self.game_started = False
         self._start_game_if_needed()
         self.last_move_timestamp = time.time()
         self.selected, self.valid_moves, self.game_over, self.game_result = None, [], False, None
@@ -235,7 +238,7 @@ class EnhancedChessApp:
         
         self.update_turn_label(); self.draw_board(); self.set_interactivity(True)
         self.update_bot_labels(); self.update_scoreboard()
-        self._start_analysis_if_needed()
+        self.update_analysis_process()
 
     def _make_game_ai_move(self):
         if self.game_over: return
@@ -253,15 +256,14 @@ class EnhancedChessApp:
                 bot_class, bot_name = (OpponentAI, self.OPPONENT_AI_NAME) if self.white_playing_bot_type == 'main' else (ChessBot, self.MAIN_AI_NAME)
         if bot_class:
             self._start_ai_process(bot_class, bot_name, self.bot_depth_slider.get())
-
-    def _start_analysis_if_needed(self):
-        if self.analysis_mode_var.get() and self.game_mode.get() == GameMode.HUMAN_VS_HUMAN.value and not self.game_over:
-            self._restart_analysis_process()
     
-    def _restart_analysis_process(self):
-        """Safely stops the old analysis process and schedules the new one."""
+    def update_analysis_process(self):
         self._stop_ai_process()
-        self.master.after(20, lambda: self._start_ai_process(ChessBot, self.ANALYSIS_AI_NAME, 99))
+        should_run_analysis = (self.analysis_mode_var.get() and 
+                               self.game_mode.get() == GameMode.HUMAN_VS_HUMAN.value and 
+                               not self.game_over)
+        if should_run_analysis:
+            self.master.after(20, lambda: self._start_ai_process(ChessBot, self.ANALYSIS_AI_NAME, 99))
 
     def on_drag_end(self, event):
         is_analysis_process_running = self.is_ai_thinking() and self.ai_process.name == self.ANALYSIS_AI_NAME
@@ -280,12 +282,6 @@ class EnhancedChessApp:
 
         if end_pos in self.valid_moves:
             self._start_game_if_needed()
-            
-            turn_number = len(self.position_history)
-            print(f"\n--- Turn {turn_number} ({self.turn.capitalize()}) ---")
-            
-            # The time is now calculated and printed inside execute_move_and_check_state
-            
             self.board.make_move(start_pos, end_pos)
             self.execute_move_and_check_state()
 
@@ -294,13 +290,22 @@ class EnhancedChessApp:
                 if mode == GameMode.HUMAN_VS_BOT.value and self.turn != self.human_color:
                     self.master.after(20, self._make_game_ai_move)
                 elif mode == GameMode.HUMAN_VS_HUMAN.value:
-                    self._start_analysis_if_needed()
+                    self.update_analysis_process()
                 
         self.drag_start, self.selected, self.valid_moves = None, None, []; self.draw_board(); self.set_interactivity(True)
 
-    def execute_move_and_check_state(self):
+    def execute_move_and_check_state(self, is_opening_move=False):
+        move_time = time.time() - self.last_move_timestamp
         self.last_move_timestamp = time.time()
         player_who_moved = self.turn
+        
+        if not is_opening_move:
+            if self.game_mode.get() != GameMode.HUMAN_VS_HUMAN.value:
+                print() 
+            print(f"--- Turn {len(self.position_history)} ({player_who_moved.capitalize()}) ---")
+            if self.game_mode.get() in [GameMode.HUMAN_VS_HUMAN.value, GameMode.HUMAN_VS_BOT.value] and self.turn == self.human_color:
+                 print(f"  > Human chose move, Time={move_time:.2f}s")
+        
         if not self.game_over: self.switch_turn()
         key = board_hash(self.board, self.turn)
         self.position_history.append(key); self.position_counts[key] = self.position_counts.get(key, 0) + 1
@@ -355,7 +360,6 @@ class EnhancedChessApp:
         is_analysis_process_running = self.is_ai_thinking() and self.ai_process.name == self.ANALYSIS_AI_NAME
         if self.game_over or (self.is_ai_thinking() and not is_analysis_process_running):
             return
-            
         r, c = self.canvas_to_board(event.x, event.y)
         if r != -1:
             piece = self.board.grid[r][c]
@@ -381,104 +385,114 @@ class EnhancedChessApp:
         self.turn = "black" if self.turn == "white" else "white"
 
     def board_to_canvas(self, r, c):
-        if self.board_orientation == "black": x, y = (COLS-1-c)*SQUARE_SIZE, (ROWS-1-r)*SQUARE_SIZE
-        else: x, y = c*SQUARE_SIZE, r*SQUARE_SIZE
+        if self.board_orientation == "black":
+            x, y = (COLS - 1 - c) * SQUARE_SIZE, (ROWS - 1 - r) * SQUARE_SIZE
+        else:
+            x, y = c * SQUARE_SIZE, r * SQUARE_SIZE
         return x, y
 
     def canvas_to_board(self, x, y):
-        if self.board_orientation == "black": c, r = (COLS-1)-(x//SQUARE_SIZE), (ROWS-1)-(y//SQUARE_SIZE)
-        else: c, r = x//SQUARE_SIZE, y//SQUARE_SIZE
-        if 0 <= r < ROWS and 0 <= c < COLS: return (r, c)
-        else: return (-1, -1)
+        if self.board_orientation == "black":
+            c, r = (COLS - 1) - (x // SQUARE_SIZE), (ROWS - 1) - (y // SQUARE_SIZE)
+        else:
+            c, r = x // SQUARE_SIZE, y // SQUARE_SIZE
+        if 0 <= r < ROWS and 0 <= c < COLS:
+            return (r, c)
+        else:
+            return (-1, -1)
 
     def draw_eval_bar(self, eval_score, depth=None):
-        score = eval_score/100.0; w = self.eval_bar_canvas.winfo_width(); h = self.eval_bar_canvas.winfo_height()
+        score = eval_score / 100.0
+        w = self.eval_bar_canvas.winfo_width()
+        h = self.eval_bar_canvas.winfo_height()
         self.eval_bar_canvas.delete("all")
-        if w<=1 or h<=1: return
+        if w <= 1 or h <= 1:
+            return
         for x_pixel in range(w):
-            intensity = int(255*(x_pixel/float(w-1))); color = f"#{intensity:02x}{intensity:02x}{intensity:02x}"
-            self.eval_bar_canvas.create_line(x_pixel,0,x_pixel,h,fill=color)
-        marker_score = max(-1.0,min(1.0,math.tanh(score/20.0))); marker_x = int(((marker_score+1)/2.0)*w)
-        self.eval_bar_canvas.create_line(marker_x,0,marker_x,h,fill=self.COLORS['accent'],width=3)
-        self.eval_bar_canvas.create_line(w//2,0,w//2,h,fill="#666666",width=1)
-        if depth: 
-            eval_text = f"{'+' if score>0 else ''}{score:.2f} (D{depth})"
-            # Also print eval to console for analysis and AI modes
-            if (self.analysis_mode_var.get() and self.game_mode.get() == GameMode.HUMAN_VS_HUMAN.value) or \
-               self.game_mode.get() == GameMode.AI_VS_AI.value:
-                print(f"  > Eval: {'+' if score>0 else ''}{score:.2f}")
-        elif abs(score)<0.05: eval_text = "Even"
-        else: eval_text = f"{'+' if score>0 else ''}{score:.2f}"
+            intensity = int(255 * (x_pixel / float(w - 1)))
+            color = f"#{intensity:02x}{intensity:02x}{intensity:02x}"
+            self.eval_bar_canvas.create_line(x_pixel, 0, x_pixel, h, fill=color)
+        marker_score = max(-1.0, min(1.0, math.tanh(score / 20.0)))
+        marker_x = int(((marker_score + 1) / 2.0) * w)
+        self.eval_bar_canvas.create_line(marker_x, 0, marker_x, h, fill=self.COLORS['accent'], width=3)
+        self.eval_bar_canvas.create_line(w // 2, 0, w // 2, h, fill="#666666", width=1)
+        if depth:
+            eval_text = f"{'+' if score > 0 else ''}{score:.2f} (D{depth})"
+        elif abs(score) < 0.05:
+            eval_text = "Even"
+        else:
+            eval_text = f"{'+' if score > 0 else ''}{score:.2f}"
         self.eval_score_label.config(text=eval_text)
 
     def setup_styles(self):
-        style = ttk.Style(); style.theme_use('clam')
-        C = {'bg_dark':'#1a1a2e','bg_medium':'#16213e','bg_light':'#0f3460','accent':'#e94560','text_light':'#ffffff','text_dark':'#a2a2a2'}
-        style.configure('.', background=C['bg_dark'], foreground=C['text_light']); style.configure('TFrame', background=C['bg_dark'])
-        style.configure('Left.TFrame', background=C['bg_dark']); style.configure('Right.TFrame', background=C['bg_medium']); style.configure('Canvas.TFrame', background=C['bg_medium'])
-        style.configure('Header.TLabel', background=C['bg_dark'], foreground=C['text_light'], font=('Helvetica',14,'bold'), padding=(0,10))
-        style.configure('SmallHeader.TLabel', background=C['bg_dark'], foreground=C['text_light'], font=('Helvetica',13,'bold'), padding=(0,1))
-        style.configure('Status.TLabel', background=C['bg_light'], foreground=C['text_light'], font=('Helvetica',14,'bold'), padding=(11,4), relief='flat')
-        style.configure('Control.TButton', background=C['accent'], foreground=C['text_light'], font=('Helvetica',11,'bold'), padding=(10,8), borderwidth=0, relief='flat')
-        style.map('Control.TButton', background=[('active',C['accent']), ('pressed','#d13550')])
-        style.configure('Custom.TRadiobutton', background=C['bg_dark'], foreground=C['text_light'], font=('Helvetica',11), padding=(5,8))
-        style.map('Custom.TRadiobutton', background=[('active',C['bg_dark'])], indicatorcolor=[('selected',C['accent'])], foreground=[('active',C['accent'])])
-        style.configure('Custom.TCheckbutton', background=C['bg_dark'], foreground=C['text_light'], font=('Helvetica',11), padding=(5,8))
-        style.map('Custom.TCheckbutton', background=[('active',C['bg_dark'])], indicatorcolor=[('selected',C['accent'])], foreground=[('active',C['accent'])])
+        style = ttk.Style()
+        style.theme_use('clam')
+        C = {'bg_dark': '#1a1a2e', 'bg_medium': '#16213e', 'bg_light': '#0f3460', 'accent': '#e94560', 'text_light': '#ffffff', 'text_dark': '#a2a2a2'}
+        style.configure('.', background=C['bg_dark'], foreground=C['text_light'])
+        style.configure('TFrame', background=C['bg_dark'])
+        style.configure('Left.TFrame', background=C['bg_dark'])
+        style.configure('Right.TFrame', background=C['bg_medium'])
+        style.configure('Canvas.TFrame', background=C['bg_medium'])
+        style.configure('Header.TLabel', background=C['bg_dark'], foreground=C['text_light'], font=('Helvetica', 14, 'bold'), padding=(0, 10))
+        style.configure('SmallHeader.TLabel', background=C['bg_dark'], foreground=C['text_light'], font=('Helvetica', 13, 'bold'), padding=(0, 1))
+        style.configure('Status.TLabel', background=C['bg_light'], foreground=C['text_light'], font=('Helvetica', 14, 'bold'), padding=(11, 4), relief='flat')
+        style.configure('Control.TButton', background=C['accent'], foreground=C['text_light'], font=('Helvetica', 11, 'bold'), padding=(10, 8), borderwidth=0, relief='flat')
+        style.map('Control.TButton', background=[('active', C['accent']), ('pressed', '#d13550')])
+        style.configure('Custom.TRadiobutton', background=C['bg_dark'], foreground=C['text_light'], font=('Helvetica', 11), padding=(5, 8))
+        style.map('Custom.TRadiobutton', background=[('active', C['bg_dark'])], indicatorcolor=[('selected', C['accent'])], foreground=[('active', C['accent'])])
+        style.configure('Custom.TCheckbutton', background=C['bg_dark'], foreground=C['text_light'], font=('Helvetica', 11), padding=(5, 8))
+        style.map('Custom.TCheckbutton', background=[('active', C['bg_dark'])], indicatorcolor=[('selected', C['accent'])], foreground=[('active', C['accent'])])
         return C
 
     def create_board_image(self, orientation):
-        img = tk.PhotoImage(width=COLS*SQUARE_SIZE, height=ROWS*SQUARE_SIZE)
+        img = tk.PhotoImage(width=COLS * SQUARE_SIZE, height=ROWS * SQUARE_SIZE)
         for r_draw in range(ROWS):
             for c_draw in range(COLS):
-                color = BOARD_COLOR_1 if (r_draw+c_draw)%2==0 else BOARD_COLOR_2
-                x1,y1 = c_draw*SQUARE_SIZE, r_draw*SQUARE_SIZE; img.put(color, to=(x1,y1,x1+SQUARE_SIZE,y1+SQUARE_SIZE))
+                color = BOARD_COLOR_1 if (r_draw + c_draw) % 2 == 0 else BOARD_COLOR_2
+                x1, y1 = c_draw * SQUARE_SIZE, r_draw * SQUARE_SIZE
+                img.put(color, to=(x1, y1, x1 + SQUARE_SIZE, y1 + SQUARE_SIZE))
         return img
 
     def draw_board(self):
         self.canvas.itemconfig(self.board_image_id, image=self.board_image_white if self.board_orientation == "white" else self.board_image_black)
         self.canvas.delete("highlight", "piece", "check_highlight")
         for r_move, c_move in self.valid_moves:
-            x1, y1 = self.board_to_canvas(r_move, c_move); center_x, center_y = x1 + SQUARE_SIZE//2, y1 + SQUARE_SIZE//2
-            self.canvas.create_oval(center_x-10, center_y-10, center_x+10, center_y+10, fill="#1E90FF", outline="", tags="highlight")
+            x1, y1 = self.board_to_canvas(r_move, c_move)
+            center_x, center_y = x1 + SQUARE_SIZE // 2, y1 + SQUARE_SIZE // 2
+            self.canvas.create_oval(center_x - 10, center_y - 10, center_x + 10, center_y + 10, fill="#1E90FF", outline="", tags="highlight")
         for r in range(ROWS):
             for c in range(COLS):
-                if self.board.grid[r][c]: self.draw_piece_with_check(r, c)
+                if self.board.grid[r][c]:
+                    self.draw_piece_with_check(r, c)
 
     def draw_piece_with_check(self, r, c):
         piece = self.board.grid[r][c]
         if isinstance(piece, King) and is_in_check(self.board, piece.color):
             color = "darkred" if self.game_over and self.game_result and self.game_result[0] == "checkmate" else "red"
-            x1, y1 = self.board_to_canvas(r, c); self.canvas.create_rectangle(x1, y1, x1+SQUARE_SIZE, y1+SQUARE_SIZE, outline=color, width=4, tags="check_highlight")
-        if (r, c) != self.drag_start: self.draw_piece_at_canvas_coords(piece, r, c)
+            x1, y1 = self.board_to_canvas(r, c)
+            self.canvas.create_rectangle(x1, y1, x1 + SQUARE_SIZE, y1 + SQUARE_SIZE, outline=color, width=4, tags="check_highlight")
+        if (r, c) != self.drag_start:
+            self.draw_piece_at_canvas_coords(piece, r, c)
 
     def draw_piece_at_canvas_coords(self, piece, r, c):
-        x, y = self.board_to_canvas(r, c); x_center, y_center = x + SQUARE_SIZE//2, y + SQUARE_SIZE//2
+        x, y = self.board_to_canvas(r, c)
+        x_center, y_center = x + SQUARE_SIZE // 2, y + SQUARE_SIZE // 2
         symbol, font, shadow_font = piece.symbol(), ("Arial Unicode MS", 48), ("Arial", 48)
         if piece.color == "white":
-            self.canvas.create_text(x_center+2, y_center+2, text=symbol, font=shadow_font, fill="#444444", tags="piece")
+            self.canvas.create_text(x_center + 2, y_center + 2, text=symbol, font=shadow_font, fill="#444444", tags="piece")
             self.canvas.create_text(x_center, y_center, text=symbol, font=font, fill="white", tags="piece")
         else:
             self.canvas.create_text(x_center, y_center, text=symbol, font=font, fill="black", tags="piece")
-
+        
     def _start_game_if_needed(self):
         if not self.game_started:
             self.game_started = True
             mode_name = self.game_mode.get()
-            if mode_name == GameMode.HUMAN_VS_HUMAN.value:
-                mode_display = "Human vs Human"
-            elif mode_name == GameMode.HUMAN_VS_BOT.value:
-                mode_display = "Human vs Bot"
-            elif mode_name == GameMode.AI_VS_AI.value:
-                mode_display = "AI vs AI"
-                
+            if mode_name == GameMode.HUMAN_VS_HUMAN.value: mode_display = "Human vs Human"
+            elif mode_name == GameMode.HUMAN_VS_BOT.value: mode_display = "Human vs Bot"
+            elif mode_name == GameMode.AI_VS_AI.value: mode_display = "AI vs AI"
             print("\n" + "="*60 + f"\nNEW GAME: {mode_display}\n" + "="*60)
-            print("\n--- Turn 0 (Starting Position) ---")
-            
-            # Start analysis right away to get initial eval
-            if (self.analysis_mode_var.get() and mode_name == GameMode.HUMAN_VS_HUMAN.value) or \
-               mode_name == GameMode.AI_VS_AI.value:
-                self._restart_analysis_process()
+            self.update_analysis_process()
 
     def update_turn_label(self):
         message = f"Turn: {self.turn.capitalize()}"
@@ -494,15 +508,10 @@ class EnhancedChessApp:
         result_type, winner_color = self.game_result
         if winner_color:
             main_ai_color_for_completed_game = 'white' if self.white_playing_bot_type == 'main' else 'black'
-            if winner_color == main_ai_color_for_completed_game:
-                self.ai_series_stats['my_ai_wins'] += 1
-            else:
-                self.ai_series_stats['op_ai_wins'] += 1
-        else:
-            self.ai_series_stats['draws'] += 1
-        
+            if winner_color == main_ai_color_for_completed_game: self.ai_series_stats['my_ai_wins'] += 1
+            else: self.ai_series_stats['op_ai_wins'] += 1
+        else: self.ai_series_stats['draws'] += 1
         self.update_scoreboard()
-        
         if self.ai_series_running and self.ai_series_stats['game_count'] < 100:
             self.master.after(1000, self.reset_game)
         else:
@@ -525,20 +534,9 @@ class EnhancedChessApp:
         
         if self.current_opening_move:
             start, end = self.current_opening_move
-            print(f"Applying opening move: {start} -> {end}")
+            print(f"Applying opening move: {self._format_move(self.current_opening_move)}")
             self.board.make_move(start, end)
-            
-            player_who_moved = self.turn
-            self.switch_turn()
-            
-            key = board_hash(self.board, self.turn)
-            self.position_history.append(key)
-            self.position_counts[key] = self.position_counts.get(key, 0) + 1
-            
-            status, winner = check_game_over(self.board, player_who_moved)
-            if status:
-                self.game_over = True
-                self.game_result = (status, winner)
+            self.execute_move_and_check_state(is_opening_move=True)
 
     def update_scoreboard(self):
         if self.game_mode.get() == GameMode.AI_VS_AI.value and self.ai_series_running:
@@ -552,6 +550,12 @@ class EnhancedChessApp:
             self.scoreboard_frame.place(relx=1.0, rely=0.0, anchor='ne', x=-15, y=15)
         else:
             self.scoreboard_frame.place_forget()
+
+    def _format_move(self, move):
+        if not move: return "None"
+        (r1, c1), (r2, c2) = move
+        return f"{'abcdefgh'[c1]}{'87654321'[r1]}-{'abcdefgh'[c2]}{'87654321'[r2]}"
+
 
 if __name__ == "__main__":
     mp.freeze_support()

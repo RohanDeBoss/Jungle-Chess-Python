@@ -1,12 +1,38 @@
-# AI.py (v7.5 - LMR + NMP!)
-# - Re-enabled NMP to its full strength, which is critical for other heuristics like
-#   LMR to function correctly in a properly pruned search tree.
-# - Restored the search loop to the simpler, more stable structure from v7.4.
+# AI.py (v7.8 - Tapered Queen/Rook Eval)
+# - Implemented Tapered Evaluation for the Queen and Rook to test a new strategic hypothesis.
+#   -Testing new rook and queen values for midgame and endgame:
+# - Replaced the static is_endgame() function with a dynamic 'phase' calculation.
 
 import time
 from GameLogic import *
 import random
 from collections import namedtuple
+
+# --- [NEW] Tapered Piece Values for Jungle Chess ---
+# Midgame values - Reflecting the start of the game
+PIECE_VALUES_MG = {
+    Pawn: 100,
+    Knight: 800,
+    Bishop: 700,
+    Rook: 600,      # Starts trapped, less valuable.
+    Queen: 850,     # High potential for devastating explosions.
+    King: 20000
+}
+
+# Endgame values - Reflecting an open board with fewer pieces
+PIECE_VALUES_EG = {
+    Pawn: 100,      # Pawn value remains the baseline.
+    Knight: 800,
+    Bishop: 650,
+    Rook: 850,      # Dominates an open board.
+    Queen: 550,     # Fewer targets, value drops significantly.
+    King: 20000
+}
+
+# Total non-pawn/king material value at the start of the game, used to determine game phase.
+INITIAL_GAME_PHASE = (PIECE_VALUES_MG[Rook] * 4 + PIECE_VALUES_MG[Knight] * 4 +
+                      PIECE_VALUES_MG[Bishop] * 4 + PIECE_VALUES_MG[Queen] * 2)
+
 
 # (Zobrist/TT setup is unchanged)
 ZOBRIST_TABLE = None
@@ -47,7 +73,7 @@ class ChessBot:
     MATE_SCORE, DRAW_SCORE, DRAW_PENALTY = 1000000, 0, -10
     MAX_Q_SEARCH_DEPTH = 8
     DELTA_PRUNING_MARGIN = 200
-    LMR_DEPTH_THRESHOLD, LMR_MOVE_COUNT_THRESHOLD, LMR_REDUCTION = 3, 4, 2
+    LMR_DEPTH_THRESHOLD, LMR_MOVE_COUNT_THRESHOLD, LMR_REDUCTION = 3, 4, 1
     NMP_MIN_DEPTH, NMP_BASE_REDUCTION, NMP_DEPTH_DIVISOR = 3, 2, 6
     BONUS_PV_MOVE, BONUS_GOOD_CAPTURE, BONUS_PROMOTION = 2_000_000, 1_500_000, 1_200_000
     BONUS_CHECKING_MOVE, BONUS_KILLER_1, BONUS_KILLER_2 = 1_000_000, 900_000, 850_000
@@ -94,7 +120,10 @@ class ChessBot:
                     iter_duration = time.time() - iter_start_time
                     knps = (self.nodes_searched / iter_duration / 1000) if iter_duration > 0 else 0
                     eval_for_ui = best_score_this_iter if self.color == 'white' else -best_score_this_iter
-                    log_msg = f"  > {self.bot_name} (Depth {current_depth}): Eval={eval_for_ui/100:+.2f}, Nodes={self.nodes_searched}, KNPS={knps:.1f}"
+                    
+                    # [NEW] Reordered log message format
+                    log_msg = f"  > {self.bot_name} (Depth {current_depth}): Eval={eval_for_ui/100:+.2f}, Nodes={self.nodes_searched}, KNPS={knps:.1f}, Time={iter_duration:.2f}s"
+                    
                     self._report_log(log_msg)
                     self._report_eval(best_score_this_iter, None)
                 else:
@@ -185,7 +214,6 @@ class ChessBot:
         if is_in_check_flag:
             depth += 1
         
-        # --- [CRITICAL FIX] Removed the self-sabotaging `not is_pv_node` condition ---
         if (depth >= self.NMP_MIN_DEPTH and ply > 0 and not is_in_check_flag and
             beta < self.MATE_SCORE - 200 and 
             any(not isinstance(p, (Pawn, King)) for r in board.grid for p in r if p and p.color == turn)):
@@ -255,7 +283,8 @@ class ChessBot:
         stand_pat = self.evaluate_board(board, turn)
         if stand_pat >= beta: return beta
         
-        biggest_gain = PIECE_VALUES[Queen] + self.DELTA_PRUNING_MARGIN
+        # Use the highest possible piece value for delta pruning margin
+        biggest_gain = PIECE_VALUES_MG[Queen] + self.DELTA_PRUNING_MARGIN
         if stand_pat + biggest_gain < alpha: return alpha
         
         alpha = max(alpha, stand_pat)
@@ -298,7 +327,8 @@ class ChessBot:
             if move == hash_move:
                 score = self.BONUS_PV_MOVE
             elif target_piece is not None:
-                mvv_lva_score = PIECE_VALUES.get(type(target_piece), 0) - PIECE_VALUES.get(type(moving_piece), 0)
+                # MVV-LVA now uses MG values as a default, since most captures happen earlier
+                mvv_lva_score = PIECE_VALUES_MG.get(type(target_piece), 0) - PIECE_VALUES_MG.get(type(moving_piece), 0)
                 score = self.BONUS_GOOD_CAPTURE + mvv_lva_score
             else:
                 if move == killers[0]: score = self.BONUS_KILLER_1
@@ -309,40 +339,55 @@ class ChessBot:
         moves.sort(key=lambda m: scores.get(m, 0), reverse=True)
         return moves
         
-    def is_endgame(self, board):
-        return sum(PIECE_VALUES.get(type(p), 0) for row in board.grid for p in row if p and not isinstance(p, King)) < ENDGAME_MATERIAL_THRESHOLD
-    
     def evaluate_board(self, board, turn_to_move):
-        score = 0
-        in_endgame = self.is_endgame(board)
+        # --- 1. Calculate Game Phase ---
+        current_phase_val = 0
         for r in range(ROWS):
             for c in range(COLS):
                 piece = board.grid[r][c]
-                if not piece: continue
-                value = PIECE_VALUES.get(type(piece), 0)
-                
+                if piece and not isinstance(piece, (Pawn, King)):
+                    current_phase_val += PIECE_VALUES_MG.get(type(piece), 0)
+
+        phase = min(1.0, current_phase_val / INITIAL_GAME_PHASE) if INITIAL_GAME_PHASE > 0 else 0
+
+        # --- 2. Calculate Tapered Score ---
+        score = 0
+        for r in range(ROWS):
+            for c in range(COLS):
+                piece = board.grid[r][c]
+                if not piece:
+                    continue
+
+                mg_value = PIECE_VALUES_MG.get(type(piece), 0)
+                eg_value = PIECE_VALUES_EG.get(type(piece), 0)
+                piece_value = (mg_value * phase) + (eg_value * (1 - phase))
+
                 pst = PIECE_SQUARE_TABLES.get(type(piece))
                 if isinstance(piece, King):
-                    pst = PIECE_SQUARE_TABLES['king_endgame'] if in_endgame else PIECE_SQUARE_TABLES['king_midgame']
+                    is_endgame_phase = phase < 0.4 # Threshold for switching king safety logic
+                    pst = PIECE_SQUARE_TABLES['king_endgame'] if is_endgame_phase else PIECE_SQUARE_TABLES['king_midgame']
 
-                if pst: 
-                    value += pst[r][c] if piece.color == 'white' else pst[ROWS - 1 - r][c]
+                if pst:
+                    piece_value += pst[r][c] if piece.color == 'white' else pst[ROWS - 1 - r][c]
                 
                 if piece.color == turn_to_move:
-                    score += value
+                    score += piece_value
                 else:
-                    score -= value
-        return score
+                    score -= piece_value
+                    
+        return int(score)
 
 # -----------------------------------------------------------------------------
 # Piece-Square Tables (PSTs) and Material Values for this Variant
 # -----------------------------------------------------------------------------
-
-PIECE_VALUES = {
-    Pawn: 100, Knight: 800, Bishop: 700,
-    Rook: 650, Queen: 900, King: 30000
-}
-ENDGAME_MATERIAL_THRESHOLD = (PIECE_VALUES[Rook] * 2 + PIECE_VALUES[Bishop] + PIECE_VALUES[Knight])
+# THIS SECTION IS NOW OBSOLETE AND REPLACED BY THE TAPERED VALUES AT THE TOP,
+# BUT IS KEPT FOR REFERENCE. THE PSTs ARE STILL USED.
+#
+# PIECE_VALUES = {
+#     Pawn: 100, Knight: 800, Bishop: 700,
+#     Rook: 650, Queen: 900, King: 30000
+# }
+# ENDGAME_MATERIAL_THRESHOLD = (PIECE_VALUES[Rook] * 2 + PIECE_VALUES[Bishop] + PIECE_VALUES[Knight])
 
 pawn_pst = [
     [0, 0, 0, 0, 0, 0, 0, 0],
