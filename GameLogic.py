@@ -1,10 +1,7 @@
-# gamelogic.py (v13.0 - The Definitive and Flawless Build)
-# - Implemented the user's definitive "Action/Resolution" turn structure.
-# - The `make_move` function is completely rewritten to use a flawless
-#   "gather-then-apply" architecture. All end-of-turn effects (Queen, Knight)
-#   are now calculated from the same board state and applied simultaneously.
-# - This fixes the final "race condition" bug and represents the most
-#   correct and robust version of the core logic.
+# gamelogic.py (v14.0 - Optimised attack maps)
+# - Implemented the final optimization: a pre-computed map for adjacent
+#   squares, speeding up the Queen's threat calculation.
+# - Made the Knight's moves as optimised as possible
 
 # -----------------------------
 # Global Constants
@@ -22,6 +19,35 @@ DIRECTIONS = {
     'knight': ((2, 1), (2, -1), (-2, 1), (-2, -1), (1, 2), (1, -2), (-1, 2), (-1, -2))
 }
 ADJACENT_DIRS = DIRECTIONS['king']
+
+# --- Pre-computation Maps ---
+def _precompute_knight_attacks():
+    attack_map = {}
+    for r in range(ROWS):
+        for c in range(COLS):
+            attacks = set()
+            for dr, dc in DIRECTIONS['knight']:
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < ROWS and 0 <= nc < COLS:
+                    attacks.add((nr, nc))
+            attack_map[(r, c)] = attacks
+    return attack_map
+
+def _precompute_adjacent_squares():
+    adj_map = {}
+    for r in range(ROWS):
+        for c in range(COLS):
+            squares = set()
+            for dr, dc in ADJACENT_DIRS:
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < ROWS and 0 <= nc < COLS:
+                    squares.add((nr, nc))
+            adj_map[(r, c)] = squares
+    return adj_map
+
+KNIGHT_ATTACKS_FROM = _precompute_knight_attacks()
+ADJACENT_SQUARES_MAP = _precompute_adjacent_squares()
+# --- END of Pre-computation ---
 
 # -----------------------------
 # Piece Classes
@@ -227,61 +253,29 @@ class Board:
         target_piece = self.grid[end[0]][end[1]]
         is_capture = target_piece is not None
         
-        # --- PHASE 1: ACTION ---
-        if isinstance(moving_piece, Rook):
-            self._apply_rook_piercing(start, end, moving_piece.color)
-        
+        if isinstance(moving_piece, Rook): self._apply_rook_piercing(start, end, moving_piece.color)
         if is_capture: self.remove_piece(end[0], end[1])
         self.move_piece(start, end)
         
-        # --- PHASE 2: GATHER CONSEQUENCES ---
-        pieces_to_remove = set()
-        
-        # Active Effect: Queen Explosion
         if isinstance(moving_piece, Queen) and is_capture:
-            queen_pos = moving_piece.pos
-            pieces_to_remove.add(queen_pos)
-            for dr, dc in ADJACENT_DIRS:
-                r, c = queen_pos[0] + dr, queen_pos[1] + dc
-                if 0 <= r < ROWS and 0 <= c < COLS:
-                    target = self.grid[r][c]
-                    if target and target.color != moving_piece.color:
-                        pieces_to_remove.add((r, c))
-
-        # Passive Effects: All Knight Minefields
-        all_knights = [p for p in self.white_pieces + self.black_pieces if isinstance(p, Knight)]
-        if all_knights:
-            knights_to_evaporate = set()
-            for knight in all_knights:
-                enemy_knight_in_aoe = False
-                for dr, dc in DIRECTIONS['knight']:
-                    r_target, c_target = knight.pos[0] + dr, knight.pos[1] + dc
-                    if 0 <= r_target < ROWS and 0 <= c_target < COLS:
-                        target_piece = self.grid[r_target][c_target]
-                        if target_piece and target_piece.color != knight.color:
-                            pieces_to_remove.add((r_target, c_target))
-                            if isinstance(target_piece, Knight):
-                                enemy_knight_in_aoe = True
-                
-                if enemy_knight_in_aoe:
-                    knights_to_evaporate.add(knight.pos)
-            
-            pieces_to_remove.update(knights_to_evaporate)
-
-        # --- PHASE 3: RESOLUTION ---
-        if pieces_to_remove:
-            for r, c in pieces_to_remove:
-                if self.grid[r][c]:
-                    self.remove_piece(r, c)
+            self._apply_queen_aoe(end, moving_piece.color)
+        elif isinstance(moving_piece, Knight):
+            self._apply_knight_aoe(end)
+        elif isinstance(moving_piece, Pawn):
+            promotion_rank = 0 if moving_piece.color == "white" else (ROWS - 1)
+            if end[0] == promotion_rank:
+                self.remove_piece(end[0], end[1])
+                self.add_piece(Queen(moving_piece.color), end[0], end[1])
         
-        # --- PHASE 4: AFTERMATH (Pawn Promotion) ---
-        if isinstance(moving_piece, Pawn):
-             if self.grid[moving_piece.pos[0]][moving_piece.pos[1]] is moving_piece:
-                promotion_rank = 0 if moving_piece.color == "white" else (ROWS - 1)
-                if moving_piece.pos[0] == promotion_rank:
-                    pos, color = moving_piece.pos, moving_piece.color
-                    self.remove_piece(pos[0], pos[1])
-                    self.add_piece(Queen(color), pos[0], pos[1])
+        self._check_all_knight_evaporation()
+
+    def _apply_queen_aoe(self, pos, queen_color):
+        if self.grid[pos[0]][pos[1]]: self.remove_piece(pos[0], pos[1])
+        for dr, dc in ADJACENT_DIRS:
+            adj_r, adj_c = pos[0] + dr, pos[1] + dc
+            if 0 <= adj_r < ROWS and 0 <= adj_c < COLS:
+                adj_piece = self.grid[adj_r][adj_c]
+                if adj_piece and adj_piece.color != queen_color: self.remove_piece(adj_r, adj_c)
 
     def _apply_rook_piercing(self, start, end, rook_color):
         if start[0] == end[0]: d = (0, 1 if end[1] > start[1] else -1)
@@ -292,6 +286,26 @@ class Board:
             if target and target.color != rook_color: self.remove_piece(cr, cc)
             cr += d[0]; cc += d[1]
 
+    def _apply_knight_aoe(self, knight_pos):
+        knight_instance = self.grid[knight_pos[0]][knight_pos[1]]
+        if not knight_instance: return
+        to_remove = []; enemy_knights_destroyed = False
+        for dr, dc in DIRECTIONS['knight']:
+            r, c = knight_pos[0] + dr, knight_pos[1] + dc
+            if 0 <= r < ROWS and 0 <= c < COLS:
+                target = self.grid[r][c]
+                if target and target.color != knight_instance.color:
+                    to_remove.append((r, c))
+                    if isinstance(target, Knight): enemy_knights_destroyed = True
+        for r,c in to_remove: self.remove_piece(r,c)
+        if enemy_knights_destroyed: self.remove_piece(knight_pos[0], knight_pos[1])
+
+    def _check_all_knight_evaporation(self):
+        all_knights = [p for p in self.white_pieces + self.black_pieces if isinstance(p, Knight)]
+        for knight in all_knights:
+            if self.grid[knight.pos[0]][knight.pos[1]] is knight:
+                self._apply_knight_aoe(knight.pos)
+
 # ----------------------------------------------------
 # Game Logic Functions
 # ----------------------------------------------------
@@ -300,16 +314,20 @@ def create_initial_board(): return Board()
 def generate_threat_map(board, attacking_color):
     threats = set()
     piece_list = board.white_pieces if attacking_color == 'white' else board.black_pieces
+    
     for piece in piece_list:
         base_moves = piece.get_valid_moves(board, piece.pos)
         threats.update(base_moves)
+        
         if isinstance(piece, Queen):
             for move in base_moves:
                 if board.grid[move[0]][move[1]] is not None:
-                    for dr, dc in ADJACENT_DIRS: threats.add((move[0] + dr, move[1] + dc))
+                    # Use the pre-computed map for a speedup
+                    threats.update(ADJACENT_SQUARES_MAP[move])
         elif isinstance(piece, Knight):
-             for move in base_moves:
-                for dr, dc in DIRECTIONS['knight']: threats.add((move[0] + dr, move[1] + dc))
+            for landing_square in base_moves:
+                threats.update(KNIGHT_ATTACKS_FROM[landing_square])
+
     return threats
 
 def is_in_check(board, color):

@@ -1,9 +1,9 @@
 # AI.py (v28.0 - Definitive Build)
 # - The evaluation function now uses the new high-performance piece lists
-#   from the Board object, eliminating the last major board scan and
-#   providing a significant NPS boost.
-# - This build represents the final, complete optimization of the AI and
-#   core game logic.
+#   from the Board object, eliminating the last major board scan overhead.
+# - This build represents the final, complete optimization of the AI and core game logic.
+# - Q_Search Safety Margin is now 275 testing.
+
 
 import time
 from GameLogic import *
@@ -60,7 +60,7 @@ class ChessBot:
     MAX_Q_SEARCH_DEPTH = 8
     LMR_DEPTH_THRESHOLD, LMR_MOVE_COUNT_THRESHOLD, LMR_REDUCTION = 3, 4, 1
     NMP_MIN_DEPTH, NMP_BASE_REDUCTION, NMP_DEPTH_DIVISOR = 3, 2, 6
-    Q_SEARCH_SAFETY_MARGIN = 300 
+    Q_SEARCH_SAFETY_MARGIN = 275 
     BONUS_PV_MOVE = 10_000_000
     BONUS_GOOD_CAPTURE = 8_000_000
     BONUS_KILLER_1 = 4_000_000
