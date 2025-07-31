@@ -1,8 +1,6 @@
-# JungleChessUI.py (v7.8 - Corrected Logging & UI Restore)
-# - Restored the "Instant Moves" checkbox and other UI elements that were
-#   accidentally removed in a previous version.
-# - Re-implemented the console logging change to be compatible with the AI's
-#   final bundled log message, ensuring consistent output in all modes.
+# JungleChessUI.py (v7.9 - Game State Management Fix)
+# - Corrected the game state management in the AI series opening move application.
+# - Ensured proper turn switching and position history updating after an opening move.
 
 import tkinter as tk
 from tkinter import ttk
@@ -205,21 +203,34 @@ class EnhancedChessApp:
              self.draw_eval_bar(0); self.eval_score_label.config(text="Even")
 
     def reset_game(self):
-        if self.game_mode.get() != GameMode.AI_VS_AI.value: self.ai_series_running = False
+        if self.game_mode.get() != GameMode.AI_VS_AI.value:
+            self.ai_series_running = False
         self._stop_ai_process()
         self.board = create_initial_board()
         self.turn = "white"
         self.game_started = False
         self.last_move_timestamp = time.time()
         self.selected, self.valid_moves, self.game_over, self.game_result = None, [], False, None
-        self.position_history = [board_hash(self.board, self.turn)]; self.position_counts = {self.position_history[0]: 1}
+        self.position_history = [board_hash(self.board, self.turn)]
+        self.position_counts = {self.position_history[0]: 1}
         self.draw_eval_bar(0)
         mode = self.game_mode.get()
         if mode == GameMode.AI_VS_AI.value:
             self.white_playing_bot_type = "op" if self.ai_series_running and self.ai_series_stats['game_count'] % 2 == 1 else "main"
             self.board_orientation = "white" if self.white_playing_bot_type == "main" else "black"
-            if self.ai_series_running: self.apply_series_opening_move()
-            if not self.game_over: 
+            
+            opening_move_applied = False
+            if self.ai_series_running:
+                # This function will make a move and switch the turn to black if applicable
+                self.apply_series_opening_move()
+                # Check if a move was actually made
+                if len(self.position_history) > 1:
+                     opening_move_applied = True
+
+            # If an opening move was just applied, it's now Black's turn.
+            # Otherwise, it's a fresh game, and it's White's turn.
+            # The _make_game_ai_move function will correctly start the AI for the current turn.
+            if not self.game_over:
                 delay = 4 if self.instant_move.get() else 20
                 self.master.after(delay, self._make_game_ai_move)
         elif mode == GameMode.HUMAN_VS_BOT.value:
@@ -229,8 +240,11 @@ class EnhancedChessApp:
                 self.master.after(delay, self._make_game_ai_move)
         else:
             self.board_orientation = "white"
-        self.update_turn_label(); self.draw_board(); self.set_interactivity(True)
-        self.update_bot_labels(); self.update_scoreboard()
+        self.update_turn_label()
+        self.draw_board()
+        self.set_interactivity(True)
+        self.update_bot_labels()
+        self.update_scoreboard()
         self.update_analysis_process()
 
     def _make_game_ai_move(self):
@@ -487,15 +501,30 @@ class EnhancedChessApp:
         self.reset_game()
         
     def apply_series_opening_move(self):
+        # On the first game of a pair, generate a new random opening
         if self.ai_series_stats['game_count'] % 2 == 0:
             print("--- Generating new opening for game pair ---")
             moves = get_all_legal_moves(self.board, "white")
             self.current_opening_move = random.choice(moves) if moves else None
         
+        # If there is a stored opening move, apply it
         if self.current_opening_move:
             print(f"Applying opening move: {self._format_move(self.current_opening_move)}")
+            
+            # --- Perform the move and state change manually ---
+            # This avoids using the general-purpose execute_move_and_check_state
+            # which has unwanted side effects for a setup move.
+            
+            # 1. Make the move on the board
             self.board.make_move(self.current_opening_move[0], self.current_opening_move[1])
-            self.execute_move_and_check_state(is_opening_move=True)
+            
+            # 2. Manually switch the turn. After white's opening, it's black's turn.
+            self.switch_turn()
+            
+            # 3. Manually update the position history for the new state
+            key = board_hash(self.board, self.turn)
+            self.position_history.append(key)
+            self.position_counts[key] = self.position_counts.get(key, 0) + 1
 
     def update_scoreboard(self):
         if self.game_mode.get() == GameMode.AI_VS_AI.value and self.ai_series_running:

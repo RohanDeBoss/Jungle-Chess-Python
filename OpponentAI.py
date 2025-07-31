@@ -1,11 +1,25 @@
-# OPAI.py (v7.5 - LMR + NMP!)
+# OPPONENT_AI.py (v29.0 - High-Performance Build)
 
 import time
 from GameLogic import *
 import random
 from collections import namedtuple
 
-# (Zobrist/TT setup is unchanged)
+from GameLogic import _generate_legal_moves
+
+# --- Tapered Piece Values for Jungle Chess ---
+PIECE_VALUES_MG = {
+    Pawn: 100, Knight: 800, Bishop: 700, Rook: 600, Queen: 850, King: 20000
+}
+PIECE_VALUES_EG = {
+    Pawn: 100, Knight: 800, Bishop: 650, Rook: 850, Queen: 550, King: 20000
+}
+# This constant is used as a denominator for the phase calculation
+INITIAL_PHASE_MATERIAL = (PIECE_VALUES_MG[Rook] * 4 + PIECE_VALUES_MG[Knight] * 4 +
+                          PIECE_VALUES_MG[Bishop] * 4 + PIECE_VALUES_MG[Queen] * 2)
+
+
+# Zobrist/TT setup is unchanged
 ZOBRIST_TABLE = None
 def initialize_zobrist_table():
     global ZOBRIST_TABLE
@@ -26,11 +40,9 @@ initialize_zobrist_table()
 
 def board_hash(board, turn):
     h = 0
-    for r in range(ROWS):
-        for c in range(COLS):
-            piece = board.grid[r][c]
-            key = (r, c, type(piece) if piece else None, piece.color if piece else None)
-            h ^= ZOBRIST_TABLE.get(key, 0)
+    for piece in board.white_pieces + board.black_pieces:
+        key = (piece.pos[0], piece.pos[1], type(piece), piece.color)
+        h ^= ZOBRIST_TABLE.get(key, 0)
     if turn == 'black': h ^= ZOBRIST_TABLE['turn']
     return h
 
@@ -43,12 +55,14 @@ class OpponentAI:
     search_depth = 3
     MATE_SCORE, DRAW_SCORE, DRAW_PENALTY = 1000000, 0, -10
     MAX_Q_SEARCH_DEPTH = 8
-    DELTA_PRUNING_MARGIN = 200
-    LMR_DEPTH_THRESHOLD, LMR_MOVE_COUNT_THRESHOLD, LMR_REDUCTION = 3, 4, 2
+    LMR_DEPTH_THRESHOLD, LMR_MOVE_COUNT_THRESHOLD, LMR_REDUCTION = 3, 4, 1
     NMP_MIN_DEPTH, NMP_BASE_REDUCTION, NMP_DEPTH_DIVISOR = 3, 2, 6
-    BONUS_PV_MOVE, BONUS_GOOD_CAPTURE, BONUS_PROMOTION = 2_000_000, 1_500_000, 1_200_000
-    BONUS_CHECKING_MOVE, BONUS_KILLER_1, BONUS_KILLER_2 = 1_000_000, 900_000, 850_000
-    BONUS_LOSING_CAPTURE = 300_000
+    Q_SEARCH_SAFETY_MARGIN = 275 
+    BONUS_PV_MOVE = 10_000_000
+    BONUS_GOOD_CAPTURE = 8_000_000
+    BONUS_KILLER_1 = 4_000_000
+    BONUS_KILLER_2 = 3_500_000
+    BONUS_BAD_CAPTURE = -8_000_000
     
     def __init__(self, board, color, position_counts, comm_queue, cancellation_event, bot_name="AI Bot"):
         self.board = board
@@ -71,9 +85,102 @@ class OpponentAI:
         (r1, c1), (r2, c2) = move
         return f"{'abcdefgh'[c1]}{'87654321'[r1]}-{'abcdefgh'[c2]}{'87654321'[r2]}"
 
+    def _get_piece_value(self, piece):
+        return PIECE_VALUES_MG.get(type(piece), 0)
+
+    def _estimate_capture_value(self, board, move):
+        start_pos, end_pos = move
+        moving_piece = board.grid[start_pos[0]][start_pos[1]]
+        captured_piece = board.grid[end_pos[0]][end_pos[1]]
+        
+        value = self._get_piece_value(captured_piece) if captured_piece else 0
+        
+        if isinstance(moving_piece, Queen):
+            for dr, dc in ADJACENT_DIRS:
+                adj_r, adj_c = end_pos[0] + dr, end_pos[1] + dc
+                if 0 <= adj_r < ROWS and 0 <= adj_c < COLS:
+                    adj_piece = board.grid[adj_r][adj_c]
+                    if adj_piece and adj_piece.color == self.opponent_color:
+                        value += self._get_piece_value(adj_piece)
+
+        elif isinstance(moving_piece, Rook):
+            if start_pos[0] == end_pos[0]:
+                d = 1 if end_pos[1] > start_pos[1] else -1
+                for c in range(start_pos[1] + d, end_pos[1], d):
+                    pierced_piece = board.grid[start_pos[0]][c]
+                    if pierced_piece and pierced_piece.color == self.opponent_color:
+                        value += self._get_piece_value(pierced_piece)
+            else:
+                d = 1 if end_pos[0] > start_pos[0] else -1
+                for r in range(start_pos[0] + d, end_pos[0], d):
+                    pierced_piece = board.grid[r][start_pos[1]]
+                    if pierced_piece and pierced_piece.color == self.opponent_color:
+                        value += self._get_piece_value(pierced_piece)
+        
+        elif isinstance(moving_piece, Knight):
+            enemy_knight_destroyed = False
+            for dr, dc in DIRECTIONS['knight']:
+                r, c = end_pos[0] + dr, end_pos[1] + dc
+                if 0 <= r < ROWS and 0 <= c < COLS:
+                    target = board.grid[r][c]
+                    if target and target.color == self.opponent_color:
+                        value += self._get_piece_value(target)
+                        if isinstance(target, Knight):
+                            enemy_knight_destroyed = True
+            
+            if enemy_knight_destroyed:
+                value -= self._get_piece_value(moving_piece)
+                        
+        return value
+
+    def order_moves(self, board, moves, ply, hash_move=None):
+        if not moves: return []
+        
+        scores = {}
+        killers = self.killer_moves[ply] if ply < len(self.killer_moves) else [None, None]
+        
+        moving_color = None
+        if moves:
+            # A fast way to find the color of the moving player
+            first_piece = board.grid[moves[0][0][0]][moves[0][0][1]]
+            if first_piece:
+                moving_color = first_piece.color
+
+        if not moving_color: return moves
+
+        color_index = 0 if moving_color == 'white' else 1
+        
+        for move in moves:
+            score = 0
+            if move == hash_move:
+                score = self.BONUS_PV_MOVE
+            else:
+                moving_piece = board.grid[move[0][0]][move[0][1]]
+                target_piece = board.grid[move[1][0]][move[1][1]]
+                
+                is_tactical = (target_piece is not None) or isinstance(moving_piece, Knight)
+
+                if is_tactical:
+                    value = self._estimate_capture_value(board, move)
+                    if value >= 0:
+                        score = self.BONUS_GOOD_CAPTURE + value
+                    else:
+                        score = self.BONUS_BAD_CAPTURE + value
+                else: # Quiet moves
+                    if move in killers:
+                        score = self.BONUS_KILLER_1 if move == killers[0] else self.BONUS_KILLER_2
+                    else:
+                        from_idx = move[0][0] * COLS + move[0][1]
+                        to_idx = move[1][0] * COLS + move[1][1]
+                        score = self.history_heuristic_table[color_index][from_idx][to_idx]
+
+            scores[move] = score
+
+        moves.sort(key=lambda m: scores.get(m, 0), reverse=True)
+        return moves
+
     def make_move(self):
         try:
-            best_move_overall = None
             root_moves = get_all_legal_moves(self.board, self.color)
             if not root_moves:
                 self._report_move(None)
@@ -91,19 +198,23 @@ class OpponentAI:
                     iter_duration = time.time() - iter_start_time
                     knps = (self.nodes_searched / iter_duration / 1000) if iter_duration > 0 else 0
                     eval_for_ui = best_score_this_iter if self.color == 'white' else -best_score_this_iter
-                    log_msg = f"  > {self.bot_name} (Depth {current_depth}): Eval={eval_for_ui/100:+.2f}, Nodes={self.nodes_searched}, KNPS={knps:.1f}"
+                    move_str = self._format_move(best_move_this_iter)
+                    
+                    log_msg = f"  > {self.bot_name} (D{current_depth}): {move_str}, Eval={eval_for_ui/100:+.2f}, Nodes={self.nodes_searched}, KNPS={knps:.1f}, Time={iter_duration:.2f}s"
+                    
                     self._report_log(log_msg)
                     self._report_eval(best_score_this_iter, None)
                 else:
                     raise SearchCancelledException()
+            
             self._report_move(best_move_overall)
+
         except SearchCancelledException:
             self._report_log(f"AI ({self.color}): Search cancelled.")
             self._report_move(None)
 
     def ponder_indefinitely(self):
         try:
-            best_move_overall = None
             root_moves = get_all_legal_moves(self.board, self.color)
             if not root_moves: return
             best_move_overall = root_moves[0]
@@ -116,8 +227,11 @@ class OpponentAI:
                     best_move_overall = best_move_this_iter
                     iter_duration = time.time() - iter_start_time
                     knps = (self.nodes_searched / iter_duration / 1000) if iter_duration > 0 else 0
+                    eval_for_ui = best_score_this_iter if self.color == 'white' else -best_score_this_iter
                     move_str = self._format_move(best_move_this_iter)
-                    log_msg = f"  > Analysis (D{current_depth}): {move_str}, Time={iter_duration:.2f}s, Nodes={self.nodes_searched}, KNPS={knps:.1f}"
+                    
+                    log_msg = f"  > {self.bot_name} (D{current_depth}): {move_str}, Eval={eval_for_ui/100:+.2f}, Nodes={self.nodes_searched}, KNPS={knps:.1f}, Time={iter_duration:.2f}s"
+
                     self._report_log(log_msg)
                     self._report_eval(best_score_this_iter, current_depth)
                 else:
@@ -129,14 +243,16 @@ class OpponentAI:
         self.nodes_searched = 0
         best_score_this_iter, best_move_this_iter = -float('inf'), None
         alpha, beta = -float('inf'), float('inf')
-        ordered_root_moves = self.order_moves(self.board, root_moves, 0, pv_move)
         
+        ordered_root_moves = self.order_moves(self.board, root_moves, 0, pv_move)
+        move_to_board_map = {m: b for m, b in _generate_legal_moves(self.board, self.color, yield_boards=True)}
+
         for i, move in enumerate(ordered_root_moves):
             if self.cancellation_event.is_set(): raise SearchCancelledException()
             
-            child_board = self.board.clone()
-            child_board.make_move(move[0], move[1])
-            
+            child_board = move_to_board_map.get(move)
+            if not child_board: continue
+
             search_path = {root_hash}
             child_hash = board_hash(child_board, self.opponent_color)
             self.position_counts[child_hash] = self.position_counts.get(child_hash, 0) + 1
@@ -182,10 +298,9 @@ class OpponentAI:
         if is_in_check_flag:
             depth += 1
         
-        # --- [CRITICAL FIX] Removed the self-sabotaging `not is_pv_node` condition ---
         if (depth >= self.NMP_MIN_DEPTH and ply > 0 and not is_in_check_flag and
             beta < self.MATE_SCORE - 200 and 
-            any(not isinstance(p, (Pawn, King)) for r in board.grid for p in r if p and p.color == turn)):
+            any(not isinstance(p, (Pawn, King)) for p in (board.white_pieces if turn == 'white' else board.black_pieces))):
             
             nmp_reduction = self.NMP_BASE_REDUCTION + (depth // self.NMP_DEPTH_DIVISOR)
             nmp_search_path = search_path | {hash_val}
@@ -196,22 +311,25 @@ class OpponentAI:
                 return beta 
 
         new_search_path = search_path | {hash_val}
-        legal_moves = get_all_legal_moves(board, turn)
-        if not legal_moves:
+        
+        legal_moves_list = get_all_legal_moves(board, turn)
+        if not legal_moves_list:
             return -self.MATE_SCORE + ply if is_in_check_flag else self.DRAW_SCORE
 
         hash_move = tt_entry.best_move if tt_entry else None
-        ordered_moves = self.order_moves(board, legal_moves, ply, hash_move)
+        ordered_moves = self.order_moves(board, legal_moves_list, ply, hash_move)
+        move_to_board_map = {m: b for m, b in _generate_legal_moves(board, turn, yield_boards=True)}
+        
         best_move_for_node = None
         
         for i, move in enumerate(ordered_moves):
-            is_capture = board.grid[move[1][0]][move[1][1]] is not None
-            child_board = board.clone()
-            child_board.make_move(move[0], move[1])
-            
+            child_board = move_to_board_map.get(move)
+            if not child_board: continue
+
             child_hash = board_hash(child_board, opponent_turn)
             self.position_counts[child_hash] = self.position_counts.get(child_hash, 0) + 1
             
+            is_capture = board.grid[move[1][0]][move[1][1]] is not None
             reduction = 0
             if (depth >= self.LMR_DEPTH_THRESHOLD and i >= self.LMR_MOVE_COUNT_THRESHOLD and 
                 not is_in_check_flag and not is_capture):
@@ -233,9 +351,11 @@ class OpponentAI:
                     if ply < len(self.killer_moves) and self.killer_moves[ply][0] != move:
                         self.killer_moves[ply][1] = self.killer_moves[ply][0]
                         self.killer_moves[ply][0] = move
-                    color_index = 0 if turn == 'white' else 1
-                    from_sq, to_sq = move[0][0]*COLS+move[0][1], move[1][0]*COLS+move[1][1]
-                    self.history_heuristic_table[color_index][from_sq][to_sq] += depth * depth
+                    moving_piece = board.grid[move[0][0]][move[0][1]]
+                    if moving_piece:
+                        color_index = 0 if moving_piece.color == 'white' else 1
+                        from_sq, to_sq = move[0][0]*COLS+move[0][1], move[1][0]*COLS+move[1][1]
+                        self.history_heuristic_table[color_index][from_sq][to_sq] += depth * depth
                 
                 self.tt[hash_val] = TTEntry(beta, depth, TT_FLAG_LOWERBOUND, move)
                 return beta
@@ -251,96 +371,109 @@ class OpponentAI:
         
         stand_pat = self.evaluate_board(board, turn)
         if stand_pat >= beta: return beta
-        
-        biggest_gain = PIECE_VALUES[Queen] + self.DELTA_PRUNING_MARGIN
-        if stand_pat + biggest_gain < alpha: return alpha
-        
         alpha = max(alpha, stand_pat)
 
-        legal_moves = get_all_legal_moves(board, turn)
-        tactical_moves = [m for m in legal_moves if board.grid[m[1][0]][m[1][1]] is not None or 
-                          (isinstance(board.grid[m[0][0]][m[0][1]], Pawn) and (m[1][0] in [0, ROWS - 1])) or
-                          self._is_checking_move(board, m, turn)]
-                          
-        ordered_tactical_moves = self.order_moves(board, tactical_moves, ply, in_qsearch=True)
-        for move in ordered_tactical_moves:
-            child_board = board.clone()
-            child_board.make_move(move[0], move[1])
-            score = -self.qsearch(child_board, -beta, -alpha, 'black' if turn == 'white' else 'white', ply + 1)
-            if score >= beta: return beta
-            alpha = max(alpha, score)
+        promising_candidates = []
+        
+        piece_list = board.white_pieces if turn == 'white' else board.black_pieces
+        for piece in piece_list:
+            for end_pos in piece.get_valid_moves(board, piece.pos):
+                move = (piece.pos, end_pos)
+                is_capture = board.grid[end_pos[0]][end_pos[1]] is not None
+                if is_capture or isinstance(piece, Knight):
+                    estimated_value = self._estimate_capture_value(board, move)
+                    if stand_pat + estimated_value + self.Q_SEARCH_SAFETY_MARGIN >= alpha:
+                        promising_candidates.append((move, estimated_value))
+
+        promising_candidates.sort(key=lambda item: item[1], reverse=True)
+        
+        for move, _ in promising_candidates:
+            sim_board = board.clone()
+            sim_board.make_move(move[0], move[1])
+            if not is_in_check(sim_board, turn):
+                score = -self.qsearch(sim_board, -beta, -alpha, 'black' if turn == 'white' else 'white', ply + 1)
+                if score >= beta:
+                    return beta
+                alpha = max(alpha, score)
+            
         return alpha
-
-    def _is_checking_move(self, board, move, turn):
-        sim_board = board.clone()
-        sim_board.make_move(move[0], move[1])
-        return is_in_check(sim_board, 'black' if turn == 'white' else 'white')
-
-    def order_moves(self, board, moves, ply, hash_move=None, in_qsearch=False):
-        if not moves:
-            return []
-
-        scores = {}
-        killers = self.killer_moves[ply] if ply < len(self.killer_moves) else [None, None]
         
-        moving_color = board.grid[moves[0][0][0]][moves[0][0][1]].color
-        color_index = 0 if moving_color == 'white' else 1
-        
-        for move in moves:
-            score = 0
-            start_pos, end_pos = move
-            moving_piece = board.grid[start_pos[0]][start_pos[1]]
-            target_piece = board.grid[end_pos[0]][end_pos[1]]
-            
-            if move == hash_move:
-                score = self.BONUS_PV_MOVE
-            elif target_piece is not None:
-                mvv_lva_score = PIECE_VALUES.get(type(target_piece), 0) - PIECE_VALUES.get(type(moving_piece), 0)
-                score = self.BONUS_GOOD_CAPTURE + mvv_lva_score
-            else:
-                if move == killers[0]: score = self.BONUS_KILLER_1
-                elif move == killers[1]: score = self.BONUS_KILLER_2
-                else: score = self.history_heuristic_table[color_index][start_pos[0]*COLS+start_pos[1]][end_pos[0]*COLS+end_pos[1]]
-            scores[move] = score
-            
-        moves.sort(key=lambda m: scores.get(m, 0), reverse=True)
-        return moves
-        
-    def is_endgame(self, board):
-        return sum(PIECE_VALUES.get(type(p), 0) for row in board.grid for p in row if p and not isinstance(p, King)) < ENDGAME_MATERIAL_THRESHOLD
-    
     def evaluate_board(self, board, turn_to_move):
-        score = 0
-        in_endgame = self.is_endgame(board)
-        for r in range(ROWS):
-            for c in range(COLS):
-                piece = board.grid[r][c]
-                if not piece: continue
-                value = PIECE_VALUES.get(type(piece), 0)
-                
-                pst = PIECE_SQUARE_TABLES.get(type(piece))
-                if isinstance(piece, King):
-                    pst = PIECE_SQUARE_TABLES['king_endgame'] if in_endgame else PIECE_SQUARE_TABLES['king_midgame']
+        # --- RE-OPTIMIZED TAPERED EVALUATION ---
+        
+        # This structure is much faster by separating material and positional calculations,
+        # minimizing the work done inside the critical loops.
 
-                if pst: 
-                    value += pst[r][c] if piece.color == 'white' else pst[ROWS - 1 - r][c]
-                
-                if piece.color == turn_to_move:
-                    score += value
-                else:
-                    score -= value
-        return score
+        white_material_mg, white_material_eg = 0, 0
+        black_material_mg, black_material_eg = 0, 0
+        white_pst_mg, white_pst_eg = 0, 0
+        black_pst_mg, black_pst_eg = 0, 0
+        phase_material_score = 0
 
-# -----------------------------------------------------------------------------
-# Piece-Square Tables (PSTs) and Material Values for this Variant
-# -----------------------------------------------------------------------------
+        # --- 1. Calculate White Piece Scores ---
+        for piece in board.white_pieces:
+            piece_type = type(piece)
+            r, c = piece.pos
+            
+            # Material Score
+            mg_val = PIECE_VALUES_MG.get(piece_type, 0)
+            white_material_mg += mg_val
+            white_material_eg += PIECE_VALUES_EG.get(piece_type, 0)
+            if not isinstance(piece, (Pawn, King)):
+                phase_material_score += mg_val
 
-PIECE_VALUES = {
-    Pawn: 100, Knight: 800, Bishop: 700,
-    Rook: 650, Queen: 900, King: 30000
-}
-ENDGAME_MATERIAL_THRESHOLD = (PIECE_VALUES[Rook] * 2 + PIECE_VALUES[Bishop] + PIECE_VALUES[Knight])
+            # Positional Score (PST)
+            if piece_type == King:
+                white_pst_mg += PIECE_SQUARE_TABLES['king_midgame'][r][c]
+                white_pst_eg += PIECE_SQUARE_TABLES['king_endgame'][r][c]
+            else:
+                pst_table = PIECE_SQUARE_TABLES.get(piece_type)
+                if pst_table:
+                    pst = pst_table[r][c]
+                    white_pst_mg += pst
+                    white_pst_eg += pst
 
+        # --- 2. Calculate Black Piece Scores ---
+        for piece in board.black_pieces:
+            piece_type = type(piece)
+            r_flipped = ROWS - 1 - piece.pos[0] # Flip row for black's perspective
+            c = piece.pos[1]
+
+            # Material Score
+            mg_val = PIECE_VALUES_MG.get(piece_type, 0)
+            black_material_mg += mg_val
+            black_material_eg += PIECE_VALUES_EG.get(piece_type, 0)
+            if not isinstance(piece, (Pawn, King)):
+                phase_material_score += mg_val
+            
+            # Positional Score (PST)
+            if piece_type == King:
+                black_pst_mg += PIECE_SQUARE_TABLES['king_midgame'][r_flipped][c]
+                black_pst_eg += PIECE_SQUARE_TABLES['king_endgame'][r_flipped][c]
+            else:
+                pst_table = PIECE_SQUARE_TABLES.get(piece_type)
+                if pst_table:
+                    pst = pst_table[r_flipped][c]
+                    black_pst_mg += pst
+                    black_pst_eg += pst
+        
+        # --- 3. Determine Game Phase ---
+        # If the denominator is zero (only kings and pawns left), phase is 0 (endgame).
+        if INITIAL_PHASE_MATERIAL == 0:
+            phase = 0
+        else:
+            phase = (phase_material_score * 256) // INITIAL_PHASE_MATERIAL
+        phase = min(phase, 256) # Cap at 256
+
+        # --- 4. Combine Scores using Tapering ---
+        mg_score = (white_material_mg + white_pst_mg) - (black_material_mg + black_pst_mg)
+        eg_score = (white_material_eg + white_pst_eg) - (black_material_eg + black_pst_eg)
+
+        final_score = (mg_score * phase + eg_score * (256 - phase)) >> 8
+        
+        return final_score if turn_to_move == 'white' else -final_score
+
+# Piece-Square Tables (PSTs)
 pawn_pst = [
     [0, 0, 0, 0, 0, 0, 0, 0],
     [100, 100, 100, 100, 100, 100, 100, 100],
