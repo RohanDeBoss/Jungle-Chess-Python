@@ -1,11 +1,10 @@
-# gamelogic.py (v18.0 - Final Verified Build)
-# - This version is IDENTICAL to the user's v14.0 to guarantee correctness.
-# - The Knight.get_valid_moves has been reverted to the original loop-based
-#   implementation to preserve the deterministic move ordering, which is
-#   critical for consistent search results.
-# - A latent bug in `remove_piece` where a captured king's position was not
-#   cleared has been fixed for engine robustness. This does not affect
-#   standard game node counts.
+# gamelogic.py (v19.0 - Final Build with SEE Helper)
+# - This version is based on the verified v18.0 to guarantee rule correctness.
+# - NEW FUNCTION: calculate_material_swing(board, move). This powerful helper
+#   function is the single source of truth for determining the outcome of a move,
+#   correctly accounting for all variant rules (AOE, piercing, etc.).
+# - This moves complex rule calculations out of the AI and into the GameLogic,
+#   where they belong, for a cleaner and more robust architecture.
 
 # -----------------------------
 # Global Constants
@@ -152,8 +151,6 @@ class Bishop(Piece):
 class Knight(Piece):
     def symbol(self): return "♘" if self.color == "white" else "♞"
     def get_valid_moves(self, board, pos):
-        # Reverted to the original v14.0 implementation to guarantee
-        # deterministic move ordering for consistent search results.
         moves = []; r_start, c_start = pos
         for dr, dc in DIRECTIONS['knight']:
             nr, nc = r_start + dr, c_start + dc
@@ -223,8 +220,6 @@ class Board:
         if piece.color == 'white': self.white_pieces.remove(piece)
         else: self.black_pieces.remove(piece)
         if isinstance(piece, King):
-            # This is a robustnes fix. When a king is captured, its
-            # cached position should be cleared.
             if piece.color == "white": self.white_king_pos = None
             else: self.black_king_pos = None
         self.grid[r][c] = None
@@ -317,25 +312,28 @@ class Board:
 # ----------------------------------------------------
 # Game Logic Functions
 # ----------------------------------------------------
+PIECE_VALUES_MG = {
+    Pawn: 100, Knight: 800, Bishop: 700, Rook: 600, Queen: 850, King: 20000
+}
+
+def _get_piece_value(piece):
+    return PIECE_VALUES_MG.get(type(piece), 0)
+
 def create_initial_board(): return Board()
 
 def generate_threat_map(board, attacking_color):
     threats = set()
     piece_list = board.white_pieces if attacking_color == 'white' else board.black_pieces
-    
     for piece in piece_list:
         base_moves = piece.get_valid_moves(board, piece.pos)
         threats.update(base_moves)
-        
         if isinstance(piece, Queen):
             for move in base_moves:
                 if board.grid[move[0]][move[1]] is not None:
-                    # Use the pre-computed map for a speedup
                     threats.update(ADJACENT_SQUARES_MAP[move])
         elif isinstance(piece, Knight):
             for landing_square in base_moves:
                 threats.update(KNIGHT_ATTACKS_FROM[landing_square])
-
     return threats
 
 def is_in_check(board, color):
@@ -373,3 +371,32 @@ def check_game_over(board, turn_color_who_just_moved):
         if is_in_check(board, next_player_color): return "checkmate", turn_color_who_just_moved
         else: return "stalemate", None
     return None, None
+
+def calculate_material_swing(board, move):
+    """
+    Simulates a move and returns the total material change.
+    This is guaranteed to be consistent with all variant rules.
+    """
+    moving_piece = board.grid[move[0][0]][move[0][1]]
+    if not moving_piece: return 0
+
+    sim_board = board.clone()
+    
+    original_opponent_pieces = {p for p in (sim_board.black_pieces if moving_piece.color == 'white' else sim_board.white_pieces)}
+    original_friendly_pieces = {p for p in (sim_board.white_pieces if moving_piece.color == 'white' else sim_board.black_pieces)}
+
+    sim_board.make_move(move[0], move[1])
+
+    final_opponent_pieces = {p for p in (sim_board.black_pieces if moving_piece.color == 'white' else sim_board.white_pieces)}
+    final_friendly_pieces = {p for p in (sim_board.white_pieces if moving_piece.color == 'white' else sim_board.black_pieces)}
+    
+    swing = 0
+    destroyed_enemies = original_opponent_pieces - final_opponent_pieces
+    for p in destroyed_enemies:
+        swing += _get_piece_value(p)
+        
+    destroyed_friendlies = original_friendly_pieces - final_friendly_pieces
+    for p in destroyed_friendlies:
+        swing -= _get_piece_value(p)
+        
+    return swing

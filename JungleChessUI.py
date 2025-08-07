@@ -35,6 +35,7 @@ class EnhancedChessApp:
     MAIN_AI_NAME = "AI Bot"
     OPPONENT_AI_NAME = "OP Bot"
     ANALYSIS_AI_NAME = "Analysis"
+    slidermaxvalue = 10
     
     def __init__(self, master):
         self.master = master
@@ -120,7 +121,7 @@ class EnhancedChessApp:
         ttk.Button(controls_frame, text="AI vs OP Series", command=self.start_ai_series, style='Control.TButton').pack(fill=tk.X, pady=3)
         ttk.Button(controls_frame, text="QUIT", command=self.master.quit, style='Control.TButton').pack(fill=tk.X, pady=3)
         ttk.Label(controls_frame, text="Bot Depth:", style='SmallHeader.TLabel').pack(anchor=tk.W, pady=(8,0))
-        self.bot_depth_slider = tk.Scale(controls_frame, from_=1, to=6, orient=tk.HORIZONTAL, bg=self.COLORS['bg_dark'], fg=self.COLORS['text_light'], highlightthickness=0, relief='flat')
+        self.bot_depth_slider = tk.Scale(controls_frame, from_=1, to=self.slidermaxvalue, orient=tk.HORIZONTAL, bg=self.COLORS['bg_dark'], fg=self.COLORS['text_light'], highlightthickness=0, relief='flat')
         self.bot_depth_slider.set(3); self.bot_depth_slider.pack(fill=tk.X, pady=(0,2))
         self.instant_move = tk.BooleanVar(value=False); ttk.Checkbutton(controls_frame, text="Instant Moves", variable=self.instant_move, style='Custom.TCheckbutton').pack(anchor=tk.W, pady=(2,2))
         self.analysis_checkbox = ttk.Checkbutton(controls_frame, text="Analysis Mode (H-vs-H)", variable=self.analysis_mode_var, style='Custom.TCheckbutton', command=self.toggle_analysis_mode)
