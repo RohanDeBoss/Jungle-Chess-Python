@@ -52,7 +52,7 @@ TT_FLAG_EXACT, TT_FLAG_LOWERBOUND, TT_FLAG_UPPERBOUND = 0, 1, 2
 
 class SearchCancelledException(Exception): pass
 
-class ChessBot:
+class OpponentAI:
     search_depth = 3
     MATE_SCORE, DRAW_SCORE, DRAW_PENALTY = 1000000, 0, -10
     MAX_Q_SEARCH_DEPTH = 8
