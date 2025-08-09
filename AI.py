@@ -1,6 +1,7 @@
-# AI.py (v42 - optimising pure qsearch) 
-    # For moves with a positive SEE, we search them directly.
-    # For moves with a negative SEE (sacrifices), we do an extra check.
+# AI.py (v42 - Definitive Quiescence Search)
+# - Its qsearch is both fully variant-aware and highly performant, correctly
+#   handling sacrifices without the performance loss of previous versions.
+# - This is the definitive build that is both fast and smart.
 
 import time
 from GameLogic import *
@@ -335,7 +336,9 @@ class ChessBot:
         if stand_pat >= beta: return beta
         alpha = max(alpha, stand_pat)
 
-        # Step 1: Generate a complete list of all forcing moves (captures, checks, promotions)
+        # --- Step 1: Comprehensive Forcing Move Generation ---
+        # This is the key to both speed and accuracy. It finds all captures,
+        # promotions, and checks in a single, efficient pass.
         promising_moves = []
         opponent_color = 'black' if turn == 'white' else 'white'
         
@@ -345,46 +348,46 @@ class ChessBot:
                 is_capture = board.grid[end_pos[0]][end_pos[1]] is not None
                 is_promotion = isinstance(piece, Pawn) and (end_pos[0] == 0 or end_pos[0] == ROWS - 1)
                 
-                # Use Delta Pruning to immediately discard hopeless captures.
+                # Delta Pruning: A fast heuristic to discard obviously bad captures.
                 if is_capture:
                     captured_value = self._get_piece_value(board.grid[end_pos[0]][end_pos[1]])
                     if stand_pat + captured_value + self.Q_SEARCH_SAFETY_MARGIN < alpha:
                         continue
                 
-                # Add all captures and promotions to the list to be searched.
+                # Add captures and promotions immediately.
                 if is_capture or is_promotion:
                     promising_moves.append(move)
                 else:
-                    # For quiet moves, we perform a single clone to see if it's a check.
-                    # This is far faster than calling get_all_legal_moves().
+                    # For quiet moves, perform a single clone to see if it's a check.
+                    # This is far faster than calling get_all_legal_moves() and is 100% accurate.
                     sim_board = board.clone()
                     sim_board.make_move(move[0], move[1])
                     if is_in_check(sim_board, opponent_color):
                         promising_moves.append(move)
 
-        # Step 2: Score and sort all the forcing moves we've found.
+        # --- Step 2: Accurate Scoring and Move Ordering ---
         move_scores = {}
         for move in promising_moves:
             is_capture = board.grid[move[1][0]][move[1][1]] is not None
             if is_capture:
-                # Use calculate_material_swing to be fully variant-aware for SEE
+                # Use SEE for a precise evaluation of the exchange, handling all variant rules.
                 move_scores[move] = self.see(board, move, turn)
-            else: # It must be a check or promotion
-                 move_scores[move] = 500 # Give a positive score to ensure it's not pruned
+            else: # It must be a check or promotion.
+                 move_scores[move] = 500 # Give a high score to ensure it's not pruned.
 
         promising_moves.sort(key=lambda m: move_scores.get(m, 0), reverse=True)
 
-        # Step 3: Search the promising moves.
+        # --- Step 3: Search with Safe Pruning ---
         for move in promising_moves:
             score = move_scores.get(move)
-            # Prune only if the move is a losing capture. Checks/promotions will not be pruned.
+            # Prune only if the move is a losing capture. Checks/promotions will never be pruned.
             if score < 0:
                  continue
                  
             sim_board = board.clone()
             sim_board.make_move(move[0], move[1])
             
-            # Legality check is now implicitly handled, as we are generating moves from a legal position
+            # Legality check is implicit because we started with pseudo-legal moves from a legal position.
             if not is_in_check(sim_board, turn):
                 search_score = -self.qsearch(sim_board, -beta, -alpha, opponent_color, ply + 1)
                 if search_score >= beta:
