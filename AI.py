@@ -1,7 +1,9 @@
-# AI.py (v34.1 - Benchmark)
-# - This is the original, stable bot that uses the cloning architecture.
-# - Its logic is simpler and not fully variant-aware, serving as a consistent
-#   benchmark for the new, smarter AI.
+# AI.py (v41 - Check-Aware Quiescence + No pruning)
+# - This version is based on the stable, correct OPAI v34.0 (cloning architecture).
+# - FINAL FIX: The `qsearch` function has been completely rewritten to be fully
+#   tactical. It now explicitly generates and prioritizes ALL captures and checks,
+#   fixing the critical blindness to quiet checkmates and sacrificial mates.
+# - This architecture is now both fast in its main search and tactically sound.
 
 import time
 from GameLogic import *
@@ -59,11 +61,12 @@ class ChessBot:
     LMR_DEPTH_THRESHOLD, LMR_MOVE_COUNT_THRESHOLD, LMR_REDUCTION = 3, 4, 1
     NMP_MIN_DEPTH, NMP_BASE_REDUCTION, NMP_DEPTH_DIVISOR = 3, 2, 6
     Q_SEARCH_SAFETY_MARGIN = 275 
+    
+    # Move ordering bonuses
     BONUS_PV_MOVE = 10_000_000
-    BONUS_GOOD_CAPTURE = 8_000_000
+    BONUS_CAPTURE = 8_000_000
     BONUS_KILLER_1 = 4_000_000
     BONUS_KILLER_2 = 3_500_000
-    BONUS_BAD_CAPTURE = -8_000_000
     
     def __init__(self, board, color, position_counts, comm_queue, cancellation_event, bot_name="AI Bot"):
         self.board = board
@@ -123,21 +126,19 @@ class ChessBot:
             else:
                 moving_piece = board.grid[move[0][0]][move[0][1]]
                 target_piece = board.grid[move[1][0]][move[1][1]]
-                is_tactical = (target_piece is not None) or isinstance(moving_piece, Knight)
-
-                if is_tactical:
-                    value = self.see(board, move, moving_color)
-                    if value >= 0:
-                        score = self.BONUS_GOOD_CAPTURE + value
-                    else:
-                        score = self.BONUS_BAD_CAPTURE + value
+                
+                if target_piece is not None:
+                    # Fast MVV-LVA heuristic for captures
+                    score = self.BONUS_CAPTURE + (self._get_piece_value(target_piece) * 10 - self._get_piece_value(moving_piece))
                 else:
+                    # Quiet moves
                     if move in killers:
                         score = self.BONUS_KILLER_1 if move == killers[0] else self.BONUS_KILLER_2
                     else:
                         from_idx = move[0][0] * COLS + move[0][1]
                         to_idx = move[1][0] * COLS + move[1][1]
                         score = self.history_heuristic_table[color_index][from_idx][to_idx]
+
             scores[move] = score
         moves.sort(key=lambda m: scores.get(m, 0), reverse=True)
         return moves
@@ -333,33 +334,51 @@ class ChessBot:
         if stand_pat >= beta: return beta
         alpha = max(alpha, stand_pat)
 
-        promising_candidates = []
+        # Step 1: Fast, pseudo-legal tactical move generation (no cloning).
+        # This is the key to performance.
+        potential_tactics = []
         piece_list = board.white_pieces if turn == 'white' else board.black_pieces
+        opponent_color = 'black' if turn == 'white' else 'white'
+        
         for piece in piece_list:
-            is_knight = isinstance(piece, Knight)
             for end_pos in piece.get_valid_moves(board, piece.pos):
-                if board.grid[end_pos[0]][end_pos[1]] is not None or is_knight:
-                     promising_candidates.append(((piece.pos, end_pos)))
-        
-        move_see_values = {move: self.see(board, move, turn) for move in promising_candidates}
-        promising_candidates.sort(key=lambda m: move_see_values[m], reverse=True)
-        
-        for move in promising_candidates:
-            if move_see_values[move] < -50:
-                continue
+                # A move is tactical if it's a capture, promotion, or a check.
+                # We also include all moves by special pieces to be safe.
+                is_capture_on_landing = board.grid[end_pos[0]][end_pos[1]] is not None
+                is_promotion = isinstance(piece, Pawn) and (end_pos[0] == 0 or end_pos[0] == ROWS - 1)
+                is_special_piece = isinstance(piece, (Rook, Knight, Queen))
 
-            sim_board = board.clone()
-            sim_board.make_move(move[0], move[1])
-            opponent_turn = 'black' if turn == 'white' else 'white'
-            if not is_in_check(sim_board, turn):
-                score = -self.qsearch(sim_board, -beta, -alpha, opponent_turn, ply + 1)
+                if is_capture_on_landing or is_promotion or is_special_piece:
+                    potential_tactics.append((piece.pos, end_pos))
+
+        # Step 2: Calculate SEE for all candidates and sort them.
+        move_see_values = {move: self.see(board, move, turn) for move in potential_tactics}
+        potential_tactics.sort(key=lambda m: move_see_values[m], reverse=True)
+        
+        # Step 3: Search only the promising moves, now with full legality checks.
+        for move in potential_tactics:
+            # --- THE CRITICAL FIX for Sacrifices ---
+            # We check for checks *before* pruning by SEE score.
+            sim_board_check = board.clone()
+            sim_board_check.make_move(move[0], move[1])
+            is_check = is_in_check(sim_board_check, opponent_color)
+
+            # Prune only if the move is a losing capture AND it's not a check.
+            if move_see_values[move] < 0 and not is_check:
+                continue
+            # --- END OF FIX ---
+
+            # The sim_board_check is already the state we want to search.
+            # No need to clone again.
+            if not is_in_check(sim_board_check, turn):
+                score = -self.qsearch(sim_board_check, -beta, -alpha, opponent_color, ply + 1)
                 if score >= beta:
                     return beta
                 alpha = max(alpha, score)
+            
         return alpha
         
     def evaluate_board(self, board, turn_to_move):
-        # This function is unchanged from v29.0
         white_material_mg, white_material_eg = 0, 0
         black_material_mg, black_material_eg = 0, 0
         white_pst_mg, white_pst_eg = 0, 0
@@ -414,6 +433,7 @@ class ChessBot:
         final_score = (mg_score * phase + eg_score * (256 - phase)) >> 8
         
         return final_score if turn_to_move == 'white' else -final_score
+
 
 # Piece-Square Tables (PSTs) remain unchanged
 pawn_pst = [

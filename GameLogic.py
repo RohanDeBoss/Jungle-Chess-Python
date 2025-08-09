@@ -1,10 +1,4 @@
-# gamelogic.py (v19.0 - Final Build with SEE Helper)
-# - This version is based on the verified v18.0 to guarantee rule correctness.
-# - NEW FUNCTION: calculate_material_swing(board, move). This powerful helper
-#   function is the single source of truth for determining the outcome of a move,
-#   correctly accounting for all variant rules (AOE, piercing, etc.).
-# - This moves complex rule calculations out of the AI and into the GameLogic,
-#   where they belong, for a cleaner and more robust architecture.
+# gamelogic.py (v20 - New helper functions)
 
 # -----------------------------
 # Global Constants
@@ -400,3 +394,67 @@ def calculate_material_swing(board, move):
         swing -= _get_piece_value(p)
         
     return swing
+def is_tactical_move(board, move):
+    """
+    Checks if a move is considered tactical in this variant.
+    This includes captures or any move by a piece with special abilities.
+    """
+    start_pos, end_pos = move
+    moving_piece = board.grid[start_pos[0]][start_pos[1]]
+    target_piece = board.grid[end_pos[0]][end_pos[1]]
+
+    if target_piece is not None:
+        return True # All captures are tactical
+    
+    if isinstance(moving_piece, (Rook, Queen, Knight)):
+        return True # Moves by pieces with AOE/piercing are always tactical
+        
+    if isinstance(moving_piece, Pawn):
+        promotion_rank = 0 if moving_piece.color == "white" else (ROWS - 1)
+        if end_pos[0] == promotion_rank:
+            return True # Pawn promotions are tactical
+            
+    return False
+
+def static_exchange_evaluation(board, move, turn):
+    """
+    Calculates the Static Exchange Evaluation (SEE) for a move.
+    This function is now the single source of truth for exchange outcomes.
+    """
+    initial_gain = calculate_material_swing(board, move)
+    
+    # After the initial move, the board state has changed
+    sim_board = board.clone()
+    sim_board.make_move(move[0], move[1])
+    
+    opponent_color = 'black' if turn == 'white' else 'white'
+    
+    # Find attackers on the destination square
+    attackers = []
+    piece_list = sim_board.white_pieces if opponent_color == 'white' else sim_board.black_pieces
+    for p in piece_list:
+        if move[1] in p.get_valid_moves(sim_board, p.pos):
+            attackers.append(p)
+            
+    if not attackers:
+        return initial_gain
+
+    # Find opponent's best re-capture (they will use their least valuable piece)
+    best_attacker = min(attackers, key=lambda p: _get_piece_value(p))
+    
+    recapture_move = (best_attacker.pos, move[1])
+    
+    # The result is the initial gain, minus the value of the exchange from the
+    # opponent's perspective after they recapture.
+    return initial_gain - static_exchange_evaluation(sim_board, recapture_move, opponent_color)
+
+def generate_tactical_moves_with_see(board, color):
+    """
+    A generator that yields all tactical moves for a given color,
+    along with their pre-calculated SEE score.
+    This is the new workhorse for the AI's quiescence search.
+    """
+    for move in get_all_legal_moves(board, color):
+        if is_tactical_move(board, move):
+            see_score = static_exchange_evaluation(board, move, color)
+            yield move, see_score
