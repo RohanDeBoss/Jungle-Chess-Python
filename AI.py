@@ -1,5 +1,4 @@
-# AI.py (v43 bug fix qsearch)
-# Now fully aware of all variant rules and all forcing moves.
+# AI.py (v44 - Critical bug fix for checkmates in qsearch)
 
 import time
 from GameLogic import *
@@ -330,50 +329,47 @@ class ChessBot:
         if self.cancellation_event.is_set(): raise SearchCancelledException()
         if ply >= self.MAX_Q_SEARCH_DEPTH: return self.evaluate_board(board, turn)
         
+        # --- THE DEFINITIVE FIX: Check for Mate/Stalemate FIRST ---
+        # This is the most critical part for accuracy. We must check if the
+        # position is terminal before doing anything else.
+        is_in_check_flag = is_in_check(board, turn)
+        # This is the only place in qsearch where get_all_legal_moves is acceptable,
+        # because we MUST know if there are any moves to determine mate/stalemate.
+        legal_moves = get_all_legal_moves(board, turn)
+        if not legal_moves:
+            return -self.MATE_SCORE + ply if is_in_check_flag else self.DRAW_SCORE
+        # --- END OF FIX ---
+
         stand_pat = self.evaluate_board(board, turn)
         if stand_pat >= beta: return beta
         alpha = max(alpha, stand_pat)
 
-        # --- High-Performance Tactical Move Generation ---
+        # --- High-Performance Tactical Move Filtering ---
+        # We now filter the already-generated legal_moves list, which is very fast.
         promising_moves = []
+        move_scores = {}
         opponent_color = 'black' if turn == 'white' else 'white'
         
-        # This single loop will find all captures, promotions, AND checks without get_all_legal_moves().
-        for piece in list(board.white_pieces if turn == 'white' else board.black_pieces):
-            for end_pos in piece.get_valid_moves(board, piece.pos):
-                move = (piece.pos, end_pos)
-                
-                # --- THE DEFINITIVE FIX: Use a variant-aware check for captures ---
-                material_swing = calculate_material_swing(board, move)
-                is_capture = material_swing > 0 # A move is a capture if it wins material.
-
-                is_promotion = isinstance(piece, Pawn) and (end_pos[0] == 0 or end_pos[0] == ROWS - 1)
-                
-                # Delta Pruning: Use the material_swing for a fast, variant-aware check.
-                if is_capture:
-                    if stand_pat + material_swing + self.Q_SEARCH_SAFETY_MARGIN < alpha:
-                        continue
-                
-                # Add all captures and promotions to the list to be searched.
-                if is_capture or is_promotion:
+        for move in legal_moves:
+            is_capture = board.grid[move[1][0]][move[1][1]] is not None
+            
+            if is_capture:
+                # Use SEE for a precise evaluation of the exchange.
+                score = self.see(board, move, turn)
+                # Delta Pruning: A fast heuristic to discard obviously bad captures.
+                if stand_pat + self._get_piece_value(board.grid[move[1][0]][move[1][1]]) + self.Q_SEARCH_SAFETY_MARGIN < alpha and score < 0:
+                    continue
+                promising_moves.append(move)
+                move_scores[move] = score
+            else:
+                # For quiet moves, we only care if they are checks.
+                sim_board = board.clone()
+                sim_board.make_move(move[0], move[1])
+                if is_in_check(sim_board, opponent_color):
                     promising_moves.append(move)
-                else:
-                    # For quiet moves, perform a single clone to see if it's a check.
-                    sim_board = board.clone()
-                    sim_board.make_move(move[0], move[1])
-                    if is_in_check(sim_board, opponent_color):
-                        promising_moves.append(move)
+                    move_scores[move] = 500 # Give a high score to ensure it's not pruned.
 
         # --- Move Ordering ---
-        move_scores = {}
-        for move in promising_moves:
-            material_swing = calculate_material_swing(board, move)
-            if material_swing != 0: # Check again for any capture, including sacrifices
-                # Use SEE to be fully variant-aware for all captures.
-                move_scores[move] = self.see(board, move, turn)
-            else: # It must be a check or promotion.
-                 move_scores[move] = 500 # Give a positive score to ensure it's not pruned.
-
         promising_moves.sort(key=lambda m: move_scores.get(m, 0), reverse=True)
 
         # --- Final Search Loop ---
@@ -386,11 +382,10 @@ class ChessBot:
             sim_board = board.clone()
             sim_board.make_move(move[0], move[1])
             
-            if not is_in_check(sim_board, turn):
-                search_score = -self.qsearch(sim_board, -beta, -alpha, opponent_color, ply + 1)
-                if search_score >= beta:
-                    return beta
-                alpha = max(alpha, search_score)
+            search_score = -self.qsearch(sim_board, -beta, -alpha, opponent_color, ply + 1)
+            if search_score >= beta:
+                return beta
+            alpha = max(alpha, search_score)
             
         return alpha
         
