@@ -1,4 +1,7 @@
-# OPAI.py (v34.0 - Final Verified SEE)
+# OPAI.py (v34.1 - Benchmark)
+# - This is the original, stable bot that uses the cloning architecture.
+# - Its logic is simpler and not fully variant-aware, serving as a consistent
+#   benchmark for the new, smarter AI.
 
 import time
 from GameLogic import *
@@ -62,7 +65,7 @@ class OpponentAI:
     BONUS_KILLER_2 = 3_500_000
     BONUS_BAD_CAPTURE = -8_000_000
     
-    def __init__(self, board, color, position_counts, comm_queue, cancellation_event, bot_name="AI Bot"):
+    def __init__(self, board, color, position_counts, comm_queue, cancellation_event, bot_name="OP Bot"):
         self.board = board
         self.color = color
         self.opponent_color = 'black' if color == 'white' else 'white'
@@ -96,22 +99,13 @@ class OpponentAI:
 
     def see(self, board, move, turn):
         initial_gain = calculate_material_swing(board, move)
-
-        # After the initial move, the board state has changed
         sim_board = board.clone()
         sim_board.make_move(move[0], move[1])
-        
         opponent_color = 'black' if turn == 'white' else 'white'
         attackers = self.get_attackers(sim_board, move[1], opponent_color)
-        
         if not attackers:
             return initial_gain
-
-        # Find opponent's best re-capture (they will use their least valuable piece)
         best_attacker = min(attackers, key=lambda p: self._get_piece_value(p))
-        
-        # The result of the exchange is the initial gain, minus the value of the
-        # exchange from the opponent's perspective after they recapture.
         recapture_move = (best_attacker.pos, move[1])
         return initial_gain - self.see(sim_board, recapture_move, opponent_color)
 
@@ -149,7 +143,6 @@ class OpponentAI:
         return moves
 
     def make_move(self):
-        # This function and those below are unchanged from v29.0
         try:
             root_moves = get_all_legal_moves(self.board, self.color)
             if not root_moves:
@@ -157,10 +150,9 @@ class OpponentAI:
                 return
             
             best_move_overall = root_moves[0]
-            root_hash = board_hash(self.board, self.color)
-
             for current_depth in range(1, self.search_depth + 1):
                 iter_start_time = time.time()
+                root_hash = board_hash(self.board, self.color)
                 best_score_this_iter, best_move_this_iter = self._search_at_depth(current_depth, root_moves, root_hash, best_move_overall)
                 
                 if not self.cancellation_event.is_set():
@@ -178,9 +170,8 @@ class OpponentAI:
                     raise SearchCancelledException()
             
             self._report_move(best_move_overall)
-
         except SearchCancelledException:
-            self._report_log(f"AI ({self.color}): Search cancelled.")
+            self._report_log(f"OP ({self.color}): Search cancelled.")
             self._report_move(None)
 
     def ponder_indefinitely(self):
@@ -273,8 +264,7 @@ class OpponentAI:
             any(not isinstance(p, (Pawn, King)) for p in (board.white_pieces if turn == 'white' else board.black_pieces))):
             
             nmp_reduction = self.NMP_BASE_REDUCTION + (depth // self.NMP_DEPTH_DIVISOR)
-            nmp_search_path = search_path | {hash_val}
-            score = -self.negamax(board, depth - 1 - nmp_reduction, -beta, -beta + 1, opponent_turn, ply + 1, nmp_search_path)
+            score = -self.negamax(board, depth - 1 - nmp_reduction, -beta, -beta + 1, opponent_turn, ply + 1, search_path | {hash_val})
             
             if score >= beta:
                 self.tt[hash_val] = TTEntry(beta, depth, TT_FLAG_LOWERBOUND, None)
@@ -366,7 +356,6 @@ class OpponentAI:
                 if score >= beta:
                     return beta
                 alpha = max(alpha, score)
-            
         return alpha
         
     def evaluate_board(self, board, turn_to_move):
@@ -426,16 +415,16 @@ class OpponentAI:
         
         return final_score if turn_to_move == 'white' else -final_score
 
-# Piece-Square Tables (PSTs) remain unchanged from v29.0
+# Piece-Square Tables (PSTs) remain unchanged
 pawn_pst = [
-    [0, 0, 0, 0, 0, 0, 0, 0],
-    [100, 100, 100, 100, 100, 100, 100, 100],
+    [ 0,  0 , 0,  0,  0,  0,  0,  0],
+    [90, 90, 90, 90, 90, 90, 90, 90],
     [50, 50, 50, 50, 50, 50, 50, 50],
     [30, 30, 40, 50, 50, 40, 30, 30],
     [20, 20, 30, 40, 40, 30, 20, 20],
     [10, 10, 20, 30, 30, 20, 10, 10],
-    [0, 0, 0, 0, 0, 0, 0, 0],
-    [0, 0, 0, 0, 0, 0, 0, 0]
+    [ 0,  0,  0,  0,  0,  0,  0,  0],
+    [ 0,  0,  0,  0,  0,  0,  0,  0]
 ]
 knight_pst = [
     [-50, -40, -30, -30, -30, -30, -40, -50],
