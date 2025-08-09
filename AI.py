@@ -1,9 +1,6 @@
-# AI.py (v41 - Check-Aware Quiescence + No pruning)
-# - This version is based on the stable, correct OPAI v34.0 (cloning architecture).
-# - FINAL FIX: The `qsearch` function has been completely rewritten to be fully
-#   tactical. It now explicitly generates and prioritizes ALL captures and checks,
-#   fixing the critical blindness to quiet checkmates and sacrificial mates.
-# - This architecture is now both fast in its main search and tactically sound.
+# AI.py (v42 - optimising pure qsearch) 
+    # For moves with a positive SEE, we search them directly.
+    # For moves with a negative SEE (sacrifices), we do an extra check.
 
 import time
 from GameLogic import *
@@ -60,7 +57,7 @@ class ChessBot:
     MAX_Q_SEARCH_DEPTH = 8
     LMR_DEPTH_THRESHOLD, LMR_MOVE_COUNT_THRESHOLD, LMR_REDUCTION = 3, 4, 1
     NMP_MIN_DEPTH, NMP_BASE_REDUCTION, NMP_DEPTH_DIVISOR = 3, 2, 6
-    Q_SEARCH_SAFETY_MARGIN = 275 
+    Q_SEARCH_SAFETY_MARGIN = 400
     
     # Move ordering bonuses
     BONUS_PV_MOVE = 10_000_000
@@ -334,47 +331,62 @@ class ChessBot:
         if stand_pat >= beta: return beta
         alpha = max(alpha, stand_pat)
 
-        # Step 1: Fast, pseudo-legal tactical move generation (no cloning).
-        # This is the key to performance.
-        potential_tactics = []
-        piece_list = board.white_pieces if turn == 'white' else board.black_pieces
+        # --- High-Performance Tactical Move Generation ---
+        promising_moves = []
         opponent_color = 'black' if turn == 'white' else 'white'
         
-        for piece in piece_list:
+        # Step 1: Quickly generate all captures and promotions using fast pseudo-legal moves.
+        for piece in list(board.white_pieces if turn == 'white' else board.black_pieces):
             for end_pos in piece.get_valid_moves(board, piece.pos):
-                # A move is tactical if it's a capture, promotion, or a check.
-                # We also include all moves by special pieces to be safe.
-                is_capture_on_landing = board.grid[end_pos[0]][end_pos[1]] is not None
+                move = (piece.pos, end_pos)
+                is_capture = board.grid[end_pos[0]][end_pos[1]] is not None
                 is_promotion = isinstance(piece, Pawn) and (end_pos[0] == 0 or end_pos[0] == ROWS - 1)
-                is_special_piece = isinstance(piece, (Rook, Knight, Queen))
-
-                if is_capture_on_landing or is_promotion or is_special_piece:
-                    potential_tactics.append((piece.pos, end_pos))
-
-        # Step 2: Calculate SEE for all candidates and sort them.
-        move_see_values = {move: self.see(board, move, turn) for move in potential_tactics}
-        potential_tactics.sort(key=lambda m: move_see_values[m], reverse=True)
+                
+                # Use Delta Pruning to immediately discard hopeless captures.
+                if is_capture:
+                    captured_value = self._get_piece_value(board.grid[end_pos[0]][end_pos[1]])
+                    if stand_pat + captured_value + self.Q_SEARCH_SAFETY_MARGIN < alpha:
+                        continue
+                
+                if is_capture or is_promotion:
+                    promising_moves.append(move)
         
-        # Step 3: Search only the promising moves, now with full legality checks.
-        for move in potential_tactics:
-            # --- THE CRITICAL FIX for Sacrifices ---
-            # We check for checks *before* pruning by SEE score.
-            sim_board_check = board.clone()
-            sim_board_check.make_move(move[0], move[1])
-            is_check = is_in_check(sim_board_check, opponent_color)
+        # Step 2: Use the comprehensive (but slower) legal move generator to find all checks.
+        # This is the only way to guarantee finding discovered checks and quiet checks.
+        legal_moves_for_checks = get_all_legal_moves(board, turn)
+        for move in legal_moves_for_checks:
+            # Add the move only if it's not already in our list of captures/promotions.
+            if move not in promising_moves:
+                 sim_board = board.clone()
+                 sim_board.make_move(move[0], move[1])
+                 if is_in_check(sim_board, opponent_color):
+                     promising_moves.append(move)
 
-            # Prune only if the move is a losing capture AND it's not a check.
-            if move_see_values[move] < 0 and not is_check:
-                continue
-            # --- END OF FIX ---
+        # Step 3: Score and sort all the forcing moves we've found.
+        move_scores = {}
+        for move in promising_moves:
+            is_capture = board.grid[move[1][0]][move[1][1]] is not None
+            if is_capture:
+                move_scores[move] = self.see(board, move, turn)
+            else: # It must be a check or promotion
+                 move_scores[move] = 500 # Give a positive score to ensure it's not pruned
 
-            # The sim_board_check is already the state we want to search.
-            # No need to clone again.
-            if not is_in_check(sim_board_check, turn):
-                score = -self.qsearch(sim_board_check, -beta, -alpha, opponent_color, ply + 1)
-                if score >= beta:
-                    return beta
-                alpha = max(alpha, score)
+        promising_moves.sort(key=lambda m: move_scores.get(m, 0), reverse=True)
+
+        # Step 4: Search the promising moves.
+        for move in promising_moves:
+            score = move_scores.get(move)
+            # Prune only if the move is a losing capture. Checks/promotions will not be pruned.
+            if score < 0:
+                 continue
+                 
+            sim_board = board.clone()
+            sim_board.make_move(move[0], move[1])
+            
+            search_score = -self.qsearch(sim_board, -beta, -alpha, opponent_color, ply + 1)
+            if search_score >= beta:
+                return beta
+            alpha = max(alpha, search_score)
             
         return alpha
         
