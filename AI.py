@@ -62,6 +62,7 @@ class ChessBot:
     # Move ordering bonuses
     BONUS_PV_MOVE = 10_000_000
     BONUS_CAPTURE = 8_000_000
+    BONUS_QN_TACTIC = 5_000_000 # High priority for Q/N non-captures
     BONUS_KILLER_1 = 4_000_000
     BONUS_KILLER_2 = 3_500_000
     
@@ -128,9 +129,12 @@ class ChessBot:
                     # Fast MVV-LVA heuristic for captures
                     score = self.BONUS_CAPTURE + (self._get_piece_value(target_piece) * 10 - self._get_piece_value(moving_piece))
                 else:
-                    # Quiet moves
+                    # Quiet moves, prioritized
                     if move in killers:
                         score = self.BONUS_KILLER_1 if move == killers[0] else self.BONUS_KILLER_2
+                    # Prioritize non-capturing moves by pieces with high tactical potential
+                    elif isinstance(moving_piece, (Queen, Knight)):
+                        score = self.BONUS_QN_TACTIC
                     else:
                         from_idx = move[0][0] * COLS + move[0][1]
                         to_idx = move[1][0] * COLS + move[1][1]
@@ -331,11 +335,10 @@ class ChessBot:
         if stand_pat >= beta: return beta
         alpha = max(alpha, stand_pat)
 
-        # --- High-Performance Tactical Move Generation ---
+        # Step 1: Generate a complete list of all forcing moves (captures, checks, promotions)
         promising_moves = []
         opponent_color = 'black' if turn == 'white' else 'white'
         
-        # Step 1: Quickly generate all captures and promotions using fast pseudo-legal moves.
         for piece in list(board.white_pieces if turn == 'white' else board.black_pieces):
             for end_pos in piece.get_valid_moves(board, piece.pos):
                 move = (piece.pos, end_pos)
@@ -348,32 +351,30 @@ class ChessBot:
                     if stand_pat + captured_value + self.Q_SEARCH_SAFETY_MARGIN < alpha:
                         continue
                 
+                # Add all captures and promotions to the list to be searched.
                 if is_capture or is_promotion:
                     promising_moves.append(move)
-        
-        # Step 2: Use the comprehensive (but slower) legal move generator to find all checks.
-        # This is the only way to guarantee finding discovered checks and quiet checks.
-        legal_moves_for_checks = get_all_legal_moves(board, turn)
-        for move in legal_moves_for_checks:
-            # Add the move only if it's not already in our list of captures/promotions.
-            if move not in promising_moves:
-                 sim_board = board.clone()
-                 sim_board.make_move(move[0], move[1])
-                 if is_in_check(sim_board, opponent_color):
-                     promising_moves.append(move)
+                else:
+                    # For quiet moves, we perform a single clone to see if it's a check.
+                    # This is far faster than calling get_all_legal_moves().
+                    sim_board = board.clone()
+                    sim_board.make_move(move[0], move[1])
+                    if is_in_check(sim_board, opponent_color):
+                        promising_moves.append(move)
 
-        # Step 3: Score and sort all the forcing moves we've found.
+        # Step 2: Score and sort all the forcing moves we've found.
         move_scores = {}
         for move in promising_moves:
             is_capture = board.grid[move[1][0]][move[1][1]] is not None
             if is_capture:
+                # Use calculate_material_swing to be fully variant-aware for SEE
                 move_scores[move] = self.see(board, move, turn)
             else: # It must be a check or promotion
                  move_scores[move] = 500 # Give a positive score to ensure it's not pruned
 
         promising_moves.sort(key=lambda m: move_scores.get(m, 0), reverse=True)
 
-        # Step 4: Search the promising moves.
+        # Step 3: Search the promising moves.
         for move in promising_moves:
             score = move_scores.get(move)
             # Prune only if the move is a losing capture. Checks/promotions will not be pruned.
@@ -383,10 +384,12 @@ class ChessBot:
             sim_board = board.clone()
             sim_board.make_move(move[0], move[1])
             
-            search_score = -self.qsearch(sim_board, -beta, -alpha, opponent_color, ply + 1)
-            if search_score >= beta:
-                return beta
-            alpha = max(alpha, search_score)
+            # Legality check is now implicitly handled, as we are generating moves from a legal position
+            if not is_in_check(sim_board, turn):
+                search_score = -self.qsearch(sim_board, -beta, -alpha, opponent_color, ply + 1)
+                if search_score >= beta:
+                    return beta
+                alpha = max(alpha, search_score)
             
         return alpha
         

@@ -1,7 +1,6 @@
-# OPAI.py (v34.1 - Benchmark)
-# - This is the original, stable bot that uses the cloning architecture.
-# - Its logic is simpler and not fully variant-aware, serving as a consistent
-#   benchmark for the new, smarter AI.
+# OPAI.py (v42 - optimising pure qsearch) 
+    # For moves with a positive SEE, we search them directly.
+    # For moves with a negative SEE (sacrifices), we do an extra check.
 
 import time
 from GameLogic import *
@@ -58,12 +57,14 @@ class OpponentAI:
     MAX_Q_SEARCH_DEPTH = 8
     LMR_DEPTH_THRESHOLD, LMR_MOVE_COUNT_THRESHOLD, LMR_REDUCTION = 3, 4, 1
     NMP_MIN_DEPTH, NMP_BASE_REDUCTION, NMP_DEPTH_DIVISOR = 3, 2, 6
-    Q_SEARCH_SAFETY_MARGIN = 275 
+    Q_SEARCH_SAFETY_MARGIN = 400
+    
+    # Move ordering bonuses
     BONUS_PV_MOVE = 10_000_000
-    BONUS_GOOD_CAPTURE = 8_000_000
+    BONUS_CAPTURE = 8_000_000
+    BONUS_QN_TACTIC = 5_000_000 # High priority for Q/N non-captures
     BONUS_KILLER_1 = 4_000_000
     BONUS_KILLER_2 = 3_500_000
-    BONUS_BAD_CAPTURE = -8_000_000
     
     def __init__(self, board, color, position_counts, comm_queue, cancellation_event, bot_name="OP Bot"):
         self.board = board
@@ -123,21 +124,22 @@ class OpponentAI:
             else:
                 moving_piece = board.grid[move[0][0]][move[0][1]]
                 target_piece = board.grid[move[1][0]][move[1][1]]
-                is_tactical = (target_piece is not None) or isinstance(moving_piece, Knight)
-
-                if is_tactical:
-                    value = self.see(board, move, moving_color)
-                    if value >= 0:
-                        score = self.BONUS_GOOD_CAPTURE + value
-                    else:
-                        score = self.BONUS_BAD_CAPTURE + value
+                
+                if target_piece is not None:
+                    # Fast MVV-LVA heuristic for captures
+                    score = self.BONUS_CAPTURE + (self._get_piece_value(target_piece) * 10 - self._get_piece_value(moving_piece))
                 else:
+                    # Quiet moves, prioritized
                     if move in killers:
                         score = self.BONUS_KILLER_1 if move == killers[0] else self.BONUS_KILLER_2
+                    # Prioritize non-capturing moves by pieces with high tactical potential
+                    elif isinstance(moving_piece, (Queen, Knight)):
+                        score = self.BONUS_QN_TACTIC
                     else:
                         from_idx = move[0][0] * COLS + move[0][1]
                         to_idx = move[1][0] * COLS + move[1][1]
                         score = self.history_heuristic_table[color_index][from_idx][to_idx]
+
             scores[move] = score
         moves.sort(key=lambda m: scores.get(m, 0), reverse=True)
         return moves
@@ -333,33 +335,65 @@ class OpponentAI:
         if stand_pat >= beta: return beta
         alpha = max(alpha, stand_pat)
 
-        promising_candidates = []
-        piece_list = board.white_pieces if turn == 'white' else board.black_pieces
-        for piece in piece_list:
-            is_knight = isinstance(piece, Knight)
+        # Step 1: Generate a complete list of all forcing moves (captures, checks, promotions)
+        promising_moves = []
+        opponent_color = 'black' if turn == 'white' else 'white'
+        
+        for piece in list(board.white_pieces if turn == 'white' else board.black_pieces):
             for end_pos in piece.get_valid_moves(board, piece.pos):
-                if board.grid[end_pos[0]][end_pos[1]] is not None or is_knight:
-                     promising_candidates.append(((piece.pos, end_pos)))
-        
-        move_see_values = {move: self.see(board, move, turn) for move in promising_candidates}
-        promising_candidates.sort(key=lambda m: move_see_values[m], reverse=True)
-        
-        for move in promising_candidates:
-            if move_see_values[move] < -50:
-                continue
+                move = (piece.pos, end_pos)
+                is_capture = board.grid[end_pos[0]][end_pos[1]] is not None
+                is_promotion = isinstance(piece, Pawn) and (end_pos[0] == 0 or end_pos[0] == ROWS - 1)
+                
+                # Use Delta Pruning to immediately discard hopeless captures.
+                if is_capture:
+                    captured_value = self._get_piece_value(board.grid[end_pos[0]][end_pos[1]])
+                    if stand_pat + captured_value + self.Q_SEARCH_SAFETY_MARGIN < alpha:
+                        continue
+                
+                # Add all captures and promotions to the list to be searched.
+                if is_capture or is_promotion:
+                    promising_moves.append(move)
+                else:
+                    # For quiet moves, we perform a single clone to see if it's a check.
+                    # This is far faster than calling get_all_legal_moves().
+                    sim_board = board.clone()
+                    sim_board.make_move(move[0], move[1])
+                    if is_in_check(sim_board, opponent_color):
+                        promising_moves.append(move)
 
+        # Step 2: Score and sort all the forcing moves we've found.
+        move_scores = {}
+        for move in promising_moves:
+            is_capture = board.grid[move[1][0]][move[1][1]] is not None
+            if is_capture:
+                # Use calculate_material_swing to be fully variant-aware for SEE
+                move_scores[move] = self.see(board, move, turn)
+            else: # It must be a check or promotion
+                 move_scores[move] = 500 # Give a positive score to ensure it's not pruned
+
+        promising_moves.sort(key=lambda m: move_scores.get(m, 0), reverse=True)
+
+        # Step 3: Search the promising moves.
+        for move in promising_moves:
+            score = move_scores.get(move)
+            # Prune only if the move is a losing capture. Checks/promotions will not be pruned.
+            if score < 0:
+                 continue
+                 
             sim_board = board.clone()
             sim_board.make_move(move[0], move[1])
-            opponent_turn = 'black' if turn == 'white' else 'white'
+            
+            # Legality check is now implicitly handled, as we are generating moves from a legal position
             if not is_in_check(sim_board, turn):
-                score = -self.qsearch(sim_board, -beta, -alpha, opponent_turn, ply + 1)
-                if score >= beta:
+                search_score = -self.qsearch(sim_board, -beta, -alpha, opponent_color, ply + 1)
+                if search_score >= beta:
                     return beta
-                alpha = max(alpha, score)
+                alpha = max(alpha, search_score)
+            
         return alpha
         
     def evaluate_board(self, board, turn_to_move):
-        # This function is unchanged from v29.0
         white_material_mg, white_material_eg = 0, 0
         black_material_mg, black_material_eg = 0, 0
         white_pst_mg, white_pst_eg = 0, 0
@@ -414,6 +448,7 @@ class OpponentAI:
         final_score = (mg_score * phase + eg_score * (256 - phase)) >> 8
         
         return final_score if turn_to_move == 'white' else -final_score
+
 
 # Piece-Square Tables (PSTs) remain unchanged
 pawn_pst = [
