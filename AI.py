@@ -1,4 +1,4 @@
-# AI.py (v47.1 - Evaluation enhancements)
+# AI.py (v48 Negamax Enhancements)
 
 import time
 from GameLogic import *
@@ -273,24 +273,26 @@ class ChessBot:
         new_search_path = search_path | {hash_val}
         
         # --- THE DEFINITIVE PERFORMANCE FIX ---
-        # 1. Generate only the move tuples first. This is still the slowest part,
-        #    but it's unavoidable in a cloning architecture.
-        legal_moves_list = get_all_legal_moves(board, turn)
+        # Generate moves and their resulting board states ONLY ONCE. This is the key.
+        legal_moves_with_boards = list(_generate_legal_moves(board, turn, yield_boards=True))
         
-        if not legal_moves_list:
+        if not legal_moves_with_boards:
             return -self.MATE_SCORE + ply if is_in_check_flag else self.DRAW_SCORE
 
-        # 2. Sort the moves before doing any more expensive work.
+        # Create the data structures we need from this single, stored list.
+        # This is extremely fast and avoids redundant work.
+        legal_moves_list = [move for move, board in legal_moves_with_boards]
+        move_to_board_map = dict(legal_moves_with_boards)
+        # --- END OF FIX ---
+
         hash_move = tt_entry.best_move if tt_entry else None
         ordered_moves = self.order_moves(board, legal_moves_list, ply, hash_move)
         
         best_move_for_node = None
         
-        # 3. Loop through the sorted moves and generate board states ON-DEMAND.
         for i, move in enumerate(ordered_moves):
-            # The expensive clone() and make_move() happen *inside* the loop.
-            child_board = board.clone()
-            child_board.make_move(move[0], move[1])
+            child_board = move_to_board_map.get(move)
+            if not child_board: continue
 
             child_hash = board_hash(child_board, opponent_turn)
             self.position_counts[child_hash] = self.position_counts.get(child_hash, 0) + 1
@@ -313,8 +315,6 @@ class ChessBot:
                 best_move_for_node = move
                 
             if alpha >= beta:
-                # If we get a cutoff, we exit early and never clone the board
-                # for the remaining moves. This is the key performance gain.
                 if not is_capture:
                     if ply < len(self.killer_moves) and self.killer_moves[ply][0] != move:
                         self.killer_moves[ply][1] = self.killer_moves[ply][0]
