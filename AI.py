@@ -1,4 +1,4 @@
-# AI.py (v48 Negamax Enhancements)
+# AI.py (v48.1 Piece value tweaks)
 
 import time
 from GameLogic import *
@@ -8,10 +8,10 @@ from GameLogic import _generate_legal_moves
 
 # --- Tapered Piece Values for Jungle Chess ---
 PIECE_VALUES_MG = {
-    Pawn: 100, Knight: 800, Bishop: 700, Rook: 600, Queen: 850, King: 20000
+    Pawn: 100, Knight: 800, Bishop: 700, Rook: 600, Queen: 900, King: 20000
 }
 PIECE_VALUES_EG = {
-    Pawn: 100, Knight: 800, Bishop: 650, Rook: 850, Queen: 550, King: 20000
+    Pawn: 100, Knight: 800, Bishop: 650, Rook: 800, Queen: 700, King: 20000
 }
 INITIAL_PHASE_MATERIAL = (PIECE_VALUES_MG[Rook] * 4 + PIECE_VALUES_MG[Knight] * 4 +
                           PIECE_VALUES_MG[Bishop] * 4 + PIECE_VALUES_MG[Queen] * 2)
