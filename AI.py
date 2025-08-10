@@ -1,4 +1,4 @@
-# AI.py (v49 Logic changes and piece table tweaks)
+# AI.py (v49.1 qsearch optimizations)
 
 import time
 from GameLogic import *
@@ -375,37 +375,33 @@ class ChessBot:
             for piece in list(board.white_pieces if turn == 'white' else board.black_pieces):
                 for end_pos in piece.get_valid_moves(board, piece.pos):
                     move = (piece.pos, end_pos)
-                    # Use a fast, naive check here. Variant awareness is handled by see() later.
-                    is_capture = board.grid[end_pos[0]][end_pos[1]] is not None
+                    
+                    material_swing = calculate_material_swing(board, move)
+                    is_capture = material_swing != 0
                     is_promotion = isinstance(piece, Pawn) and (end_pos[0] == 0 or end_pos[0] == ROWS - 1)
                     
-                    if is_capture:
-                        captured_value = self._get_piece_value(board.grid[end_pos[0]][end_pos[1]])
-                        if stand_pat + captured_value + self.Q_SEARCH_SAFETY_MARGIN < alpha:
+                    if is_capture or is_promotion:
+                        move_value = material_swing if is_capture else self._get_piece_value(Queen)
+                        if stand_pat + move_value + self.Q_SEARCH_SAFETY_MARGIN < alpha:
                             continue
-                        promising_moves.append(move)
-                    elif is_promotion:
                         promising_moves.append(move)
                     # Integrate the Horizon fix: also add quiet moves if they are escapes.
                     elif piece.pos in threatened_pieces_pos:
                         promising_moves.append(move)
 
-            # Score and sort the unified list of promising moves.
-            move_scores = {move: self.see(board, move, turn) for move in promising_moves}
-            promising_moves.sort(key=lambda m: move_scores.get(m, 0), reverse=True)
+            # Score, sort, and search the unified list of promising moves.
+            if promising_moves:
+                move_scores = {move: self.see(board, move, turn) for move in promising_moves}
+                promising_moves.sort(key=lambda m: move_scores.get(m, 0), reverse=True)
 
-            # OPTIMIZATION 3: Perform pruning checks BEFORE cloning the board.
-            for move in promising_moves:
-                if move_scores.get(move, 0) < 0:
-                     continue
-                 
-                sim_board = board.clone()
-                sim_board.make_move(move[0], move[1])
-                
-                if not is_in_check(sim_board, turn):
-                    score = -self.qsearch(sim_board, -beta, -alpha, opponent_color, ply + 1)
-                    if score >= beta: return beta
-                    alpha = max(alpha, score)
+                for move in promising_moves:
+                    if move_scores.get(move, 0) < 0: continue
+                    sim_board = board.clone()
+                    sim_board.make_move(move[0], move[1])
+                    if not is_in_check(sim_board, turn):
+                        score = -self.qsearch(sim_board, -beta, -alpha, opponent_color, ply + 1)
+                        if score >= beta: return beta
+                        alpha = max(alpha, score)
 
         return alpha
         
