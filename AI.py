@@ -1,4 +1,4 @@
-# AI.py (v49.1 qsearch optimizations)
+# AI.py (v50 - Final Qsearch fixes)
 
 import time
 from GameLogic import *
@@ -359,10 +359,10 @@ class ChessBot:
                 if search_score >= beta: return beta
                 alpha = max(alpha, search_score)
         else:
-            # TIER 2 (NOT IN CHECK): Performance is key. This is the fully optimized version.
+            # TIER 2 (NOT IN CHECK): Performance is key.
             promising_moves = []
             
-            # OPTIMIZATION 1: Identify threatened pieces ONCE before the main loop.
+            # Identify threatened pieces ONCE before the main loop for the Horizon fix.
             threatened_pieces_pos = set()
             my_pieces = board.white_pieces if turn == 'white' else board.black_pieces
             for piece in my_pieces:
@@ -371,22 +371,26 @@ class ChessBot:
                     if attackers and self._get_piece_value(attackers[0]) < self._get_piece_value(piece):
                         threatened_pieces_pos.add(piece.pos)
 
-            # OPTIMIZATION 2: Generate all tactical candidates in a single, efficient pass.
+            # Generate all tactical candidates in a single, efficient pass.
             for piece in list(board.white_pieces if turn == 'white' else board.black_pieces):
                 for end_pos in piece.get_valid_moves(board, piece.pos):
                     move = (piece.pos, end_pos)
                     
+                    # --- THE CRITICAL BUG FIX: Use the VARIANT-AWARE check ---
                     material_swing = calculate_material_swing(board, move)
                     is_capture = material_swing != 0
+                    
                     is_promotion = isinstance(piece, Pawn) and (end_pos[0] == 0 or end_pos[0] == ROWS - 1)
                     
-                    if is_capture or is_promotion:
-                        move_value = material_swing if is_capture else self._get_piece_value(Queen)
-                        if stand_pat + move_value + self.Q_SEARCH_SAFETY_MARGIN < alpha:
+                    if is_capture:
+                        # Delta Pruning, now correctly using the variant-aware material_swing
+                        if stand_pat + material_swing + self.Q_SEARCH_SAFETY_MARGIN < alpha:
                             continue
                         promising_moves.append(move)
+                    elif is_promotion:
+                        promising_moves.append(move)
                     # Integrate the Horizon fix: also add quiet moves if they are escapes.
-                    elif piece.pos in threatened_pieces_pos:
+                    elif piece.pos in threatened_pieces_pos and not is_capture:
                         promising_moves.append(move)
 
             # Score, sort, and search the unified list of promising moves.
