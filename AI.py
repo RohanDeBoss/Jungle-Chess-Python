@@ -1,4 +1,4 @@
-# AI.py (v47 - Bug fixes to qsearch and pay as you go for qsearch + negamax)
+# AI.py (v47.1 - Evaluation enhancements)
 
 import time
 from GameLogic import *
@@ -395,12 +395,23 @@ class ChessBot:
         return alpha
         
     def evaluate_board(self, board, turn_to_move):
+        # --- Heuristic Bonuses (Tuned King Mobility) ---
+        ROOK_SEMI_OPEN_FILE_BONUS = 30 # Highest value: file with enemy targets
+        ROOK_OPEN_FILE_BONUS = 15      # Medium value: file for mobility
+        
+        # --- THE CHANGE ---
+        # New, more conservative bonus for king mobility as requested.
+        # It rewards having escape squares but does not over-incentivize an exposed king.
+        KING_MOBILITY_BONUS = [0, 30, 45] # Bonus for 0, 1, or 2+ legal moves
+        # --- END OF CHANGE ---
+
         white_material_mg, white_material_eg = 0, 0
         black_material_mg, black_material_eg = 0, 0
         white_pst_mg, white_pst_eg = 0, 0
         black_pst_mg, black_pst_eg = 0, 0
         phase_material_score = 0
 
+        # --- Base Evaluation: Material and Piece-Square Tables ---
         for piece in board.white_pieces:
             piece_type = type(piece)
             r, c = piece.pos
@@ -437,7 +448,56 @@ class ChessBot:
                     pst = pst_table[r_flipped][c]
                     black_pst_mg += pst
                     black_pst_eg += pst
+
+        # --- Fast, Variant-Aware Heuristics ---
+
+        # 1. Rook Piercing Potential (Prioritizing Semi-Open Files)
+        white_pawn_files = {p.pos[1] for p in board.white_pieces if isinstance(p, Pawn)}
+        black_pawn_files = {p.pos[1] for p in board.black_pieces if isinstance(p, Pawn)}
+
+        for piece in board.white_pieces:
+            if isinstance(piece, Rook):
+                c = piece.pos[1]
+                is_friendly_pawn_on_file = c in white_pawn_files
+                is_enemy_pawn_on_file = c in black_pawn_files
+                
+                if not is_friendly_pawn_on_file and is_enemy_pawn_on_file:
+                    white_pst_mg += ROOK_SEMI_OPEN_FILE_BONUS
+                elif not is_friendly_pawn_on_file and not is_enemy_pawn_on_file:
+                    white_pst_mg += ROOK_OPEN_FILE_BONUS
         
+        for piece in board.black_pieces:
+            if isinstance(piece, Rook):
+                c = piece.pos[1]
+                is_friendly_pawn_on_file = c in black_pawn_files
+                is_enemy_pawn_on_file = c in white_pawn_files
+
+                if not is_friendly_pawn_on_file and is_enemy_pawn_on_file:
+                    black_pst_mg += ROOK_SEMI_OPEN_FILE_BONUS
+                elif not is_friendly_pawn_on_file and not is_enemy_pawn_on_file:
+                    black_pst_mg += ROOK_OPEN_FILE_BONUS
+        
+        # 2. King Mobility (Safety and Escape Routes)
+        if board.white_king_pos:
+            white_king = board.grid[board.white_king_pos[0]][board.white_king_pos[1]]
+            if white_king:
+                num_moves = len(white_king.get_valid_moves(board, white_king.pos))
+                # --- THE CHANGE ---
+                # Cap the mobility index at 2 (for 2+ moves) as requested.
+                mobility_index = min(num_moves, 2) 
+                white_pst_mg += KING_MOBILITY_BONUS[mobility_index]
+                # --- END OF CHANGE ---
+
+        if board.black_king_pos:
+            black_king = board.grid[board.black_king_pos[0]][board.black_king_pos[1]]
+            if black_king:
+                num_moves = len(black_king.get_valid_moves(board, black_king.pos))
+                # --- THE CHANGE ---
+                mobility_index = min(num_moves, 2)
+                black_pst_mg += KING_MOBILITY_BONUS[mobility_index]
+                # --- END OF CHANGE ---
+        
+        # --- Final Score Calculation ---
         if INITIAL_PHASE_MATERIAL == 0:
             phase = 0
         else:
