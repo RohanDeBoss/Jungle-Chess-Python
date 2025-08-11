@@ -1,4 +1,4 @@
-# OPAI.py (v51 - Final Qsearch fixes)
+# OPAI.py (v47.2 - Evaluation enhancements 2 se edition)
 
 import time
 from GameLogic import *
@@ -256,7 +256,6 @@ class OpponentAI:
         opponent_turn = 'black' if turn == 'white' else 'white'
         is_in_check_flag = is_in_check(board, turn)
         
-        # Check Extension is the only extension needed here.
         if is_in_check_flag:
             depth += 1
         
@@ -273,22 +272,25 @@ class OpponentAI:
 
         new_search_path = search_path | {hash_val}
         
-        legal_moves_with_boards = list(_generate_legal_moves(board, turn, yield_boards=True))
+        # --- THE DEFINITIVE PERFORMANCE FIX ---
+        # 1. Generate only the move tuples first. This is still the slowest part,
+        #    but it's unavoidable in a cloning architecture.
+        legal_moves_list = get_all_legal_moves(board, turn)
         
-        if not legal_moves_with_boards:
+        if not legal_moves_list:
             return -self.MATE_SCORE + ply if is_in_check_flag else self.DRAW_SCORE
 
-        legal_moves_list = [move for move, board in legal_moves_with_boards]
-        move_to_board_map = dict(legal_moves_with_boards)
-
+        # 2. Sort the moves before doing any more expensive work.
         hash_move = tt_entry.best_move if tt_entry else None
         ordered_moves = self.order_moves(board, legal_moves_list, ply, hash_move)
         
         best_move_for_node = None
         
+        # 3. Loop through the sorted moves and generate board states ON-DEMAND.
         for i, move in enumerate(ordered_moves):
-            child_board = move_to_board_map.get(move)
-            if not child_board: continue
+            # The expensive clone() and make_move() happen *inside* the loop.
+            child_board = board.clone()
+            child_board.make_move(move[0], move[1])
 
             child_hash = board_hash(child_board, opponent_turn)
             self.position_counts[child_hash] = self.position_counts.get(child_hash, 0) + 1
@@ -311,6 +313,8 @@ class OpponentAI:
                 best_move_for_node = move
                 
             if alpha >= beta:
+                # If we get a cutoff, we exit early and never clone the board
+                # for the remaining moves. This is the key performance gain.
                 if not is_capture:
                     if ply < len(self.killer_moves) and self.killer_moves[ply][0] != move:
                         self.killer_moves[ply][1] = self.killer_moves[ply][0]
@@ -335,7 +339,8 @@ class OpponentAI:
         
         is_in_check_flag = is_in_check(board, turn)
         
-        # If we are in check, the stand-pat evaluation is not reliable.
+        # If we are in check, the stand-pat evaluation is not reliable and can cause
+        # incorrect cutoffs. We must find a move to escape.
         if not is_in_check_flag:
             stand_pat = self.evaluate_board(board, turn)
             if stand_pat >= beta: return beta
@@ -344,9 +349,10 @@ class OpponentAI:
         opponent_color = 'black' if turn == 'white' else 'white'
         promising_moves = []
 
-        # --- THE DEFINITIVE TWO-TIERED ARCHITECTURE (Your Superior Design) ---
+        # --- THE DEFINITIVE FIX: Two-Tiered Move Generation ---
         if is_in_check_flag:
-            # TIER 1 (IN CHECK): Accuracy is paramount. This logic is correct and remains.
+            # TIER 1 (IN CHECK): Accuracy is paramount. We must find all legal escapes.
+            # This is slower but 100% necessary to avoid missing mates.
             promising_moves = get_all_legal_moves(board, turn)
             if not promising_moves:
                 return -self.MATE_SCORE + ply # It's checkmate.
@@ -355,23 +361,19 @@ class OpponentAI:
             for piece in list(board.white_pieces if turn == 'white' else board.black_pieces):
                 for end_pos in piece.get_valid_moves(board, piece.pos):
                     move = (piece.pos, end_pos)
-
-                    # --- THE CRITICAL BUG FIX: Use the VARIANT-AWARE check ---
-                    material_swing = calculate_material_swing(board, move)
-                    is_capture = material_swing != 0
-                    
+                    is_capture = board.grid[end_pos[0]][end_pos[1]] is not None
                     is_promotion = isinstance(piece, Pawn) and (end_pos[0] == 0 or end_pos[0] == ROWS - 1)
                     
                     if is_capture:
-                        # Delta Pruning, now correctly using the variant-aware material_swing
-                        if stand_pat + material_swing + self.Q_SEARCH_SAFETY_MARGIN < alpha:
+                        # Delta Pruning: A fast heuristic to discard obviously bad captures.
+                        captured_value = self._get_piece_value(board.grid[end_pos[0]][end_pos[1]])
+                        if stand_pat + captured_value + self.Q_SEARCH_SAFETY_MARGIN < alpha:
                             continue
                         promising_moves.append(move)
                     elif is_promotion:
                         promising_moves.append(move)
         
         # --- Move Ordering & Final Search ---
-        # This is now fully variant-aware because the capture list is correct.
         move_scores = {move: self.see(board, move, turn) for move in promising_moves}
         promising_moves.sort(key=lambda m: move_scores.get(m, 0), reverse=True)
 

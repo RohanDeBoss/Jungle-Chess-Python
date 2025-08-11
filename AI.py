@@ -1,4 +1,4 @@
-# AI.py (v53 - Better or not)
+# AI.py (v55 removed horison fix for speed)
 
 import time
 from GameLogic import *
@@ -341,81 +341,53 @@ class ChessBot:
             alpha = max(alpha, stand_pat)
 
         opponent_color = 'black' if turn == 'white' else 'white'
-        
+        promising_moves = []
+
         # --- THE DEFINITIVE TWO-TIERED ARCHITECTURE (Your Superior Design) ---
         if is_in_check_flag:
             # TIER 1 (IN CHECK): Accuracy is paramount. This logic is correct and remains.
             promising_moves = get_all_legal_moves(board, turn)
             if not promising_moves:
-                return -self.MATE_SCORE + ply
-            
-            move_scores = {move: self.see(board, move, turn) for move in promising_moves}
-            promising_moves.sort(key=lambda m: move_scores.get(m, 0), reverse=True)
-
-            for move in promising_moves:
-                sim_board = board.clone()
-                sim_board.make_move(move[0], move[1])
-                search_score = -self.qsearch(sim_board, -beta, -alpha, opponent_color, ply + 1)
-                if search_score >= beta: return beta
-                alpha = max(alpha, search_score)
+                return -self.MATE_SCORE + ply # It's checkmate.
         else:
-            # TIER 2 (NOT IN CHECK): Performance is key.
-            # Stage A: Search only captures and promotions first.
-            captures_and_promotions = []
+            # TIER 2 (NOT IN CHECK): Performance is key. We only look for "violent" moves.
             for piece in list(board.white_pieces if turn == 'white' else board.black_pieces):
                 for end_pos in piece.get_valid_moves(board, piece.pos):
                     move = (piece.pos, end_pos)
-                    
+
+                    # --- THE FINAL CRITICAL BUG FIX: Use the VARIANT-AWARE check ---
                     material_swing = calculate_material_swing(board, move)
                     is_capture = material_swing != 0
+                    
                     is_promotion = isinstance(piece, Pawn) and (end_pos[0] == 0 or end_pos[0] == ROWS - 1)
                     
                     if is_capture or is_promotion:
+                        # Delta Pruning, now correctly using the variant-aware material_swing
                         move_value = material_swing if is_capture else self._get_piece_value(Queen)
                         if stand_pat + move_value + self.Q_SEARCH_SAFETY_MARGIN < alpha:
                             continue
-                        captures_and_promotions.append(move)
+                        promising_moves.append(move)
+        
+        # --- Move Ordering & Final Search ---
+        # This is now fully variant-aware because the capture list is correct.
+        move_scores = {move: self.see(board, move, turn) for move in promising_moves}
+        promising_moves.sort(key=lambda m: move_scores.get(m, 0), reverse=True)
+
+        for move in promising_moves:
+            # When in check, we must search all escapes, even if they look like material losses.
+            # When not in check, we can safely prune moves with a negative SEE score.
+            if not is_in_check_flag and move_scores.get(move, 0) < 0:
+                 continue
+                 
+            sim_board = board.clone()
+            sim_board.make_move(move[0], move[1])
             
-            if captures_and_promotions:
-                move_scores = {move: self.see(board, move, turn) for move in captures_and_promotions}
-                captures_and_promotions.sort(key=lambda m: move_scores.get(m, 0), reverse=True)
-
-                for move in captures_and_promotions:
-                    if move_scores.get(move, 0) < 0: continue
-                    sim_board = board.clone()
-                    sim_board.make_move(move[0], move[1])
-                    if not is_in_check(sim_board, turn):
-                        score = -self.qsearch(sim_board, -beta, -alpha, opponent_color, ply + 1)
-                        if score >= beta: return beta
-                        alpha = max(alpha, score)
-
-            # --- THE FINAL, OPTIMIZED HORIZON EFFECT FIX ---
-            # Stage B: If no capture/promotion was good enough, check for and respond to threats.
-            threatened_pieces = []
-            my_pieces = board.white_pieces if turn == 'white' else board.black_pieces
-            for piece in my_pieces:
-                if isinstance(piece, (Queen, Rook)):
-                    attackers = self.get_attackers(board, piece.pos, opponent_color)
-                    if attackers and self._get_piece_value(attackers[0]) < self._get_piece_value(piece):
-                        threatened_pieces.append(piece)
+            # Legality is guaranteed by our generation methods.
+            search_score = -self.qsearch(sim_board, -beta, -alpha, opponent_color, ply + 1)
+            if search_score >= beta:
+                return beta
+            alpha = max(alpha, search_score)
             
-            if threatened_pieces:
-                escape_moves = []
-                # Use a fast, targeted move generation for only the threatened pieces.
-                for piece in threatened_pieces:
-                    for end_pos in piece.get_valid_moves(board, piece.pos):
-                        if board.grid[end_pos[0]][end_pos[1]] is None: # Only quiet escapes
-                            escape_moves.append((piece.pos, end_pos))
-
-                # We don't need to score/sort these escapes, just search them.
-                for move in escape_moves:
-                    sim_board = board.clone()
-                    sim_board.make_move(move[0], move[1])
-                    if not is_in_check(sim_board, turn):
-                        score = -self.qsearch(sim_board, -beta, -alpha, opponent_color, ply + 1)
-                        if score >= beta: return beta
-                        alpha = max(alpha, score)
-
         return alpha
         
     def evaluate_board(self, board, turn_to_move):
