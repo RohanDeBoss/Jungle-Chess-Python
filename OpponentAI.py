@@ -1,4 +1,4 @@
-# OPAI.py (v47.1 - Evaluation enhancements)
+# OPAI.py (v51 - Final Qsearch fixes)
 
 import time
 from GameLogic import *
@@ -8,10 +8,10 @@ from GameLogic import _generate_legal_moves
 
 # --- Tapered Piece Values for Jungle Chess ---
 PIECE_VALUES_MG = {
-    Pawn: 100, Knight: 800, Bishop: 700, Rook: 600, Queen: 850, King: 20000
+    Pawn: 100, Knight: 800, Bishop: 700, Rook: 600, Queen: 900, King: 20000
 }
 PIECE_VALUES_EG = {
-    Pawn: 100, Knight: 800, Bishop: 650, Rook: 850, Queen: 550, King: 20000
+    Pawn: 100, Knight: 800, Bishop: 650, Rook: 800, Queen: 700, King: 20000
 }
 INITIAL_PHASE_MATERIAL = (PIECE_VALUES_MG[Rook] * 4 + PIECE_VALUES_MG[Knight] * 4 +
                           PIECE_VALUES_MG[Bishop] * 4 + PIECE_VALUES_MG[Queen] * 2)
@@ -256,6 +256,7 @@ class OpponentAI:
         opponent_turn = 'black' if turn == 'white' else 'white'
         is_in_check_flag = is_in_check(board, turn)
         
+        # Check Extension is the only extension needed here.
         if is_in_check_flag:
             depth += 1
         
@@ -272,25 +273,22 @@ class OpponentAI:
 
         new_search_path = search_path | {hash_val}
         
-        # --- THE DEFINITIVE PERFORMANCE FIX ---
-        # 1. Generate only the move tuples first. This is still the slowest part,
-        #    but it's unavoidable in a cloning architecture.
-        legal_moves_list = get_all_legal_moves(board, turn)
+        legal_moves_with_boards = list(_generate_legal_moves(board, turn, yield_boards=True))
         
-        if not legal_moves_list:
+        if not legal_moves_with_boards:
             return -self.MATE_SCORE + ply if is_in_check_flag else self.DRAW_SCORE
 
-        # 2. Sort the moves before doing any more expensive work.
+        legal_moves_list = [move for move, board in legal_moves_with_boards]
+        move_to_board_map = dict(legal_moves_with_boards)
+
         hash_move = tt_entry.best_move if tt_entry else None
         ordered_moves = self.order_moves(board, legal_moves_list, ply, hash_move)
         
         best_move_for_node = None
         
-        # 3. Loop through the sorted moves and generate board states ON-DEMAND.
         for i, move in enumerate(ordered_moves):
-            # The expensive clone() and make_move() happen *inside* the loop.
-            child_board = board.clone()
-            child_board.make_move(move[0], move[1])
+            child_board = move_to_board_map.get(move)
+            if not child_board: continue
 
             child_hash = board_hash(child_board, opponent_turn)
             self.position_counts[child_hash] = self.position_counts.get(child_hash, 0) + 1
@@ -313,8 +311,6 @@ class OpponentAI:
                 best_move_for_node = move
                 
             if alpha >= beta:
-                # If we get a cutoff, we exit early and never clone the board
-                # for the remaining moves. This is the key performance gain.
                 if not is_capture:
                     if ply < len(self.killer_moves) and self.killer_moves[ply][0] != move:
                         self.killer_moves[ply][1] = self.killer_moves[ply][0]
@@ -339,8 +335,7 @@ class OpponentAI:
         
         is_in_check_flag = is_in_check(board, turn)
         
-        # If we are in check, the stand-pat evaluation is not reliable and can cause
-        # incorrect cutoffs. We must find a move to escape.
+        # If we are in check, the stand-pat evaluation is not reliable.
         if not is_in_check_flag:
             stand_pat = self.evaluate_board(board, turn)
             if stand_pat >= beta: return beta
@@ -349,10 +344,9 @@ class OpponentAI:
         opponent_color = 'black' if turn == 'white' else 'white'
         promising_moves = []
 
-        # --- THE DEFINITIVE FIX: Two-Tiered Move Generation ---
+        # --- THE DEFINITIVE TWO-TIERED ARCHITECTURE (Your Superior Design) ---
         if is_in_check_flag:
-            # TIER 1 (IN CHECK): Accuracy is paramount. We must find all legal escapes.
-            # This is slower but 100% necessary to avoid missing mates.
+            # TIER 1 (IN CHECK): Accuracy is paramount. This logic is correct and remains.
             promising_moves = get_all_legal_moves(board, turn)
             if not promising_moves:
                 return -self.MATE_SCORE + ply # It's checkmate.
@@ -361,19 +355,23 @@ class OpponentAI:
             for piece in list(board.white_pieces if turn == 'white' else board.black_pieces):
                 for end_pos in piece.get_valid_moves(board, piece.pos):
                     move = (piece.pos, end_pos)
-                    is_capture = board.grid[end_pos[0]][end_pos[1]] is not None
+
+                    # --- THE CRITICAL BUG FIX: Use the VARIANT-AWARE check ---
+                    material_swing = calculate_material_swing(board, move)
+                    is_capture = material_swing != 0
+                    
                     is_promotion = isinstance(piece, Pawn) and (end_pos[0] == 0 or end_pos[0] == ROWS - 1)
                     
                     if is_capture:
-                        # Delta Pruning: A fast heuristic to discard obviously bad captures.
-                        captured_value = self._get_piece_value(board.grid[end_pos[0]][end_pos[1]])
-                        if stand_pat + captured_value + self.Q_SEARCH_SAFETY_MARGIN < alpha:
+                        # Delta Pruning, now correctly using the variant-aware material_swing
+                        if stand_pat + material_swing + self.Q_SEARCH_SAFETY_MARGIN < alpha:
                             continue
                         promising_moves.append(move)
                     elif is_promotion:
                         promising_moves.append(move)
         
         # --- Move Ordering & Final Search ---
+        # This is now fully variant-aware because the capture list is correct.
         move_scores = {move: self.see(board, move, turn) for move in promising_moves}
         promising_moves.sort(key=lambda m: move_scores.get(m, 0), reverse=True)
 
@@ -530,17 +528,17 @@ knight_pst = [
     [-30,  10,  25,  35,  35,  25,  10, -30],
     [-30,  10,  20,  25,  25,  20,  10, -30],
     [-40, -20,   5,  10,  10,   5, -20, -40],
-    [-50, -40, -30, -30, -30, -30, -40, -50]
+    [-50, -45, -30, -30, -30, -30, -45, -50]
 ]
 bishop_pst = [
     [-20, -10, -10, -10, -10, -10, -10, -20],
     [-10,   0,   0,   0,   0,   0,   0, -10],
     [-10,   0,   5,  10,  10,   5,   0, -10],
     [-10,   5,   5,  10,  10,   5,   5, -10],
-    [-10,   0,  10,  10,  10,  10,   0, -10],
+    [-10,   0,  15,  10,  10,  15,   0, -10],
     [-10,  10,  10,  10,  10,  10,  10, -10],
     [-10,   5,   0,   0,   0,   0,   5, -10],
-    [-20, -10, -10, -10, -10, -10, -10, -20]
+    [-20, -10, -10, -15, -15, -10, -10, -20]
 ]
 rook_pst = [
     [  0,   0,   0,  10,  10,   0,   0,   0],
@@ -556,11 +554,11 @@ queen_pst = [
     [-20, -10, -10,  -5,  -5, -10, -10, -20],
     [-10,   0,   0,   0,   0,   0,   0, -10],
     [-10,   0,   5,   5,   5,   5,   0, -10],
-    [ -5,   0,   5,   5,   5,   5,   0,  -5],
-    [  0,   0,   5,   5,   5,   5,   0,  -5],
-    [-10,   5,   5,   5,   5,   5,   5, -10],
+    [ -5,   0,  10,  15,  15,  10,   0,  -5],
+    [  0,   0,  10,  15,  15,  10,   0,  -5],
+    [-10,   5,  15,   5,   5,  15,   5, -10],
     [-10,   0,   5,   0,   0,   0,   5, -10],
-    [-20, -10, -10,  -5,  -5, -10, -10, -20]
+    [-20, -10, -10,  -5, -15, -10, -10, -20]
 ]
 king_midgame_pst = [
     [-30, -40, -40, -50, -50, -40, -40, -30],
@@ -570,7 +568,7 @@ king_midgame_pst = [
     [-20, -30, -30, -40, -40, -30, -30, -20],
     [-10, -20, -20, -20, -20, -20, -20, -10],
     [ 20,  20,   0,   0,   0,   0,  20,  20],
-    [ 20,  30,  10,   0,   0,  10,  30,  20]
+    [ 20,  30,  10,   0,   5,  10,  30,  20]
 ]
 king_endgame_pst = [
     [-50, -40, -30, -20, -20, -30, -40, -50],
