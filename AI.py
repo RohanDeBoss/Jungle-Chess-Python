@@ -1,4 +1,4 @@
-# AI.py (v55 removed horison fix for speed)
+# AI.py (v56 Negamax Improved variant awareness)
 
 import time
 from GameLogic import *
@@ -256,7 +256,6 @@ class ChessBot:
         opponent_turn = 'black' if turn == 'white' else 'white'
         is_in_check_flag = is_in_check(board, turn)
         
-        # Check Extension is the only extension needed here.
         if is_in_check_flag:
             depth += 1
         
@@ -273,6 +272,8 @@ class ChessBot:
 
         new_search_path = search_path | {hash_val}
         
+        # --- THE DEFINITIVE PERFORMANCE FIX ---
+        # Generate moves and their resulting board states ONLY ONCE.
         legal_moves_with_boards = list(_generate_legal_moves(board, turn, yield_boards=True))
         
         if not legal_moves_with_boards:
@@ -280,6 +281,7 @@ class ChessBot:
 
         legal_moves_list = [move for move, board in legal_moves_with_boards]
         move_to_board_map = dict(legal_moves_with_boards)
+        # --- END OF FIX ---
 
         hash_move = tt_entry.best_move if tt_entry else None
         ordered_moves = self.order_moves(board, legal_moves_list, ply, hash_move)
@@ -293,11 +295,14 @@ class ChessBot:
             child_hash = board_hash(child_board, opponent_turn)
             self.position_counts[child_hash] = self.position_counts.get(child_hash, 0) + 1
             
-            is_capture = board.grid[move[1][0]][move[1][1]] is not None
+            # --- THE CRITICAL VARIANT-AWARE FIX ---
+            is_tactical_move = calculate_material_swing(board, move) != 0
+            
             reduction = 0
             if (depth >= self.LMR_DEPTH_THRESHOLD and i >= self.LMR_MOVE_COUNT_THRESHOLD and 
-                not is_in_check_flag and not is_capture):
+                not is_in_check_flag and not is_tactical_move):
                 reduction = self.LMR_REDUCTION
+            # --- END OF FIX ---
 
             score = -self.negamax(child_board, depth - 1 - reduction, -beta, -alpha, opponent_turn, ply + 1, new_search_path)
 
@@ -311,7 +316,7 @@ class ChessBot:
                 best_move_for_node = move
                 
             if alpha >= beta:
-                if not is_capture:
+                if not is_tactical_move: # Use the correct flag here as well
                     if ply < len(self.killer_moves) and self.killer_moves[ply][0] != move:
                         self.killer_moves[ply][1] = self.killer_moves[ply][0]
                         self.killer_moves[ply][0] = move
