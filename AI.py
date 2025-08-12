@@ -76,15 +76,12 @@ class ChessBot:
         self.comm_queue = comm_queue
         self.cancellation_event = cancellation_event
         
-        # --- Automatic Naming Logic ---
-        # If no name is provided, determine it from the class name.
         if bot_name is None:
             if self.__class__.__name__ == "OpponentAI":
                 self.bot_name = "OP Bot"
-            else: # Default for ChessBot or any other class
+            else:
                 self.bot_name = "AI Bot"
         else:
-            # If a name was provided (e.g., from the UI), use it.
             self.bot_name = bot_name
 
         self.tt = {}

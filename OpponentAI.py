@@ -1,4 +1,7 @@
-# OPAI.py (v56.1 Name Autoswitching)
+# OPAI.py (v56.2 - Compatibility Patch)
+# - Patched all calls to `calculate_material_swing` to provide the required
+#   `value_func` argument, making this older version compatible with the newer gamelogic.
+# - No other logic has been changed, preserving the original v56.1 behavior for testing.
 
 import time
 from GameLogic import *
@@ -72,15 +75,12 @@ class OpponentAI:
         self.comm_queue = comm_queue
         self.cancellation_event = cancellation_event
         
-        # --- Automatic Naming Logic ---
-        # If no name is provided, determine it from the class name.
         if bot_name is None:
             if self.__class__.__name__ == "OpponentAI":
                 self.bot_name = "OP Bot"
-            else: # Default for ChessBot or any other class
+            else:
                 self.bot_name = "AI Bot"
         else:
-            # If a name was provided (e.g., from the UI), use it.
             self.bot_name = bot_name
 
         self.tt = {}
@@ -108,7 +108,8 @@ class OpponentAI:
         return attackers
 
     def see(self, board, move, turn):
-        initial_gain = calculate_material_swing(board, move)
+        # PATCH: Pass the required value_func argument
+        initial_gain = calculate_material_swing(board, move, self._get_piece_value)
         sim_board = board.clone()
         sim_board.make_move(move[0], move[1])
         opponent_color = 'black' if turn == 'white' else 'white'
@@ -135,13 +136,10 @@ class OpponentAI:
                 target_piece = board.grid[move[1][0]][move[1][1]]
                 
                 if target_piece is not None:
-                    # Fast MVV-LVA heuristic for captures
                     score = self.BONUS_CAPTURE + (self._get_piece_value(target_piece) * 10 - self._get_piece_value(moving_piece))
                 else:
-                    # Quiet moves, prioritized
                     if move in killers:
                         score = self.BONUS_KILLER_1 if move == killers[0] else self.BONUS_KILLER_2
-                    # Prioritize non-capturing moves by pieces with high tactical potential
                     elif isinstance(moving_piece, (Queen, Knight)):
                         score = self.BONUS_QN_TACTIC
                     else:
@@ -283,8 +281,6 @@ class OpponentAI:
 
         new_search_path = search_path | {hash_val}
         
-        # --- THE DEFINITIVE PERFORMANCE FIX ---
-        # Generate moves and their resulting board states ONLY ONCE.
         legal_moves_with_boards = list(_generate_legal_moves(board, turn, yield_boards=True))
         
         if not legal_moves_with_boards:
@@ -292,7 +288,6 @@ class OpponentAI:
 
         legal_moves_list = [move for move, board in legal_moves_with_boards]
         move_to_board_map = dict(legal_moves_with_boards)
-        # --- END OF FIX ---
 
         hash_move = tt_entry.best_move if tt_entry else None
         ordered_moves = self.order_moves(board, legal_moves_list, ply, hash_move)
@@ -306,14 +301,13 @@ class OpponentAI:
             child_hash = board_hash(child_board, opponent_turn)
             self.position_counts[child_hash] = self.position_counts.get(child_hash, 0) + 1
             
-            # --- THE CRITICAL VARIANT-AWARE FIX ---
-            is_tactical_move = calculate_material_swing(board, move) != 0
+            # PATCH: Pass the required value_func argument
+            is_tactical_move = calculate_material_swing(board, move, self._get_piece_value) != 0
             
             reduction = 0
             if (depth >= self.LMR_DEPTH_THRESHOLD and i >= self.LMR_MOVE_COUNT_THRESHOLD and 
                 not is_in_check_flag and not is_tactical_move):
                 reduction = self.LMR_REDUCTION
-            # --- END OF FIX ---
 
             score = -self.negamax(child_board, depth - 1 - reduction, -beta, -alpha, opponent_turn, ply + 1, new_search_path)
 
@@ -327,7 +321,7 @@ class OpponentAI:
                 best_move_for_node = move
                 
             if alpha >= beta:
-                if not is_tactical_move: # Use the correct flag here as well
+                if not is_tactical_move:
                     if ply < len(self.killer_moves) and self.killer_moves[ply][0] != move:
                         self.killer_moves[ply][1] = self.killer_moves[ply][0]
                         self.killer_moves[ply][0] = move
@@ -359,46 +353,37 @@ class OpponentAI:
         opponent_color = 'black' if turn == 'white' else 'white'
         promising_moves = []
 
-        # --- THE DEFINITIVE TWO-TIERED ARCHITECTURE (Your Superior Design) ---
         if is_in_check_flag:
-            # TIER 1 (IN CHECK): Accuracy is paramount. This logic is correct and remains.
             promising_moves = get_all_legal_moves(board, turn)
             if not promising_moves:
-                return -self.MATE_SCORE + ply # It's checkmate.
+                return -self.MATE_SCORE + ply
         else:
-            # TIER 2 (NOT IN CHECK): Performance is key. We only look for "violent" moves.
             for piece in list(board.white_pieces if turn == 'white' else board.black_pieces):
                 for end_pos in piece.get_valid_moves(board, piece.pos):
                     move = (piece.pos, end_pos)
 
-                    # --- THE FINAL CRITICAL BUG FIX: Use the VARIANT-AWARE check ---
-                    material_swing = calculate_material_swing(board, move)
+                    # PATCH: Pass the required value_func argument
+                    material_swing = calculate_material_swing(board, move, self._get_piece_value)
                     is_capture = material_swing != 0
                     
                     is_promotion = isinstance(piece, Pawn) and (end_pos[0] == 0 or end_pos[0] == ROWS - 1)
                     
                     if is_capture or is_promotion:
-                        # Delta Pruning, now correctly using the variant-aware material_swing
                         move_value = material_swing if is_capture else self._get_piece_value(Queen)
                         if stand_pat + move_value + self.Q_SEARCH_SAFETY_MARGIN < alpha:
                             continue
                         promising_moves.append(move)
         
-        # --- Move Ordering & Final Search ---
-        # This is now fully variant-aware because the capture list is correct.
         move_scores = {move: self.see(board, move, turn) for move in promising_moves}
         promising_moves.sort(key=lambda m: move_scores.get(m, 0), reverse=True)
 
         for move in promising_moves:
-            # When in check, we must search all escapes, even if they look like material losses.
-            # When not in check, we can safely prune moves with a negative SEE score.
             if not is_in_check_flag and move_scores.get(move, 0) < 0:
                  continue
                  
             sim_board = board.clone()
             sim_board.make_move(move[0], move[1])
             
-            # Legality is guaranteed by our generation methods.
             search_score = -self.qsearch(sim_board, -beta, -alpha, opponent_color, ply + 1)
             if search_score >= beta:
                 return beta
@@ -407,15 +392,9 @@ class OpponentAI:
         return alpha
         
     def evaluate_board(self, board, turn_to_move):
-        # --- Heuristic Bonuses (Tuned King Mobility) ---
-        ROOK_SEMI_OPEN_FILE_BONUS = 30 # Highest value: file with enemy targets
-        ROOK_OPEN_FILE_BONUS = 15      # Medium value: file for mobility
-        
-        # --- THE CHANGE ---
-        # New, more conservative bonus for king mobility as requested.
-        # It rewards having escape squares but does not over-incentivize an exposed king.
-        KING_MOBILITY_BONUS = [0, 30, 45] # Bonus for 0, 1, or 2+ legal moves
-        # --- END OF CHANGE ---
+        ROOK_SEMI_OPEN_FILE_BONUS = 30
+        ROOK_OPEN_FILE_BONUS = 15
+        KING_MOBILITY_BONUS = [0, 30, 45]
 
         white_material_mg, white_material_eg = 0, 0
         black_material_mg, black_material_eg = 0, 0
@@ -423,7 +402,6 @@ class OpponentAI:
         black_pst_mg, black_pst_eg = 0, 0
         phase_material_score = 0
 
-        # --- Base Evaluation: Material and Piece-Square Tables ---
         for piece in board.white_pieces:
             piece_type = type(piece)
             r, c = piece.pos
@@ -461,9 +439,6 @@ class OpponentAI:
                     black_pst_mg += pst
                     black_pst_eg += pst
 
-        # --- Fast, Variant-Aware Heuristics ---
-
-        # 1. Rook Piercing Potential (Prioritizing Semi-Open Files)
         white_pawn_files = {p.pos[1] for p in board.white_pieces if isinstance(p, Pawn)}
         black_pawn_files = {p.pos[1] for p in board.black_pieces if isinstance(p, Pawn)}
 
@@ -489,27 +464,20 @@ class OpponentAI:
                 elif not is_friendly_pawn_on_file and not is_enemy_pawn_on_file:
                     black_pst_mg += ROOK_OPEN_FILE_BONUS
         
-        # 2. King Mobility (Safety and Escape Routes)
         if board.white_king_pos:
             white_king = board.grid[board.white_king_pos[0]][board.white_king_pos[1]]
             if white_king:
                 num_moves = len(white_king.get_valid_moves(board, white_king.pos))
-                # --- THE CHANGE ---
-                # Cap the mobility index at 2 (for 2+ moves) as requested.
                 mobility_index = min(num_moves, 2) 
                 white_pst_mg += KING_MOBILITY_BONUS[mobility_index]
-                # --- END OF CHANGE ---
 
         if board.black_king_pos:
             black_king = board.grid[board.black_king_pos[0]][board.black_king_pos[1]]
             if black_king:
                 num_moves = len(black_king.get_valid_moves(board, black_king.pos))
-                # --- THE CHANGE ---
                 mobility_index = min(num_moves, 2)
                 black_pst_mg += KING_MOBILITY_BONUS[mobility_index]
-                # --- END OF CHANGE ---
         
-        # --- Final Score Calculation ---
         if INITIAL_PHASE_MATERIAL == 0:
             phase = 0
         else:
