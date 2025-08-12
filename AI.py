@@ -1,4 +1,4 @@
-# AI.py (v56 Negamax Improved variant awareness)
+# AI.py (v56.1 Name Autoswitching)
 
 import time
 from GameLogic import *
@@ -64,14 +64,25 @@ class ChessBot:
     BONUS_KILLER_1 = 4_000_000
     BONUS_KILLER_2 = 3_500_000
     
-    def __init__(self, board, color, position_counts, comm_queue, cancellation_event, bot_name="AI Bot"):
+    def __init__(self, board, color, position_counts, comm_queue, cancellation_event, bot_name=None):
         self.board = board
         self.color = color
         self.opponent_color = 'black' if color == 'white' else 'white'
         self.position_counts = position_counts
         self.comm_queue = comm_queue
         self.cancellation_event = cancellation_event
-        self.bot_name = bot_name
+        
+        # --- Automatic Naming Logic ---
+        # If no name is provided, determine it from the class name.
+        if bot_name is None:
+            if self.__class__.__name__ == "OpponentAI":
+                self.bot_name = "OP Bot"
+            else: # Default for ChessBot or any other class
+                self.bot_name = "AI Bot"
+        else:
+            # If a name was provided (e.g., from the UI), use it.
+            self.bot_name = bot_name
+
         self.tt = {}
         self.nodes_searched = 0
         self.killer_moves = [[None, None] for _ in range(50)]
@@ -171,7 +182,7 @@ class ChessBot:
             
             self._report_move(best_move_overall)
         except SearchCancelledException:
-            self._report_log(f"AI ({self.color}): Search cancelled.")
+            self._report_log(f"{self.bot_name} ({self.color}): Search cancelled.")
             self._report_move(None)
 
     def ponder_indefinitely(self):

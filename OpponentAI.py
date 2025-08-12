@@ -1,4 +1,4 @@
-# OPAI.py (v55 removed horison fix for speed)
+# OPAI.py (v56.1 Name Autoswitching)
 
 import time
 from GameLogic import *
@@ -64,14 +64,25 @@ class OpponentAI:
     BONUS_KILLER_1 = 4_000_000
     BONUS_KILLER_2 = 3_500_000
     
-    def __init__(self, board, color, position_counts, comm_queue, cancellation_event, bot_name="OP Bot"):
+    def __init__(self, board, color, position_counts, comm_queue, cancellation_event, bot_name=None):
         self.board = board
         self.color = color
         self.opponent_color = 'black' if color == 'white' else 'white'
         self.position_counts = position_counts
         self.comm_queue = comm_queue
         self.cancellation_event = cancellation_event
-        self.bot_name = bot_name
+        
+        # --- Automatic Naming Logic ---
+        # If no name is provided, determine it from the class name.
+        if bot_name is None:
+            if self.__class__.__name__ == "OpponentAI":
+                self.bot_name = "OP Bot"
+            else: # Default for ChessBot or any other class
+                self.bot_name = "AI Bot"
+        else:
+            # If a name was provided (e.g., from the UI), use it.
+            self.bot_name = bot_name
+
         self.tt = {}
         self.nodes_searched = 0
         self.killer_moves = [[None, None] for _ in range(50)]
@@ -171,7 +182,7 @@ class OpponentAI:
             
             self._report_move(best_move_overall)
         except SearchCancelledException:
-            self._report_log(f"OP ({self.color}): Search cancelled.")
+            self._report_log(f"{self.bot_name} ({self.color}): Search cancelled.")
             self._report_move(None)
 
     def ponder_indefinitely(self):
@@ -256,7 +267,6 @@ class OpponentAI:
         opponent_turn = 'black' if turn == 'white' else 'white'
         is_in_check_flag = is_in_check(board, turn)
         
-        # Check Extension is the only extension needed here.
         if is_in_check_flag:
             depth += 1
         
@@ -273,6 +283,8 @@ class OpponentAI:
 
         new_search_path = search_path | {hash_val}
         
+        # --- THE DEFINITIVE PERFORMANCE FIX ---
+        # Generate moves and their resulting board states ONLY ONCE.
         legal_moves_with_boards = list(_generate_legal_moves(board, turn, yield_boards=True))
         
         if not legal_moves_with_boards:
@@ -280,6 +292,7 @@ class OpponentAI:
 
         legal_moves_list = [move for move, board in legal_moves_with_boards]
         move_to_board_map = dict(legal_moves_with_boards)
+        # --- END OF FIX ---
 
         hash_move = tt_entry.best_move if tt_entry else None
         ordered_moves = self.order_moves(board, legal_moves_list, ply, hash_move)
@@ -293,11 +306,14 @@ class OpponentAI:
             child_hash = board_hash(child_board, opponent_turn)
             self.position_counts[child_hash] = self.position_counts.get(child_hash, 0) + 1
             
-            is_capture = board.grid[move[1][0]][move[1][1]] is not None
+            # --- THE CRITICAL VARIANT-AWARE FIX ---
+            is_tactical_move = calculate_material_swing(board, move) != 0
+            
             reduction = 0
             if (depth >= self.LMR_DEPTH_THRESHOLD and i >= self.LMR_MOVE_COUNT_THRESHOLD and 
-                not is_in_check_flag and not is_capture):
+                not is_in_check_flag and not is_tactical_move):
                 reduction = self.LMR_REDUCTION
+            # --- END OF FIX ---
 
             score = -self.negamax(child_board, depth - 1 - reduction, -beta, -alpha, opponent_turn, ply + 1, new_search_path)
 
@@ -311,7 +327,7 @@ class OpponentAI:
                 best_move_for_node = move
                 
             if alpha >= beta:
-                if not is_capture:
+                if not is_tactical_move: # Use the correct flag here as well
                     if ply < len(self.killer_moves) and self.killer_moves[ply][0] != move:
                         self.killer_moves[ply][1] = self.killer_moves[ply][0]
                         self.killer_moves[ply][0] = move
