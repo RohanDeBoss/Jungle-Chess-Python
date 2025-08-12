@@ -1,6 +1,9 @@
-# JungleChessUI.py (v7.9 - Game State Management Fix)
-# - Corrected the game state management in the AI series opening move application.
-# - Ensured proper turn switching and position history updating after an opening move.
+# JungleChessUI.py (v8.7 - Final Tuning)
+# - Perfected all responsive scaling for a polished look on any screen size.
+# - Refined board padding for an optimal board-to-screen ratio.
+# - Implemented a new, stable piece-centering formula that works at all sizes.
+# - Tightened sidebar widget spacing to prevent controls from being cut off.
+# - Set a fixed, balanced padding for control buttons.
 
 import tkinter as tk
 from tkinter import ttk
@@ -13,15 +16,12 @@ from OpponentAI import OpponentAI
 from enum import Enum
 import multiprocessing as mp
 
-# --- UI Constants ---
-SQUARE_SIZE = 75
 
 class GameMode(Enum):
     HUMAN_VS_BOT = "bot"
     HUMAN_VS_HUMAN = "human"
     AI_VS_AI = "ai_vs_ai"
 
-# --- MULTIPROCESSING WORKER FUNCTION ---
 def run_ai_process(board, color, position_counts, comm_queue, cancellation_event, bot_class, bot_name, search_depth):
     bot = bot_class(board, color, position_counts, comm_queue, cancellation_event, bot_name)
     bot.search_depth = search_depth
@@ -29,7 +29,6 @@ def run_ai_process(board, color, position_counts, comm_queue, cancellation_event
         bot.ponder_indefinitely()
     else:
         bot.make_move()
-
 
 class EnhancedChessApp:
     MAIN_AI_NAME = "AI Bot"
@@ -40,7 +39,6 @@ class EnhancedChessApp:
     def __init__(self, master):
         self.master = master
         self.master.title("Jungle Chess")
-
         random.seed()
         
         self.comm_queue = mp.Queue()
@@ -60,6 +58,8 @@ class EnhancedChessApp:
         self.position_history = []
         self.position_counts = {}
         self.current_opening_move = None
+        self.square_size = 75
+        self.base_sidebar_width = 265
 
         self.game_mode = tk.StringVar(value=GameMode.HUMAN_VS_BOT.value)
         self.analysis_mode_var = tk.BooleanVar(value=True)
@@ -72,59 +72,124 @@ class EnhancedChessApp:
         self.last_move_timestamp = None
         self.game_started = False 
 
+        self.last_eval_score = 0.0
+        self.last_eval_depth = None
+
         self.COLORS = self.setup_styles()
         self.master.configure(bg=self.COLORS['bg_dark'])
         self.build_ui()
         
         self.process_comm_queue()
-        
-        # Call the single reset function
         self.reset_game()
 
     def build_ui(self):
         screen_w = self.master.winfo_screenwidth(); screen_h = self.master.winfo_screenheight()
         self.master.geometry(f"{screen_w}x{screen_h}+0+0"); self.master.state('zoomed')
+        
         self.main_frame = ttk.Frame(self.master, style='Left.TFrame')
-        self.main_frame.pack(fill=tk.BOTH, expand=True, padx=2, pady=2)
-        self.left_panel = ttk.Frame(self.main_frame, width=280, style='Left.TFrame')
-        self.left_panel.pack(side=tk.LEFT, fill=tk.Y, padx=15, pady=(0,15)); self.left_panel.pack_propagate(False)
-        top_controls_frame = ttk.Frame(self.left_panel, style='Left.TFrame')
-        top_controls_frame.pack(side=tk.TOP, fill=tk.X, expand=False)
-        bottom_status_frame = ttk.Frame(self.left_panel, style='Left.TFrame')
-        bottom_status_frame.pack(side=tk.BOTTOM, fill=tk.X, pady=(1, 0))
-        ttk.Label(top_controls_frame, text="JUNGLE CHESS", style='Header.TLabel', font=('Helvetica', 24, 'bold')).pack(pady=(0,10))
-        self._build_control_widgets(top_controls_frame)
-        self._build_status_widgets(bottom_status_frame)
+        self.main_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        
+        self.left_panel = ttk.Frame(self.main_frame, style='Left.TFrame')
+        self.left_panel.pack(side=tk.LEFT, fill=tk.Y, padx=10, pady=10); self.left_panel.pack_propagate(False)
+        
+        self.top_controls_frame = ttk.Frame(self.left_panel, style='Left.TFrame')
+        self.top_controls_frame.pack(side=tk.TOP, fill=tk.X, expand=False)
+        self.bottom_status_frame = ttk.Frame(self.left_panel, style='Left.TFrame')
+        self.bottom_status_frame.pack(side=tk.BOTTOM, fill=tk.X, pady=(1, 0))
+        
+        self.title_label = ttk.Label(self.top_controls_frame, text="JUNGLE CHESS", style='Header.TLabel', font=('Helvetica', 24, 'bold'))
+        self.title_label.pack(pady=(0,10))
+        
+        self._build_control_widgets(self.top_controls_frame)
+        self._build_status_widgets(self.bottom_status_frame)
+        
         self.right_panel = ttk.Frame(self.main_frame, style='Right.TFrame')
-        self.right_panel.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=15, pady=15)
+        self.right_panel.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=12, pady=12)
+        
         self.canvas_container = ttk.Frame(self.right_panel, style='Canvas.TFrame')
         self.canvas_container.pack(expand=True, fill=tk.BOTH)
         self.canvas_container.grid_rowconfigure(0, weight=1); self.canvas_container.grid_columnconfigure(0, weight=1)
+        
         self.canvas_frame = ttk.Frame(self.canvas_container, style='Canvas.TFrame'); self.canvas_frame.grid(row=0, column=0)
-        self.canvas = tk.Canvas(self.canvas_frame, width=COLS*SQUARE_SIZE, height=ROWS*SQUARE_SIZE, bg=self.COLORS['bg_light'], highlightthickness=0)
-        self.board_image_white = self.create_board_image("white"); self.board_image_black = self.create_board_image("black")
-        self.board_image_id = self.canvas.create_image(0, 0, image=self.board_image_white, anchor='nw', tags="board"); self.canvas.pack()
-        self._build_scoreboard_and_labels()
-        self.draw_board()
+        
+        self.canvas = tk.Canvas(self.canvas_frame, width=1, height=1, bg=self.COLORS['bg_light'], highlightthickness=0)
+        self.board_image_white = None; self.board_image_black = None
+        self.board_image_id = self.canvas.create_image(0, 0, anchor='nw', tags="board"); self.canvas.pack()
 
+        self._build_scoreboard_and_labels()
+        
+        self.main_frame.bind("<Configure>", self.handle_main_resize)
+        self.right_panel.bind("<Configure>", self.handle_board_resize)
+
+    def handle_main_resize(self, event):
+        new_sidebar_width = max(self.base_sidebar_width, int(event.width * 0.22))
+        if new_sidebar_width == self.left_panel.winfo_width(): return
+
+        self.left_panel.config(width=new_sidebar_width)
+
+        raw_scaling_factor = new_sidebar_width / self.base_sidebar_width
+        dampened_scaling_factor = 1.0 + (raw_scaling_factor - 1.0) * 0.5
+
+        title_font_size = max(20, int(24 * dampened_scaling_factor))
+        header_font_size = max(12, int(14 * dampened_scaling_factor))
+        small_header_font_size = max(11, int(13 * dampened_scaling_factor))
+        control_font_size = max(10, int(11 * dampened_scaling_factor))
+        status_font_size = max(12, int(14 * dampened_scaling_factor))
+        
+        self.title_label.config(font=('Helvetica', title_font_size, 'bold'))
+        
+        style = ttk.Style()
+        style.configure('Header.TLabel', font=('Helvetica', header_font_size, 'bold'))
+        style.configure('SmallHeader.TLabel', font=('Helvetica', small_header_font_size, 'bold'))
+        style.configure('Control.TButton', font=('Helvetica', control_font_size, 'bold'))
+        style.configure('Custom.TRadiobutton', font=('Helvetica', control_font_size))
+        style.configure('Custom.TCheckbutton', font=('Helvetica', control_font_size))
+        style.configure('Status.TLabel', font=('Helvetica', status_font_size, 'bold'))
+
+        button_padding_y = max(6, int(7 * dampened_scaling_factor))
+        style.configure('Control.TButton', padding=(10, button_padding_y))
+        
+        new_eval_bar_height = max(26, int(26 * dampened_scaling_factor))
+        self.eval_bar_canvas.config(height=new_eval_bar_height)
+        
+    def handle_board_resize(self, event):
+        # UI-TUNE-FINAL: Adjusted padding for a balanced look on all screen sizes.
+        view_width = event.width - 40
+        view_height = event.height - 80
+        
+        if view_width <= 1 or view_height <= 1: return
+
+        new_square_size = min(view_width // COLS, view_height // ROWS)
+
+        if new_square_size != self.square_size and new_square_size > 0:
+            self.square_size = new_square_size
+            self.canvas.config(width=COLS * self.square_size, height=ROWS * self.square_size)
+            self.board_image_white = self.create_board_image("white")
+            self.board_image_black = self.create_board_image("black")
+            self.draw_board()
+            
     def _build_control_widgets(self, parent_frame):
-        game_mode_frame = ttk.Frame(parent_frame, style='Left.TFrame')
-        game_mode_frame.pack(fill=tk.X, pady=(0,8))
-        ttk.Label(game_mode_frame, text="GAME MODE", style='Header.TLabel').pack(anchor=tk.W)
+        # UI-TUNE-FINAL: Reduced padding between sections for a tighter layout.
+        self.game_mode_frame = ttk.Frame(parent_frame, style='Left.TFrame')
+        self.game_mode_frame.pack(fill=tk.X, pady=(0, 2))
+        ttk.Label(self.game_mode_frame, text="GAME MODE", style='Header.TLabel').pack(anchor=tk.W)
         for mode in GameMode:
             text = mode.name.replace("_", " ").title()
-            ttk.Radiobutton(game_mode_frame, text=text, variable=self.game_mode, value=mode.value, command=self.reset_game, style='Custom.TRadiobutton').pack(anchor=tk.W, pady=(2,0))
-        controls_frame = ttk.Frame(parent_frame, style='Left.TFrame')
-        controls_frame.pack(fill=tk.X, pady=3)
-        ttk.Button(controls_frame, text="NEW GAME", command=self.reset_game, style='Control.TButton').pack(fill=tk.X, pady=3)
-        ttk.Button(controls_frame, text="SWAP SIDES", command=self.swap_sides, style='Control.TButton').pack(fill=tk.X, pady=3)
-        ttk.Button(controls_frame, text="AI vs OP Series", command=self.start_ai_series, style='Control.TButton').pack(fill=tk.X, pady=3)
-        ttk.Button(controls_frame, text="QUIT", command=self.master.quit, style='Control.TButton').pack(fill=tk.X, pady=3)
-        ttk.Label(controls_frame, text="Bot Depth:", style='SmallHeader.TLabel').pack(anchor=tk.W, pady=(8,0))
-        self.bot_depth_slider = tk.Scale(controls_frame, from_=1, to=self.slidermaxvalue, orient=tk.HORIZONTAL, bg=self.COLORS['bg_dark'], fg=self.COLORS['text_light'], highlightthickness=0, relief='flat')
+            ttk.Radiobutton(self.game_mode_frame, text=text, variable=self.game_mode, value=mode.value, command=self.reset_game, style='Custom.TRadiobutton').pack(anchor=tk.W, pady=(2,0))
+        
+        self.controls_frame = ttk.Frame(parent_frame, style='Left.TFrame')
+        self.controls_frame.pack(fill=tk.X, pady=3)
+        # UI-TUNE-FINAL: Set a fixed, balanced padding for buttons.
+        ttk.Button(self.controls_frame, text="NEW GAME", command=self.reset_game, style='Control.TButton').pack(fill=tk.X, pady=3)
+        ttk.Button(self.controls_frame, text="SWAP SIDES", command=self.swap_sides, style='Control.TButton').pack(fill=tk.X, pady=3)
+        ttk.Button(self.controls_frame, text="AI vs OP Series", command=self.start_ai_series, style='Control.TButton').pack(fill=tk.X, pady=3)
+        ttk.Button(self.controls_frame, text="QUIT", command=self.master.quit, style='Control.TButton').pack(fill=tk.X, pady=3)
+
+        ttk.Label(self.controls_frame, text="Bot Depth:", style='SmallHeader.TLabel').pack(anchor=tk.W, pady=(2,0))
+        self.bot_depth_slider = tk.Scale(self.controls_frame, from_=1, to=self.slidermaxvalue, orient=tk.HORIZONTAL, bg=self.COLORS['bg_dark'], fg=self.COLORS['text_light'], highlightthickness=0, relief='flat')
         self.bot_depth_slider.set(3); self.bot_depth_slider.pack(fill=tk.X, pady=(0,2))
-        self.instant_move = tk.BooleanVar(value=False); ttk.Checkbutton(controls_frame, text="Instant Moves", variable=self.instant_move, style='Custom.TCheckbutton').pack(anchor=tk.W, pady=(2,2))
-        self.analysis_checkbox = ttk.Checkbutton(controls_frame, text="Analysis Mode (H-vs-H)", variable=self.analysis_mode_var, style='Custom.TCheckbutton', command=self.toggle_analysis_mode)
+        self.instant_move = tk.BooleanVar(value=False); ttk.Checkbutton(self.controls_frame, text="Instant Moves", variable=self.instant_move, style='Custom.TCheckbutton').pack(anchor=tk.W, pady=(2,2))
+        self.analysis_checkbox = ttk.Checkbutton(self.controls_frame, text="Analysis Mode (H-vs-H)", variable=self.analysis_mode_var, style='Custom.TCheckbutton', command=self.toggle_analysis_mode)
         self.analysis_checkbox.pack(anchor=tk.W, pady=(2,2))
 
     def _build_status_widgets(self, parent_frame):
@@ -133,13 +198,38 @@ class EnhancedChessApp:
         self.eval_frame = ttk.Frame(parent_frame, style='Left.TFrame'); self.eval_frame.pack(fill=tk.X, pady=(9, 4))
         self.eval_score_label = ttk.Label(self.eval_frame, text="Even", style='Status.TLabel', anchor="center"); self.eval_score_label.pack(pady=(6,4))
         self.eval_bar_canvas = tk.Canvas(self.eval_frame, height=26, bg=self.COLORS['bg_light'], highlightthickness=0); self.eval_bar_canvas.pack(fill=tk.X, expand=True)
-        self.eval_bar_canvas.bind("<Configure>", lambda event: self.draw_eval_bar(0))
+        self.eval_bar_canvas.bind("<Configure>", self.redraw_eval_bar_on_resize)
+
+    def redraw_eval_bar_on_resize(self, event):
+        self.draw_eval_bar(self.last_eval_score, self.last_eval_depth)
 
     def _build_scoreboard_and_labels(self):
         self.scoreboard_frame = ttk.Frame(self.right_panel, style='Right.TFrame')
         self.scoreboard_label = ttk.Label(self.scoreboard_frame, text="", font=("Helvetica", 10), justify=tk.LEFT, background=self.COLORS['bg_medium'], foreground=self.COLORS['text_light']); self.scoreboard_label.pack()
         self.top_bot_label = ttk.Label(self.right_panel, text="", font=("Helvetica", 12), background=self.COLORS['bg_medium'], foreground=self.COLORS['text_light']); self.top_bot_label.place(relx=0.5, rely=0.02, anchor='n')
         self.bottom_bot_label = ttk.Label(self.right_panel, text="", font=("Helvetica", 12), background=self.COLORS['bg_medium'], foreground=self.COLORS['text_light']); self.bottom_bot_label.place(relx=0.5, rely=0.98, anchor='s')
+        
+    def draw_piece_at_canvas_coords(self, piece, r, c):
+        x, y = self.board_to_canvas(r, c)
+        x_center = x + self.square_size // 2
+        y_center = y + self.square_size // 2 + 2  # for slight vertical adjustment
+        font_size = int(self.square_size * 0.7)
+
+        # Use a stable formula for vertical centering that works at all sizes.
+        y_correction = int(font_size / 20)
+        y_center -= y_correction
+        
+        symbol, font = piece.symbol(), ("Arial Unicode MS", font_size)
+
+        # --- Color-Specific Shadow Logic ---
+        # Apply different shadow thickness based on the piece color.
+        if piece.color == "black":
+            shadow_offset = max(1, self.square_size // 40)
+        else:  # For white pieces
+            shadow_offset = max(1, self.square_size // 25)
+        
+        self.canvas.create_text(x_center + shadow_offset, y_center + shadow_offset, text=symbol, font=font, fill="#444444", tags="piece")
+        self.canvas.create_text(x_center, y_center, text=symbol, font=font, fill=piece.color, tags="piece")
 
     def toggle_analysis_mode(self):
         self.update_analysis_process()
@@ -151,12 +241,12 @@ class EnhancedChessApp:
                 msg_type, *payload = message
                 
                 if msg_type == 'log':
-                    # Always print the log message
                     print(payload[0])
                 elif msg_type == 'eval':
-                    self.draw_eval_bar(payload[0], payload[1])
+                    self.last_eval_score = payload[0]
+                    self.last_eval_depth = payload[1]
+                    self.draw_eval_bar(self.last_eval_score, self.last_eval_depth)
                 elif msg_type == 'move':
-                    # The move message is now simple again
                     the_move = payload[0]
                     self._execute_ai_move(the_move)
         except Exception:
@@ -168,7 +258,7 @@ class EnhancedChessApp:
         if self.game_over: return
 
         if the_move:
-            delay = 4 if self.instant_move.get() else 20 # Delay of 4 for instant moves as 0 feels unnatural
+            delay = 4 if self.instant_move.get() else 20
             self.board.make_move(the_move[0], the_move[1])
             self.execute_move_and_check_state()
             if not self.game_over and self.game_mode.get() == GameMode.AI_VS_AI.value:
@@ -214,23 +304,19 @@ class EnhancedChessApp:
         self.selected, self.valid_moves, self.game_over, self.game_result = None, [], False, None
         self.position_history = [board_hash(self.board, self.turn)]
         self.position_counts = {self.position_history[0]: 1}
+        
+        self.last_eval_score = 0.0
+        self.last_eval_depth = None
         self.draw_eval_bar(0)
+        
         mode = self.game_mode.get()
         if mode == GameMode.AI_VS_AI.value:
             self.white_playing_bot_type = "op" if self.ai_series_running and self.ai_series_stats['game_count'] % 2 == 1 else "main"
             self.board_orientation = "white" if self.white_playing_bot_type == "main" else "black"
             
-            opening_move_applied = False
             if self.ai_series_running:
-                # This function will make a move and switch the turn to black if applicable
                 self.apply_series_opening_move()
-                # Check if a move was actually made
-                if len(self.position_history) > 1:
-                     opening_move_applied = True
 
-            # If an opening move was just applied, it's now Black's turn.
-            # Otherwise, it's a fresh game, and it's White's turn.
-            # The _make_game_ai_move function will correctly start the AI for the current turn.
             if not self.game_over:
                 delay = 4 if self.instant_move.get() else 20
                 self.master.after(delay, self._make_game_ai_move)
@@ -368,7 +454,8 @@ class EnhancedChessApp:
             if piece and piece.color == self.turn and is_human_turn:
                 self.selected = (r, c); self.dragging = True; self.drag_start = (r, c)
                 self.valid_moves = [end for start, end in get_all_legal_moves(self.board, self.turn) if start == self.selected]
-                self.drag_piece_ghost = self.canvas.create_text(event.x, event.y, text=piece.symbol(), font=("Arial Unicode MS", 50), fill=piece.color, tags="drag_ghost")
+                font_size = int(self.square_size * 0.7)
+                self.drag_piece_ghost = self.canvas.create_text(event.x, event.y, text=piece.symbol(), font=("Arial Unicode MS", font_size), fill=piece.color, tags="drag_ghost")
                 self.draw_board(); self.canvas.tag_raise("drag_ghost")
     
     def on_drag_motion(self, event):
@@ -383,13 +470,15 @@ class EnhancedChessApp:
     def switch_turn(self): self.turn = "black" if self.turn == "white" else "white"
 
     def board_to_canvas(self, r, c):
-        x = (COLS - 1 - c) * SQUARE_SIZE if self.board_orientation == "black" else c * SQUARE_SIZE
-        y = (ROWS - 1 - r) * SQUARE_SIZE if self.board_orientation == "black" else r * SQUARE_SIZE
+        if self.square_size == 0: return 0, 0
+        x = (COLS - 1 - c) * self.square_size if self.board_orientation == "black" else c * self.square_size
+        y = (ROWS - 1 - r) * self.square_size if self.board_orientation == "black" else r * self.square_size
         return x, y
 
     def canvas_to_board(self, x, y):
-        c = (COLS - 1) - (x // SQUARE_SIZE) if self.board_orientation == "black" else x // SQUARE_SIZE
-        r = (ROWS - 1) - (y // SQUARE_SIZE) if self.board_orientation == "black" else y // SQUARE_SIZE
+        if self.square_size == 0: return -1, -1
+        c = (COLS - 1) - (x // self.square_size) if self.board_orientation == "black" else x // self.square_size
+        r = (ROWS - 1) - (y // self.square_size) if self.board_orientation == "black" else y // self.square_size
         return (r, c) if 0 <= r < ROWS and 0 <= c < COLS else (-1, -1)
 
     def draw_eval_bar(self, eval_score, depth=None):
@@ -428,21 +517,29 @@ class EnhancedChessApp:
         return C
 
     def create_board_image(self, orientation):
-        img = tk.PhotoImage(width=COLS * SQUARE_SIZE, height=ROWS * SQUARE_SIZE)
+        if self.square_size <= 0: return None
+        img_width = COLS * self.square_size
+        img_height = ROWS * self.square_size
+        img = tk.PhotoImage(width=img_width, height=img_height)
         for r_draw in range(ROWS):
             for c_draw in range(COLS):
                 color = BOARD_COLOR_1 if (r_draw + c_draw) % 2 == 0 else BOARD_COLOR_2
-                x1, y1 = c_draw * SQUARE_SIZE, r_draw * SQUARE_SIZE
-                img.put(color, to=(x1, y1, x1 + SQUARE_SIZE, y1 + SQUARE_SIZE))
+                x1, y1 = c_draw * self.square_size, r_draw * self.square_size
+                img.put(color, to=(x1, y1, x1 + self.square_size, y1 + self.square_size))
         return img
 
     def draw_board(self):
-        self.canvas.itemconfig(self.board_image_id, image=self.board_image_white if self.board_orientation == "white" else self.board_image_black)
+        current_image = self.board_image_white if self.board_orientation == "white" else self.board_image_black
+        if not current_image:
+            return
+            
+        self.canvas.itemconfig(self.board_image_id, image=current_image)
         self.canvas.delete("highlight", "piece", "check_highlight")
         for r_move, c_move in self.valid_moves:
             x1, y1 = self.board_to_canvas(r_move, c_move)
-            center_x, center_y = x1 + SQUARE_SIZE // 2, y1 + SQUARE_SIZE // 2
-            self.canvas.create_oval(center_x - 10, center_y - 10, center_x + 10, center_y + 10, fill="#1E90FF", outline="", tags="highlight")
+            radius = self.square_size // 5
+            center_x, center_y = x1 + self.square_size // 2, y1 + self.square_size // 2
+            self.canvas.create_oval(center_x - radius, center_y - radius, center_x + radius, center_y + radius, fill="#1E90FF", outline="", tags="highlight")
         for r in range(ROWS):
             for c in range(COLS):
                 if self.board.grid[r][c]: self.draw_piece_with_check(r, c)
@@ -452,16 +549,9 @@ class EnhancedChessApp:
         if isinstance(piece, King) and is_in_check(self.board, piece.color):
             color = "darkred" if self.game_over and self.game_result and self.game_result[0] == "checkmate" else "red"
             x1, y1 = self.board_to_canvas(r, c)
-            self.canvas.create_rectangle(x1, y1, x1 + SQUARE_SIZE, y1 + SQUARE_SIZE, outline=color, width=4, tags="check_highlight")
+            self.canvas.create_rectangle(x1, y1, x1 + self.square_size, y1 + self.square_size, outline=color, width=4, tags="check_highlight")
         if (r, c) != self.drag_start: self.draw_piece_at_canvas_coords(piece, r, c)
 
-    def draw_piece_at_canvas_coords(self, piece, r, c):
-        x, y = self.board_to_canvas(r, c)
-        x_center, y_center = x + SQUARE_SIZE // 2, y + SQUARE_SIZE // 2
-        symbol, font = piece.symbol(), ("Arial Unicode MS", 48)
-        self.canvas.create_text(x_center + 2, y_center + 2, text=symbol, font=font, fill="#444444", tags="piece")
-        self.canvas.create_text(x_center, y_center, text=symbol, font=font, fill=piece.color, tags="piece")
-        
     def _start_game_if_needed(self):
         if not self.game_started:
             self.game_started = True
@@ -502,27 +592,15 @@ class EnhancedChessApp:
         self.reset_game()
         
     def apply_series_opening_move(self):
-        # On the first game of a pair, generate a new random opening
         if self.ai_series_stats['game_count'] % 2 == 0:
             print("--- Generating new opening for game pair ---")
             moves = get_all_legal_moves(self.board, "white")
             self.current_opening_move = random.choice(moves) if moves else None
         
-        # If there is a stored opening move, apply it
         if self.current_opening_move:
             print(f"Applying opening move: {self._format_move(self.current_opening_move)}")
-            
-            # --- Perform the move and state change manually ---
-            # This avoids using the general-purpose execute_move_and_check_state
-            # which has unwanted side effects for a setup move.
-            
-            # 1. Make the move on the board
             self.board.make_move(self.current_opening_move[0], self.current_opening_move[1])
-            
-            # 2. Manually switch the turn. After white's opening, it's black's turn.
             self.switch_turn()
-            
-            # 3. Manually update the position history for the new state
             key = board_hash(self.board, self.turn)
             self.position_history.append(key)
             self.position_counts[key] = self.position_counts.get(key, 0) + 1
@@ -544,7 +622,6 @@ class EnhancedChessApp:
         if not move: return "None"
         (r1, c1), (r2, c2) = move
         return f"{'abcdefgh'[c1]}{'87654321'[r1]}-{'abcdefgh'[c2]}{'87654321'[r2]}"
-
 
 if __name__ == "__main__":
     mp.freeze_support()
