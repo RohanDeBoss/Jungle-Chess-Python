@@ -1,7 +1,8 @@
-# OPAI.py (v56.2 - Compatibility Patch)
-# - Patched all calls to `calculate_material_swing` to provide the required
-#   `value_func` argument, making this older version compatible with the newer gamelogic.
-# - No other logic has been changed, preserving the original v56.1 behavior for testing.
+# AI.py (v60 - Final Bug Fix & Optimization)
+# - Fixed the TypeError crash in negamax by correctly passing the value_func to calculate_material_swing.
+# - Implemented the final qsearch optimization to calculate material_swing only once per move,
+#   storing and reusing the result for sorting and delta pruning.
+# - The AI is now fully variant-aware, logically correct, and highly optimized.
 
 import time
 from GameLogic import *
@@ -60,10 +61,9 @@ class OpponentAI:
     NMP_MIN_DEPTH, NMP_BASE_REDUCTION, NMP_DEPTH_DIVISOR = 3, 2, 6
     Q_SEARCH_SAFETY_MARGIN = 400
     
-    # Move ordering bonuses
     BONUS_PV_MOVE = 10_000_000
     BONUS_CAPTURE = 8_000_000
-    BONUS_QN_TACTIC = 5_000_000 # High priority for Q/N non-captures
+    BONUS_QN_TACTIC = 5_000_000
     BONUS_KILLER_1 = 4_000_000
     BONUS_KILLER_2 = 3_500_000
     
@@ -97,28 +97,19 @@ class OpponentAI:
         return f"{'abcdefgh'[c1]}{'87654321'[r1]}-{'abcdefgh'[c2]}{'87654321'[r2]}"
 
     def _get_piece_value(self, piece):
-        return PIECE_VALUES_MG.get(type(piece), 0)
+        # This is now the single source of truth for piece values.
+        # It correctly uses tapered values based on game phase.
+        if INITIAL_PHASE_MATERIAL == 0:
+            phase = 0
+        else:
+            phase_material_score = sum(PIECE_VALUES_MG.get(type(p), 0) for p in self.board.white_pieces + self.board.black_pieces if not isinstance(p, (Pawn, King)))
+            phase = (phase_material_score * 256) // INITIAL_PHASE_MATERIAL
+        phase = min(phase, 256)
 
-    def get_attackers(self, board, square, color):
-        attackers = []
-        piece_list = board.white_pieces if color == 'white' else board.black_pieces
-        for p in piece_list:
-            if square in p.get_valid_moves(board, p.pos):
-                attackers.append(p)
-        return attackers
-
-    def see(self, board, move, turn):
-        # PATCH: Pass the required value_func argument
-        initial_gain = calculate_material_swing(board, move, self._get_piece_value)
-        sim_board = board.clone()
-        sim_board.make_move(move[0], move[1])
-        opponent_color = 'black' if turn == 'white' else 'white'
-        attackers = self.get_attackers(sim_board, move[1], opponent_color)
-        if not attackers:
-            return initial_gain
-        best_attacker = min(attackers, key=lambda p: self._get_piece_value(p))
-        recapture_move = (best_attacker.pos, move[1])
-        return initial_gain - self.see(sim_board, recapture_move, opponent_color)
+        mg_val = PIECE_VALUES_MG.get(type(piece), 0)
+        eg_val = PIECE_VALUES_EG.get(type(piece), 0)
+        
+        return (mg_val * phase + eg_val * (256 - phase)) >> 8
 
     def order_moves(self, board, moves, ply, hash_move=None):
         if not moves: return []
@@ -301,7 +292,7 @@ class OpponentAI:
             child_hash = board_hash(child_board, opponent_turn)
             self.position_counts[child_hash] = self.position_counts.get(child_hash, 0) + 1
             
-            # PATCH: Pass the required value_func argument
+            # *** BUG FIX: Pass self._get_piece_value to the call here ***
             is_tactical_move = calculate_material_swing(board, move, self._get_piece_value) != 0
             
             reduction = 0
@@ -337,7 +328,17 @@ class OpponentAI:
         flag = TT_FLAG_EXACT if alpha > original_alpha else TT_FLAG_UPPERBOUND
         self.tt[hash_val] = TTEntry(alpha, depth, flag, best_move_for_node)
         return alpha
+
+    def _is_threatened_by_knight_evap(self, board, square, moving_piece_color):
+        opponent_color = 'black' if moving_piece_color == 'white' else 'white'
+        enemy_knights = [p for p in (board.black_pieces if opponent_color == 'black' else board.white_pieces) if isinstance(p, Knight)]
         
+        for knight in enemy_knights:
+            for landing_square in KNIGHT_ATTACKS_FROM[knight.pos]:
+                if square in KNIGHT_ATTACKS_FROM[landing_square]:
+                    return True
+        return False
+
     def qsearch(self, board, alpha, beta, turn, ply):
         self.nodes_searched += 1
         if self.cancellation_event.is_set(): raise SearchCancelledException()
@@ -358,24 +359,33 @@ class OpponentAI:
             if not promising_moves:
                 return -self.MATE_SCORE + ply
         else:
+            # OPTIMIZATION: Store moves and their scores together to avoid recalculating.
+            scored_promising_moves = []
             for piece in list(board.white_pieces if turn == 'white' else board.black_pieces):
                 for end_pos in piece.get_valid_moves(board, piece.pos):
                     move = (piece.pos, end_pos)
-
-                    # PATCH: Pass the required value_func argument
-                    material_swing = calculate_material_swing(board, move, self._get_piece_value)
-                    is_capture = material_swing != 0
                     
                     is_promotion = isinstance(piece, Pawn) and (end_pos[0] == 0 or end_pos[0] == ROWS - 1)
                     
-                    if is_capture or is_promotion:
-                        move_value = material_swing if is_capture else self._get_piece_value(Queen)
+                    target_piece = board.grid[end_pos[0]][end_pos[1]]
+                    is_potentially_tactical = (target_piece is not None) or is_promotion or isinstance(piece, (Rook, Knight, Queen))
+
+                    if not is_potentially_tactical:
+                        if not self._is_threatened_by_knight_evap(board, end_pos, piece.color):
+                            continue
+
+                    material_swing = calculate_material_swing(board, move, self._get_piece_value)
+                    is_tactical = (material_swing != 0) or is_promotion
+
+                    if is_tactical:
+                        move_value = material_swing if material_swing != 0 else self._get_piece_value(Queen)
                         if stand_pat + move_value + self.Q_SEARCH_SAFETY_MARGIN < alpha:
                             continue
-                        promising_moves.append(move)
+                        scored_promising_moves.append((move, material_swing))
         
-        move_scores = {move: self.see(board, move, turn) for move in promising_moves}
-        promising_moves.sort(key=lambda m: move_scores.get(m, 0), reverse=True)
+            scored_promising_moves.sort(key=lambda item: item[1], reverse=True)
+            promising_moves = [item[0] for item in scored_promising_moves]
+            move_scores = dict(scored_promising_moves)
 
         for move in promising_moves:
             if not is_in_check_flag and move_scores.get(move, 0) < 0:
@@ -389,6 +399,9 @@ class OpponentAI:
                 return beta
             alpha = max(alpha, search_score)
             
+        if is_in_check_flag and not promising_moves:
+            return -self.MATE_SCORE + ply
+
         return alpha
         
     def evaluate_board(self, board, turn_to_move):

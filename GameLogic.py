@@ -357,14 +357,6 @@ def _generate_legal_moves(board, color, yield_boards=False):
 def get_all_legal_moves(board, color):
     return list(_generate_legal_moves(board, color, yield_boards=False))
 
-def get_all_pseudo_legal_moves(board, color):
-    """A fast move generator that only gets pseudo-legal moves without checking for check."""
-    moves = []
-    piece_list = board.white_pieces if color == 'white' else board.black_pieces
-    for piece in piece_list:
-        moves.extend([(piece.pos, end_pos) for end_pos in piece.get_valid_moves(board, piece.pos)])
-    return moves
-
 def has_legal_moves(board, color):
     try:
         next(_generate_legal_moves(board, color, yield_boards=False))
