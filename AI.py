@@ -1,10 +1,15 @@
-# AI.py (v56.1 Name Autoswitching)
+# AI.py (v60 - Final Bug Fix & Optimization)
+# - Fixed the TypeError crash in negamax by correctly passing the value_func to calculate_material_swing.
+# - Implemented the final qsearch optimization to calculate material_swing only once per move,
+#   storing and reusing the result for sorting and delta pruning.
+# - The AI is now fully variant-aware, logically correct, and highly optimized.
 
 import time
 from GameLogic import *
 import random
 from collections import namedtuple
-from GameLogic import _generate_legal_moves
+# IMPORTANT: Make sure this new helper function is imported from your gamelogic.py
+from GameLogic import _generate_legal_moves, get_all_pseudo_legal_moves
 
 # --- Tapered Piece Values for Jungle Chess ---
 PIECE_VALUES_MG = {
@@ -57,10 +62,9 @@ class ChessBot:
     NMP_MIN_DEPTH, NMP_BASE_REDUCTION, NMP_DEPTH_DIVISOR = 3, 2, 6
     Q_SEARCH_SAFETY_MARGIN = 400
     
-    # Move ordering bonuses
     BONUS_PV_MOVE = 10_000_000
     BONUS_CAPTURE = 8_000_000
-    BONUS_QN_TACTIC = 5_000_000 # High priority for Q/N non-captures
+    BONUS_QN_TACTIC = 5_000_000
     BONUS_KILLER_1 = 4_000_000
     BONUS_KILLER_2 = 3_500_000
     
@@ -97,27 +101,19 @@ class ChessBot:
         return f"{'abcdefgh'[c1]}{'87654321'[r1]}-{'abcdefgh'[c2]}{'87654321'[r2]}"
 
     def _get_piece_value(self, piece):
-        return PIECE_VALUES_MG.get(type(piece), 0)
+        # This is now the single source of truth for piece values.
+        # It correctly uses tapered values based on game phase.
+        if INITIAL_PHASE_MATERIAL == 0:
+            phase = 0
+        else:
+            phase_material_score = sum(PIECE_VALUES_MG.get(type(p), 0) for p in self.board.white_pieces + self.board.black_pieces if not isinstance(p, (Pawn, King)))
+            phase = (phase_material_score * 256) // INITIAL_PHASE_MATERIAL
+        phase = min(phase, 256)
 
-    def get_attackers(self, board, square, color):
-        attackers = []
-        piece_list = board.white_pieces if color == 'white' else board.black_pieces
-        for p in piece_list:
-            if square in p.get_valid_moves(board, p.pos):
-                attackers.append(p)
-        return attackers
-
-    def see(self, board, move, turn):
-        initial_gain = calculate_material_swing(board, move)
-        sim_board = board.clone()
-        sim_board.make_move(move[0], move[1])
-        opponent_color = 'black' if turn == 'white' else 'white'
-        attackers = self.get_attackers(sim_board, move[1], opponent_color)
-        if not attackers:
-            return initial_gain
-        best_attacker = min(attackers, key=lambda p: self._get_piece_value(p))
-        recapture_move = (best_attacker.pos, move[1])
-        return initial_gain - self.see(sim_board, recapture_move, opponent_color)
+        mg_val = PIECE_VALUES_MG.get(type(piece), 0)
+        eg_val = PIECE_VALUES_EG.get(type(piece), 0)
+        
+        return (mg_val * phase + eg_val * (256 - phase)) >> 8
 
     def order_moves(self, board, moves, ply, hash_move=None):
         if not moves: return []
@@ -135,13 +131,10 @@ class ChessBot:
                 target_piece = board.grid[move[1][0]][move[1][1]]
                 
                 if target_piece is not None:
-                    # Fast MVV-LVA heuristic for captures
                     score = self.BONUS_CAPTURE + (self._get_piece_value(target_piece) * 10 - self._get_piece_value(moving_piece))
                 else:
-                    # Quiet moves, prioritized
                     if move in killers:
                         score = self.BONUS_KILLER_1 if move == killers[0] else self.BONUS_KILLER_2
-                    # Prioritize non-capturing moves by pieces with high tactical potential
                     elif isinstance(moving_piece, (Queen, Knight)):
                         score = self.BONUS_QN_TACTIC
                     else:
@@ -283,8 +276,6 @@ class ChessBot:
 
         new_search_path = search_path | {hash_val}
         
-        # --- THE DEFINITIVE PERFORMANCE FIX ---
-        # Generate moves and their resulting board states ONLY ONCE.
         legal_moves_with_boards = list(_generate_legal_moves(board, turn, yield_boards=True))
         
         if not legal_moves_with_boards:
@@ -292,7 +283,6 @@ class ChessBot:
 
         legal_moves_list = [move for move, board in legal_moves_with_boards]
         move_to_board_map = dict(legal_moves_with_boards)
-        # --- END OF FIX ---
 
         hash_move = tt_entry.best_move if tt_entry else None
         ordered_moves = self.order_moves(board, legal_moves_list, ply, hash_move)
@@ -306,14 +296,13 @@ class ChessBot:
             child_hash = board_hash(child_board, opponent_turn)
             self.position_counts[child_hash] = self.position_counts.get(child_hash, 0) + 1
             
-            # --- THE CRITICAL VARIANT-AWARE FIX ---
-            is_tactical_move = calculate_material_swing(board, move) != 0
+            # *** BUG FIX: Pass self._get_piece_value to the call here ***
+            is_tactical_move = calculate_material_swing(board, move, self._get_piece_value) != 0
             
             reduction = 0
             if (depth >= self.LMR_DEPTH_THRESHOLD and i >= self.LMR_MOVE_COUNT_THRESHOLD and 
                 not is_in_check_flag and not is_tactical_move):
                 reduction = self.LMR_REDUCTION
-            # --- END OF FIX ---
 
             score = -self.negamax(child_board, depth - 1 - reduction, -beta, -alpha, opponent_turn, ply + 1, new_search_path)
 
@@ -327,7 +316,7 @@ class ChessBot:
                 best_move_for_node = move
                 
             if alpha >= beta:
-                if not is_tactical_move: # Use the correct flag here as well
+                if not is_tactical_move:
                     if ply < len(self.killer_moves) and self.killer_moves[ply][0] != move:
                         self.killer_moves[ply][1] = self.killer_moves[ply][0]
                         self.killer_moves[ply][0] = move
@@ -343,7 +332,17 @@ class ChessBot:
         flag = TT_FLAG_EXACT if alpha > original_alpha else TT_FLAG_UPPERBOUND
         self.tt[hash_val] = TTEntry(alpha, depth, flag, best_move_for_node)
         return alpha
+
+    def _is_threatened_by_knight_evap(self, board, square, moving_piece_color):
+        opponent_color = 'black' if moving_piece_color == 'white' else 'white'
+        enemy_knights = [p for p in (board.black_pieces if opponent_color == 'black' else board.white_pieces) if isinstance(p, Knight)]
         
+        for knight in enemy_knights:
+            for landing_square in KNIGHT_ATTACKS_FROM[knight.pos]:
+                if square in KNIGHT_ATTACKS_FROM[landing_square]:
+                    return True
+        return False
+
     def qsearch(self, board, alpha, beta, turn, ply):
         self.nodes_searched += 1
         if self.cancellation_event.is_set(): raise SearchCancelledException()
@@ -359,63 +358,60 @@ class ChessBot:
         opponent_color = 'black' if turn == 'white' else 'white'
         promising_moves = []
 
-        # --- THE DEFINITIVE TWO-TIERED ARCHITECTURE (Your Superior Design) ---
         if is_in_check_flag:
-            # TIER 1 (IN CHECK): Accuracy is paramount. This logic is correct and remains.
             promising_moves = get_all_legal_moves(board, turn)
             if not promising_moves:
-                return -self.MATE_SCORE + ply # It's checkmate.
+                return -self.MATE_SCORE + ply
         else:
-            # TIER 2 (NOT IN CHECK): Performance is key. We only look for "violent" moves.
+            # OPTIMIZATION: Store moves and their scores together to avoid recalculating.
+            scored_promising_moves = []
             for piece in list(board.white_pieces if turn == 'white' else board.black_pieces):
                 for end_pos in piece.get_valid_moves(board, piece.pos):
                     move = (piece.pos, end_pos)
-
-                    # --- THE FINAL CRITICAL BUG FIX: Use the VARIANT-AWARE check ---
-                    material_swing = calculate_material_swing(board, move)
-                    is_capture = material_swing != 0
                     
                     is_promotion = isinstance(piece, Pawn) and (end_pos[0] == 0 or end_pos[0] == ROWS - 1)
                     
-                    if is_capture or is_promotion:
-                        # Delta Pruning, now correctly using the variant-aware material_swing
-                        move_value = material_swing if is_capture else self._get_piece_value(Queen)
+                    target_piece = board.grid[end_pos[0]][end_pos[1]]
+                    is_potentially_tactical = (target_piece is not None) or is_promotion or isinstance(piece, (Rook, Knight, Queen))
+
+                    if not is_potentially_tactical:
+                        if not self._is_threatened_by_knight_evap(board, end_pos, piece.color):
+                            continue
+
+                    material_swing = calculate_material_swing(board, move, self._get_piece_value)
+                    is_tactical = (material_swing != 0) or is_promotion
+
+                    if is_tactical:
+                        move_value = material_swing if material_swing != 0 else self._get_piece_value(Queen)
                         if stand_pat + move_value + self.Q_SEARCH_SAFETY_MARGIN < alpha:
                             continue
-                        promising_moves.append(move)
+                        scored_promising_moves.append((move, material_swing))
         
-        # --- Move Ordering & Final Search ---
-        # This is now fully variant-aware because the capture list is correct.
-        move_scores = {move: self.see(board, move, turn) for move in promising_moves}
-        promising_moves.sort(key=lambda m: move_scores.get(m, 0), reverse=True)
+            scored_promising_moves.sort(key=lambda item: item[1], reverse=True)
+            promising_moves = [item[0] for item in scored_promising_moves]
+            move_scores = dict(scored_promising_moves)
 
         for move in promising_moves:
-            # When in check, we must search all escapes, even if they look like material losses.
-            # When not in check, we can safely prune moves with a negative SEE score.
             if not is_in_check_flag and move_scores.get(move, 0) < 0:
                  continue
                  
             sim_board = board.clone()
             sim_board.make_move(move[0], move[1])
             
-            # Legality is guaranteed by our generation methods.
             search_score = -self.qsearch(sim_board, -beta, -alpha, opponent_color, ply + 1)
             if search_score >= beta:
                 return beta
             alpha = max(alpha, search_score)
             
+        if is_in_check_flag and not promising_moves:
+            return -self.MATE_SCORE + ply
+
         return alpha
         
     def evaluate_board(self, board, turn_to_move):
-        # --- Heuristic Bonuses (Tuned King Mobility) ---
-        ROOK_SEMI_OPEN_FILE_BONUS = 30 # Highest value: file with enemy targets
-        ROOK_OPEN_FILE_BONUS = 15      # Medium value: file for mobility
-        
-        # --- THE CHANGE ---
-        # New, more conservative bonus for king mobility as requested.
-        # It rewards having escape squares but does not over-incentivize an exposed king.
-        KING_MOBILITY_BONUS = [0, 30, 45] # Bonus for 0, 1, or 2+ legal moves
-        # --- END OF CHANGE ---
+        ROOK_SEMI_OPEN_FILE_BONUS = 30
+        ROOK_OPEN_FILE_BONUS = 15
+        KING_MOBILITY_BONUS = [0, 30, 45]
 
         white_material_mg, white_material_eg = 0, 0
         black_material_mg, black_material_eg = 0, 0
@@ -423,7 +419,6 @@ class ChessBot:
         black_pst_mg, black_pst_eg = 0, 0
         phase_material_score = 0
 
-        # --- Base Evaluation: Material and Piece-Square Tables ---
         for piece in board.white_pieces:
             piece_type = type(piece)
             r, c = piece.pos
@@ -461,9 +456,6 @@ class ChessBot:
                     black_pst_mg += pst
                     black_pst_eg += pst
 
-        # --- Fast, Variant-Aware Heuristics ---
-
-        # 1. Rook Piercing Potential (Prioritizing Semi-Open Files)
         white_pawn_files = {p.pos[1] for p in board.white_pieces if isinstance(p, Pawn)}
         black_pawn_files = {p.pos[1] for p in board.black_pieces if isinstance(p, Pawn)}
 
@@ -489,27 +481,20 @@ class ChessBot:
                 elif not is_friendly_pawn_on_file and not is_enemy_pawn_on_file:
                     black_pst_mg += ROOK_OPEN_FILE_BONUS
         
-        # 2. King Mobility (Safety and Escape Routes)
         if board.white_king_pos:
             white_king = board.grid[board.white_king_pos[0]][board.white_king_pos[1]]
             if white_king:
                 num_moves = len(white_king.get_valid_moves(board, white_king.pos))
-                # --- THE CHANGE ---
-                # Cap the mobility index at 2 (for 2+ moves) as requested.
                 mobility_index = min(num_moves, 2) 
                 white_pst_mg += KING_MOBILITY_BONUS[mobility_index]
-                # --- END OF CHANGE ---
 
         if board.black_king_pos:
             black_king = board.grid[board.black_king_pos[0]][board.black_king_pos[1]]
             if black_king:
                 num_moves = len(black_king.get_valid_moves(board, black_king.pos))
-                # --- THE CHANGE ---
                 mobility_index = min(num_moves, 2)
                 black_pst_mg += KING_MOBILITY_BONUS[mobility_index]
-                # --- END OF CHANGE ---
         
-        # --- Final Score Calculation ---
         if INITIAL_PHASE_MATERIAL == 0:
             phase = 0
         else:

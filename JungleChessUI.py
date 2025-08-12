@@ -213,7 +213,7 @@ class EnhancedChessApp:
         x, y = self.board_to_canvas(r, c)
         x_center = x + self.square_size // 2
         y_center = y + self.square_size // 2 + 2  # for slight vertical adjustment
-        font_size = int(self.square_size * 0.7)
+        font_size = int(self.square_size * 0.67)
 
         # Use a stable formula for vertical centering that works at all sizes.
         y_correction = int(font_size / 20)
