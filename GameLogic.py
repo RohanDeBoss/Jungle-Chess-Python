@@ -1,9 +1,9 @@
-# gamelogic.py (v22.1 - Rook Piercing Bug Fix)
-# - Reverted to the user's fast v20.1 baseline.
-# - Identified and fixed a critical bug where the Rook's move generation did not
-#   correctly implement the "piercing" rule.
-# - The Rook can now correctly see and generate moves to squares behind enemy pieces,
-#   stopping only for friendly pieces, as per the official rulebook.
+# gamelogic.py (v22.2 - Final Stable Baseline)
+# - Based on the user's fast v22.1 code.
+# - Contains the critical bug fix for the Rook's "piercing" move generation.
+# - Contains the final, critical bug fix to calculate_material_swing, allowing it to
+#   work correctly with the AI's tapered evaluation function. This version is now
+#   fully compatible with the v63 AI.
 
 import copy
 
@@ -108,7 +108,6 @@ class Queen(Piece):
 class Rook(Piece):
     def symbol(self): return "♖" if self.color == "white" else "♜"
     def get_valid_moves(self, board, pos):
-        # *** BUG FIX: THIS LOGIC IS NOW RULEBOOK-COMPLIANT ***
         moves = []
         r_start, c_start = pos
         for dr, dc in DIRECTIONS['rook']:
@@ -116,14 +115,11 @@ class Rook(Piece):
             while 0 <= r < ROWS and 0 <= c < COLS:
                 target = board.grid[r][c]
                 if target:
-                    # Path is only blocked by a friendly piece
                     if target.color == self.color:
                         break
-                    # If it's an enemy, the Rook can move to this square (or any square past it)
                     else:
                         moves.append((r,c))
                 else:
-                    # If it's an empty square, the Rook can move to it
                     moves.append((r,c))
                 r += dr
                 c += dc
@@ -357,6 +353,13 @@ def _generate_legal_moves(board, color, yield_boards=False):
 def get_all_legal_moves(board, color):
     return list(_generate_legal_moves(board, color, yield_boards=False))
 
+def get_all_pseudo_legal_moves(board, color):
+    moves = []
+    piece_list = board.white_pieces if color == 'white' else board.black_pieces
+    for piece in piece_list:
+        moves.extend([(piece.pos, end_pos) for end_pos in piece.get_valid_moves(board, piece.pos)])
+    return moves
+
 def has_legal_moves(board, color):
     try:
         next(_generate_legal_moves(board, color, yield_boards=False))
@@ -372,10 +375,6 @@ def check_game_over(board, turn_color_who_just_moved):
     return None, None
 
 def calculate_material_swing(board, move, value_func):
-    """
-    Simulates a move and returns the total material change.
-    This is guaranteed to be consistent with all variant rules.
-    """
     moving_piece = board.grid[move[0][0]][move[0][1]]
     if not moving_piece: return 0
 
@@ -392,31 +391,13 @@ def calculate_material_swing(board, move, value_func):
     swing = 0
     destroyed_enemies = original_opponent_pieces - final_opponent_pieces
     for p in destroyed_enemies:
-        swing += value_func(p)
+        # *** BUG FIX IS HERE ***
+        # The value_func from the AI expects two arguments: the piece and the board context.
+        swing += value_func(p, sim_board)
         
     destroyed_friendlies = original_friendly_pieces - final_friendly_pieces
     for p in destroyed_friendlies:
-        swing -= value_func(p)
-
-    return swing
-def is_tactical_move(board, move):
-    """
-    Checks if a move is considered tactical in this variant.
-    This includes captures or any move by a piece with special abilities.
-    """
-    start_pos, end_pos = move
-    moving_piece = board.grid[start_pos[0]][start_pos[1]]
-    target_piece = board.grid[end_pos[0]][end_pos[1]]
-
-    if target_piece is not None:
-        return True # All captures are tactical
-    
-    if isinstance(moving_piece, (Rook, Queen, Knight)):
-        return True # Moves by pieces with AOE/piercing are always tactical
+        # *** BUG FIX IS HERE ***
+        swing -= value_func(p, sim_board)
         
-    if isinstance(moving_piece, Pawn):
-        promotion_rank = 0 if moving_piece.color == "white" else (ROWS - 1)
-        if end_pos[0] == promotion_rank:
-            return True # Pawn promotions are tactical
-            
-    return False
+    return swing

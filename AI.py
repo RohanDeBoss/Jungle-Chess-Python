@@ -1,14 +1,14 @@
-# AI.py (v62 - Final Stable Baseline)
-# - Reverted to the fully optimized and logically sound v60 baseline.
-# - Permanently fixed the "fast bug" in piece value evaluation by ensuring the
-#   correct board context is used for calculating the game phase.
-# - The `evaluate_board` function is now both fast and 100% correct.
+# AI.py (v63.1 - Final Stable Baseline)
+# - This is the definitive version of the AI, based on the user-confirmed fast and stable v63.
+# - Contains all necessary bug fixes, including the TypeError patch for value_func.
+# - The tapered evaluation is correctly implemented and used in all tactical calculations.
+# - The qsearch is fully optimized and variant-aware.
 
 import time
 from GameLogic import *
 import random
 from collections import namedtuple
-from GameLogic import _generate_legal_moves
+from GameLogic import _generate_legal_moves, get_all_pseudo_legal_moves
 
 # --- Tapered Piece Values for Jungle Chess ---
 PIECE_VALUES_MG = {
@@ -288,7 +288,7 @@ class ChessBot:
             child_hash = board_hash(child_board, opponent_turn)
             self.position_counts[child_hash] = self.position_counts.get(child_hash, 0) + 1
             
-            is_tactical_move = calculate_material_swing(board, move, lambda p: self._get_piece_value(p, board)) != 0
+            is_tactical_move = calculate_material_swing(board, move, lambda p, b: self._get_piece_value(p, b)) != 0
             
             reduction = 0
             if (depth >= self.LMR_DEPTH_THRESHOLD and i >= self.LMR_MOVE_COUNT_THRESHOLD and 
@@ -368,7 +368,7 @@ class ChessBot:
                         if not self._is_threatened_by_knight_evap(board, end_pos, piece.color):
                             continue
 
-                    material_swing = calculate_material_swing(board, move, lambda p: self._get_piece_value(p, board))
+                    material_swing = calculate_material_swing(board, move, lambda p, b: self._get_piece_value(p, b))
                     is_tactical = (material_swing != 0) or is_promotion
 
                     if is_tactical:
