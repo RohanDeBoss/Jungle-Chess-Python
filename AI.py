@@ -1,8 +1,6 @@
-# AI.py (v64 - Final Performance Polish)
-# - Identified and fixed the final major performance bottleneck by optimizing move ordering and evaluation.
-# - The `order_moves` and `evaluate_board` functions now calculate the game phase only ONCE per call,
-#   avoiding thousands of redundant calculations deep in the search tree.
-# - This significantly increases NPS (Nodes Per Second) while being logically identical to v63.
+# AI.py (v64 - Refactored for 1D Board)
+# - Adapted to use the flat 1D list board representation from gamelogic.py.
+# - All grid access logic (e.g., board.grid[r][c]) updated to use 1D indexing.
 
 import time
 from GameLogic import *
@@ -134,8 +132,9 @@ class ChessBot:
             if move == hash_move:
                 score = self.BONUS_PV_MOVE
             else:
-                moving_piece = board.grid[move[0][0]][move[0][1]]
-                target_piece = board.grid[move[1][0]][move[1][1]]
+                # REFACTOR: Use 1D indexing
+                moving_piece = board.grid[move[0][0] * COLS + move[0][1]]
+                target_piece = board.grid[move[1][0] * COLS + move[1][1]]
                 
                 if target_piece is not None:
                     score = self.BONUS_CAPTURE + (get_tapered_value(target_piece) * 10 - get_tapered_value(moving_piece))
@@ -326,7 +325,8 @@ class ChessBot:
                     if ply < len(self.killer_moves) and self.killer_moves[ply][0] != move:
                         self.killer_moves[ply][1] = self.killer_moves[ply][0]
                         self.killer_moves[ply][0] = move
-                    moving_piece = board.grid[move[0][0]][move[0][1]]
+                    # REFACTOR: Use 1D indexing
+                    moving_piece = board.grid[move[0][0] * COLS + move[0][1]]
                     if moving_piece:
                         color_index = 0 if moving_piece.color == 'white' else 1
                         from_sq, to_sq = move[0][0]*COLS+move[0][1], move[1][0]*COLS+move[1][1]
@@ -356,8 +356,8 @@ class ChessBot:
         
         is_in_check_flag = is_in_check(board, turn)
         
+        stand_pat = self.evaluate_board(board, turn)
         if not is_in_check_flag:
-            stand_pat = self.evaluate_board(board, turn)
             if stand_pat >= beta: return beta
             alpha = max(alpha, stand_pat)
 
@@ -376,7 +376,8 @@ class ChessBot:
                     
                     is_promotion = isinstance(piece, Pawn) and (end_pos[0] == 0 or end_pos[0] == ROWS - 1)
                     
-                    target_piece = board.grid[end_pos[0]][end_pos[1]]
+                    # REFACTOR: Use 1D indexing
+                    target_piece = board.grid[end_pos[0] * COLS + end_pos[1]]
                     is_potentially_tactical = (target_piece is not None) or is_promotion or isinstance(piece, (Rook, Knight, Queen))
 
                     if not is_potentially_tactical:
@@ -408,9 +409,6 @@ class ChessBot:
                 return beta
             alpha = max(alpha, search_score)
             
-        if is_in_check_flag and not promising_moves:
-            return -self.MATE_SCORE + ply
-
         return alpha
         
     def evaluate_board(self, board, turn_to_move):
@@ -492,7 +490,8 @@ class ChessBot:
         for piece in board.white_pieces:
             if isinstance(piece, Knight):
                 for r_attack, c_attack in KNIGHT_ATTACKS_FROM[piece.pos]:
-                    target = board.grid[r_attack][c_attack]
+                    # REFACTOR: Use 1D indexing
+                    target = board.grid[r_attack * COLS + c_attack]
                     if target and target.color == 'black':
                         mg_val = PIECE_VALUES_MG.get(type(target), 0)
                         eg_val = PIECE_VALUES_EG.get(type(target), 0)
@@ -502,7 +501,8 @@ class ChessBot:
         for piece in board.black_pieces:
             if isinstance(piece, Knight):
                 for r_attack, c_attack in KNIGHT_ATTACKS_FROM[piece.pos]:
-                    target = board.grid[r_attack][c_attack]
+                    # REFACTOR: Use 1D indexing
+                    target = board.grid[r_attack * COLS + c_attack]
                     if target and target.color == 'white':
                         mg_val = PIECE_VALUES_MG.get(type(target), 0)
                         eg_val = PIECE_VALUES_EG.get(type(target), 0)
@@ -510,14 +510,16 @@ class ChessBot:
                         black_pst_mg += tapered_value // KNIGHT_THREAT_VALUE_SCALE
         
         if board.white_king_pos:
-            white_king = board.grid[board.white_king_pos[0]][board.white_king_pos[1]]
+            # REFACTOR: Use 1D indexing
+            white_king = board.grid[board.white_king_pos[0] * COLS + board.white_king_pos[1]]
             if white_king:
                 num_moves = len(white_king.get_valid_moves(board, white_king.pos))
                 mobility_index = min(num_moves, 2) 
                 white_pst_mg += KING_MOBILITY_BONUS[mobility_index]
 
         if board.black_king_pos:
-            black_king = board.grid[board.black_king_pos[0]][board.black_king_pos[1]]
+            # REFACTOR: Use 1D indexing
+            black_king = board.grid[board.black_king_pos[0] * COLS + board.black_king_pos[1]]
             if black_king:
                 num_moves = len(black_king.get_valid_moves(board, black_king.pos))
                 mobility_index = min(num_moves, 2)
