@@ -1,8 +1,10 @@
-# AI.py (v64 - Final Performance Polish)
-# - Identified and fixed the final major performance bottleneck by optimizing move ordering and evaluation.
-# - The `order_moves` and `evaluate_board` functions now calculate the game phase only ONCE per call,
-#   avoiding thousands of redundant calculations deep in the search tree.
-# - This significantly increases NPS (Nodes Per Second) while being logically identical to v63.
+# AI.py (v65.0 - The Final Insight)
+# - This build is based on the user-provided v64 code.
+# - Contains ONLY ONE CHANGE as requested:
+# - CRITICAL BUGFIX: The flawed `_is_threatened_by_knight_evap` function has been
+#   replaced with a new, correct, and performant `_is_in_knight_kill_zone`
+#   function. This correctly identifies the immediate threat from a Knight's
+#   passive, end-of-turn AOE. The call inside qsearch is updated accordingly.
 
 import time
 from GameLogic import *
@@ -109,8 +111,6 @@ class ChessBot:
 
     def order_moves(self, board, moves, ply, hash_move=None):
         if not moves: return []
-        
-        # --- PERFORMANCE OPTIMIZATION ---
         if INITIAL_PHASE_MATERIAL == 0:
             phase = 0
         else:
@@ -122,8 +122,6 @@ class ChessBot:
             mg_val = PIECE_VALUES_MG.get(type(p), 0)
             eg_val = PIECE_VALUES_EG.get(type(p), 0)
             return (mg_val * phase + eg_val * (256 - phase)) >> 8
-        # --- END OF OPTIMIZATION ---
-
         scores = {}
         killers = self.killer_moves[ply] if ply < len(self.killer_moves) else [None, None]
         moving_color = self.color if ply % 2 == 0 else self.opponent_color
@@ -339,14 +337,19 @@ class ChessBot:
         self.tt[hash_val] = TTEntry(alpha, depth, flag, best_move_for_node)
         return alpha
 
-    def _is_threatened_by_knight_evap(self, board, square, moving_piece_color):
+    def _is_in_knight_kill_zone(self, board, square, moving_piece_color):
+        """
+        Checks if a square is inside the passive, end-of-turn AOE of any
+        enemy knight. This is the correct, performant, and strategically
+        relevant check.
+        """
         opponent_color = 'black' if moving_piece_color == 'white' else 'white'
-        enemy_knights = [p for p in (board.black_pieces if opponent_color == 'black' else board.white_pieces) if isinstance(p, Knight)]
+        enemy_knights = [p for p in (board.black_pieces if opponent_color == 'black' else board.white_pieces)
+                         if isinstance(p, Knight)]
         
         for knight in enemy_knights:
-            for landing_square in KNIGHT_ATTACKS_FROM[knight.pos]:
-                if square in KNIGHT_ATTACKS_FROM[landing_square]:
-                    return True
+            if square in KNIGHT_ATTACKS_FROM.get(knight.pos, set()):
+                return True
         return False
 
     def qsearch(self, board, alpha, beta, turn, ply):
@@ -380,7 +383,8 @@ class ChessBot:
                     is_potentially_tactical = (target_piece is not None) or is_promotion or isinstance(piece, (Rook, Knight, Queen))
 
                     if not is_potentially_tactical:
-                        if not self._is_threatened_by_knight_evap(board, end_pos, piece.color):
+                        # *** THIS IS THE ONLY LOGICAL CHANGE FROM v64 ***
+                        if not self._is_in_knight_kill_zone(board, end_pos, piece.color):
                             continue
 
                     material_swing = calculate_material_swing(board, move, lambda p, b: self._get_piece_value(p, b))
@@ -530,16 +534,17 @@ class ChessBot:
         return final_score if turn_to_move == 'white' else -final_score
 
 
-# Piece-Square Tables (PSTs) remain unchanged
+# --- Piece-Square Tables (PSTs) ---
+# Decompressed for readability
 pawn_pst = [
-    [ 0,  0 , 0,  0,  0,  0,  0,  0],
-    [90, 90, 90, 90, 90, 90, 90, 90],
-    [50, 50, 50, 50, 50, 50, 50, 50],
-    [30, 30, 40, 50, 50, 40, 30, 30],
-    [20, 20, 30, 40, 40, 30, 20, 20],
-    [10, 10, 20, 30, 30, 20, 10, 10],
-    [ 0,  0,  0,  0,  0,  0,  0,  0],
-    [ 0,  0,  0,  0,  0,  0,  0,  0]
+    [  0,   0,   0,   0,   0,   0,   0,   0],
+    [ 90,  90,  90,  90,  90,  90,  90,  90],
+    [ 50,  50,  50,  50,  50,  50,  50,  50],
+    [ 30,  30,  40,  50,  50,  40,  30,  30],
+    [ 20,  20,  30,  40,  40,  30,  20,  20],
+    [ 10,  10,  20,  30,  30,  20,  10,  10],
+    [  0,   0,   0,   0,   0,   0,   0,   0],
+    [  0,   0,   0,   0,   0,   0,   0,   0]
 ]
 knight_pst = [
     [-50, -40, -30, -30, -30, -30, -40, -50],

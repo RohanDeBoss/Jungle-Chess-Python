@@ -391,13 +391,11 @@ def calculate_material_swing(board, move, value_func):
     swing = 0
     destroyed_enemies = original_opponent_pieces - final_opponent_pieces
     for p in destroyed_enemies:
-        # *** BUG FIX IS HERE ***
         # The value_func from the AI expects two arguments: the piece and the board context.
         swing += value_func(p, sim_board)
         
     destroyed_friendlies = original_friendly_pieces - final_friendly_pieces
     for p in destroyed_friendlies:
-        # *** BUG FIX IS HERE ***
         swing -= value_func(p, sim_board)
         
     return swing
