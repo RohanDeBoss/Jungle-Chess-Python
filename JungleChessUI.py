@@ -449,8 +449,7 @@ class EnhancedChessApp:
         if self.game_over or (self.is_ai_thinking() and not is_analysis_process_running): return
         r, c = self.canvas_to_board(event.x, event.y)
         if r != -1:
-            # REFACTOR: Access grid using 1D index
-            piece = self.board.grid[r * COLS + c]
+            piece = self.board.grid[r][c]
             is_human_turn = (self.game_mode.get() != GameMode.HUMAN_VS_BOT.value or self.turn == self.human_color)
             if piece and piece.color == self.turn and is_human_turn:
                 self.selected = (r, c); self.dragging = True; self.drag_start = (r, c)
@@ -543,13 +542,10 @@ class EnhancedChessApp:
             self.canvas.create_oval(center_x - radius, center_y - radius, center_x + radius, center_y + radius, fill="#1E90FF", outline="", tags="highlight")
         for r in range(ROWS):
             for c in range(COLS):
-                # REFACTOR: Access grid using 1D index
-                if self.board.grid[r * COLS + c]: 
-                    self.draw_piece_with_check(r, c)
+                if self.board.grid[r][c]: self.draw_piece_with_check(r, c)
 
     def draw_piece_with_check(self, r, c):
-        # REFACTOR: Access grid using 1D index
-        piece = self.board.grid[r * COLS + c]
+        piece = self.board.grid[r][c]
         if isinstance(piece, King) and is_in_check(self.board, piece.color):
             color = "darkred" if self.game_over and self.game_result and self.game_result[0] == "checkmate" else "red"
             x1, y1 = self.board_to_canvas(r, c)
