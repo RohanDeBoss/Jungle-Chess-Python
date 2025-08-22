@@ -61,7 +61,7 @@ class ChessBot:
     MAX_Q_SEARCH_DEPTH = 8
     LMR_DEPTH_THRESHOLD, LMR_MOVE_COUNT_THRESHOLD, LMR_REDUCTION = 3, 4, 1
     NMP_MIN_DEPTH, NMP_BASE_REDUCTION, NMP_DEPTH_DIVISOR = 3, 2, 6
-    Q_SEARCH_SAFETY_MARGIN = 400
+    Q_SEARCH_SAFETY_MARGIN = 600 # Got to be careful, knights/rooks/queens could take a lot of material in 1 move
     
     BONUS_PV_MOVE = 10_000_000
     BONUS_CAPTURE = 8_000_000
