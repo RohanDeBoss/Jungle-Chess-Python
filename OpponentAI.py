@@ -1,8 +1,8 @@
-# AI.py (v60.1 - Final Bug Fix & Optimization)
+# AI.py (v60.2 - Final Bug Fix & Optimization)
 # - Fixed the TypeError crash in negamax by correctly passing the value_func to calculate_material_swing.
 # - Implemented the final qsearch optimization to calculate material_swing only once per move,
 #   storing and reusing the result for sorting and delta pruning.
-# - Compadibility with the latest GameLogic changes.
+# - Compadibility with the latest GameLogic changes and resetting of transposition table.
 
 import time
 from GameLogic import *
@@ -83,6 +83,16 @@ class OpponentAI:
         else:
             self.bot_name = bot_name
 
+        # Initialize all search-related state. This is called for every new
+        # bot instance, guaranteeing a clean slate before every search or game.
+        self._initialize_search_state()
+
+    def _initialize_search_state(self):
+        """
+        Resets all transposition tables and search-related caches.
+        This is critical to ensure that no state from a previous search
+        (or game) influences the current one.
+        """
         self.tt = {}
         self.nodes_searched = 0
         self.killer_moves = [[None, None] for _ in range(50)]

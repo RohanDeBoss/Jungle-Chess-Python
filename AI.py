@@ -1,9 +1,6 @@
-# AI.py (v65.3 - knight_kill_zone fix)
-# CRITICAL BUGFIX: The flawed `_is_threatened_by_knight_evap` function has been replaced 
-# with a new, correct, and performant `_is_in_knight_kill_zone` function.
-# This correctly identifies the immediate threat from a Knight's passive, end-of-turn AOE.
-# Remove the Q_SEARCH_SAFETY_MARGIN constant and modify the qsearch method to not skip potential sacrifices.
-# Really allowed for sacrifices to be considered in the qsearch phase.
+# AI.py (v66 - Safer TT resetting)
+    # Initialize all search-related state. This is called for every new
+    # bot instance, guaranteeing a clean slate before every search or game.
 
 import time
 from GameLogic import *
@@ -67,7 +64,6 @@ class ChessBot:
     BONUS_KILLER_1 = 4_000_000
     BONUS_KILLER_2 = 3_500_000
     
-    
     def __init__(self, board, color, position_counts, comm_queue, cancellation_event, bot_name=None):
         self.board = board
         self.color = color
@@ -84,6 +80,16 @@ class ChessBot:
         else:
             self.bot_name = bot_name
 
+        # Initialize all search-related state. This is called for every new
+        # bot instance, guaranteeing a clean slate before every search or game.
+        self._initialize_search_state()
+
+    def _initialize_search_state(self):
+        """
+        Resets all transposition tables and search-related caches.
+        This is critical to ensure that no state from a previous search
+        (or game) influences the current one.
+        """
         self.tt = {}
         self.nodes_searched = 0
         self.killer_moves = [[None, None] for _ in range(50)]
