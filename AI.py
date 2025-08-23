@@ -1,8 +1,9 @@
-# AI.py (v66.1 - Draw Awareness)
-# - The AI now imports and uses the `is_insufficient_material` function from GameLogic.
-# - The negamax and qsearch methods now check for insufficient material at the start
-#   of a node evaluation, returning a draw score immediately. This makes the AI
-#   aware of these drawn endgames without needing to search them.
+# AI.py (v66.2 - Correct Draw Evaluation)
+# - CRITICAL FIX: The `evaluate_board` function now checks for insufficient material
+#   at the very beginning. If a position is a known theoretical draw (like K+R vs K),
+#   it immediately returns a DRAW_SCORE (0) instead of calculating a misleading
+#   material advantage. This makes the AI fully aware of moves that lead into
+#   drawn endgames.
 
 import time
 from GameLogic import *
@@ -247,7 +248,6 @@ class ChessBot:
         if ply > 0 and hash_val in search_path:
             return self.DRAW_PENALTY
         
-        # Check for draws by insufficient material at the node
         if is_insufficient_material(board):
             return self.DRAW_SCORE
 
@@ -355,7 +355,6 @@ class ChessBot:
         self.nodes_searched += 1
         if self.cancellation_event.is_set(): raise SearchCancelledException()
         
-        # Check for draws by insufficient material at the qsearch node
         if is_insufficient_material(board):
             return self.DRAW_SCORE
             
@@ -417,7 +416,10 @@ class ChessBot:
         return alpha
         
     def evaluate_board(self, board, turn_to_move):
-        # ... (rest of the function is unchanged)
+        # This is the crucial fix: check for theoretical draws before evaluating material.
+        if is_insufficient_material(board):
+            return self.DRAW_SCORE
+
         KNIGHT_THREAT_VALUE_SCALE = 4 
         ROOK_SEMI_OPEN_FILE_BONUS = 30
         ROOK_OPEN_FILE_BONUS = 15
@@ -533,9 +535,9 @@ class ChessBot:
         
         return final_score if turn_to_move == 'white' else -final_score
 
-# ... (PSTs are unchanged)
+
 # --- Piece-Square Tables (PSTs) ---
-# Decompressed for readability
+# (PSTs remain unchanged)
 pawn_pst = [
     [  0,   0,   0,   0,   0,   0,   0,   0],
     [ 90,  90,  90,  90,  90,  90,  90,  90],

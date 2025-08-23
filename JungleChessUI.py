@@ -1,8 +1,8 @@
-# JungleChessUI.py (v8.9 - Centralized Logic)
-# - All game-over detection logic (checkmate, stalemate, repetition, move limit)
-#   has been removed from the UI and is now handled by the new, centralized
-#   `get_game_state` function in GameLogic.py.
-# - The UI now correctly displays the new "insufficient material" draw message.
+# JungleChessUI.py (v8.11 - Logging & State Fixes)
+# - Improved console log spacing for better readability during AI series.
+# - Added a clear "GAME OVER" message to the console at the end of each game.
+# - Fixed a logic bug where the turn would switch one final time after a game had already ended.
+# - Corrected the log order to ensure the "NEW GAME" banner appears before any opening move logs.
 
 import tkinter as tk
 from tkinter import ttk
@@ -253,8 +253,11 @@ class EnhancedChessApp:
 
         if the_move:
             delay = 4 if self.instant_move.get() else 20
+            
+            player_who_moved = self.turn
             self.board.make_move(the_move[0], the_move[1])
-            self.execute_move_and_check_state()
+            self.execute_move_and_check_state(player_who_moved=player_who_moved)
+            
             if not self.game_over and self.game_mode.get() == GameMode.AI_VS_AI.value:
                 self.master.after(delay, self._make_game_ai_move)
         else:
@@ -303,6 +306,9 @@ class EnhancedChessApp:
         self.last_eval_depth = None
         self.draw_eval_bar(0)
         
+        # Start game log here to fix order issue
+        self._start_game_if_needed()
+
         mode = self.game_mode.get()
         if mode == GameMode.AI_VS_AI.value:
             self.white_playing_bot_type = "op" if self.ai_series_running and self.ai_series_stats['game_count'] % 2 == 1 else "main"
@@ -330,7 +336,6 @@ class EnhancedChessApp:
 
     def _make_game_ai_move(self):
         if self.game_over: return
-        self._start_game_if_needed()
         mode = self.game_mode.get()
         bot_class, bot_name = None, None
         if mode == GameMode.HUMAN_VS_BOT.value:
@@ -367,9 +372,9 @@ class EnhancedChessApp:
         start_pos, end_pos = self.drag_start, (row, col)
 
         if end_pos in self.valid_moves:
-            self._start_game_if_needed()
+            player_who_moved = self.turn
             self.board.make_move(start_pos, end_pos)
-            self.execute_move_and_check_state()
+            self.execute_move_and_check_state(player_who_moved=player_who_moved)
 
             if not self.game_over:
                 mode = self.game_mode.get()
@@ -381,22 +386,20 @@ class EnhancedChessApp:
                 
         self.drag_start, self.selected, self.valid_moves = None, None, []; self.draw_board(); self.set_interactivity(True)
 
-    def execute_move_and_check_state(self, is_opening_move=False):
-        move_time = time.time() - self.last_move_timestamp
-        self.last_move_timestamp = time.time()
-        
-        if not is_opening_move:
-            player_who_moved = 'black' if self.turn == 'white' else 'white'
-            print(f"--- Turn {len(self.position_history)} ({player_who_moved.capitalize()}) ---")
+    def execute_move_and_check_state(self, player_who_moved=None, is_opening_move=False):
+        if not is_opening_move and player_who_moved:
+            move_time = time.time() - self.last_move_timestamp
+            self.last_move_timestamp = time.time()
+            # Added newline for spacing
+            print(f"\n--- Turn {len(self.position_history)} ({player_who_moved.capitalize()}) ---")
             if self.game_mode.get() in [GameMode.HUMAN_VS_HUMAN.value, GameMode.HUMAN_VS_BOT.value] and player_who_moved == self.human_color:
                  print(f"  > Human chose move, Time={move_time:.2f}s")
         
-        if not self.game_over: self.switch_turn()
+        self.switch_turn()
         key = board_hash(self.board, self.turn)
         self.position_history.append(key)
         self.position_counts[key] = self.position_counts.get(key, 0) + 1
         
-        # Centralized game state check
         status, winner = get_game_state(self.board, self.turn, self.position_counts, len(self.position_history), self.MAX_GAME_MOVES)
 
         if status != "ongoing":
@@ -405,7 +408,9 @@ class EnhancedChessApp:
             
         self.update_turn_label()
         self.draw_board()
+
         if self.game_over:
+            self._log_game_over()
             self._stop_ai_process()
             if self.game_mode.get() == GameMode.AI_VS_AI.value and self.ai_series_running:
                 self.process_ai_series_result()
@@ -464,7 +469,11 @@ class EnhancedChessApp:
             self.human_color = "black" if self.human_color == "white" else "white"
         self.reset_game()
 
-    def switch_turn(self): self.turn = "black" if self.turn == "white" else "white"
+    def switch_turn(self):
+        # FIX: Add guard to prevent switching turn after game is over
+        if self.game_over:
+            return
+        self.turn = "black" if self.turn == "white" else "white"
 
     def board_to_canvas(self, r, c):
         if self.square_size == 0: return 0, 0
@@ -555,6 +564,20 @@ class EnhancedChessApp:
             mode_name = self.game_mode.get().replace("_", " ").title()
             print("\n" + "="*60 + f"\nNEW GAME: {mode_name}\n" + "="*60)
             self.update_analysis_process()
+    
+    def _log_game_over(self):
+        if not self.game_result: return
+        result_type, winner = self.game_result
+        message = ""
+        if result_type == "checkmate": message = f"Checkmate! {winner.capitalize()} wins!"
+        elif result_type == "stalemate": message = "Stalemate! It's a draw."
+        elif result_type == "repetition": message = "Draw by Repetition!"
+        elif result_type == "move_limit": message = f"Draw by {self.MAX_GAME_MOVES} move limit!"
+        elif result_type == "insufficient_material": message = "Draw by Insufficient Material!"
+        
+        print("\n" + "-"*25 + " GAME OVER " + "-"*24)
+        print(f"Result: {message}")
+        print("-" * 60)
 
     def update_turn_label(self):
         message = f"Turn: {self.turn.capitalize()}"
@@ -592,17 +615,17 @@ class EnhancedChessApp:
         
     def apply_series_opening_move(self):
         if self.ai_series_stats['game_count'] % 2 == 0:
+            print()
             print("--- Generating new opening for game pair ---")
             moves = get_all_legal_moves(self.board, "white")
             self.current_opening_move = random.choice(moves) if moves else None
         
         if self.current_opening_move:
             print(f"Applying opening move: {self._format_move(self.current_opening_move)}")
+            print()
+            player_who_moved = self.turn
             self.board.make_move(self.current_opening_move[0], self.current_opening_move[1])
-            self.switch_turn()
-            key = board_hash(self.board, self.turn)
-            self.position_history.append(key)
-            self.position_counts[key] = self.position_counts.get(key, 0) + 1
+            self.execute_move_and_check_state(player_who_moved=player_who_moved, is_opening_move=True)
 
     def update_scoreboard(self):
         if self.game_mode.get() == GameMode.AI_VS_AI.value and self.ai_series_running:
