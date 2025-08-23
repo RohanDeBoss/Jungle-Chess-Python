@@ -1,9 +1,8 @@
-# JungleChessUI.py (v8.7 - Final Tuning)
-# - Perfected all responsive scaling for a polished look on any screen size.
-# - Refined board padding for an optimal board-to-screen ratio.
-# - Implemented a new, stable piece-centering formula that works at all sizes.
-# - Tightened sidebar widget spacing to prevent controls from being cut off.
-# - Set a fixed, balanced padding for control buttons.
+# JungleChessUI.py (v8.9 - Centralized Logic)
+# - All game-over detection logic (checkmate, stalemate, repetition, move limit)
+#   has been removed from the UI and is now handled by the new, centralized
+#   `get_game_state` function in GameLogic.py.
+# - The UI now correctly displays the new "insufficient material" draw message.
 
 import tkinter as tk
 from tkinter import ttk
@@ -35,6 +34,7 @@ class EnhancedChessApp:
     OPPONENT_AI_NAME = "OP Bot"
     ANALYSIS_AI_NAME = "Analysis"
     slidermaxvalue = 10
+    MAX_GAME_MOVES = 200 
     
     def __init__(self, master):
         self.master = master
@@ -153,7 +153,6 @@ class EnhancedChessApp:
         self.eval_bar_canvas.config(height=new_eval_bar_height)
         
     def handle_board_resize(self, event):
-        # UI-TUNE-FINAL: Adjusted padding for a balanced look on all screen sizes.
         view_width = event.width - 40
         view_height = event.height - 80
         
@@ -169,7 +168,6 @@ class EnhancedChessApp:
             self.draw_board()
             
     def _build_control_widgets(self, parent_frame):
-        # UI-TUNE-FINAL: Reduced padding between sections for a tighter layout.
         self.game_mode_frame = ttk.Frame(parent_frame, style='Left.TFrame')
         self.game_mode_frame.pack(fill=tk.X, pady=(0, 2))
         ttk.Label(self.game_mode_frame, text="GAME MODE", style='Header.TLabel').pack(anchor=tk.W)
@@ -179,7 +177,6 @@ class EnhancedChessApp:
         
         self.controls_frame = ttk.Frame(parent_frame, style='Left.TFrame')
         self.controls_frame.pack(fill=tk.X, pady=3)
-        # UI-TUNE-FINAL: Set a fixed, balanced padding for buttons.
         ttk.Button(self.controls_frame, text="NEW GAME", command=self.reset_game, style='Control.TButton').pack(fill=tk.X, pady=3)
         ttk.Button(self.controls_frame, text="SWAP SIDES", command=self.swap_sides, style='Control.TButton').pack(fill=tk.X, pady=3)
         ttk.Button(self.controls_frame, text="AI vs OP Series", command=self.start_ai_series, style='Control.TButton').pack(fill=tk.X, pady=3)
@@ -212,20 +209,17 @@ class EnhancedChessApp:
     def draw_piece_at_canvas_coords(self, piece, r, c):
         x, y = self.board_to_canvas(r, c)
         x_center = x + self.square_size // 2
-        y_center = y + self.square_size // 2 + 2  # for slight vertical adjustment
+        y_center = y + self.square_size // 2 + 2
         font_size = int(self.square_size * 0.67)
 
-        # Use a stable formula for vertical centering that works at all sizes.
         y_correction = int(font_size / 20)
         y_center -= y_correction
         
         symbol, font = piece.symbol(), ("Arial Unicode MS", font_size)
 
-        # --- Color-Specific Shadow Logic ---
-        # Apply different shadow thickness based on the piece color.
         if piece.color == "black":
             shadow_offset = max(1, self.square_size // 40)
-        else:  # For white pieces
+        else:
             shadow_offset = max(1, self.square_size // 25)
         
         self.canvas.create_text(x_center + shadow_offset, y_center + shadow_offset, text=symbol, font=font, fill="#444444", tags="piece")
@@ -390,24 +384,27 @@ class EnhancedChessApp:
     def execute_move_and_check_state(self, is_opening_move=False):
         move_time = time.time() - self.last_move_timestamp
         self.last_move_timestamp = time.time()
-        player_who_moved = self.turn
         
         if not is_opening_move:
-            if self.game_mode.get() != GameMode.HUMAN_VS_HUMAN.value:
-                print() 
+            player_who_moved = 'black' if self.turn == 'white' else 'white'
             print(f"--- Turn {len(self.position_history)} ({player_who_moved.capitalize()}) ---")
-            if self.game_mode.get() in [GameMode.HUMAN_VS_HUMAN.value, GameMode.HUMAN_VS_BOT.value] and self.turn == self.human_color:
+            if self.game_mode.get() in [GameMode.HUMAN_VS_HUMAN.value, GameMode.HUMAN_VS_BOT.value] and player_who_moved == self.human_color:
                  print(f"  > Human chose move, Time={move_time:.2f}s")
         
         if not self.game_over: self.switch_turn()
         key = board_hash(self.board, self.turn)
-        self.position_history.append(key); self.position_counts[key] = self.position_counts.get(key, 0) + 1
-        status, winner = check_game_over(self.board, player_who_moved)
-        if status:
-            self.game_over, self.game_result = True, (status, winner)
-        elif self.position_counts.get(key, 0) >= 3:
-            self.game_over, self.game_result = True, ("repetition", None)
-        self.update_turn_label(); self.draw_board()
+        self.position_history.append(key)
+        self.position_counts[key] = self.position_counts.get(key, 0) + 1
+        
+        # Centralized game state check
+        status, winner = get_game_state(self.board, self.turn, self.position_counts, len(self.position_history), self.MAX_GAME_MOVES)
+
+        if status != "ongoing":
+            self.game_over = True
+            self.game_result = (status, winner)
+            
+        self.update_turn_label()
+        self.draw_board()
         if self.game_over:
             self._stop_ai_process()
             if self.game_mode.get() == GameMode.AI_VS_AI.value and self.ai_series_running:
@@ -566,6 +563,8 @@ class EnhancedChessApp:
             if result_type == "checkmate": message = f"Checkmate! {winner.capitalize()} wins!"
             elif result_type == "stalemate": message = "Stalemate! It's a draw."
             elif result_type == "repetition": message = "Draw by Repetition!"
+            elif result_type == "move_limit": message = f"Draw by {self.MAX_GAME_MOVES} move limit!"
+            elif result_type == "insufficient_material": message = "Draw by Insufficient Material!"
         self.turn_label.config(text=message)
         
     def process_ai_series_result(self):

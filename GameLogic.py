@@ -1,9 +1,8 @@
-# gamelogic.py (v22.2 - Final Stable Baseline)
-# - Based on the user's fast v22.1 code.
-# - Contains the critical bug fix for the Rook's "piercing" move generation.
-# - Contains the final, critical bug fix to calculate_material_swing, allowing it to
-#   work correctly with the AI's tapered evaluation function. This version is now
-#   fully compatible with the v63 AI.
+# gamelogic.py (v23.0 - Centralized State Logic)
+# - The `check_game_over` function has been removed and replaced with a new,
+#   comprehensive `get_game_state` function that centralizes all end-of-game logic.
+# - This new function now correctly identifies draws by insufficient material (K+R vs K and K+B vs K).
+# - Added a public helper function `is_insufficient_material` for use by the AI.
 
 import copy
 
@@ -367,12 +366,59 @@ def has_legal_moves(board, color):
     except StopIteration:
         return False
         
-def check_game_over(board, turn_color_who_just_moved):
-    next_player_color = "black" if turn_color_who_just_moved == "white" else "white"
-    if not has_legal_moves(board, next_player_color):
-        if is_in_check(board, next_player_color): return "checkmate", turn_color_who_just_moved
-        else: return "stalemate", None
-    return None, None
+def is_insufficient_material(board):
+    """Checks for endgames that are automatic draws (K+R vs K, K+B vs K)."""
+    total_pieces = len(board.white_pieces) + len(board.black_pieces)
+    if total_pieces > 3:
+        return False
+    
+    if total_pieces == 2: # King vs King
+        return True
+
+    if total_pieces == 3:
+        # Check which side has 2 pieces
+        if len(board.white_pieces) == 2:
+            major_side = board.white_pieces
+        elif len(board.black_pieces) == 2:
+            major_side = board.black_pieces
+        else:
+            return False # Should not happen, e.g. 1.5 pieces
+            
+        piece_types = {type(p) for p in major_side}
+        if King in piece_types and (Rook in piece_types or Bishop in piece_types):
+            return True
+            
+    return False
+
+def get_game_state(board, turn_to_move, position_counts, ply_count, max_moves):
+    """
+    Centralized function to determine the current state of the game.
+    Returns a tuple (status, winner).
+    """
+    # 1. Check for checkmate or stalemate
+    if not has_legal_moves(board, turn_to_move):
+        if is_in_check(board, turn_to_move):
+            winner = 'black' if turn_to_move == 'white' else 'white'
+            return "checkmate", winner
+        else:
+            return "stalemate", None
+    
+    # 2. Check for insufficient material
+    if is_insufficient_material(board):
+        return "insufficient_material", None
+        
+    # 3. Check for three-fold repetition
+    from AI import board_hash # To avoid circular import at top level
+    current_hash = board_hash(board, turn_to_move)
+    if position_counts.get(current_hash, 0) >= 3:
+        return "repetition", None
+        
+    # 4. Check for move limit
+    if ply_count >= max_moves:
+        return "move_limit", None
+        
+    # 5. If none of the above, the game is ongoing
+    return "ongoing", None
 
 def calculate_material_swing(board, move, value_func):
     moving_piece = board.grid[move[0][0]][move[0][1]]
@@ -391,7 +437,6 @@ def calculate_material_swing(board, move, value_func):
     swing = 0
     destroyed_enemies = original_opponent_pieces - final_opponent_pieces
     for p in destroyed_enemies:
-        # The value_func from the AI expects two arguments: the piece and the board context.
         swing += value_func(p, sim_board)
         
     destroyed_friendlies = original_friendly_pieces - final_friendly_pieces

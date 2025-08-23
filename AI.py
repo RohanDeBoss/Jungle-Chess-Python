@@ -1,12 +1,14 @@
-# AI.py (v66 - Safer TT resetting)
-    # Initialize all search-related state. This is called for every new
-    # bot instance, guaranteeing a clean slate before every search or game.
+# AI.py (v66.1 - Draw Awareness)
+# - The AI now imports and uses the `is_insufficient_material` function from GameLogic.
+# - The negamax and qsearch methods now check for insufficient material at the start
+#   of a node evaluation, returning a draw score immediately. This makes the AI
+#   aware of these drawn endgames without needing to search them.
 
 import time
 from GameLogic import *
 import random
 from collections import namedtuple
-from GameLogic import _generate_legal_moves
+from GameLogic import _generate_legal_moves, is_insufficient_material
 
 # --- Tapered Piece Values for Jungle Chess ---
 PIECE_VALUES_MG = {
@@ -80,16 +82,9 @@ class ChessBot:
         else:
             self.bot_name = bot_name
 
-        # Initialize all search-related state. This is called for every new
-        # bot instance, guaranteeing a clean slate before every search or game.
         self._initialize_search_state()
 
     def _initialize_search_state(self):
-        """
-        Resets all transposition tables and search-related caches.
-        This is critical to ensure that no state from a previous search
-        (or game) influences the current one.
-        """
         self.tt = {}
         self.nodes_searched = 0
         self.killer_moves = [[None, None] for _ in range(50)]
@@ -251,6 +246,10 @@ class ChessBot:
         hash_val = board_hash(board, turn)
         if ply > 0 and hash_val in search_path:
             return self.DRAW_PENALTY
+        
+        # Check for draws by insufficient material at the node
+        if is_insufficient_material(board):
+            return self.DRAW_SCORE
 
         original_alpha = alpha
         tt_entry = self.tt.get(hash_val)
@@ -343,11 +342,6 @@ class ChessBot:
         return alpha
 
     def _is_in_knight_kill_zone(self, board, square, moving_piece_color):
-        """
-        Checks if a square is inside the passive, end-of-turn AOE of any
-        enemy knight. This is the correct, performant, and strategically
-        relevant check.
-        """
         opponent_color = 'black' if moving_piece_color == 'white' else 'white'
         enemy_knights = [p for p in (board.black_pieces if opponent_color == 'black' else board.white_pieces)
                          if isinstance(p, Knight)]
@@ -360,6 +354,11 @@ class ChessBot:
     def qsearch(self, board, alpha, beta, turn, ply):
         self.nodes_searched += 1
         if self.cancellation_event.is_set(): raise SearchCancelledException()
+        
+        # Check for draws by insufficient material at the qsearch node
+        if is_insufficient_material(board):
+            return self.DRAW_SCORE
+            
         if ply >= self.MAX_Q_SEARCH_DEPTH: return self.evaluate_board(board, turn)
         
         is_in_check_flag = is_in_check(board, turn)
@@ -418,6 +417,7 @@ class ChessBot:
         return alpha
         
     def evaluate_board(self, board, turn_to_move):
+        # ... (rest of the function is unchanged)
         KNIGHT_THREAT_VALUE_SCALE = 4 
         ROOK_SEMI_OPEN_FILE_BONUS = 30
         ROOK_OPEN_FILE_BONUS = 15
@@ -533,7 +533,7 @@ class ChessBot:
         
         return final_score if turn_to_move == 'white' else -final_score
 
-
+# ... (PSTs are unchanged)
 # --- Piece-Square Tables (PSTs) ---
 # Decompressed for readability
 pawn_pst = [
