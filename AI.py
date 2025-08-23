@@ -1,10 +1,9 @@
-# AI.py (v65.0 - The Final Insight)
-# - This build is based on the user-provided v64 code.
-# - Contains ONLY ONE CHANGE as requested:
-# - CRITICAL BUGFIX: The flawed `_is_threatened_by_knight_evap` function has been
-#   replaced with a new, correct, and performant `_is_in_knight_kill_zone`
-#   function. This correctly identifies the immediate threat from a Knight's
-#   passive, end-of-turn AOE. The call inside qsearch is updated accordingly.
+# AI.py (v65.3 - knight_kill_zone fix)
+# CRITICAL BUGFIX: The flawed `_is_threatened_by_knight_evap` function has been replaced 
+# with a new, correct, and performant `_is_in_knight_kill_zone` function.
+# This correctly identifies the immediate threat from a Knight's passive, end-of-turn AOE.
+# Remove the Q_SEARCH_SAFETY_MARGIN constant and modify the qsearch method to not skip potential sacrifices.
+# Really allowed for sacrifices to be considered in the qsearch phase.
 
 import time
 from GameLogic import *
@@ -61,13 +60,13 @@ class ChessBot:
     MAX_Q_SEARCH_DEPTH = 8
     LMR_DEPTH_THRESHOLD, LMR_MOVE_COUNT_THRESHOLD, LMR_REDUCTION = 3, 4, 1
     NMP_MIN_DEPTH, NMP_BASE_REDUCTION, NMP_DEPTH_DIVISOR = 3, 2, 6
-    Q_SEARCH_SAFETY_MARGIN = 600 # Got to be careful, knights/rooks/queens could take a lot of material in 1 move
     
     BONUS_PV_MOVE = 10_000_000
     BONUS_CAPTURE = 8_000_000
     BONUS_QN_TACTIC = 5_000_000
     BONUS_KILLER_1 = 4_000_000
     BONUS_KILLER_2 = 3_500_000
+    
     
     def __init__(self, board, color, position_counts, comm_queue, cancellation_event, bot_name=None):
         self.board = board
@@ -383,7 +382,6 @@ class ChessBot:
                     is_potentially_tactical = (target_piece is not None) or is_promotion or isinstance(piece, (Rook, Knight, Queen))
 
                     if not is_potentially_tactical:
-                        # *** THIS IS THE ONLY LOGICAL CHANGE FROM v64 ***
                         if not self._is_in_knight_kill_zone(board, end_pos, piece.color):
                             continue
 
@@ -392,8 +390,6 @@ class ChessBot:
 
                     if is_tactical:
                         move_value = material_swing if material_swing != 0 else self._get_piece_value(Queen(turn), board)
-                        if stand_pat + move_value + self.Q_SEARCH_SAFETY_MARGIN < alpha:
-                            continue
                         scored_promising_moves.append((move, material_swing))
         
             scored_promising_moves.sort(key=lambda item: item[1], reverse=True)
@@ -401,8 +397,6 @@ class ChessBot:
             move_scores = dict(scored_promising_moves)
 
         for move in promising_moves:
-            if not is_in_check_flag and move_scores.get(move, 0) < 0:
-                 continue
                  
             sim_board = board.clone()
             sim_board.make_move(move[0], move[1])

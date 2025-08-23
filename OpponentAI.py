@@ -1,8 +1,8 @@
-# AI.py (v60 - Final Bug Fix & Optimization)
+# AI.py (v60.1 - Final Bug Fix & Optimization)
 # - Fixed the TypeError crash in negamax by correctly passing the value_func to calculate_material_swing.
 # - Implemented the final qsearch optimization to calculate material_swing only once per move,
 #   storing and reusing the result for sorting and delta pruning.
-# - The AI is now fully variant-aware, logically correct, and highly optimized.
+# - Compadibility with the latest GameLogic changes.
 
 import time
 from GameLogic import *
@@ -96,13 +96,15 @@ class OpponentAI:
         (r1, c1), (r2, c2) = move
         return f"{'abcdefgh'[c1]}{'87654321'[r1]}-{'abcdefgh'[c2]}{'87654321'[r2]}"
 
-    def _get_piece_value(self, piece):
-        # This is now the single source of truth for piece values.
-        # It correctly uses tapered values based on game phase.
+    def _get_piece_value(self, piece, board_context=None):
+        # If board_context is not provided, use self.board
+        if board_context is None:
+            board_context = self.board
+            
         if INITIAL_PHASE_MATERIAL == 0:
             phase = 0
         else:
-            phase_material_score = sum(PIECE_VALUES_MG.get(type(p), 0) for p in self.board.white_pieces + self.board.black_pieces if not isinstance(p, (Pawn, King)))
+            phase_material_score = sum(PIECE_VALUES_MG.get(type(p), 0) for p in board_context.white_pieces + board_context.black_pieces if not isinstance(p, (Pawn, King)))
             phase = (phase_material_score * 256) // INITIAL_PHASE_MATERIAL
         phase = min(phase, 256)
 
