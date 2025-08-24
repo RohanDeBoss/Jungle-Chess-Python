@@ -1,4 +1,4 @@
-# JungleChessUI.py (v8.11 - Logging & State Fixes)
+# JungleChessUI.py (v8.13 - Logging & State Fixes)
 # - Improved console log spacing for better readability during AI series.
 # - Added a clear "GAME OVER" message to the console at the end of each game.
 # - Fixed a logic bug where the turn would switch one final time after a game had already ended.
@@ -21,8 +21,15 @@ class GameMode(Enum):
     HUMAN_VS_HUMAN = "human"
     AI_VS_AI = "ai_vs_ai"
 
-def run_ai_process(board, color, position_counts, comm_queue, cancellation_event, bot_class, bot_name, search_depth):
-    bot = bot_class(board, color, position_counts, comm_queue, cancellation_event, bot_name)
+def run_ai_process(board, color, position_counts, comm_queue, cancellation_event, bot_class, bot_name, search_depth, ply_count, game_mode):
+    # FIX: Intelligently decide how to initialize the bot based on its class
+    if bot_class == ChessBot:
+        # The new AI is aware of the game state
+        bot = bot_class(board, color, position_counts, comm_queue, cancellation_event, bot_name, ply_count, game_mode)
+    else:
+        # The old OpponentAI is not, so call its original constructor
+        bot = bot_class(board, color, position_counts, comm_queue, cancellation_event, bot_name)
+        
     bot.search_depth = search_depth
     if search_depth == 99:
         bot.ponder_indefinitely()
@@ -269,7 +276,11 @@ class EnhancedChessApp:
     def _start_ai_process(self, bot_class, bot_name, search_depth):
         if self.ai_process and self.ai_process.is_alive(): return
         self.ai_cancellation_event.clear()
-        args = (self.board.clone(), self.turn, self.position_counts.copy(), self.comm_queue, self.ai_cancellation_event, bot_class, bot_name, search_depth)
+        
+        ply_count = len(self.position_history)
+        game_mode_str = self.game_mode.get()
+        args = (self.board.clone(), self.turn, self.position_counts.copy(), self.comm_queue, self.ai_cancellation_event, bot_class, bot_name, search_depth, ply_count, game_mode_str)
+        
         self.ai_process = mp.Process(target=run_ai_process, args=args, daemon=True)
         self.ai_process.name = bot_name 
         self.ai_process.start()
@@ -278,7 +289,6 @@ class EnhancedChessApp:
 
     def _stop_ai_process(self):
         if self.ai_process and self.ai_process.is_alive():
-            print(f"Stopping process: {self.ai_process.name} (PID: {self.ai_process.pid})...")
             self.ai_cancellation_event.set()
             self.ai_process.join(timeout=0.5)
             if self.ai_process.is_alive(): self.ai_process.terminate()
@@ -561,7 +571,21 @@ class EnhancedChessApp:
     def _start_game_if_needed(self):
         if not self.game_started:
             self.game_started = True
-            mode_name = self.game_mode.get().replace("_", " ").title()
+            
+            # Create a more descriptive game mode name for the log
+            mode = self.game_mode.get()
+            if mode == GameMode.HUMAN_VS_BOT.value:
+                mode_name = f"Human ({self.human_color.capitalize()}) vs. AI ({('Black' if self.human_color == 'white' else 'White')})"
+            elif mode == GameMode.HUMAN_VS_HUMAN.value:
+                mode_name = "Human vs. Human"
+            elif mode == GameMode.AI_VS_AI.value:
+                if self.white_playing_bot_type == 'main':
+                    mode_name = f"{self.MAIN_AI_NAME} (White) vs. {self.OPPONENT_AI_NAME} (Black)"
+                else:
+                    mode_name = f"{self.OPPONENT_AI_NAME} (White) vs. {self.MAIN_AI_NAME} (Black)"
+            else:
+                mode_name = mode.replace("_", " ").title()
+
             print("\n" + "="*60 + f"\nNEW GAME: {mode_name}\n" + "="*60)
             self.update_analysis_process()
     
