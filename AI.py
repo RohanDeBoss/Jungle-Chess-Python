@@ -9,7 +9,7 @@ import time
 from GameLogic import *
 import random
 from collections import namedtuple
-from GameLogic import _generate_legal_moves, is_insufficient_material
+from GameLogic import _generate_legal_moves, is_draw
 
 # --- Tapered Piece Values for Jungle Chess ---
 PIECE_VALUES_MG = {
@@ -186,6 +186,12 @@ class ChessBot:
 
     def ponder_indefinitely(self):
         try:
+            # Check for draw immediately
+            if is_draw(self.board, self.color, self.position_counts, 0, float('inf')):
+                self._report_log(f"{self.bot_name} ({self.color}): Position is drawn.")
+                self._report_eval(self.DRAW_SCORE, None)  # Report draw score (0)
+                return
+                
             root_moves = get_all_legal_moves(self.board, self.color)
             if not root_moves: return
             best_move_overall = root_moves[0]
@@ -218,6 +224,7 @@ class ChessBot:
         ordered_root_moves = self.order_moves(self.board, root_moves, 0, pv_move)
         move_to_board_map = {m: b for m, b in _generate_legal_moves(self.board, self.color, yield_boards=True)}
 
+        all_moves_draw = True  # Track if all moves lead to a draw
         for i, move in enumerate(ordered_root_moves):
             if self.cancellation_event.is_set(): raise SearchCancelledException()
             
@@ -232,12 +239,19 @@ class ChessBot:
             
             self.position_counts[child_hash] -= 1
 
+            if score != self.DRAW_SCORE:  # If any move is not a draw
+                all_moves_draw = False
+
             if score > best_score_this_iter:
                 best_score_this_iter = score
                 best_move_this_iter = move
             
             alpha = max(alpha, best_score_this_iter)
-            
+        
+        # If all moves lead to draws, this position is a draw
+        if all_moves_draw:
+            best_score_this_iter = self.DRAW_SCORE
+
         return best_score_this_iter, best_move_this_iter
 
     def negamax(self, board, depth, alpha, beta, turn, ply, search_path):
@@ -247,8 +261,9 @@ class ChessBot:
         hash_val = board_hash(board, turn)
         if ply > 0 and hash_val in search_path:
             return self.DRAW_PENALTY
-        
-        if is_insufficient_material(board):
+            
+        # Check for draw before evaluating
+        if is_draw(board, turn, self.position_counts, ply, float('inf')):
             return self.DRAW_SCORE
 
         original_alpha = alpha
@@ -355,7 +370,8 @@ class ChessBot:
         self.nodes_searched += 1
         if self.cancellation_event.is_set(): raise SearchCancelledException()
         
-        if is_insufficient_material(board):
+        # Check for draw before evaluating
+        if is_draw(board, turn, self.position_counts, ply, float('inf')):
             return self.DRAW_SCORE
             
         if ply >= self.MAX_Q_SEARCH_DEPTH: return self.evaluate_board(board, turn)

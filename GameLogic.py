@@ -444,3 +444,11 @@ def calculate_material_swing(board, move, value_func):
         swing -= value_func(p, sim_board)
         
     return swing
+
+def is_draw(board, turn_to_move, position_counts, ply_count, max_moves):
+    """
+    Helper function to check if the current position is a draw.
+    Returns True if the game is drawn, False otherwise.
+    """
+    state, _ = get_game_state(board, turn_to_move, position_counts, ply_count, max_moves)
+    return state in ["stalemate", "insufficient_material", "repetition", "move_limit"]
