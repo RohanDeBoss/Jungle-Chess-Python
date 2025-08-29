@@ -1,15 +1,10 @@
-# AI.py (v66.3 - Correct Draw Evaluation)
-# - CRITICAL FIX: The `evaluate_board` function now checks for insufficient material
-#   at the very beginning. If a position is a known theoretical draw (like K+R vs K),
-#   it immediately returns a DRAW_SCORE (0) instead of calculating a misleading
-#   material advantage. This makes the AI fully aware of moves that lead into
-#   drawn endgames.
+# AI.py (v66.4 - reverted downgrades of 66.3 and added new fixes)
 
 import time
 from GameLogic import *
 import random
 from collections import namedtuple
-from GameLogic import _generate_legal_moves, is_draw
+from GameLogic import _generate_legal_moves, is_insufficient_material
 
 # --- Tapered Piece Values for Jungle Chess ---
 PIECE_VALUES_MG = {
@@ -76,12 +71,16 @@ class ChessBot:
         self.cancellation_event = cancellation_event
         self.ply_count = ply_count
         self.game_mode = game_mode
-        self.max_moves = max_moves  # Store the rule from the UI
+        self.max_moves = max_moves
         
         if bot_name is None:
-            self.bot_name = "AI Bot"
+            if self.__class__.__name__ == "OpponentAI":
+                self.bot_name = "OP Bot"
+            else:
+                self.bot_name = "AI Bot"
         else:
             self.bot_name = bot_name
+
         self._initialize_search_state()
 
     def _initialize_search_state(self):
@@ -185,60 +184,33 @@ class ChessBot:
 
     def ponder_indefinitely(self):
         try:
-            # First, check if the current position is already a forced draw.
+            # Check for draw immediately
             if is_insufficient_material(self.board):
                 self._report_log(f"{self.bot_name} ({self.color}): Position is a draw by insufficient material.")
-                self._report_eval(self.DRAW_SCORE, 99) # Report draw score with high depth
-                return
-
+                
             root_moves = get_all_legal_moves(self.board, self.color)
-            if not root_moves:
-                self._report_log(f"{self.bot_name} ({self.color}): No legal moves.")
-                return
-
+            if not root_moves: return
             best_move_overall = root_moves[0]
             root_hash = board_hash(self.board, self.color)
-            
             for current_depth in range(1, 100):
-                if self.cancellation_event.is_set():
-                    raise SearchCancelledException()
-                
+                if self.cancellation_event.is_set(): raise SearchCancelledException()
                 iter_start_time = time.time()
                 best_score_this_iter, best_move_this_iter = self._search_at_depth(current_depth, root_moves, root_hash, best_move_overall)
-                
                 if not self.cancellation_event.is_set():
                     best_move_overall = best_move_this_iter
                     iter_duration = time.time() - iter_start_time
                     knps = (self.nodes_searched / iter_duration / 1000) if iter_duration > 0 else 0
-                    
-                    # Correctly determine the evaluation score for the UI log.
-                    # The search score is from the current player's perspective.
-                    # The UI perspective is always (White=+).
-                    score_for_log = best_score_this_iter if self.color == 'white' else -best_score_this_iter
-                    
+                    eval_for_ui = best_score_this_iter if self.color == 'white' else -best_score_this_iter
                     move_str = self._format_move(best_move_this_iter)
                     
-                    # Add the forced draw status to the regular log line if detected
-                    draw_status = ", (FORCED DRAW!)" if best_score_this_iter == self.DRAW_SCORE and current_depth > 1 else ""
-                    log_msg = f"  > {self.bot_name} (D{current_depth}): {move_str}, Eval={score_for_log/100:+.2f}{draw_status}, Nodes={self.nodes_searched}, KNPS={knps:.1f}, Time={iter_duration:.2f}s"
+                    log_msg = f"  > {self.bot_name} (D{current_depth}): {move_str}, Eval={eval_for_ui/100:+.2f}, Nodes={self.nodes_searched}, KNPS={knps:.1f}, Time={iter_duration:.2f}s"
 
                     self._report_log(log_msg)
-                    # This call is correct as it passes the raw score from the AI's perspective.
                     self._report_eval(best_score_this_iter, current_depth)
-                    
-                    # If a forced draw is found, no need to search deeper for a "better" move.
-                    if best_score_this_iter == self.DRAW_SCORE and current_depth > 1:
-                        # We can continue pondering in case the opponent blunders away from the draw,
-                        # but we have found the objective truth of the position.
-                        pass
-
                 else:
                     raise SearchCancelledException()
-                    
-        except SearchCancelledException:
-            pass
-        finally:
-            self._report_log(f"{self.bot_name} ({self.color}): Pondering stopped.")
+        except SearchCancelledException: pass
+        finally: self._report_log(f"{self.bot_name} ({self.color}): Pondering stopped.")
 
     def _search_at_depth(self, depth, root_moves, root_hash, pv_move):
         self.nodes_searched = 0
@@ -285,12 +257,13 @@ class ChessBot:
         hash_val = board_hash(board, turn)
         if ply > 0 and hash_val in search_path:
             return self.DRAW_PENALTY
-
+        
+        # --- Performant Draw Condition Checks ---
         if is_insufficient_material(board):
             return self.DRAW_SCORE
-        if self.game_mode == "ai_vs_ai" and self.ply_count + ply >= self.max_moves:  # Fixed: Using self.max_moves
+        if self.game_mode == "ai_vs_ai" and self.ply_count + ply >= self.max_moves:
             return self.DRAW_SCORE
-        
+
         original_alpha = alpha
         tt_entry = self.tt.get(hash_val)
 
@@ -396,7 +369,7 @@ class ChessBot:
         if self.cancellation_event.is_set(): raise SearchCancelledException()
         
         # Check for draw before evaluating
-        if is_draw(board, turn, self.position_counts, ply, float('inf')):
+        if is_insufficient_material(board):
             return self.DRAW_SCORE
             
         if ply >= self.MAX_Q_SEARCH_DEPTH: return self.evaluate_board(board, turn)
@@ -603,7 +576,7 @@ bishop_pst = [
     [-20, -10, -10, -10, -10, -10, -10, -20],
     [-10,   0,   0,   0,   0,   0,   0, -10],
     [-10,   0,   5,  10,  10,   5,   0, -10],
-    [-10,   5,   5,  10,  10,   5,  5, -10],
+    [-10,   5,   5,  10,  10,   5,   5, -10],
     [-10,   0,  15,  10,  10,  15,   0, -10],
     [-10,  10,  10,  10,  10,  10,  10, -10],
     [-10,   5,   0,   0,   0,   0,   5, -10],
