@@ -1,8 +1,4 @@
-# JungleChessUI.py (v8.13 - Logging & State Fixes)
-# - Improved console log spacing for better readability during AI series.
-# - Added a clear "GAME OVER" message to the console at the end of each game.
-# - Fixed a logic bug where the turn would switch one final time after a game had already ended.
-# - Corrected the log order to ensure the "NEW GAME" banner appears before any opening move logs.
+# JungleChessUI.py (v8.2 - Fixing bugs and code restructuring + cleanup)
 
 import tkinter as tk
 from tkinter import ttk
@@ -259,12 +255,11 @@ class EnhancedChessApp:
         if self.game_over: return
 
         if the_move:
-            delay = 4 if self.instant_move.get() else 20
-            
             player_who_moved = self.turn
             self.board.make_move(the_move[0], the_move[1])
             self.execute_move_and_check_state(player_who_moved=player_who_moved)
             
+            delay = 4 if self.instant_move.get() else 20
             if not self.game_over and self.game_mode.get() == GameMode.AI_VS_AI.value:
                 self.master.after(delay, self._make_game_ai_move)
         else:
@@ -272,11 +267,12 @@ class EnhancedChessApp:
         
         self.update_bot_labels()
         self.set_interactivity(True)
+    
 
     def _start_ai_process(self, bot_class, bot_name, search_depth):
         if self.ai_process and self.ai_process.is_alive(): return
         self.ai_cancellation_event.clear()
-        
+
         ply_count = len(self.position_history)
         game_mode_str = self.game_mode.get()
         args = (self.board.clone(), self.turn, self.position_counts.copy(), self.comm_queue, self.ai_cancellation_event, bot_class, bot_name, search_depth, ply_count, game_mode_str)
@@ -346,6 +342,11 @@ class EnhancedChessApp:
 
     def _make_game_ai_move(self):
         if self.game_over: return
+
+        # Print header and start timer HERE
+        print(f"\n--- Turn {len(self.position_history)} ({self.turn.capitalize()}) ---")
+        self.last_move_timestamp = time.time()
+
         mode = self.game_mode.get()
         bot_class, bot_name = None, None
         if mode == GameMode.HUMAN_VS_BOT.value:
@@ -382,6 +383,11 @@ class EnhancedChessApp:
         start_pos, end_pos = self.drag_start, (row, col)
 
         if end_pos in self.valid_moves:
+            move_time = time.time() - self.last_move_timestamp
+            move_str = self._format_move((start_pos, end_pos))
+            print(f"\n--- Turn {len(self.position_history)} ({self.turn.capitalize()}) ---")
+            print(f"Human played: {move_str}, Time={move_time:.2f}s")
+            
             player_who_moved = self.turn
             self.board.make_move(start_pos, end_pos)
             self.execute_move_and_check_state(player_who_moved=player_who_moved)
@@ -396,15 +402,8 @@ class EnhancedChessApp:
                 
         self.drag_start, self.selected, self.valid_moves = None, None, []; self.draw_board(); self.set_interactivity(True)
 
-    def execute_move_and_check_state(self, player_who_moved=None, is_opening_move=False):
-        if not is_opening_move and player_who_moved:
-            move_time = time.time() - self.last_move_timestamp
-            self.last_move_timestamp = time.time()
-            # Added newline for spacing
-            print(f"\n--- Turn {len(self.position_history)} ({player_who_moved.capitalize()}) ---")
-            if self.game_mode.get() in [GameMode.HUMAN_VS_HUMAN.value, GameMode.HUMAN_VS_BOT.value] and player_who_moved == self.human_color:
-                 print(f"  > Human chose move, Time={move_time:.2f}s")
-        
+    def execute_move_and_check_state(self, player_who_moved):
+        """Handles post-move logic for ALL moves (human and AI)."""
         self.switch_turn()
         key = board_hash(self.board, self.turn)
         self.position_history.append(key)
@@ -464,6 +463,7 @@ class EnhancedChessApp:
             piece = self.board.grid[r][c]
             is_human_turn = (self.game_mode.get() != GameMode.HUMAN_VS_BOT.value or self.turn == self.human_color)
             if piece and piece.color == self.turn and is_human_turn:
+                self.last_move_timestamp = time.time() # Start timer on click
                 self.selected = (r, c); self.dragging = True; self.drag_start = (r, c)
                 self.valid_moves = [end for start, end in get_all_legal_moves(self.board, self.turn) if start == self.selected]
                 font_size = int(self.square_size * 0.7)
@@ -649,7 +649,7 @@ class EnhancedChessApp:
             print()
             player_who_moved = self.turn
             self.board.make_move(self.current_opening_move[0], self.current_opening_move[1])
-            self.execute_move_and_check_state(player_who_moved=player_who_moved, is_opening_move=True)
+            self.execute_move_and_check_state(player_who_moved=player_who_moved)
 
     def update_scoreboard(self):
         if self.game_mode.get() == GameMode.AI_VS_AI.value and self.ai_series_running:
