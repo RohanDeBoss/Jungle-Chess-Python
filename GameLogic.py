@@ -341,7 +341,7 @@ def is_in_check(board, color):
     opponent_color = "black" if color == "white" else "white"
     return is_square_attacked(board, king_pos[0], king_pos[1], opponent_color)
 
-def _generate_legal_moves_generator(board, color):
+def generate_legal_moves_generator(board, color, yield_boards=False):
     """A generator that yields all legal moves for a given color."""
     piece_list = board.white_pieces if color == 'white' else board.black_pieces
     opponent_color = "black" if color == "white" else "white"
@@ -352,11 +352,14 @@ def _generate_legal_moves_generator(board, color):
             sim_board.make_move(start_pos, end_pos)
             king_pos = sim_board.find_king_pos(color)
             if king_pos and not is_square_attacked(sim_board, king_pos[0], king_pos[1], opponent_color):
-                yield (start_pos, end_pos)
+                if yield_boards:
+                    yield (start_pos, end_pos), sim_board
+                else:
+                    yield (start_pos, end_pos)
 
 def get_all_legal_moves(board, color):
     """Returns a list of all legal moves for a given color."""
-    return list(_generate_legal_moves_generator(board, color))
+    return list(generate_legal_moves_generator(board, color))
 
 def get_all_pseudo_legal_moves(board, color):
     """Returns all moves a piece can make, without checking for self-check."""
@@ -369,7 +372,7 @@ def get_all_pseudo_legal_moves(board, color):
 def has_legal_moves(board, color):
     """Efficiently checks if any legal moves exist."""
     try:
-        next(_generate_legal_moves_generator(board, color))
+        next(generate_legal_moves_generator(board, color))
         return True
     except StopIteration:
         return False

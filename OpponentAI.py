@@ -1,3 +1,4 @@
+# OpponentAI v76
 import time
 from GameLogic import *
 import random

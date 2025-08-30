@@ -1,5 +1,6 @@
 # v68 (Updated to work with new gamelogic.py structure)
 import time
+from GameLogic import generate_legal_moves_generator
 from GameLogic import *
 import random
 from collections import namedtuple
@@ -53,6 +54,7 @@ class ChessBot:
     MAX_Q_SEARCH_DEPTH = 8
     LMR_DEPTH_THRESHOLD, LMR_MOVE_COUNT_THRESHOLD, LMR_REDUCTION = 3, 4, 1
     NMP_MIN_DEPTH, NMP_BASE_REDUCTION, NMP_DEPTH_DIVISOR = 3, 2, 6
+    Q_SEARCH_SAFETY_MARGIN = 800 # Safe margin for promotions (Queen val - Pawn val)
     
     BONUS_PV_MOVE = 10_000_000
     BONUS_CAPTURE = 8_000_000
@@ -291,23 +293,24 @@ class ChessBot:
                 self.tt[hash_val] = TTEntry(beta, depth, TT_FLAG_LOWERBOUND, None)
                 return beta 
 
-        new_search_path = search_path | {hash_val}
+        # OPTIMIZATION FROM v60.2: Generate moves and boards once
+        legal_moves_with_boards = list(generate_legal_moves_generator(board, turn, yield_boards=True))
         
-        # AI FIX: Get the list of moves from the public GameLogic function
-        legal_moves = get_all_legal_moves(board, turn)
-        
-        if not legal_moves:
+        if not legal_moves_with_boards:
             return -self.MATE_SCORE + ply if is_in_check_flag else self.DRAW_SCORE
 
+        legal_moves_list = [move for move, board in legal_moves_with_boards]
+        move_to_board_map = dict(legal_moves_with_boards)
+
         hash_move = tt_entry.best_move if tt_entry else None
-        ordered_moves = self.order_moves(board, legal_moves, ply, hash_move)
+        ordered_moves = self.order_moves(board, legal_moves_list, ply, hash_move)
         
         best_move_for_node = None
         
         for i, move in enumerate(ordered_moves):
-            # AI FIX: Manually create the board for the next state
-            child_board = board.clone()
-            child_board.make_move(move[0], move[1])
+            # OPTIMIZATION FROM v60.2: Look up the pre-calculated board
+            child_board = move_to_board_map.get(move)
+            if not child_board: continue
 
             child_hash = board_hash(child_board, opponent_turn)
             self.position_counts[child_hash] = self.position_counts.get(child_hash, 0) + 1
@@ -319,10 +322,10 @@ class ChessBot:
                 not is_in_check_flag and not is_tactical_move):
                 reduction = self.LMR_REDUCTION
 
-            score = -self.negamax(child_board, depth - 1 - reduction, -beta, -alpha, opponent_turn, ply + 1, new_search_path)
+            score = -self.negamax(child_board, depth - 1 - reduction, -beta, -alpha, opponent_turn, ply + 1, search_path | {hash_val})
 
             if reduction > 0 and score > alpha:
-                score = -self.negamax(child_board, depth - 1, -beta, -alpha, opponent_turn, ply + 1, new_search_path)
+                score = -self.negamax(child_board, depth - 1, -beta, -alpha, opponent_turn, ply + 1, search_path | {hash_val})
             
             self.position_counts[child_hash] -= 1
 
@@ -359,8 +362,8 @@ class ChessBot:
         
         is_in_check_flag = is_in_check(board, turn)
         
+        stand_pat = self.evaluate_board(board, turn)
         if not is_in_check_flag:
-            stand_pat = self.evaluate_board(board, turn)
             if stand_pat >= beta: return beta
             alpha = max(alpha, stand_pat)
 
@@ -373,8 +376,6 @@ class ChessBot:
         else:
             tactical_moves = []
             for move in get_all_pseudo_legal_moves(board, turn):
-                # A move is tactical if it's a direct capture, a promotion,
-                # OR our new special rook piercing capture.
                 is_direct_capture = board.grid[move[1][0]][move[1][1]] is not None
                 moving_piece = board.grid[move[0][0]][move[0][1]]
                 is_promotion = isinstance(moving_piece, Pawn) and (move[1][0] == 0 or move[1][0] == ROWS - 1)
@@ -382,11 +383,18 @@ class ChessBot:
                 if is_direct_capture or is_promotion or is_rook_piercing_capture(board, move):
                     tactical_moves.append(move)
 
-        # Move ordering is now implicitly correct because calculate_material_swing
-        # already handles the full effect of a piercing move.
-        scored_moves = sorted(tactical_moves, key=lambda m: calculate_material_swing(board, m, self._get_piece_value), reverse=True)
+        scored_moves = []
+        for move in tactical_moves:
+            swing = calculate_material_swing(board, move, self._get_piece_value)
+            scored_moves.append((move, swing))
+        
+        scored_moves.sort(key=lambda item: item[1], reverse=True)
 
-        for move in scored_moves:
+        for move, swing in scored_moves:
+            # Delta Pruning with the new, SAFE margin
+            if not is_in_check_flag and stand_pat + swing + self.Q_SEARCH_SAFETY_MARGIN < alpha:
+                continue
+                
             sim_board = board.clone()
             sim_board.make_move(move[0], move[1])
 
