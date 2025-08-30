@@ -373,24 +373,23 @@ class ChessBot:
         else:
             tactical_moves = []
             for move in get_all_pseudo_legal_moves(board, turn):
-                is_capture = board.grid[move[1][0]][move[1][1]] is not None
+                # A move is tactical if it's a direct capture, a promotion,
+                # OR our new special rook piercing capture.
+                is_direct_capture = board.grid[move[1][0]][move[1][1]] is not None
                 moving_piece = board.grid[move[0][0]][move[0][1]]
                 is_promotion = isinstance(moving_piece, Pawn) and (move[1][0] == 0 or move[1][0] == ROWS - 1)
-                if is_capture or is_promotion:
+                
+                if is_direct_capture or is_promotion or is_rook_piercing_capture(board, move):
                     tactical_moves.append(move)
 
-        scored_moves = []
-        for move in tactical_moves:
-            swing = calculate_material_swing(board, move, self._get_piece_value)
-            scored_moves.append((swing, move))
-        
-        scored_moves.sort(key=lambda x: x[0], reverse=True)
+        # Move ordering is now implicitly correct because calculate_material_swing
+        # already handles the full effect of a piercing move.
+        scored_moves = sorted(tactical_moves, key=lambda m: calculate_material_swing(board, m, self._get_piece_value), reverse=True)
 
-        for _, move in scored_moves:
+        for move in scored_moves:
             sim_board = board.clone()
             sim_board.make_move(move[0], move[1])
 
-            # A check is needed here since we might be using pseudo_legal_moves
             if is_in_check(sim_board, turn):
                 continue
             
@@ -400,7 +399,6 @@ class ChessBot:
             alpha = max(alpha, search_score)
             
         return alpha
-        
 
     def evaluate_board(self, board, turn_to_move):
         if is_insufficient_material(board):

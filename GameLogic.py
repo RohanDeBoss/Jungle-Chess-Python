@@ -18,8 +18,6 @@ DIRECTIONS = {
 }
 ADJACENT_DIRS = DIRECTIONS['king']
 
-# --- Pre-computation Maps ---
-def _precompute_knight_attacks():
 # --- Pre-computation Maps for Performance ---
 KNIGHT_ATTACKS_FROM = { (r, c): {(r+dr, c+dc) for dr, dc in DIRECTIONS['knight'] if 0 <= r+dr < ROWS and 0 <= c+dc < COLS} for r in range(ROWS) for c in range(COLS) }
 ADJACENT_SQUARES_MAP = { (r, c): {(r+dr, c+dc) for dr, dc in ADJACENT_DIRS if 0 <= r+dr < ROWS and 0 <= c+dc < COLS} for r in range(ROWS) for c in range(COLS) }
