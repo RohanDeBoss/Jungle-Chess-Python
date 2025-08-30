@@ -1,4 +1,5 @@
-# v68 (Updated to work with new gamelogic.py structure)
+# v70 Optimisated Qsearch
+
 import time
 from GameLogic import generate_legal_moves_generator
 from GameLogic import *
@@ -7,10 +8,10 @@ from collections import namedtuple
 
 # --- Tapered Piece Values for Jungle Chess ---
 PIECE_VALUES_MG = {
-    Pawn: 100, Knight: 800, Bishop: 700, Rook: 600, Queen: 900, King: 20000
+    Pawn: 100, Knight: 850, Bishop: 700, Rook: 600, Queen: 900, King: 20000
 }
 PIECE_VALUES_EG = {
-    Pawn: 100, Knight: 800, Bishop: 650, Rook: 800, Queen: 700, King: 20000
+    Pawn: 100, Knight: 800, Bishop: 650, Rook: 750, Queen: 700, King: 20000
 }
 INITIAL_PHASE_MATERIAL = (PIECE_VALUES_MG[Rook] * 4 + PIECE_VALUES_MG[Knight] * 4 +
                           PIECE_VALUES_MG[Bishop] * 4 + PIECE_VALUES_MG[Queen] * 2)
@@ -54,7 +55,7 @@ class ChessBot:
     MAX_Q_SEARCH_DEPTH = 8
     LMR_DEPTH_THRESHOLD, LMR_MOVE_COUNT_THRESHOLD, LMR_REDUCTION = 3, 4, 1
     NMP_MIN_DEPTH, NMP_BASE_REDUCTION, NMP_DEPTH_DIVISOR = 3, 2, 6
-    Q_SEARCH_SAFETY_MARGIN = 800 # Safe margin for promotions (Queen val - Pawn val)
+    Q_SEARCH_SAFETY_MARGIN = 850 # Safe margin for promotions (Queen val - Pawn val + buffer)
     
     BONUS_PV_MOVE = 10_000_000
     BONUS_CAPTURE = 8_000_000
@@ -248,6 +249,7 @@ class ChessBot:
 
         return best_score_this_iter, best_move_this_iter
 
+
     def negamax(self, board, depth, alpha, beta, turn, ply, search_path):
         self.nodes_searched += 1
         if self.cancellation_event.is_set(): raise SearchCancelledException()
@@ -293,7 +295,7 @@ class ChessBot:
                 self.tt[hash_val] = TTEntry(beta, depth, TT_FLAG_LOWERBOUND, None)
                 return beta 
 
-        # OPTIMIZATION FROM v60.2: Generate moves and boards once
+        # OPTIMIZATION: Generate moves and boards ONCE, outside the loop.
         legal_moves_with_boards = list(generate_legal_moves_generator(board, turn, yield_boards=True))
         
         if not legal_moves_with_boards:
@@ -308,7 +310,7 @@ class ChessBot:
         best_move_for_node = None
         
         for i, move in enumerate(ordered_moves):
-            # OPTIMIZATION FROM v60.2: Look up the pre-calculated board
+            # OPTIMIZATION: Look up the pre-calculated board instead of cloning.
             child_board = move_to_board_map.get(move)
             if not child_board: continue
 
@@ -374,14 +376,8 @@ class ChessBot:
             if not tactical_moves:
                 return -self.MATE_SCORE + ply
         else:
-            tactical_moves = []
-            for move in get_all_pseudo_legal_moves(board, turn):
-                is_direct_capture = board.grid[move[1][0]][move[1][1]] is not None
-                moving_piece = board.grid[move[0][0]][move[0][1]]
-                is_promotion = isinstance(moving_piece, Pawn) and (move[1][0] == 0 or move[1][0] == ROWS - 1)
-                
-                if is_direct_capture or is_promotion or is_rook_piercing_capture(board, move):
-                    tactical_moves.append(move)
+            # OPTIMIZATION: Use the new, faster capture generator
+            tactical_moves = list(generate_all_captures(board, turn))
 
         scored_moves = []
         for move in tactical_moves:
@@ -391,7 +387,6 @@ class ChessBot:
         scored_moves.sort(key=lambda item: item[1], reverse=True)
 
         for move, swing in scored_moves:
-            # Delta Pruning with the new, SAFE margin
             if not is_in_check_flag and stand_pat + swing + self.Q_SEARCH_SAFETY_MARGIN < alpha:
                 continue
                 

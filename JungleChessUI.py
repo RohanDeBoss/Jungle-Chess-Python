@@ -1,4 +1,4 @@
-# JungleChessUI.py (v8.3 - Fixing bugs and code restructuring + cleanup)
+# JungleChessUI.py (v8.4 - On drag end fix)
 
 import tkinter as tk
 from tkinter import ttk
@@ -375,7 +375,7 @@ class EnhancedChessApp:
     def on_drag_end(self, event):
         is_analysis_process_running = self.is_ai_thinking() and self.ai_process.name == self.ANALYSIS_AI_NAME
         if self.is_ai_thinking() and not is_analysis_process_running:
-             self.valid_moves = []; self.draw_board(); return
+            self.valid_moves = []; self.draw_board(); return
         if not self.dragging:
             self.valid_moves = []; self.draw_board(); return
 
@@ -383,13 +383,15 @@ class EnhancedChessApp:
         row, col = self.canvas_to_board(event.x, event.y)
         
         if row == -1 or not self.drag_start:
-            self.drag_start, self.selected, self.valid_moves = None, None, []; self.draw_board(); self.set_interactivity(True); return
+            self.drag_start, self.selected, self.valid_moves, self.valid_moves_for_highlight = None, None, [], []; self.draw_board(); self.set_interactivity(True); return
 
         start_pos, end_pos = self.drag_start, (row, col)
+        
+        move_to_check = (start_pos, end_pos)
 
-        if end_pos in self.valid_moves:
+        if move_to_check in self.valid_moves:
             move_time = time.time() - self.last_move_timestamp
-            move_str = self._format_move((start_pos, end_pos))
+            move_str = self._format_move(move_to_check)
             print(f"\n--- Turn {len(self.position_history)} ({self.turn.capitalize()}) ---")
             print(f"Human played: {move_str}, Time={move_time:.2f}s")
             
@@ -405,7 +407,11 @@ class EnhancedChessApp:
                 elif mode == GameMode.HUMAN_VS_HUMAN.value:
                     self.update_analysis_process()
                 
-        self.drag_start, self.selected, self.valid_moves = None, None, []; self.draw_board(); self.set_interactivity(True)
+        # CRITICAL FIX: Reset all move-related state variables, including the highlight list.
+        self.drag_start, self.selected, self.valid_moves, self.valid_moves_for_highlight = None, None, [], []
+        self.draw_board()
+        self.set_interactivity(True)
+
 
     def execute_move_and_check_state(self, player_who_moved):
         """Handles post-move logic for ALL moves (human and AI)."""

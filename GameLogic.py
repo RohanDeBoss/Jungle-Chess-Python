@@ -1,4 +1,4 @@
-# v26 (This is a version name)
+# v26.6 (Pawns are board-agnostic in threat calculation, queens and rooks fixed)
 import copy
 
 # -----------------------------
@@ -80,13 +80,19 @@ class Queen(Piece):
         return moves
 
     def get_threats(self, board, pos):
+        """
+        A Queen threatens squares she can move to. If a move is a capture,
+        she ALSO threatens the adjacent squares (AoE).
+        """
         threats = set()
         valid_moves = self.get_valid_moves(board, pos)
         for move in valid_moves:
+            # She always threatens the square she can move to.
             threats.add(move)
-            # AoE Threat: If a move is a capture, it also threatens adjacent squares.
-            # This is the source of "quiet" check threats.
-            if board.grid[move[0]][move[1]] is not None:
+            
+            # The AoE threat is ONLY projected around a potential capture.
+            target_piece = board.grid[move[0]][move[1]]
+            if target_piece is not None and target_piece.color == self.opponent_color:
                 threats.update(ADJACENT_SQUARES_MAP.get(move, set()))
         return threats
 
@@ -107,13 +113,29 @@ class Rook(Piece):
         return moves
         
     def get_threats(self, board, pos):
-        # A Rook's threat PIERCES, so it is not limited by its valid moves.
-        # It threatens every square on its axes.
+        """
+        A Rook's threat PIERCES through enemy pieces, but is BLOCKED by friendly pieces.
+        This corrected version is board-aware and stops BEFORE a friendly piece.
+        """
         threats = set()
         for dr, dc in DIRECTIONS['rook']:
             r, c = pos[0] + dr, pos[1] + dc
             while 0 <= r < ROWS and 0 <= c < COLS:
-                threats.add((r,c))
+                target = board.grid[r][c]
+                # CRITICAL FIX: Check for a friendly blocker FIRST.
+                if target and target.color == self.color:
+                    break # The threat ends here, before this square.
+                
+                threats.add((r, c))
+                
+                # The threat continues through an enemy piece, but stops after.
+                if target and target.color == self.opponent_color:
+                    # While the threat continues, the line of sight for further threats is blocked.
+                    # This logic depends on whether a rook can pierce through multiple enemies.
+                    # Assuming it can, we don't break. If it stops at the first enemy, we would break here.
+                    # Your rule "take and amount of pieces" implies it continues, so no break is correct.
+                    pass
+
                 r += dr; c += dc
         return threats
 
@@ -171,6 +193,7 @@ class Pawn(Piece):
         self.starting_row = 6 if self.color == "white" else 1
 
     def symbol(self): return "♙" if self.color == "white" else "♟"
+
     def get_valid_moves(self, board, pos):
         moves = []
         r, c = pos
@@ -193,7 +216,7 @@ class Pawn(Piece):
     def get_threats(self, board, pos):
         """
         A pawn's threats are only the squares it can legally capture on.
-        This corrected version is board-aware.
+        This corrected version is board-aware to prevent friendly fire.
         """
         threats = set()
         r, c = pos
@@ -385,7 +408,7 @@ def is_insufficient_material(board):
     if total_pieces == 3:
         major_side = board.white_pieces if len(board.white_pieces) == 2 else board.black_pieces
         piece_types = {type(p) for p in major_side}
-        if King in piece_types and (Rook in piece_types or Bishop in piece_types):
+        if King in piece_types and (Rook in piece_types or Bishop in piece_types or Knight in piece_types):
             return True
     return False
 
@@ -460,3 +483,30 @@ def is_rook_piercing_capture(board, move):
         cc += dc
         
     return False
+
+def generate_all_captures(board, color):
+    """
+    An optimized generator that yields only pseudo-legal captures and promotions.
+    This is much faster than generating all moves and then filtering.
+    """
+    piece_list = board.white_pieces if color == 'white' else board.black_pieces
+    opponent_color = "black" if color == "white" else "white"
+
+    for piece in piece_list:
+        start_pos = piece.pos
+        # Promotions are always tactical, so we can check the piece type first
+        if isinstance(piece, Pawn):
+            promotion_rank = 0 if piece.color == "white" else (ROWS - 1)
+            for end_pos in piece.get_valid_moves(board, start_pos):
+                if board.grid[end_pos[0]][end_pos[1]] is not None or end_pos[0] == promotion_rank:
+                    yield (start_pos, end_pos)
+        # Rooks are special because a piercing move to an empty square is a capture
+        elif isinstance(piece, Rook):
+             for end_pos in piece.get_valid_moves(board, start_pos):
+                if board.grid[end_pos[0]][end_pos[1]] is not None or is_rook_piercing_capture(board, (start_pos, end_pos)):
+                    yield (start_pos, end_pos)
+        # For other pieces, a capture is only when they land on an enemy piece
+        else:
+            for end_pos in piece.get_valid_moves(board, start_pos):
+                if board.grid[end_pos[0]][end_pos[1]] is not None:
+                    yield (start_pos, end_pos)
