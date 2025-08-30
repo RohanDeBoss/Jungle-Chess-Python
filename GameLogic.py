@@ -191,15 +191,24 @@ class Pawn(Piece):
         return moves
         
     def get_threats(self, board, pos):
-        # A pawn's threats are only the squares it can capture on.
+        """
+        A pawn's threats are only the squares it can legally capture on.
+        This corrected version is board-aware.
+        """
         threats = set()
         r, c = pos
+        
         # Forward capture threat
         one_r = r + self.direction
-        if 0 <= one_r < ROWS: threats.add((one_r, c))
+        if 0 <= one_r < ROWS and board.grid[one_r][c] is not None and board.grid[one_r][c].color == self.opponent_color:
+            threats.add((one_r, c))
+            
         # Sideways capture threats
         for dc_offset in [-1, 1]:
-            if 0 <= c + dc_offset < COLS: threats.add((r, c + dc_offset))
+            new_c = c + dc_offset
+            if 0 <= new_c < COLS and board.grid[r][new_c] is not None and board.grid[r][new_c].color == self.opponent_color:
+                threats.add((r, new_c))
+
         return threats
 
 # ---------------------------------------------
