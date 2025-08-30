@@ -1,10 +1,8 @@
-# AI.py (v66.4 - reverted downgrades of 66.3 and added new fixes)
-
+# v68 (Updated to work with new gamelogic.py structure)
 import time
 from GameLogic import *
 import random
 from collections import namedtuple
-from GameLogic import _generate_legal_moves, is_insufficient_material
 
 # --- Tapered Piece Values for Jungle Chess ---
 PIECE_VALUES_MG = {
@@ -184,7 +182,6 @@ class ChessBot:
 
     def ponder_indefinitely(self):
         try:
-            # Check for draw immediately
             if is_insufficient_material(self.board):
                 self._report_log(f"{self.bot_name} ({self.color}): Position is a draw by insufficient material.")
                 
@@ -218,14 +215,14 @@ class ChessBot:
         alpha, beta = -float('inf'), float('inf')
         
         ordered_root_moves = self.order_moves(self.board, root_moves, 0, pv_move)
-        move_to_board_map = {m: b for m, b in _generate_legal_moves(self.board, self.color, yield_boards=True)}
-
-        all_moves_draw = True  # Track if all moves lead to a draw
+        
+        all_moves_draw = True
         for i, move in enumerate(ordered_root_moves):
             if self.cancellation_event.is_set(): raise SearchCancelledException()
             
-            child_board = move_to_board_map.get(move)
-            if not child_board: continue
+            # AI FIX: Manually create the board for the next state
+            child_board = self.board.clone()
+            child_board.make_move(move[0], move[1])
 
             search_path = {root_hash}
             child_hash = board_hash(child_board, self.opponent_color)
@@ -235,7 +232,7 @@ class ChessBot:
             
             self.position_counts[child_hash] -= 1
 
-            if score != self.DRAW_SCORE:  # If any move is not a draw
+            if score != self.DRAW_SCORE:
                 all_moves_draw = False
 
             if score > best_score_this_iter:
@@ -244,7 +241,6 @@ class ChessBot:
             
             alpha = max(alpha, best_score_this_iter)
         
-        # If all moves lead to draws, this position is a draw
         if all_moves_draw:
             best_score_this_iter = self.DRAW_SCORE
 
@@ -258,7 +254,6 @@ class ChessBot:
         if ply > 0 and hash_val in search_path:
             return self.DRAW_PENALTY
         
-        # --- Performant Draw Condition Checks ---
         if is_insufficient_material(board):
             return self.DRAW_SCORE
         if self.game_mode == "ai_vs_ai" and self.ply_count + ply >= self.max_moves:
@@ -298,27 +293,26 @@ class ChessBot:
 
         new_search_path = search_path | {hash_val}
         
-        legal_moves_with_boards = list(_generate_legal_moves(board, turn, yield_boards=True))
+        # AI FIX: Get the list of moves from the public GameLogic function
+        legal_moves = get_all_legal_moves(board, turn)
         
-        if not legal_moves_with_boards:
+        if not legal_moves:
             return -self.MATE_SCORE + ply if is_in_check_flag else self.DRAW_SCORE
 
-        legal_moves_list = [move for move, board in legal_moves_with_boards]
-        move_to_board_map = dict(legal_moves_with_boards)
-
         hash_move = tt_entry.best_move if tt_entry else None
-        ordered_moves = self.order_moves(board, legal_moves_list, ply, hash_move)
+        ordered_moves = self.order_moves(board, legal_moves, ply, hash_move)
         
         best_move_for_node = None
         
         for i, move in enumerate(ordered_moves):
-            child_board = move_to_board_map.get(move)
-            if not child_board: continue
+            # AI FIX: Manually create the board for the next state
+            child_board = board.clone()
+            child_board.make_move(move[0], move[1])
 
             child_hash = board_hash(child_board, opponent_turn)
             self.position_counts[child_hash] = self.position_counts.get(child_hash, 0) + 1
             
-            is_tactical_move = calculate_material_swing(board, move, lambda p, b: self._get_piece_value(p, b)) != 0
+            is_tactical_move = calculate_material_swing(board, move, self._get_piece_value) != 0
             
             reduction = 0
             if (depth >= self.LMR_DEPTH_THRESHOLD and i >= self.LMR_MOVE_COUNT_THRESHOLD and 
@@ -354,21 +348,10 @@ class ChessBot:
         self.tt[hash_val] = TTEntry(alpha, depth, flag, best_move_for_node)
         return alpha
 
-    def _is_in_knight_kill_zone(self, board, square, moving_piece_color):
-        opponent_color = 'black' if moving_piece_color == 'white' else 'white'
-        enemy_knights = [p for p in (board.black_pieces if opponent_color == 'black' else board.white_pieces)
-                         if isinstance(p, Knight)]
-        
-        for knight in enemy_knights:
-            if square in KNIGHT_ATTACKS_FROM.get(knight.pos, set()):
-                return True
-        return False
-
     def qsearch(self, board, alpha, beta, turn, ply):
         self.nodes_searched += 1
         if self.cancellation_event.is_set(): raise SearchCancelledException()
         
-        # Check for draw before evaluating
         if is_insufficient_material(board):
             return self.DRAW_SCORE
             
@@ -382,176 +365,185 @@ class ChessBot:
             alpha = max(alpha, stand_pat)
 
         opponent_color = 'black' if turn == 'white' else 'white'
-        promising_moves = []
-
+        
         if is_in_check_flag:
-            promising_moves = get_all_legal_moves(board, turn)
-            if not promising_moves:
+            tactical_moves = get_all_legal_moves(board, turn)
+            if not tactical_moves:
                 return -self.MATE_SCORE + ply
         else:
-            scored_promising_moves = []
-            for piece in list(board.white_pieces if turn == 'white' else board.black_pieces):
-                for end_pos in piece.get_valid_moves(board, piece.pos):
-                    move = (piece.pos, end_pos)
-                    
-                    is_promotion = isinstance(piece, Pawn) and (end_pos[0] == 0 or end_pos[0] == ROWS - 1)
-                    
-                    target_piece = board.grid[end_pos[0]][end_pos[1]]
-                    is_potentially_tactical = (target_piece is not None) or is_promotion or isinstance(piece, (Rook, Knight, Queen))
+            tactical_moves = []
+            for move in get_all_pseudo_legal_moves(board, turn):
+                is_capture = board.grid[move[1][0]][move[1][1]] is not None
+                moving_piece = board.grid[move[0][0]][move[0][1]]
+                is_promotion = isinstance(moving_piece, Pawn) and (move[1][0] == 0 or move[1][0] == ROWS - 1)
+                if is_capture or is_promotion:
+                    tactical_moves.append(move)
 
-                    if not is_potentially_tactical:
-                        if not self._is_in_knight_kill_zone(board, end_pos, piece.color):
-                            continue
-
-                    material_swing = calculate_material_swing(board, move, lambda p, b: self._get_piece_value(p, b))
-                    is_tactical = (material_swing != 0) or is_promotion
-
-                    if is_tactical:
-                        move_value = material_swing if material_swing != 0 else self._get_piece_value(Queen(turn), board)
-                        scored_promising_moves.append((move, material_swing))
+        scored_moves = []
+        for move in tactical_moves:
+            swing = calculate_material_swing(board, move, self._get_piece_value)
+            scored_moves.append((swing, move))
         
-            scored_promising_moves.sort(key=lambda item: item[1], reverse=True)
-            promising_moves = [item[0] for item in scored_promising_moves]
-            move_scores = dict(scored_promising_moves)
+        scored_moves.sort(key=lambda x: x[0], reverse=True)
 
-        for move in promising_moves:
-                 
+        for _, move in scored_moves:
             sim_board = board.clone()
             sim_board.make_move(move[0], move[1])
+
+            # A check is needed here since we might be using pseudo_legal_moves
+            if is_in_check(sim_board, turn):
+                continue
             
             search_score = -self.qsearch(sim_board, -beta, -alpha, opponent_color, ply + 1)
             if search_score >= beta:
                 return beta
             alpha = max(alpha, search_score)
             
-        if is_in_check_flag and not promising_moves:
-            return -self.MATE_SCORE + ply
-
         return alpha
         
+
     def evaluate_board(self, board, turn_to_move):
-        # This is the crucial fix: check for theoretical draws before evaluating material.
         if is_insufficient_material(board):
             return self.DRAW_SCORE
 
-        KNIGHT_THREAT_VALUE_SCALE = 4 
-        ROOK_SEMI_OPEN_FILE_BONUS = 30
-        ROOK_OPEN_FILE_BONUS = 15
-        KING_MOBILITY_BONUS = [0, 30, 45]
+        # --- Variant-Specific Evaluation Bonuses ---
+        QUEEN_AOE_POTENTIAL_BONUS = 25  # Bonus per piece in Queen's blast radius
+        ROOK_PIERCING_POTENTIAL_BONUS = 20 # Bonus per piece a Rook skewers
+        BISHOP_MOBILITY_BONUS = 3       # Bonus per potential zig-zag move
 
-        white_material_mg, white_material_eg = 0, 0
-        black_material_mg, black_material_eg = 0, 0
         white_pst_mg, white_pst_eg = 0, 0
         black_pst_mg, black_pst_eg = 0, 0
-        phase_material_score = 0
-
-        for piece in board.white_pieces:
-            piece_type = type(piece)
-            r, c = piece.pos
-            mg_val = PIECE_VALUES_MG.get(piece_type, 0)
-            white_material_mg += mg_val
-            white_material_eg += PIECE_VALUES_EG.get(piece_type, 0)
-            if not isinstance(piece, (Pawn, King)):
-                phase_material_score += mg_val
-            if piece_type == King:
-                white_pst_mg += PIECE_SQUARE_TABLES['king_midgame'][r][c]
-                white_pst_eg += PIECE_SQUARE_TABLES['king_endgame'][r][c]
-            else:
-                pst_table = PIECE_SQUARE_TABLES.get(piece_type)
-                if pst_table:
-                    pst = pst_table[r][c]
-                    white_pst_mg += pst
-                    white_pst_eg += pst
-
-        for piece in board.black_pieces:
-            piece_type = type(piece)
-            r_flipped = ROWS - 1 - piece.pos[0]
-            c = piece.pos[1]
-            mg_val = PIECE_VALUES_MG.get(piece_type, 0)
-            black_material_mg += mg_val
-            black_material_eg += PIECE_VALUES_EG.get(piece_type, 0)
-            if not isinstance(piece, (Pawn, King)):
-                phase_material_score += mg_val
-            if piece_type == King:
-                black_pst_mg += PIECE_SQUARE_TABLES['king_midgame'][r_flipped][c]
-                black_pst_eg += PIECE_SQUARE_TABLES['king_endgame'][r_flipped][c]
-            else:
-                pst_table = PIECE_SQUARE_TABLES.get(piece_type)
-                if pst_table:
-                    pst = pst_table[r_flipped][c]
-                    black_pst_mg += pst
-                    black_pst_eg += pst
-
+        
+        # --- Phase Calculation (Unchanged) ---
+        phase_material_score = sum(PIECE_VALUES_MG.get(type(p), 0) for p in board.white_pieces + board.black_pieces if not isinstance(p, (Pawn, King)))
         if INITIAL_PHASE_MATERIAL == 0:
             phase = 0
         else:
-            phase = (phase_material_score * 256) // INITIAL_PHASE_MATERIAL
-        phase = min(phase, 256)
+            phase = min(256, (phase_material_score * 256) // INITIAL_PHASE_MATERIAL)
 
-        white_pawn_files = {p.pos[1] for p in board.white_pieces if isinstance(p, Pawn)}
-        black_pawn_files = {p.pos[1] for p in board.black_pieces if isinstance(p, Pawn)}
+        # --- Material and PST Calculation ---
+        for piece in board.white_pieces:
+            piece_type = type(piece)
+            r, c = piece.pos
+            # Tapered material value
+            mg_val = PIECE_VALUES_MG.get(piece_type, 0)
+            eg_val = PIECE_VALUES_EG.get(piece_type, 0)
+            tapered_value = (mg_val * phase + eg_val * (256 - phase)) >> 8
+            white_pst_mg += mg_val
+            white_pst_eg += eg_val
 
-        for piece in board.white_pieces:
-            if isinstance(piece, Rook):
-                c = piece.pos[1]
-                if c not in white_pawn_files:
-                    if c in black_pawn_files:
-                        white_pst_mg += ROOK_SEMI_OPEN_FILE_BONUS
-                    else:
-                        white_pst_mg += ROOK_OPEN_FILE_BONUS
-        
-        for piece in board.black_pieces:
-            if isinstance(piece, Rook):
-                c = piece.pos[1]
-                if c not in black_pawn_files:
-                    if c in white_pawn_files:
-                        black_pst_mg += ROOK_SEMI_OPEN_FILE_BONUS
-                    else:
-                        black_pst_mg += ROOK_OPEN_FILE_BONUS
-        
-        for piece in board.white_pieces:
-            if isinstance(piece, Knight):
-                for r_attack, c_attack in KNIGHT_ATTACKS_FROM[piece.pos]:
-                    target = board.grid[r_attack][c_attack]
+            # Standard PST
+            if piece_type == King:
+                white_pst_mg += PIECE_SQUARE_TABLES['king_midgame'][r][c]
+                white_pst_eg += PIECE_SQUARE_TABLES['king_endgame'][r][c]
+            elif PIECE_SQUARE_TABLES.get(piece_type):
+                pst_val = PIECE_SQUARE_TABLES[piece_type][r][c]
+                white_pst_mg += pst_val
+                white_pst_eg += pst_val
+
+            # --- Variant-Aware Positional Bonuses for White ---
+            if piece_type == Queen:
+                for adj_r, adj_c in ADJACENT_SQUARES_MAP.get(piece.pos, set()):
+                    if board.grid[adj_r][adj_c] and board.grid[adj_r][adj_c].color == 'black':
+                        white_pst_mg += QUEEN_AOE_POTENTIAL_BONUS
+            
+            elif piece_type == Rook:
+                # Check horizontal and vertical for skewer potential
+                for dr, dc in DIRECTIONS['rook']:
+                    for i in range(1, 8):
+                        nr, nc = r + dr*i, c + dc*i
+                        if not (0 <= nr < ROWS and 0 <= nc < COLS): break
+                        target = board.grid[nr][nc]
+                        if target and target.color == 'black':
+                            white_pst_mg += ROOK_PIERCING_POTENTIAL_BONUS
+
+            elif piece_type == Knight:
+                for threatened_pos in KNIGHT_ATTACKS_FROM.get(piece.pos, set()):
+                    target = board.grid[threatened_pos[0]][threatened_pos[1]]
                     if target and target.color == 'black':
-                        mg_val = PIECE_VALUES_MG.get(type(target), 0)
-                        eg_val = PIECE_VALUES_EG.get(type(target), 0)
-                        tapered_value = (mg_val * phase + eg_val * (256 - phase)) >> 8
-                        white_pst_mg += tapered_value // KNIGHT_THREAT_VALUE_SCALE
+                        target_mg = PIECE_VALUES_MG.get(type(target), 0)
+                        target_eg = PIECE_VALUES_EG.get(type(target), 0)
+                        target_val = (target_mg * phase + target_eg * (256 - phase)) >> 8
+                        # FIX: Correctly evaluate knight trades as neutral
+                        if isinstance(target, Knight):
+                            white_pst_mg += (target_val - tapered_value) // 4
+                        else:
+                            white_pst_mg += target_val // 4
+            
+            elif piece_type == Bishop:
+                # Approximate mobility by checking one step in each zig-zag direction
+                mobility = 0
+                direction_pairs = (((-1, 1), (-1, -1)), ((1, 1), (1, -1)), ((-1, 1), (1, 1)), ((-1, -1), (1, -1)))
+                for d1, d2 in direction_pairs:
+                    if 0 <= r+d1[0] < ROWS and 0 <= c+d1[1] < COLS and board.grid[r+d1[0]][c+d1[1]] is None: mobility += 1
+                    if 0 <= r+d2[0] < ROWS and 0 <= c+d2[1] < COLS and board.grid[r+d2[0]][c+d2[1]] is None: mobility += 1
+                white_pst_mg += mobility * BISHOP_MOBILITY_BONUS
 
+        # --- Repeat for Black Pieces ---
         for piece in board.black_pieces:
-            if isinstance(piece, Knight):
-                for r_attack, c_attack in KNIGHT_ATTACKS_FROM[piece.pos]:
-                    target = board.grid[r_attack][c_attack]
-                    if target and target.color == 'white':
-                        mg_val = PIECE_VALUES_MG.get(type(target), 0)
-                        eg_val = PIECE_VALUES_EG.get(type(target), 0)
-                        tapered_value = (mg_val * phase + eg_val * (256 - phase)) >> 8
-                        black_pst_mg += tapered_value // KNIGHT_THREAT_VALUE_SCALE
-        
-        if board.white_king_pos:
-            white_king = board.grid[board.white_king_pos[0]][board.white_king_pos[1]]
-            if white_king:
-                num_moves = len(white_king.get_valid_moves(board, white_king.pos))
-                mobility_index = min(num_moves, 2) 
-                white_pst_mg += KING_MOBILITY_BONUS[mobility_index]
+            piece_type = type(piece)
+            r, c = piece.pos
+            r_flipped = ROWS - 1 - r
+            # Tapered material value
+            mg_val = PIECE_VALUES_MG.get(piece_type, 0)
+            eg_val = PIECE_VALUES_EG.get(piece_type, 0)
+            tapered_value = (mg_val * phase + eg_val * (256 - phase)) >> 8
+            black_pst_mg += mg_val
+            black_pst_eg += eg_val
 
-        if board.black_king_pos:
-            black_king = board.grid[board.black_king_pos[0]][board.black_king_pos[1]]
-            if black_king:
-                num_moves = len(black_king.get_valid_moves(board, black_king.pos))
-                mobility_index = min(num_moves, 2)
-                black_pst_mg += KING_MOBILITY_BONUS[mobility_index]
-        
-        mg_score = (white_material_mg + white_pst_mg) - (black_material_mg + black_pst_mg)
-        eg_score = (white_material_eg + white_pst_eg) - (black_material_eg + black_pst_eg)
+            # Standard PST
+            if piece_type == King:
+                black_pst_mg += PIECE_SQUARE_TABLES['king_midgame'][r_flipped][c]
+                black_pst_eg += PIECE_SQUARE_TABLES['king_endgame'][r_flipped][c]
+            elif PIECE_SQUARE_TABLES.get(piece_type):
+                pst_val = PIECE_SQUARE_TABLES[piece_type][r_flipped][c]
+                black_pst_mg += pst_val
+                black_pst_eg += pst_val
+
+            # --- Variant-Aware Positional Bonuses for Black ---
+            if piece_type == Queen:
+                for adj_r, adj_c in ADJACENT_SQUARES_MAP.get(piece.pos, set()):
+                    if board.grid[adj_r][adj_c] and board.grid[adj_r][adj_c].color == 'white':
+                        black_pst_mg += QUEEN_AOE_POTENTIAL_BONUS
+
+            elif piece_type == Rook:
+                for dr, dc in DIRECTIONS['rook']:
+                    for i in range(1, 8):
+                        nr, nc = r + dr*i, c + dc*i
+                        if not (0 <= nr < ROWS and 0 <= nc < COLS): break
+                        target = board.grid[nr][nc]
+                        if target and target.color == 'white':
+                            black_pst_mg += ROOK_PIERCING_POTENTIAL_BONUS
+
+            elif piece_type == Knight:
+                for threatened_pos in KNIGHT_ATTACKS_FROM.get(piece.pos, set()):
+                    target = board.grid[threatened_pos[0]][threatened_pos[1]]
+                    if target and target.color == 'white':
+                        target_mg = PIECE_VALUES_MG.get(type(target), 0)
+                        target_eg = PIECE_VALUES_EG.get(type(target), 0)
+                        target_val = (target_mg * phase + target_eg * (256 - phase)) >> 8
+                        if isinstance(target, Knight):
+                            black_pst_mg += (target_val - tapered_value) // 4
+                        else:
+                            black_pst_mg += target_val // 4
+            
+            elif piece_type == Bishop:
+                mobility = 0
+                direction_pairs = (((-1, 1), (-1, -1)), ((1, 1), (1, -1)), ((-1, 1), (1, 1)), ((-1, -1), (1, -1)))
+                for d1, d2 in direction_pairs:
+                    if 0 <= r+d1[0] < ROWS and 0 <= c+d1[1] < COLS and board.grid[r+d1[0]][c+d1[1]] is None: mobility += 1
+                    if 0 <= r+d2[0] < ROWS and 0 <= c+d2[1] < COLS and board.grid[r+d2[0]][c+d2[1]] is None: mobility += 1
+                black_pst_mg += mobility * BISHOP_MOBILITY_BONUS
+
+        # --- Final Score Calculation (Unchanged) ---
+        mg_score = white_pst_mg - black_pst_mg
+        eg_score = white_pst_eg - black_pst_eg
         final_score = (mg_score * phase + eg_score * (256 - phase)) >> 8
         
         return final_score if turn_to_move == 'white' else -final_score
 
 
 # --- Piece-Square Tables (PSTs) ---
-# (PSTs remain unchanged)
 pawn_pst = [
     [  0,   0,   0,   0,   0,   0,   0,   0],
     [ 90,  90,  90,  90,  90,  90,  90,  90],

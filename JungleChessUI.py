@@ -1,4 +1,4 @@
-# JungleChessUI.py (v8.2 - Fixing bugs and code restructuring + cleanup)
+# JungleChessUI.py (v8.3 - Fixing bugs and code restructuring + cleanup)
 
 import tkinter as tk
 from tkinter import ttk
@@ -49,7 +49,9 @@ class EnhancedChessApp:
         self.ai_cancellation_event = mp.Event()
         self.ai_search_start_time = None
 
-        self.board = create_initial_board()
+        # FIX: Directly instantiate the Board class instead of calling the removed function.
+        self.board = Board()
+        
         self.turn = "white"
         self.selected = None
         self.valid_moves = []
@@ -300,7 +302,10 @@ class EnhancedChessApp:
         if self.game_mode.get() != GameMode.AI_VS_AI.value:
             self.ai_series_running = False
         self._stop_ai_process()
-        self.board = create_initial_board()
+        
+        # FIX: Directly instantiate the Board class.
+        self.board = Board()
+
         self.turn = "white"
         self.game_started = False
         self.last_move_timestamp = time.time()
@@ -465,7 +470,9 @@ class EnhancedChessApp:
             if piece and piece.color == self.turn and is_human_turn:
                 self.last_move_timestamp = time.time() # Start timer on click
                 self.selected = (r, c); self.dragging = True; self.drag_start = (r, c)
-                self.valid_moves = [end for start, end in get_all_legal_moves(self.board, self.turn) if start == self.selected]
+                self.valid_moves = get_all_legal_moves(self.board, self.turn)
+                # Filter valid_moves for the selected piece only for drawing highlights
+                self.valid_moves_for_highlight = [end for start, end in self.valid_moves if start == self.selected]
                 font_size = int(self.square_size * 0.7)
                 self.drag_piece_ghost = self.canvas.create_text(event.x, event.y, text=piece.symbol(), font=("Arial Unicode MS", font_size), fill=piece.color, tags="drag_ghost")
                 self.draw_board(); self.canvas.tag_raise("drag_ghost")
@@ -480,7 +487,6 @@ class EnhancedChessApp:
         self.reset_game()
 
     def switch_turn(self):
-        # FIX: Add guard to prevent switching turn after game is over
         if self.game_over:
             return
         self.turn = "black" if self.turn == "white" else "white"
@@ -537,6 +543,9 @@ class EnhancedChessApp:
         img_width = COLS * self.square_size
         img_height = ROWS * self.square_size
         img = tk.PhotoImage(width=img_width, height=img_height)
+        # Board colors
+        BOARD_COLOR_1 = "#D2B48C"
+        BOARD_COLOR_2 = "#8B5A2B"
         for r_draw in range(ROWS):
             for c_draw in range(COLS):
                 color = BOARD_COLOR_1 if (r_draw + c_draw) % 2 == 0 else BOARD_COLOR_2
@@ -551,11 +560,15 @@ class EnhancedChessApp:
             
         self.canvas.itemconfig(self.board_image_id, image=current_image)
         self.canvas.delete("highlight", "piece", "check_highlight")
-        for r_move, c_move in self.valid_moves:
+        
+        # Use valid_moves_for_highlight if available, otherwise default to empty
+        moves_to_highlight = getattr(self, 'valid_moves_for_highlight', [])
+        for r_move, c_move in moves_to_highlight:
             x1, y1 = self.board_to_canvas(r_move, c_move)
             radius = self.square_size // 5
             center_x, center_y = x1 + self.square_size // 2, y1 + self.square_size // 2
             self.canvas.create_oval(center_x - radius, center_y - radius, center_x + radius, center_y + radius, fill="#1E90FF", outline="", tags="highlight")
+        
         for r in range(ROWS):
             for c in range(COLS):
                 if self.board.grid[r][c]: self.draw_piece_with_check(r, c)
@@ -572,7 +585,6 @@ class EnhancedChessApp:
         if not self.game_started:
             self.game_started = True
             
-            # Create a more descriptive game mode name for the log
             mode = self.game_mode.get()
             if mode == GameMode.HUMAN_VS_BOT.value:
                 mode_name = f"Human ({self.human_color.capitalize()}) vs. AI ({('Black' if self.human_color == 'white' else 'White')})"
