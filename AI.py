@@ -1,4 +1,4 @@
-# v70 Optimisated Qsearch
+# v71.1 - Tweaks to qsearch and negamax optimisations galore
 
 import time
 from GameLogic import generate_legal_moves_generator
@@ -258,9 +258,10 @@ class ChessBot:
         if ply > 0 and hash_val in search_path:
             return self.DRAW_PENALTY
         
-        if is_insufficient_material(board):
-            return self.DRAW_SCORE
-        if self.game_mode == "ai_vs_ai" and self.ply_count + ply >= self.max_moves:
+        # Use the centralized get_game_state for robust termination checks
+        game_status, _ = get_game_state(board, turn, self.position_counts, self.ply_count + ply, self.max_moves)
+        if game_status != "ongoing":
+            if game_status == "checkmate": return -self.MATE_SCORE + ply
             return self.DRAW_SCORE
 
         original_alpha = alpha
@@ -274,9 +275,6 @@ class ChessBot:
 
         if depth <= 0:
             return self.qsearch(board, alpha, beta, turn, ply)
-
-        if ply > 0 and self.position_counts.get(hash_val, 0) >= 2:
-            return self.DRAW_PENALTY
 
         opponent_turn = 'black' if turn == 'white' else 'white'
         is_in_check_flag = is_in_check(board, turn)
@@ -295,7 +293,6 @@ class ChessBot:
                 self.tt[hash_val] = TTEntry(beta, depth, TT_FLAG_LOWERBOUND, None)
                 return beta 
 
-        # OPTIMIZATION: Generate moves and boards ONCE, outside the loop.
         legal_moves_with_boards = list(generate_legal_moves_generator(board, turn, yield_boards=True))
         
         if not legal_moves_with_boards:
@@ -310,14 +307,18 @@ class ChessBot:
         best_move_for_node = None
         
         for i, move in enumerate(ordered_moves):
-            # OPTIMIZATION: Look up the pre-calculated board instead of cloning.
             child_board = move_to_board_map.get(move)
             if not child_board: continue
 
-            child_hash = board_hash(child_board, opponent_turn)
-            self.position_counts[child_hash] = self.position_counts.get(child_hash, 0) + 1
+            # The redundant position_counts logic has been removed here for correctness.
             
-            is_tactical_move = calculate_material_swing(board, move, self._get_piece_value) != 0
+            is_direct_capture = board.grid[move[1][0]][move[1][1]] is not None
+            moving_piece = board.grid[move[0][0]][move[0][1]]
+            is_promotion = isinstance(moving_piece, Pawn) and (move[1][0] == 0 or move[1][0] == ROWS - 1)
+            gives_check = is_in_check(child_board, opponent_turn)
+            is_piercing = is_rook_piercing_capture(board, move)
+            is_evaporation = is_quiet_knight_evaporation(board, move)
+            is_tactical_move = is_direct_capture or is_promotion or gives_check or is_piercing or is_evaporation
             
             reduction = 0
             if (depth >= self.LMR_DEPTH_THRESHOLD and i >= self.LMR_MOVE_COUNT_THRESHOLD and 
@@ -329,18 +330,15 @@ class ChessBot:
             if reduction > 0 and score > alpha:
                 score = -self.negamax(child_board, depth - 1, -beta, -alpha, opponent_turn, ply + 1, search_path | {hash_val})
             
-            self.position_counts[child_hash] -= 1
-
             if score > alpha:
                 alpha = score
                 best_move_for_node = move
                 
             if alpha >= beta:
-                if not is_tactical_move:
+                if not is_direct_capture and not is_piercing:
                     if ply < len(self.killer_moves) and self.killer_moves[ply][0] != move:
                         self.killer_moves[ply][1] = self.killer_moves[ply][0]
                         self.killer_moves[ply][0] = move
-                    moving_piece = board.grid[move[0][0]][move[0][1]]
                     if moving_piece:
                         color_index = 0 if moving_piece.color == 'white' else 1
                         from_sq, to_sq = move[0][0]*COLS+move[0][1], move[1][0]*COLS+move[1][1]
@@ -356,15 +354,18 @@ class ChessBot:
     def qsearch(self, board, alpha, beta, turn, ply):
         self.nodes_searched += 1
         if self.cancellation_event.is_set(): raise SearchCancelledException()
-        
-        if is_insufficient_material(board):
+
+        # OPTIMIZATION: Use the centralized get_game_state for robust termination checks
+        game_status, _ = get_game_state(board, turn, self.position_counts, self.ply_count + ply, self.max_moves)
+        if game_status != "ongoing":
+            if game_status == "checkmate": return -self.MATE_SCORE + ply
             return self.DRAW_SCORE
-            
+
         if ply >= self.MAX_Q_SEARCH_DEPTH: return self.evaluate_board(board, turn)
         
-        is_in_check_flag = is_in_check(board, turn)
-        
         stand_pat = self.evaluate_board(board, turn)
+        is_in_check_flag = is_in_check(board, turn) # We still need this to decide on move generation
+        
         if not is_in_check_flag:
             if stand_pat >= beta: return beta
             alpha = max(alpha, stand_pat)
@@ -372,13 +373,13 @@ class ChessBot:
         opponent_color = 'black' if turn == 'white' else 'white'
         
         if is_in_check_flag:
+            # If in check, we must consider all legal moves as tactical
             tactical_moves = get_all_legal_moves(board, turn)
-            if not tactical_moves:
-                return -self.MATE_SCORE + ply
         else:
-            # OPTIMIZATION: Use the new, faster capture generator
+            # Otherwise, we use the optimized generator for only captures and promotions
             tactical_moves = list(generate_all_captures(board, turn))
 
+        # Pre-calculate material swing for sorting and delta pruning
         scored_moves = []
         for move in tactical_moves:
             swing = calculate_material_swing(board, move, self._get_piece_value)
@@ -387,12 +388,14 @@ class ChessBot:
         scored_moves.sort(key=lambda item: item[1], reverse=True)
 
         for move, swing in scored_moves:
+            # Delta Pruning
             if not is_in_check_flag and stand_pat + swing + self.Q_SEARCH_SAFETY_MARGIN < alpha:
                 continue
                 
             sim_board = board.clone()
             sim_board.make_move(move[0], move[1])
 
+            # A check is needed since we might be using pseudo_legal_moves from the capture generator
             if is_in_check(sim_board, turn):
                 continue
             
@@ -406,6 +409,10 @@ class ChessBot:
     def evaluate_board(self, board, turn_to_move):
         if is_insufficient_material(board):
             return self.DRAW_SCORE
+        
+        # Cache the piece lists
+        white_pieces = board.white_pieces
+        black_pieces = board.black_pieces
 
         # --- Variant-Specific Evaluation Bonuses ---
         QUEEN_AOE_POTENTIAL_BONUS = 25  # Bonus per piece in Queen's blast radius
@@ -416,14 +423,14 @@ class ChessBot:
         black_pst_mg, black_pst_eg = 0, 0
         
         # --- Phase Calculation (Unchanged) ---
-        phase_material_score = sum(PIECE_VALUES_MG.get(type(p), 0) for p in board.white_pieces + board.black_pieces if not isinstance(p, (Pawn, King)))
+        phase_material_score = sum(PIECE_VALUES_MG.get(type(p), 0) for p in white_pieces + black_pieces if not isinstance(p, (Pawn, King)))
         if INITIAL_PHASE_MATERIAL == 0:
             phase = 0
         else:
             phase = min(256, (phase_material_score * 256) // INITIAL_PHASE_MATERIAL)
 
         # --- Material and PST Calculation ---
-        for piece in board.white_pieces:
+        for piece in white_pieces:
             piece_type = type(piece)
             r, c = piece.pos
             # Tapered material value

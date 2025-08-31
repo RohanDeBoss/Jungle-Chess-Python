@@ -67,10 +67,11 @@ class Queen(Piece):
     def symbol(self): return "♕" if self.color == "white" else "♛"
     def get_valid_moves(self, board, pos):
         moves = []
+        grid = board.grid # Cache the grid lookup
         for dr, dc in DIRECTIONS['queen']:
             r, c = pos[0] + dr, pos[1] + dc
             while 0 <= r < ROWS and 0 <= c < COLS:
-                target = board.grid[r][c]
+                target = grid[r][c] # Access the faster local variable
                 if target is None:
                     moves.append((r, c))
                 else:
@@ -100,10 +101,11 @@ class Rook(Piece):
     def symbol(self): return "♖" if self.color == "white" else "♜"
     def get_valid_moves(self, board, pos):
         moves = []
+        grid = board.grid # Cache the grid lookup
         for dr, dc in DIRECTIONS['rook']:
             r, c = pos[0] + dr, pos[1] + dc
             while 0 <= r < ROWS and 0 <= c < COLS:
-                target = board.grid[r][c]
+                target = grid[r][c] # Access the faster local variable
                 if target is None:
                     moves.append((r, c))
                 else:
@@ -265,11 +267,21 @@ class Board:
     def remove_piece(self, r, c):
         piece = self.grid[r][c]
         if not piece: return
-        if piece.color == 'white': self.white_pieces.remove(piece)
-        else: self.black_pieces.remove(piece)
+        
+        if piece.color == 'white':
+            self.white_pieces.remove(piece)
+        else:
+            self.black_pieces.remove(piece)
+            
         if isinstance(piece, King):
-            if piece.color == "white": self.white_king_pos = None
-            else: self.black_king_pos = None
+            if piece.color == "white":
+                self.white_king_pos = None
+            else:
+                self.black_king_pos = None
+                
+        # CRITICAL FIX: Decommission the piece by nullifying its position.
+        piece.pos = None 
+        
         self.grid[r][c] = None
 
     def move_piece(self, start, end):
@@ -510,3 +522,23 @@ def generate_all_captures(board, color):
             for end_pos in piece.get_valid_moves(board, start_pos):
                 if board.grid[end_pos[0]][end_pos[1]] is not None:
                     yield (start_pos, end_pos)
+
+def is_quiet_knight_evaporation(board, move):
+    """
+    A fast, clone-free check to see if a quiet Knight move will evaporate
+    any enemy pieces from its destination square.
+    """
+    start_pos, end_pos = move
+    moving_piece = board.grid[start_pos[0]][start_pos[1]]
+    
+    # This only applies to Knights making a non-capturing move.
+    if not isinstance(moving_piece, Knight) or board.grid[end_pos[0]][end_pos[1]] is not None:
+        return False
+        
+    # Check the future evaporation zone from the destination square.
+    for r, c in KNIGHT_ATTACKS_FROM.get(end_pos, set()):
+        target = board.grid[r][c]
+        if target and target.color == moving_piece.opponent_color:
+            return True # An enemy piece will be evaporated.
+            
+    return False
