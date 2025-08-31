@@ -1,4 +1,4 @@
-# v71.1 - Tweaks to qsearch and negamax optimisations galore
+# v71.3 Individual value changes + Bishop mobility removed + Removed draw penalty + Move ordering tweaks
 
 import time
 from GameLogic import generate_legal_moves_generator
@@ -8,7 +8,7 @@ from collections import namedtuple
 
 # --- Tapered Piece Values for Jungle Chess ---
 PIECE_VALUES_MG = {
-    Pawn: 100, Knight: 850, Bishop: 700, Rook: 600, Queen: 900, King: 20000
+    Pawn: 100, Knight: 850, Bishop: 700, Rook: 650, Queen: 850, King: 20000
 }
 PIECE_VALUES_EG = {
     Pawn: 100, Knight: 800, Bishop: 650, Rook: 750, Queen: 700, King: 20000
@@ -51,7 +51,7 @@ class SearchCancelledException(Exception): pass
 
 class ChessBot:
     search_depth = 3
-    MATE_SCORE, DRAW_SCORE, DRAW_PENALTY = 1000000, 0, -10
+    MATE_SCORE, DRAW_SCORE = 1000000, 0
     MAX_Q_SEARCH_DEPTH = 8
     LMR_DEPTH_THRESHOLD, LMR_MOVE_COUNT_THRESHOLD, LMR_REDUCTION = 3, 4, 1
     NMP_MIN_DEPTH, NMP_BASE_REDUCTION, NMP_DEPTH_DIVISOR = 3, 2, 6
@@ -59,9 +59,9 @@ class ChessBot:
     
     BONUS_PV_MOVE = 10_000_000
     BONUS_CAPTURE = 8_000_000
-    BONUS_QN_TACTIC = 5_000_000
     BONUS_KILLER_1 = 4_000_000
-    BONUS_KILLER_2 = 3_500_000
+    BONUS_KILLER_2 = 3_000_000
+    BONUS_QN_TACTIC = 3_500_000
     
     def __init__(self, board, color, position_counts, comm_queue, cancellation_event, bot_name=None, ply_count=0, game_mode="bot", max_moves=200):
         self.board = board
@@ -256,7 +256,7 @@ class ChessBot:
         
         hash_val = board_hash(board, turn)
         if ply > 0 and hash_val in search_path:
-            return self.DRAW_PENALTY
+            return self.DRAW_SCORE
         
         # Use the centralized get_game_state for robust termination checks
         game_status, _ = get_game_state(board, turn, self.position_counts, self.ply_count + ply, self.max_moves)
@@ -417,7 +417,6 @@ class ChessBot:
         # --- Variant-Specific Evaluation Bonuses ---
         QUEEN_AOE_POTENTIAL_BONUS = 25  # Bonus per piece in Queen's blast radius
         ROOK_PIERCING_POTENTIAL_BONUS = 20 # Bonus per piece a Rook skewers
-        BISHOP_MOBILITY_BONUS = 3       # Bonus per potential zig-zag move
 
         white_pst_mg, white_pst_eg = 0, 0
         black_pst_mg, black_pst_eg = 0, 0
@@ -478,14 +477,6 @@ class ChessBot:
                         else:
                             white_pst_mg += target_val // 4
             
-            elif piece_type == Bishop:
-                # Approximate mobility by checking one step in each zig-zag direction
-                mobility = 0
-                direction_pairs = (((-1, 1), (-1, -1)), ((1, 1), (1, -1)), ((-1, 1), (1, 1)), ((-1, -1), (1, -1)))
-                for d1, d2 in direction_pairs:
-                    if 0 <= r+d1[0] < ROWS and 0 <= c+d1[1] < COLS and board.grid[r+d1[0]][c+d1[1]] is None: mobility += 1
-                    if 0 <= r+d2[0] < ROWS and 0 <= c+d2[1] < COLS and board.grid[r+d2[0]][c+d2[1]] is None: mobility += 1
-                white_pst_mg += mobility * BISHOP_MOBILITY_BONUS
 
         # --- Repeat for Black Pieces ---
         for piece in board.black_pieces:
@@ -534,14 +525,6 @@ class ChessBot:
                             black_pst_mg += (target_val - tapered_value) // 4
                         else:
                             black_pst_mg += target_val // 4
-            
-            elif piece_type == Bishop:
-                mobility = 0
-                direction_pairs = (((-1, 1), (-1, -1)), ((1, 1), (1, -1)), ((-1, 1), (1, 1)), ((-1, -1), (1, -1)))
-                for d1, d2 in direction_pairs:
-                    if 0 <= r+d1[0] < ROWS and 0 <= c+d1[1] < COLS and board.grid[r+d1[0]][c+d1[1]] is None: mobility += 1
-                    if 0 <= r+d2[0] < ROWS and 0 <= c+d2[1] < COLS and board.grid[r+d2[0]][c+d2[1]] is None: mobility += 1
-                black_pst_mg += mobility * BISHOP_MOBILITY_BONUS
 
         # --- Final Score Calculation (Unchanged) ---
         mg_score = white_pst_mg - black_pst_mg
@@ -554,10 +537,10 @@ class ChessBot:
 # --- Piece-Square Tables (PSTs) ---
 pawn_pst = [
     [  0,   0,   0,   0,   0,   0,   0,   0],
-    [ 90,  90,  90,  90,  90,  90,  90,  90],
+    [ 80,  80,  80,  80,  80,  80,  80,  80],
     [ 50,  50,  50,  50,  50,  50,  50,  50],
     [ 30,  30,  40,  50,  50,  40,  30,  30],
-    [ 20,  20,  30,  40,  40,  30,  20,  20],
+    [ 20,  20,  30,  40,  30,  30,  20,  20],
     [ 10,  10,  20,  30,  30,  20,  10,  10],
     [  0,   0,   0,   0,   0,   0,   0,   0],
     [  0,   0,   0,   0,   0,   0,   0,   0]
@@ -567,8 +550,8 @@ knight_pst = [
     [-40, -20,   5,  10,  10,   5, -20, -40],
     [-30,   5,  20,  25,  25,  20,   5, -30],
     [-30,  10,  25,  35,  35,  25,  10, -30],
-    [-30,  10,  25,  35,  35,  25,  10, -30],
-    [-30,  10,  20,  25,  25,  20,  10, -30],
+    [  0,  10,  25,  35,  35,  25,  10,   0],
+    [-30,  10,  25,  25,  25,  25,  10, -30],
     [-40, -20,   5,  10,  10,   5, -20, -40],
     [-50, -45, -30, -30, -30, -30, -45, -50]
 ]
@@ -598,7 +581,7 @@ queen_pst = [
     [-10,   0,   5,   5,   5,   5,   0, -10],
     [ -5,   0,  10,  15,  15,  10,   0,  -5],
     [  0,   0,  10,  15,  15,  10,   0,  -5],
-    [-10,   5,  15,   5,   5,  15,   5, -10],
+    [-10,   5,  25,   5,   5,  25,   5, -10],
     [-10,   0,   5,   0,   0,   0,   5, -10],
     [-20, -10, -10,  -5, -15, -10, -10, -20]
 ]
@@ -610,7 +593,7 @@ king_midgame_pst = [
     [-20, -30, -30, -40, -40, -30, -30, -20],
     [-10, -20, -20, -20, -20, -20, -20, -10],
     [ 20,  20,   0,   0,   0,   0,  20,  20],
-    [ 20,  30,  10,   0,   5,  10,  30,  20]
+    [ -10,  0,   0,   0,   5,   0,  0,  -10]
 ]
 king_endgame_pst = [
     [-50, -40, -30, -20, -20, -30, -40, -50],
