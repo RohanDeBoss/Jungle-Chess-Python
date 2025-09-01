@@ -1,4 +1,4 @@
-# v73 Negamax optimisations
+# v75 - Qsearch and Negamax fixed for Jungle Chess
 
 import time
 from GameLogic import generate_legal_moves_generator
@@ -295,16 +295,6 @@ class ChessBot:
                 self.tt[hash_val] = TTEntry(beta, depth, TT_FLAG_LOWERBOUND, None)
                 return beta 
 
-        # --- PERFORMANCE FIX: Pre-calculate tapered values ONCE per node ---
-        # This is used for both move ordering and the LMR check, eliminating all redundancy.
-        all_pieces = board.white_pieces + board.black_pieces
-        phase_material_score = sum(PIECE_VALUES_MG.get(type(p), 0) for p in all_pieces if not isinstance(p, (Pawn, King)))
-        phase = min(256, (phase_material_score * 256) // INITIAL_PHASE_MATERIAL) if INITIAL_PHASE_MATERIAL > 0 else 0
-        tapered_vals_by_type = {
-            ptype: (vals_mg * phase + PIECE_VALUES_EG[ptype] * (256 - phase)) >> 8
-            for ptype, vals_mg in PIECE_VALUES_MG.items()
-        }
-
         legal_moves_with_boards = list(generate_legal_moves_generator(board, turn, yield_boards=True))
         if not legal_moves_with_boards:
             return -self.MATE_SCORE + ply if is_in_check_flag else self.DRAW_SCORE
@@ -313,7 +303,11 @@ class ChessBot:
         move_to_board_map = dict(legal_moves_with_boards)
 
         hash_move = tt_entry.best_move if tt_entry else None
-        ordered_moves = self.order_moves(board, legal_moves_list, ply, hash_move, tapered_vals_by_type)
+        ordered_moves = self.order_moves(board, legal_moves_list, ply, hash_move)
+        
+        # --- THE CONSOLIDATION FIX ---
+        # Generate the set of all tactical moves ONCE. This is our single source of truth.
+        tactical_moves_set = set(generate_all_tactical_moves(board, turn))
         
         best_move_for_node = None
         
@@ -321,15 +315,12 @@ class ChessBot:
             child_board = move_to_board_map.get(move)
             if not child_board: continue
 
-            # --- THE REAL OPTIMIZATION ---
-            # Use the fast, clone-free swing calculator. This is much faster
-            # than the old cloning method and safer than the flawed is_in_check method.
-            # It's a simple, robust heuristic for LMR.
-            is_capture_like_move = calculate_material_swing(board, move, tapered_vals_by_type) != 0
+            # The LMR check is now a simple, fast, and authoritative lookup.
+            is_tactical = move in tactical_moves_set
 
             reduction = 0
             if (depth >= self.LMR_DEPTH_THRESHOLD and i >= self.LMR_MOVE_COUNT_THRESHOLD and 
-                not is_in_check_flag and not is_capture_like_move):
+                not is_in_check_flag and not is_tactical):
                 reduction = self.LMR_REDUCTION
 
             score = -self.negamax(child_board, depth - 1 - reduction, -beta, -alpha, opponent_turn, ply + 1, search_path | {hash_val})
@@ -342,7 +333,7 @@ class ChessBot:
                 best_move_for_node = move
                 
             if alpha >= beta:
-                if not is_capture_like_move:
+                if not is_tactical: # Use our new authoritative flag
                     if ply < len(self.killer_moves) and self.killer_moves[ply][0] != move:
                         self.killer_moves[ply][1] = self.killer_moves[ply][0]
                         self.killer_moves[ply][0] = move
@@ -369,46 +360,43 @@ class ChessBot:
             if game_status == "checkmate": return -self.MATE_SCORE + ply
             return self.DRAW_SCORE
 
-        # --- BUG FIX STARTS HERE ---
         if ply >= self.MAX_Q_SEARCH_DEPTH:
-            # We only need the score, so we unpack the tuple and discard the map.
             score, _ = self.evaluate_board(board, turn)
             return score
         
-        # Get stand_pat and pre-computed values in ONE efficient call.
         stand_pat, tapered_vals_by_type = self.evaluate_board(board, turn)
-        # --- BUG FIX ENDS HERE ---
         
         is_in_check_flag = is_in_check(board, turn)
         
         if not is_in_check_flag:
-            # Now 'stand_pat' is correctly an integer, and this comparison works.
             if stand_pat >= beta: return beta
             alpha = max(alpha, stand_pat)
 
         opponent_color = 'black' if turn == 'white' else 'white'
         
         if is_in_check_flag:
-            tactical_moves = get_all_legal_moves(board, turn)
+            promising_moves = get_all_legal_moves(board, turn)
         else:
-            tactical_moves = list(generate_all_captures(board, turn))
+            promising_moves = list(generate_all_tactical_moves(board, turn))
 
-        scored_moves = []
-        # BUG FIX: Handle the edge case where tapered_vals_by_type might be empty
-        # if the game is in an insufficient material state, which qsearch might still enter.
         if not tapered_vals_by_type:
             return self.DRAW_SCORE
 
-        for move in tactical_moves:
-            swing = calculate_material_swing(board, move, tapered_vals_by_type)
-            scored_moves.append((move, swing))
+        # Use our fast, authoritative swing calculator for move ordering.
+        move_scores = {move: calculate_material_swing(board, move, tapered_vals_by_type) for move in promising_moves}
+        promising_moves.sort(key=lambda m: move_scores.get(m, 0), reverse=True)
 
-        scored_moves.sort(key=lambda item: item[1], reverse=True)
-
-        for move, _ in scored_moves:
+        for move in promising_moves:
+            swing = move_scores.get(move, 0)
+            
+            # --- THE SAFE PRUNING FIX (DELTA PRUNING) ---
+            # Prune only if the move has no realistic chance of raising alpha.
+            if not is_in_check_flag and stand_pat + swing + self.Q_SEARCH_SAFETY_MARGIN < alpha:
+                continue
+                
             sim_board = board.clone()
             sim_board.make_move(move[0], move[1])
-
+            
             if is_in_check(sim_board, turn):
                 continue
             
@@ -417,6 +405,10 @@ class ChessBot:
                 return beta
             alpha = max(alpha, search_score)
             
+        # If in check and no legal moves were found, it's checkmate.
+        if is_in_check_flag and alpha < self.MATE_SCORE - 100 and not has_legal_moves(board, turn):
+            return -self.MATE_SCORE + ply
+
         return alpha
 
     def evaluate_board(self, board, turn_to_move):

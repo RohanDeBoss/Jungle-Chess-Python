@@ -548,3 +548,28 @@ def is_quiet_knight_evaporation(board, move):
         if target and target.color == moving_piece.opponent_color:
             return True
     return False
+
+def generate_all_tactical_moves(board, color):
+    """
+    An optimized generator that yields all pseudo-legal tactical moves.
+    This includes captures, promotions, quiet rook skewers, and quiet knight evaporations.
+    """
+    piece_list = board.white_pieces if color == 'white' else board.black_pieces
+    
+    for piece in piece_list:
+        start_pos = piece.pos
+        if start_pos is None: continue
+
+        for end_pos in piece.get_valid_moves(board, start_pos):
+            is_capture = board.grid[end_pos[0]][end_pos[1]] is not None
+            is_promotion = isinstance(piece, Pawn) and (end_pos[0] == 0 or end_pos[0] == ROWS - 1)
+            
+            if is_capture or is_promotion:
+                yield (start_pos, end_pos)
+                continue # Move has been yielded, no need for further checks
+            
+            # Check for special quiet tactical moves
+            if is_rook_piercing_capture(board, (start_pos, end_pos)):
+                yield (start_pos, end_pos)
+            elif is_quiet_knight_evaporation(board, (start_pos, end_pos)):
+                yield (start_pos, end_pos)

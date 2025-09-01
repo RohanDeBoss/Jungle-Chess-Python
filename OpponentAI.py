@@ -1,4 +1,4 @@
-# v70.1 Compadibility with new GameLogic structure
+# v73.99 - Latest v74 minus the eval changes
 
 import time
 from GameLogic import generate_legal_moves_generator
@@ -59,7 +59,6 @@ class OpponentAI:
     
     BONUS_PV_MOVE = 10_000_000
     BONUS_CAPTURE = 8_000_000
-    BONUS_QN_TACTIC = 5_000_000
     BONUS_KILLER_1 = 4_000_000
     BONUS_KILLER_2 = 3_500_000
     
@@ -109,19 +108,19 @@ class OpponentAI:
         eg_val = PIECE_VALUES_EG.get(type(piece), 0)
         return (mg_val * phase + eg_val * (256 - phase)) >> 8
 
-    def order_moves(self, board, moves, ply, hash_move=None):
+    def order_moves(self, board, moves, ply, hash_move=None, tapered_vals_by_type=None):
         if not moves: return []
-        if INITIAL_PHASE_MATERIAL == 0:
-            phase = 0
-        else:
-            phase_material_score = sum(PIECE_VALUES_MG.get(type(p), 0) for p in board.white_pieces + board.black_pieces if not isinstance(p, (Pawn, King)))
-            phase = (phase_material_score * 256) // INITIAL_PHASE_MATERIAL
-        phase = min(phase, 256)
+        
+        # If the pre-computed map isn't provided (e.g., from the root search), calculate it once.
+        if tapered_vals_by_type is None:
+            all_pieces = board.white_pieces + board.black_pieces
+            phase_material_score = sum(PIECE_VALUES_MG.get(type(p), 0) for p in all_pieces if not isinstance(p, (Pawn, King)))
+            phase = min(256, (phase_material_score * 256) // INITIAL_PHASE_MATERIAL) if INITIAL_PHASE_MATERIAL > 0 else 0
+            tapered_vals_by_type = {
+                ptype: (vals_mg * phase + PIECE_VALUES_EG[ptype] * (256 - phase)) >> 8
+                for ptype, vals_mg in PIECE_VALUES_MG.items()
+            }
 
-        def get_tapered_value(p):
-            mg_val = PIECE_VALUES_MG.get(type(p), 0)
-            eg_val = PIECE_VALUES_EG.get(type(p), 0)
-            return (mg_val * phase + eg_val * (256 - phase)) >> 8
         scores = {}
         killers = self.killer_moves[ply] if ply < len(self.killer_moves) else [None, None]
         moving_color = self.color if ply % 2 == 0 else self.opponent_color
@@ -136,7 +135,10 @@ class OpponentAI:
                 target_piece = board.grid[move[1][0]][move[1][1]]
                 
                 if target_piece is not None:
-                    score = self.BONUS_CAPTURE + (get_tapered_value(target_piece) * 10 - get_tapered_value(moving_piece))
+                    # Use the fast, pre-computed map
+                    moving_val = tapered_vals_by_type.get(type(moving_piece), 0)
+                    target_val = tapered_vals_by_type.get(type(target_piece), 0)
+                    score = self.BONUS_CAPTURE + (target_val * 10 - moving_val)
                 else:
                     if move in killers:
                         score = self.BONUS_KILLER_1 if move == killers[0] else self.BONUS_KILLER_2
@@ -256,11 +258,11 @@ class OpponentAI:
         
         hash_val = board_hash(board, turn)
         if ply > 0 and hash_val in search_path:
-            return self.DRAW_PENALTY
-        
-        if is_insufficient_material(board):
             return self.DRAW_SCORE
-        if self.game_mode == "ai_vs_ai" and self.ply_count + ply >= self.max_moves:
+        
+        game_status, _ = get_game_state(board, turn, self.position_counts, self.ply_count + ply, self.max_moves)
+        if game_status != "ongoing":
+            if game_status == "checkmate": return -self.MATE_SCORE + ply
             return self.DRAW_SCORE
 
         original_alpha = alpha
@@ -274,9 +276,6 @@ class OpponentAI:
 
         if depth <= 0:
             return self.qsearch(board, alpha, beta, turn, ply)
-
-        if ply > 0 and self.position_counts.get(hash_val, 0) >= 2:
-            return self.DRAW_PENALTY
 
         opponent_turn = 'black' if turn == 'white' else 'white'
         is_in_check_flag = is_in_check(board, turn)
@@ -295,33 +294,41 @@ class OpponentAI:
                 self.tt[hash_val] = TTEntry(beta, depth, TT_FLAG_LOWERBOUND, None)
                 return beta 
 
-        # OPTIMIZATION: Generate moves and boards ONCE, outside the loop.
+        # --- PERFORMANCE FIX: Pre-calculate tapered values ONCE per node ---
+        # This is used for both move ordering and the LMR check, eliminating all redundancy.
+        all_pieces = board.white_pieces + board.black_pieces
+        phase_material_score = sum(PIECE_VALUES_MG.get(type(p), 0) for p in all_pieces if not isinstance(p, (Pawn, King)))
+        phase = min(256, (phase_material_score * 256) // INITIAL_PHASE_MATERIAL) if INITIAL_PHASE_MATERIAL > 0 else 0
+        tapered_vals_by_type = {
+            ptype: (vals_mg * phase + PIECE_VALUES_EG[ptype] * (256 - phase)) >> 8
+            for ptype, vals_mg in PIECE_VALUES_MG.items()
+        }
+
         legal_moves_with_boards = list(generate_legal_moves_generator(board, turn, yield_boards=True))
-        
         if not legal_moves_with_boards:
             return -self.MATE_SCORE + ply if is_in_check_flag else self.DRAW_SCORE
 
-        legal_moves_list = [move for move, board in legal_moves_with_boards]
+        legal_moves_list = [move for move, _ in legal_moves_with_boards]
         move_to_board_map = dict(legal_moves_with_boards)
 
         hash_move = tt_entry.best_move if tt_entry else None
-        ordered_moves = self.order_moves(board, legal_moves_list, ply, hash_move)
+        ordered_moves = self.order_moves(board, legal_moves_list, ply, hash_move, tapered_vals_by_type)
         
         best_move_for_node = None
         
         for i, move in enumerate(ordered_moves):
-            # OPTIMIZATION: Look up the pre-calculated board instead of cloning.
             child_board = move_to_board_map.get(move)
             if not child_board: continue
 
-            child_hash = board_hash(child_board, opponent_turn)
-            self.position_counts[child_hash] = self.position_counts.get(child_hash, 0) + 1
-            
-            is_tactical_move = calculate_material_swing(board, move, self._get_piece_value) != 0
-            
+            # --- THE REAL OPTIMIZATION ---
+            # Use the fast, clone-free swing calculator. This is much faster
+            # than the old cloning method and safer than the flawed is_in_check method.
+            # It's a simple, robust heuristic for LMR.
+            is_capture_like_move = calculate_material_swing(board, move, tapered_vals_by_type) != 0
+
             reduction = 0
             if (depth >= self.LMR_DEPTH_THRESHOLD and i >= self.LMR_MOVE_COUNT_THRESHOLD and 
-                not is_in_check_flag and not is_tactical_move):
+                not is_in_check_flag and not is_capture_like_move):
                 reduction = self.LMR_REDUCTION
 
             score = -self.negamax(child_board, depth - 1 - reduction, -beta, -alpha, opponent_turn, ply + 1, search_path | {hash_val})
@@ -329,17 +336,16 @@ class OpponentAI:
             if reduction > 0 and score > alpha:
                 score = -self.negamax(child_board, depth - 1, -beta, -alpha, opponent_turn, ply + 1, search_path | {hash_val})
             
-            self.position_counts[child_hash] -= 1
-
             if score > alpha:
                 alpha = score
                 best_move_for_node = move
                 
             if alpha >= beta:
-                if not is_tactical_move:
+                if not is_capture_like_move:
                     if ply < len(self.killer_moves) and self.killer_moves[ply][0] != move:
                         self.killer_moves[ply][1] = self.killer_moves[ply][0]
                         self.killer_moves[ply][0] = move
+                    
                     moving_piece = board.grid[move[0][0]][move[0][1]]
                     if moving_piece:
                         color_index = 0 if moving_piece.color == 'white' else 1
@@ -357,18 +363,15 @@ class OpponentAI:
         self.nodes_searched += 1
         if self.cancellation_event.is_set(): raise SearchCancelledException()
 
-        # Get the game state once
         game_status, _ = get_game_state(board, turn, self.position_counts, self.ply_count + ply, self.max_moves)
         if game_status != "ongoing":
             if game_status == "checkmate": return -self.MATE_SCORE + ply
             return self.DRAW_SCORE
 
         if ply >= self.MAX_Q_SEARCH_DEPTH:
-            # The new evaluate_board returns a tuple (score, map)
             score, _ = self.evaluate_board(board, turn)
             return score
         
-        # Get the stand_pat score and the pre-computed map in one call
         stand_pat, tapered_vals_by_type = self.evaluate_board(board, turn)
         
         is_in_check_flag = is_in_check(board, turn)
@@ -379,30 +382,29 @@ class OpponentAI:
 
         opponent_color = 'black' if turn == 'white' else 'white'
         
-        # Generate the correct set of tactical moves
         if is_in_check_flag:
-            tactical_moves = get_all_legal_moves(board, turn)
+            promising_moves = get_all_legal_moves(board, turn)
         else:
-            tactical_moves = list(generate_all_captures(board, turn))
+            promising_moves = list(generate_all_tactical_moves(board, turn))
 
-        # Handle the edge case where the board is drawn but qsearch was still called
         if not tapered_vals_by_type:
             return self.DRAW_SCORE
 
-        scored_moves = []
-        for move in tactical_moves:
-            # THIS IS THE KEY FIX: We are now passing the correct DICTIONARY
-            swing = calculate_material_swing(board, move, tapered_vals_by_type)
-            scored_moves.append((move, swing))
+        # Use our fast, authoritative swing calculator for move ordering.
+        move_scores = {move: calculate_material_swing(board, move, tapered_vals_by_type) for move in promising_moves}
+        promising_moves.sort(key=lambda m: move_scores.get(m, 0), reverse=True)
 
-        # Sort moves for better alpha-beta pruning
-        scored_moves.sort(key=lambda item: item[1], reverse=True)
-
-        # Search the moves
-        for move, _ in scored_moves:
+        for move in promising_moves:
+            swing = move_scores.get(move, 0)
+            
+            # --- THE SAFE PRUNING FIX (DELTA PRUNING) ---
+            # Prune only if the move has no realistic chance of raising alpha.
+            if not is_in_check_flag and stand_pat + swing + self.Q_SEARCH_SAFETY_MARGIN < alpha:
+                continue
+                
             sim_board = board.clone()
             sim_board.make_move(move[0], move[1])
-
+            
             if is_in_check(sim_board, turn):
                 continue
             
@@ -411,40 +413,51 @@ class OpponentAI:
                 return beta
             alpha = max(alpha, search_score)
             
+        # If in check and no legal moves were found, it's checkmate.
+        if is_in_check_flag and alpha < self.MATE_SCORE - 100 and not has_legal_moves(board, turn):
+            return -self.MATE_SCORE + ply
+
         return alpha
 
     def evaluate_board(self, board, turn_to_move):
         if is_insufficient_material(board):
-            return self.DRAW_SCORE
+            # OPTIMIZATION: Return an empty dict as there's no need for tapered values here.
+            return self.DRAW_SCORE, {}
+        
+        white_pieces = board.white_pieces
+        black_pieces = board.black_pieces
+        grid = board.grid
 
-        # --- Variant-Specific Evaluation Bonuses ---
-        QUEEN_AOE_POTENTIAL_BONUS = 25  # Bonus per piece in Queen's blast radius
-        ROOK_PIERCING_POTENTIAL_BONUS = 20 # Bonus per piece a Rook skewers
-        BISHOP_MOBILITY_BONUS = 3       # Bonus per potential zig-zag move
+        QUEEN_AOE_POTENTIAL_BONUS = 25
+        ROOK_PIERCING_POTENTIAL_BONUS = 20
 
         white_pst_mg, white_pst_eg = 0, 0
         black_pst_mg, black_pst_eg = 0, 0
         
-        # --- Phase Calculation (Unchanged) ---
-        phase_material_score = sum(PIECE_VALUES_MG.get(type(p), 0) for p in board.white_pieces + board.black_pieces if not isinstance(p, (Pawn, King)))
+        phase_material_score = sum(PIECE_VALUES_MG.get(type(p), 0) for p in white_pieces + black_pieces if not isinstance(p, (Pawn, King)))
         if INITIAL_PHASE_MATERIAL == 0:
             phase = 0
         else:
             phase = min(256, (phase_material_score * 256) // INITIAL_PHASE_MATERIAL)
 
-        # --- Material and PST Calculation ---
-        for piece in board.white_pieces:
+        # --- This pre-computation is now done once and shared with qsearch ---
+        tapered_vals_by_type = {
+            ptype: (vals_mg * phase + PIECE_VALUES_EG[ptype] * (256 - phase)) >> 8
+            for ptype, vals_mg in PIECE_VALUES_MG.items()
+        }
+
+        # --- Material and PST Calculation (White) ---
+        for piece in white_pieces:
             piece_type = type(piece)
             r, c = piece.pos
-            # Tapered material value
+            
             mg_val = PIECE_VALUES_MG.get(piece_type, 0)
             eg_val = PIECE_VALUES_EG.get(piece_type, 0)
-            tapered_value = (mg_val * phase + eg_val * (256 - phase)) >> 8
+            
             white_pst_mg += mg_val
             white_pst_eg += eg_val
 
-            # Standard PST
-            if piece_type == King:
+            if piece_type is King:
                 white_pst_mg += PIECE_SQUARE_TABLES['king_midgame'][r][c]
                 white_pst_eg += PIECE_SQUARE_TABLES['king_endgame'][r][c]
             elif PIECE_SQUARE_TABLES.get(piece_type):
@@ -452,58 +465,43 @@ class OpponentAI:
                 white_pst_mg += pst_val
                 white_pst_eg += pst_val
 
-            # --- Variant-Aware Positional Bonuses for White ---
-            if piece_type == Queen:
+            if piece_type is Queen:
                 for adj_r, adj_c in ADJACENT_SQUARES_MAP.get(piece.pos, set()):
-                    if board.grid[adj_r][adj_c] and board.grid[adj_r][adj_c].color == 'black':
+                    target = grid[adj_r][adj_c]
+                    if target and target.color == 'black':
                         white_pst_mg += QUEEN_AOE_POTENTIAL_BONUS
             
-            elif piece_type == Rook:
-                # Check horizontal and vertical for skewer potential
+            elif piece_type is Rook:
                 for dr, dc in DIRECTIONS['rook']:
                     for i in range(1, 8):
                         nr, nc = r + dr*i, c + dc*i
                         if not (0 <= nr < ROWS and 0 <= nc < COLS): break
-                        target = board.grid[nr][nc]
+                        target = grid[nr][nc]
                         if target and target.color == 'black':
                             white_pst_mg += ROOK_PIERCING_POTENTIAL_BONUS
 
-            elif piece_type == Knight:
+            elif piece_type is Knight:
+                knight_tapered_value = tapered_vals_by_type[Knight]
                 for threatened_pos in KNIGHT_ATTACKS_FROM.get(piece.pos, set()):
-                    target = board.grid[threatened_pos[0]][threatened_pos[1]]
+                    target = grid[threatened_pos[0]][threatened_pos[1]]
                     if target and target.color == 'black':
-                        target_mg = PIECE_VALUES_MG.get(type(target), 0)
-                        target_eg = PIECE_VALUES_EG.get(type(target), 0)
-                        target_val = (target_mg * phase + target_eg * (256 - phase)) >> 8
-                        # FIX: Correctly evaluate knight trades as neutral
-                        if isinstance(target, Knight):
-                            white_pst_mg += (target_val - tapered_value) // 4
-                        else:
-                            white_pst_mg += target_val // 4
-            
-            elif piece_type == Bishop:
-                # Approximate mobility by checking one step in each zig-zag direction
-                mobility = 0
-                direction_pairs = (((-1, 1), (-1, -1)), ((1, 1), (1, -1)), ((-1, 1), (1, 1)), ((-1, -1), (1, -1)))
-                for d1, d2 in direction_pairs:
-                    if 0 <= r+d1[0] < ROWS and 0 <= c+d1[1] < COLS and board.grid[r+d1[0]][c+d1[1]] is None: mobility += 1
-                    if 0 <= r+d2[0] < ROWS and 0 <= c+d2[1] < COLS and board.grid[r+d2[0]][c+d2[1]] is None: mobility += 1
-                white_pst_mg += mobility * BISHOP_MOBILITY_BONUS
+                        target_val = tapered_vals_by_type[type(target)]
+                        bonus = (target_val - knight_tapered_value) if type(target) is Knight else target_val
+                        white_pst_mg += bonus // 4
 
-        # --- Repeat for Black Pieces ---
-        for piece in board.black_pieces:
+        # --- Material and PST Calculation (Black) ---
+        for piece in black_pieces:
             piece_type = type(piece)
             r, c = piece.pos
             r_flipped = ROWS - 1 - r
-            # Tapered material value
+            
             mg_val = PIECE_VALUES_MG.get(piece_type, 0)
             eg_val = PIECE_VALUES_EG.get(piece_type, 0)
-            tapered_value = (mg_val * phase + eg_val * (256 - phase)) >> 8
+
             black_pst_mg += mg_val
             black_pst_eg += eg_val
 
-            # Standard PST
-            if piece_type == King:
+            if piece_type is King:
                 black_pst_mg += PIECE_SQUARE_TABLES['king_midgame'][r_flipped][c]
                 black_pst_eg += PIECE_SQUARE_TABLES['king_endgame'][r_flipped][c]
             elif PIECE_SQUARE_TABLES.get(piece_type):
@@ -511,47 +509,39 @@ class OpponentAI:
                 black_pst_mg += pst_val
                 black_pst_eg += pst_val
 
-            # --- Variant-Aware Positional Bonuses for Black ---
-            if piece_type == Queen:
+            if piece_type is Queen:
                 for adj_r, adj_c in ADJACENT_SQUARES_MAP.get(piece.pos, set()):
-                    if board.grid[adj_r][adj_c] and board.grid[adj_r][adj_c].color == 'white':
+                    target = grid[adj_r][adj_c]
+                    if target and target.color == 'white':
                         black_pst_mg += QUEEN_AOE_POTENTIAL_BONUS
 
-            elif piece_type == Rook:
+            elif piece_type is Rook:
                 for dr, dc in DIRECTIONS['rook']:
                     for i in range(1, 8):
                         nr, nc = r + dr*i, c + dc*i
                         if not (0 <= nr < ROWS and 0 <= nc < COLS): break
-                        target = board.grid[nr][nc]
+                        target = grid[nr][nc]
                         if target and target.color == 'white':
                             black_pst_mg += ROOK_PIERCING_POTENTIAL_BONUS
 
-            elif piece_type == Knight:
+            elif piece_type is Knight:
+                knight_tapered_value = tapered_vals_by_type[Knight]
                 for threatened_pos in KNIGHT_ATTACKS_FROM.get(piece.pos, set()):
-                    target = board.grid[threatened_pos[0]][threatened_pos[1]]
+                    target = grid[threatened_pos[0]][threatened_pos[1]]
                     if target and target.color == 'white':
-                        target_mg = PIECE_VALUES_MG.get(type(target), 0)
-                        target_eg = PIECE_VALUES_EG.get(type(target), 0)
-                        target_val = (target_mg * phase + target_eg * (256 - phase)) >> 8
-                        if isinstance(target, Knight):
-                            black_pst_mg += (target_val - tapered_value) // 4
-                        else:
-                            black_pst_mg += target_val // 4
-            
-            elif piece_type == Bishop:
-                mobility = 0
-                direction_pairs = (((-1, 1), (-1, -1)), ((1, 1), (1, -1)), ((-1, 1), (1, 1)), ((-1, -1), (1, -1)))
-                for d1, d2 in direction_pairs:
-                    if 0 <= r+d1[0] < ROWS and 0 <= c+d1[1] < COLS and board.grid[r+d1[0]][c+d1[1]] is None: mobility += 1
-                    if 0 <= r+d2[0] < ROWS and 0 <= c+d2[1] < COLS and board.grid[r+d2[0]][c+d2[1]] is None: mobility += 1
-                black_pst_mg += mobility * BISHOP_MOBILITY_BONUS
+                        target_val = tapered_vals_by_type[type(target)]
+                        bonus = (target_val - knight_tapered_value) if type(target) is Knight else target_val
+                        black_pst_mg += bonus // 4
 
-        # --- Final Score Calculation (Unchanged) ---
+        # --- Final Score Calculation ---
         mg_score = white_pst_mg - black_pst_mg
         eg_score = white_pst_eg - black_pst_eg
         final_score = (mg_score * phase + eg_score * (256 - phase)) >> 8
         
-        return final_score if turn_to_move == 'white' else -final_score
+        score_for_player = final_score if turn_to_move == 'white' else -final_score
+        
+        # --- RETURN BOTH the score and the pre-computed map ---
+        return score_for_player, tapered_vals_by_type
 
 
 # --- Piece-Square Tables (PSTs) ---
