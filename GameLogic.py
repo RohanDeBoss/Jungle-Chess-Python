@@ -1,4 +1,4 @@
-# v26.6 (Pawns are board-agnostic in threat calculation, queens and rooks fixed)
+# v27 (Patch for rook movements)
 import copy
 
 # -----------------------------
@@ -99,18 +99,26 @@ class Queen(Piece):
 
 class Rook(Piece):
     def symbol(self): return "♖" if self.color == "white" else "♜"
+    
     def get_valid_moves(self, board, pos):
+        """
+        A Jungle Chess Rook can move through enemy pieces, but is blocked
+        by friendly pieces. This is the corrected move generation.
+        """
         moves = []
-        grid = board.grid # Cache the grid lookup
+        grid = board.grid
         for dr, dc in DIRECTIONS['rook']:
             r, c = pos[0] + dr, pos[1] + dc
             while 0 <= r < ROWS and 0 <= c < COLS:
-                target = grid[r][c] # Access the faster local variable
-                if target is None:
-                    moves.append((r, c))
-                else:
-                    if target.color != self.color: moves.append((r, c))
-                    break
+                target = grid[r][c]
+                if target and target.color == self.color:
+                    break # Stop at friendly pieces
+                
+                moves.append((r, c))
+                
+                # If we hit an enemy piece, we add the move but continue searching,
+                # as the Rook can move through them.
+                
                 r += dr; c += dc
         return moves
         
@@ -120,26 +128,22 @@ class Rook(Piece):
         This corrected version is board-aware and stops BEFORE a friendly piece.
         """
         threats = set()
+        grid = board.grid
         for dr, dc in DIRECTIONS['rook']:
             r, c = pos[0] + dr, pos[1] + dc
             while 0 <= r < ROWS and 0 <= c < COLS:
-                target = board.grid[r][c]
+                target = grid[r][c]
                 # CRITICAL FIX: Check for a friendly blocker FIRST.
                 if target and target.color == self.color:
                     break # The threat ends here, before this square.
                 
                 threats.add((r, c))
                 
-                # The threat continues through an enemy piece, but stops after.
-                if target and target.color == self.opponent_color:
-                    # While the threat continues, the line of sight for further threats is blocked.
-                    # This logic depends on whether a rook can pierce through multiple enemies.
-                    # Assuming it can, we don't break. If it stops at the first enemy, we would break here.
-                    # Your rule "take and amount of pieces" implies it continues, so no break is correct.
-                    pass
-
+                # Unlike get_valid_moves, the threat ray continues even after hitting
+                # an enemy piece, but it is still blocked by a friendly one.
                 r += dr; c += dc
         return threats
+        
 
 class Bishop(Piece):
     def symbol(self): return "♗" if self.color == "white" else "♝"
