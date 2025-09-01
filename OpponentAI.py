@@ -1,4 +1,4 @@
-# v70 Optimisated Qsearch
+# v70.1 Compadibility with new GameLogic structure
 
 import time
 from GameLogic import generate_legal_moves_generator
@@ -356,40 +356,50 @@ class OpponentAI:
     def qsearch(self, board, alpha, beta, turn, ply):
         self.nodes_searched += 1
         if self.cancellation_event.is_set(): raise SearchCancelledException()
-        
-        if is_insufficient_material(board):
+
+        # Get the game state once
+        game_status, _ = get_game_state(board, turn, self.position_counts, self.ply_count + ply, self.max_moves)
+        if game_status != "ongoing":
+            if game_status == "checkmate": return -self.MATE_SCORE + ply
             return self.DRAW_SCORE
-            
-        if ply >= self.MAX_Q_SEARCH_DEPTH: return self.evaluate_board(board, turn)
+
+        if ply >= self.MAX_Q_SEARCH_DEPTH:
+            # The new evaluate_board returns a tuple (score, map)
+            score, _ = self.evaluate_board(board, turn)
+            return score
+        
+        # Get the stand_pat score and the pre-computed map in one call
+        stand_pat, tapered_vals_by_type = self.evaluate_board(board, turn)
         
         is_in_check_flag = is_in_check(board, turn)
         
-        stand_pat = self.evaluate_board(board, turn)
         if not is_in_check_flag:
             if stand_pat >= beta: return beta
             alpha = max(alpha, stand_pat)
 
         opponent_color = 'black' if turn == 'white' else 'white'
         
+        # Generate the correct set of tactical moves
         if is_in_check_flag:
             tactical_moves = get_all_legal_moves(board, turn)
-            if not tactical_moves:
-                return -self.MATE_SCORE + ply
         else:
-            # OPTIMIZATION: Use the new, faster capture generator
             tactical_moves = list(generate_all_captures(board, turn))
+
+        # Handle the edge case where the board is drawn but qsearch was still called
+        if not tapered_vals_by_type:
+            return self.DRAW_SCORE
 
         scored_moves = []
         for move in tactical_moves:
-            swing = calculate_material_swing(board, move, self._get_piece_value)
+            # THIS IS THE KEY FIX: We are now passing the correct DICTIONARY
+            swing = calculate_material_swing(board, move, tapered_vals_by_type)
             scored_moves.append((move, swing))
-        
+
+        # Sort moves for better alpha-beta pruning
         scored_moves.sort(key=lambda item: item[1], reverse=True)
 
-        for move, swing in scored_moves:
-            if not is_in_check_flag and stand_pat + swing + self.Q_SEARCH_SAFETY_MARGIN < alpha:
-                continue
-                
+        # Search the moves
+        for move, _ in scored_moves:
             sim_board = board.clone()
             sim_board.make_move(move[0], move[1])
 

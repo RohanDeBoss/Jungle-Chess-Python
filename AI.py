@@ -1,4 +1,4 @@
-# v72.2 use new material swing calculator from GameLogic
+# v73 Negamax optimisations
 
 import time
 from GameLogic import generate_legal_moves_generator
@@ -109,19 +109,19 @@ class ChessBot:
         eg_val = PIECE_VALUES_EG.get(type(piece), 0)
         return (mg_val * phase + eg_val * (256 - phase)) >> 8
 
-    def order_moves(self, board, moves, ply, hash_move=None):
+    def order_moves(self, board, moves, ply, hash_move=None, tapered_vals_by_type=None):
         if not moves: return []
-        if INITIAL_PHASE_MATERIAL == 0:
-            phase = 0
-        else:
-            phase_material_score = sum(PIECE_VALUES_MG.get(type(p), 0) for p in board.white_pieces + board.black_pieces if not isinstance(p, (Pawn, King)))
-            phase = (phase_material_score * 256) // INITIAL_PHASE_MATERIAL
-        phase = min(phase, 256)
+        
+        # If the pre-computed map isn't provided (e.g., from the root search), calculate it once.
+        if tapered_vals_by_type is None:
+            all_pieces = board.white_pieces + board.black_pieces
+            phase_material_score = sum(PIECE_VALUES_MG.get(type(p), 0) for p in all_pieces if not isinstance(p, (Pawn, King)))
+            phase = min(256, (phase_material_score * 256) // INITIAL_PHASE_MATERIAL) if INITIAL_PHASE_MATERIAL > 0 else 0
+            tapered_vals_by_type = {
+                ptype: (vals_mg * phase + PIECE_VALUES_EG[ptype] * (256 - phase)) >> 8
+                for ptype, vals_mg in PIECE_VALUES_MG.items()
+            }
 
-        def get_tapered_value(p):
-            mg_val = PIECE_VALUES_MG.get(type(p), 0)
-            eg_val = PIECE_VALUES_EG.get(type(p), 0)
-            return (mg_val * phase + eg_val * (256 - phase)) >> 8
         scores = {}
         killers = self.killer_moves[ply] if ply < len(self.killer_moves) else [None, None]
         moving_color = self.color if ply % 2 == 0 else self.opponent_color
@@ -136,7 +136,10 @@ class ChessBot:
                 target_piece = board.grid[move[1][0]][move[1][1]]
                 
                 if target_piece is not None:
-                    score = self.BONUS_CAPTURE + (get_tapered_value(target_piece) * 10 - get_tapered_value(moving_piece))
+                    # Use the fast, pre-computed map
+                    moving_val = tapered_vals_by_type.get(type(moving_piece), 0)
+                    target_val = tapered_vals_by_type.get(type(target_piece), 0)
+                    score = self.BONUS_CAPTURE + (target_val * 10 - moving_val)
                 else:
                     if move in killers:
                         score = self.BONUS_KILLER_1 if move == killers[0] else self.BONUS_KILLER_2
@@ -258,7 +261,6 @@ class ChessBot:
         if ply > 0 and hash_val in search_path:
             return self.DRAW_SCORE
         
-        # Use the centralized get_game_state for robust termination checks
         game_status, _ = get_game_state(board, turn, self.position_counts, self.ply_count + ply, self.max_moves)
         if game_status != "ongoing":
             if game_status == "checkmate": return -self.MATE_SCORE + ply
@@ -293,16 +295,25 @@ class ChessBot:
                 self.tt[hash_val] = TTEntry(beta, depth, TT_FLAG_LOWERBOUND, None)
                 return beta 
 
+        # --- PERFORMANCE FIX: Pre-calculate tapered values ONCE per node ---
+        # This is used for both move ordering and the LMR check, eliminating all redundancy.
+        all_pieces = board.white_pieces + board.black_pieces
+        phase_material_score = sum(PIECE_VALUES_MG.get(type(p), 0) for p in all_pieces if not isinstance(p, (Pawn, King)))
+        phase = min(256, (phase_material_score * 256) // INITIAL_PHASE_MATERIAL) if INITIAL_PHASE_MATERIAL > 0 else 0
+        tapered_vals_by_type = {
+            ptype: (vals_mg * phase + PIECE_VALUES_EG[ptype] * (256 - phase)) >> 8
+            for ptype, vals_mg in PIECE_VALUES_MG.items()
+        }
+
         legal_moves_with_boards = list(generate_legal_moves_generator(board, turn, yield_boards=True))
-        
         if not legal_moves_with_boards:
             return -self.MATE_SCORE + ply if is_in_check_flag else self.DRAW_SCORE
 
-        legal_moves_list = [move for move, board in legal_moves_with_boards]
+        legal_moves_list = [move for move, _ in legal_moves_with_boards]
         move_to_board_map = dict(legal_moves_with_boards)
 
         hash_move = tt_entry.best_move if tt_entry else None
-        ordered_moves = self.order_moves(board, legal_moves_list, ply, hash_move)
+        ordered_moves = self.order_moves(board, legal_moves_list, ply, hash_move, tapered_vals_by_type)
         
         best_move_for_node = None
         
@@ -310,19 +321,15 @@ class ChessBot:
             child_board = move_to_board_map.get(move)
             if not child_board: continue
 
-            # The redundant position_counts logic has been removed here for correctness.
-            
-            is_direct_capture = board.grid[move[1][0]][move[1][1]] is not None
-            moving_piece = board.grid[move[0][0]][move[0][1]]
-            is_promotion = isinstance(moving_piece, Pawn) and (move[1][0] == 0 or move[1][0] == ROWS - 1)
-            gives_check = is_in_check(child_board, opponent_turn)
-            is_piercing = is_rook_piercing_capture(board, move)
-            is_evaporation = is_quiet_knight_evaporation(board, move)
-            is_tactical_move = is_direct_capture or is_promotion or gives_check or is_piercing or is_evaporation
-            
+            # --- THE REAL OPTIMIZATION ---
+            # Use the fast, clone-free swing calculator. This is much faster
+            # than the old cloning method and safer than the flawed is_in_check method.
+            # It's a simple, robust heuristic for LMR.
+            is_capture_like_move = calculate_material_swing(board, move, tapered_vals_by_type) != 0
+
             reduction = 0
             if (depth >= self.LMR_DEPTH_THRESHOLD and i >= self.LMR_MOVE_COUNT_THRESHOLD and 
-                not is_in_check_flag and not is_tactical_move):
+                not is_in_check_flag and not is_capture_like_move):
                 reduction = self.LMR_REDUCTION
 
             score = -self.negamax(child_board, depth - 1 - reduction, -beta, -alpha, opponent_turn, ply + 1, search_path | {hash_val})
@@ -335,10 +342,12 @@ class ChessBot:
                 best_move_for_node = move
                 
             if alpha >= beta:
-                if not is_direct_capture and not is_piercing:
+                if not is_capture_like_move:
                     if ply < len(self.killer_moves) and self.killer_moves[ply][0] != move:
                         self.killer_moves[ply][1] = self.killer_moves[ply][0]
                         self.killer_moves[ply][0] = move
+                    
+                    moving_piece = board.grid[move[0][0]][move[0][1]]
                     if moving_piece:
                         color_index = 0 if moving_piece.color == 'white' else 1
                         from_sq, to_sq = move[0][0]*COLS+move[0][1], move[1][0]*COLS+move[1][1]
