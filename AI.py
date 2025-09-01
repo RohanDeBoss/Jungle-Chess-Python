@@ -1,4 +1,4 @@
-# v71.3 Individual value changes + Bishop mobility removed + Removed draw penalty + Move ordering tweaks
+# v72.2 use new material swing calculator from GameLogic
 
 import time
 from GameLogic import generate_legal_moves_generator
@@ -355,47 +355,51 @@ class ChessBot:
         self.nodes_searched += 1
         if self.cancellation_event.is_set(): raise SearchCancelledException()
 
-        # OPTIMIZATION: Use the centralized get_game_state for robust termination checks
         game_status, _ = get_game_state(board, turn, self.position_counts, self.ply_count + ply, self.max_moves)
         if game_status != "ongoing":
             if game_status == "checkmate": return -self.MATE_SCORE + ply
             return self.DRAW_SCORE
 
-        if ply >= self.MAX_Q_SEARCH_DEPTH: return self.evaluate_board(board, turn)
+        # --- BUG FIX STARTS HERE ---
+        if ply >= self.MAX_Q_SEARCH_DEPTH:
+            # We only need the score, so we unpack the tuple and discard the map.
+            score, _ = self.evaluate_board(board, turn)
+            return score
         
-        stand_pat = self.evaluate_board(board, turn)
-        is_in_check_flag = is_in_check(board, turn) # We still need this to decide on move generation
+        # Get stand_pat and pre-computed values in ONE efficient call.
+        stand_pat, tapered_vals_by_type = self.evaluate_board(board, turn)
+        # --- BUG FIX ENDS HERE ---
+        
+        is_in_check_flag = is_in_check(board, turn)
         
         if not is_in_check_flag:
+            # Now 'stand_pat' is correctly an integer, and this comparison works.
             if stand_pat >= beta: return beta
             alpha = max(alpha, stand_pat)
 
         opponent_color = 'black' if turn == 'white' else 'white'
         
         if is_in_check_flag:
-            # If in check, we must consider all legal moves as tactical
             tactical_moves = get_all_legal_moves(board, turn)
         else:
-            # Otherwise, we use the optimized generator for only captures and promotions
             tactical_moves = list(generate_all_captures(board, turn))
 
-        # Pre-calculate material swing for sorting and delta pruning
         scored_moves = []
+        # BUG FIX: Handle the edge case where tapered_vals_by_type might be empty
+        # if the game is in an insufficient material state, which qsearch might still enter.
+        if not tapered_vals_by_type:
+            return self.DRAW_SCORE
+
         for move in tactical_moves:
-            swing = calculate_material_swing(board, move, self._get_piece_value)
+            swing = calculate_material_swing(board, move, tapered_vals_by_type)
             scored_moves.append((move, swing))
-        
+
         scored_moves.sort(key=lambda item: item[1], reverse=True)
 
-        for move, swing in scored_moves:
-            # Delta Pruning
-            if not is_in_check_flag and stand_pat + swing + self.Q_SEARCH_SAFETY_MARGIN < alpha:
-                continue
-                
+        for move, _ in scored_moves:
             sim_board = board.clone()
             sim_board.make_move(move[0], move[1])
 
-            # A check is needed since we might be using pseudo_legal_moves from the capture generator
             if is_in_check(sim_board, turn):
                 continue
             
@@ -408,39 +412,43 @@ class ChessBot:
 
     def evaluate_board(self, board, turn_to_move):
         if is_insufficient_material(board):
-            return self.DRAW_SCORE
+            # OPTIMIZATION: Return an empty dict as there's no need for tapered values here.
+            return self.DRAW_SCORE, {}
         
-        # Cache the piece lists
         white_pieces = board.white_pieces
         black_pieces = board.black_pieces
+        grid = board.grid
 
-        # --- Variant-Specific Evaluation Bonuses ---
-        QUEEN_AOE_POTENTIAL_BONUS = 25  # Bonus per piece in Queen's blast radius
-        ROOK_PIERCING_POTENTIAL_BONUS = 20 # Bonus per piece a Rook skewers
+        QUEEN_AOE_POTENTIAL_BONUS = 25
+        ROOK_PIERCING_POTENTIAL_BONUS = 20
 
         white_pst_mg, white_pst_eg = 0, 0
         black_pst_mg, black_pst_eg = 0, 0
         
-        # --- Phase Calculation (Unchanged) ---
         phase_material_score = sum(PIECE_VALUES_MG.get(type(p), 0) for p in white_pieces + black_pieces if not isinstance(p, (Pawn, King)))
         if INITIAL_PHASE_MATERIAL == 0:
             phase = 0
         else:
             phase = min(256, (phase_material_score * 256) // INITIAL_PHASE_MATERIAL)
 
-        # --- Material and PST Calculation ---
+        # --- This pre-computation is now done once and shared with qsearch ---
+        tapered_vals_by_type = {
+            ptype: (vals_mg * phase + PIECE_VALUES_EG[ptype] * (256 - phase)) >> 8
+            for ptype, vals_mg in PIECE_VALUES_MG.items()
+        }
+
+        # --- Material and PST Calculation (White) ---
         for piece in white_pieces:
             piece_type = type(piece)
             r, c = piece.pos
-            # Tapered material value
+            
             mg_val = PIECE_VALUES_MG.get(piece_type, 0)
             eg_val = PIECE_VALUES_EG.get(piece_type, 0)
-            tapered_value = (mg_val * phase + eg_val * (256 - phase)) >> 8
+            
             white_pst_mg += mg_val
             white_pst_eg += eg_val
 
-            # Standard PST
-            if piece_type == King:
+            if piece_type is King:
                 white_pst_mg += PIECE_SQUARE_TABLES['king_midgame'][r][c]
                 white_pst_eg += PIECE_SQUARE_TABLES['king_endgame'][r][c]
             elif PIECE_SQUARE_TABLES.get(piece_type):
@@ -448,50 +456,43 @@ class ChessBot:
                 white_pst_mg += pst_val
                 white_pst_eg += pst_val
 
-            # --- Variant-Aware Positional Bonuses for White ---
-            if piece_type == Queen:
+            if piece_type is Queen:
                 for adj_r, adj_c in ADJACENT_SQUARES_MAP.get(piece.pos, set()):
-                    if board.grid[adj_r][adj_c] and board.grid[adj_r][adj_c].color == 'black':
+                    target = grid[adj_r][adj_c]
+                    if target and target.color == 'black':
                         white_pst_mg += QUEEN_AOE_POTENTIAL_BONUS
             
-            elif piece_type == Rook:
-                # Check horizontal and vertical for skewer potential
+            elif piece_type is Rook:
                 for dr, dc in DIRECTIONS['rook']:
                     for i in range(1, 8):
                         nr, nc = r + dr*i, c + dc*i
                         if not (0 <= nr < ROWS and 0 <= nc < COLS): break
-                        target = board.grid[nr][nc]
+                        target = grid[nr][nc]
                         if target and target.color == 'black':
                             white_pst_mg += ROOK_PIERCING_POTENTIAL_BONUS
 
-            elif piece_type == Knight:
+            elif piece_type is Knight:
+                knight_tapered_value = tapered_vals_by_type[Knight]
                 for threatened_pos in KNIGHT_ATTACKS_FROM.get(piece.pos, set()):
-                    target = board.grid[threatened_pos[0]][threatened_pos[1]]
+                    target = grid[threatened_pos[0]][threatened_pos[1]]
                     if target and target.color == 'black':
-                        target_mg = PIECE_VALUES_MG.get(type(target), 0)
-                        target_eg = PIECE_VALUES_EG.get(type(target), 0)
-                        target_val = (target_mg * phase + target_eg * (256 - phase)) >> 8
-                        # FIX: Correctly evaluate knight trades as neutral
-                        if isinstance(target, Knight):
-                            white_pst_mg += (target_val - tapered_value) // 4
-                        else:
-                            white_pst_mg += target_val // 4
-            
+                        target_val = tapered_vals_by_type[type(target)]
+                        bonus = (target_val - knight_tapered_value) if type(target) is Knight else target_val
+                        white_pst_mg += bonus // 4
 
-        # --- Repeat for Black Pieces ---
-        for piece in board.black_pieces:
+        # --- Material and PST Calculation (Black) ---
+        for piece in black_pieces:
             piece_type = type(piece)
             r, c = piece.pos
             r_flipped = ROWS - 1 - r
-            # Tapered material value
+            
             mg_val = PIECE_VALUES_MG.get(piece_type, 0)
             eg_val = PIECE_VALUES_EG.get(piece_type, 0)
-            tapered_value = (mg_val * phase + eg_val * (256 - phase)) >> 8
+
             black_pst_mg += mg_val
             black_pst_eg += eg_val
 
-            # Standard PST
-            if piece_type == King:
+            if piece_type is King:
                 black_pst_mg += PIECE_SQUARE_TABLES['king_midgame'][r_flipped][c]
                 black_pst_eg += PIECE_SQUARE_TABLES['king_endgame'][r_flipped][c]
             elif PIECE_SQUARE_TABLES.get(piece_type):
@@ -499,39 +500,39 @@ class ChessBot:
                 black_pst_mg += pst_val
                 black_pst_eg += pst_val
 
-            # --- Variant-Aware Positional Bonuses for Black ---
-            if piece_type == Queen:
+            if piece_type is Queen:
                 for adj_r, adj_c in ADJACENT_SQUARES_MAP.get(piece.pos, set()):
-                    if board.grid[adj_r][adj_c] and board.grid[adj_r][adj_c].color == 'white':
+                    target = grid[adj_r][adj_c]
+                    if target and target.color == 'white':
                         black_pst_mg += QUEEN_AOE_POTENTIAL_BONUS
 
-            elif piece_type == Rook:
+            elif piece_type is Rook:
                 for dr, dc in DIRECTIONS['rook']:
                     for i in range(1, 8):
                         nr, nc = r + dr*i, c + dc*i
                         if not (0 <= nr < ROWS and 0 <= nc < COLS): break
-                        target = board.grid[nr][nc]
+                        target = grid[nr][nc]
                         if target and target.color == 'white':
                             black_pst_mg += ROOK_PIERCING_POTENTIAL_BONUS
 
-            elif piece_type == Knight:
+            elif piece_type is Knight:
+                knight_tapered_value = tapered_vals_by_type[Knight]
                 for threatened_pos in KNIGHT_ATTACKS_FROM.get(piece.pos, set()):
-                    target = board.grid[threatened_pos[0]][threatened_pos[1]]
+                    target = grid[threatened_pos[0]][threatened_pos[1]]
                     if target and target.color == 'white':
-                        target_mg = PIECE_VALUES_MG.get(type(target), 0)
-                        target_eg = PIECE_VALUES_EG.get(type(target), 0)
-                        target_val = (target_mg * phase + target_eg * (256 - phase)) >> 8
-                        if isinstance(target, Knight):
-                            black_pst_mg += (target_val - tapered_value) // 4
-                        else:
-                            black_pst_mg += target_val // 4
+                        target_val = tapered_vals_by_type[type(target)]
+                        bonus = (target_val - knight_tapered_value) if type(target) is Knight else target_val
+                        black_pst_mg += bonus // 4
 
-        # --- Final Score Calculation (Unchanged) ---
+        # --- Final Score Calculation ---
         mg_score = white_pst_mg - black_pst_mg
         eg_score = white_pst_eg - black_pst_eg
         final_score = (mg_score * phase + eg_score * (256 - phase)) >> 8
         
-        return final_score if turn_to_move == 'white' else -final_score
+        score_for_player = final_score if turn_to_move == 'white' else -final_score
+        
+        # --- RETURN BOTH the score and the pre-computed map ---
+        return score_for_player, tapered_vals_by_type
 
 
 # --- Piece-Square Tables (PSTs) ---

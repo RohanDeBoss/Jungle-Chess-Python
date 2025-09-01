@@ -1,4 +1,4 @@
-# v27 (Patch for rook movements)
+# v28.2 (Refactor for SEE-style move outcome prediction)
 import copy
 
 # -----------------------------
@@ -144,7 +144,6 @@ class Rook(Piece):
                 r += dr; c += dc
         return threats
         
-
 class Bishop(Piece):
     def symbol(self): return "♗" if self.color == "white" else "♝"
     def get_valid_moves(self, board, pos):
@@ -362,6 +361,89 @@ class Board:
             if self.grid[knight.pos[0]][knight.pos[1]] is knight:
                 self._apply_knight_aoe(knight.pos)
 
+    # --- NEW: Methods for Clone-Free Move Outcome Prediction ---
+
+    def _get_rook_piercing_captures(self, start, end, rook_color):
+        """Finds all pieces captured by a rook's piercing move."""
+        captured = []
+        dr = 0 if start[0] == end[0] else 1 if end[0] > start[0] else -1
+        dc = 0 if start[1] == end[1] else 1 if end[1] > start[1] else -1
+        cr, cc = start[0] + dr, start[1] + dc
+        while (cr, cc) != end:
+            target = self.grid[cr][cc]
+            if target and target.color != rook_color:
+                captured.append(target)
+            cr += dr
+            cc += dc
+        return captured
+
+    def _get_queen_aoe_captures(self, pos, queen_color):
+        """Finds all pieces captured by a queen's AoE."""
+        captured = []
+        for r, c in ADJACENT_SQUARES_MAP.get(pos, set()):
+            adj_piece = self.grid[r][c]
+            if adj_piece and adj_piece.color != queen_color:
+                captured.append(adj_piece)
+        return captured
+    
+    def _get_knight_aoe_outcome(self, knight_pos, knight_color):
+        """
+        Finds pieces captured by knight's AoE and determines if the knight itself evaporates.
+        Returns: (list_of_captured_pieces, self_evaporates_flag)
+        """
+        captured = []
+        self_evaporates = False
+        for r, c in KNIGHT_ATTACKS_FROM.get(knight_pos, set()):
+            target = self.grid[r][c]
+            if target and target.color != knight_color:
+                captured.append(target)
+                if isinstance(target, Knight):
+                    self_evaporates = True
+        return captured, self_evaporates
+
+    def get_move_outcome(self, move):
+        """
+        A 'dry run' of a move that returns all pieces that would be removed and any promotion.
+        This is the single source of truth for move consequences.
+        
+        Returns: (set_of_friendly_lost, set_of_opponent_captured, promotion_piece_type_or_None)
+        """
+        start_pos, end_pos = move
+        moving_piece = self.grid[start_pos[0]][start_pos[1]]
+        if not moving_piece:
+            return set(), set(), None
+            
+        friendly_lost = set()
+        opponent_captured = set()
+        promotion_type = None
+        
+        target_piece = self.grid[end_pos[0]][end_pos[1]]
+        is_capture = target_piece is not None
+
+        if is_capture:
+            opponent_captured.add(target_piece)
+
+        if isinstance(moving_piece, Rook):
+            opponent_captured.update(self._get_rook_piercing_captures(start_pos, end_pos, moving_piece.color))
+            
+        elif isinstance(moving_piece, Queen) and is_capture:
+            friendly_lost.add(moving_piece)
+            opponent_captured.update(self._get_queen_aoe_captures(end_pos, moving_piece.color))
+
+        elif isinstance(moving_piece, Knight):
+            captures, self_evaporates = self._get_knight_aoe_outcome(end_pos, moving_piece.color)
+            opponent_captured.update(captures)
+            if self_evaporates:
+                friendly_lost.add(moving_piece)
+                
+        elif isinstance(moving_piece, Pawn):
+            promotion_rank = 0 if moving_piece.color == "white" else (ROWS - 1)
+            if end_pos[0] == promotion_rank:
+                promotion_type = Queen  # Signal that a Queen will be created
+                friendly_lost.add(moving_piece) # The pawn is removed
+        
+        return friendly_lost, opponent_captured, promotion_type
+
 # ----------------------------------------------------
 # GLOBAL GAME LOGIC: ROBUST & CENTRALIZED
 # ----------------------------------------------------
@@ -386,6 +468,7 @@ def generate_legal_moves_generator(board, color, yield_boards=False):
     opponent_color = "black" if color == "white" else "white"
     for piece in piece_list:
         start_pos = piece.pos
+        if start_pos is None: continue # Safety check for captured pieces
         for end_pos in piece.get_valid_moves(board, start_pos):
             sim_board = board.clone()
             sim_board.make_move(start_pos, end_pos)
@@ -405,7 +488,8 @@ def get_all_pseudo_legal_moves(board, color):
     moves = []
     piece_list = board.white_pieces if color == 'white' else board.black_pieces
     for piece in piece_list:
-        moves.extend([(piece.pos, end_pos) for end_pos in piece.get_valid_moves(board, piece.pos)])
+        if piece.pos is not None: # Safety check
+            moves.extend([(piece.pos, end_pos) for end_pos in piece.get_valid_moves(board, piece.pos)])
     return moves
 
 def has_legal_moves(board, color):
@@ -424,7 +508,7 @@ def is_insufficient_material(board):
     if total_pieces == 3:
         major_side = board.white_pieces if len(board.white_pieces) == 2 else board.black_pieces
         piece_types = {type(p) for p in major_side}
-        if King in piece_types and (Rook in piece_types or Bishop in piece_types or Knight in piece_types):
+        if King in piece_types and (Bishop in piece_types or Knight in piece_types):
             return True
     return False
 
@@ -446,24 +530,29 @@ def get_game_state(board, turn_to_move, position_counts, ply_count, max_moves):
         return "move_limit", None
     return "ongoing", None
 
-def calculate_material_swing(board, move, value_func):
-    """Calculates the change in material after a move, accounting for all AoE effects."""
-    moving_piece = board.grid[move[0][0]][move[0][1]]
-    if not moving_piece: return 0
-    sim_board = board.clone()
-    original_opponent_pieces = {p.pos for p in (sim_board.black_pieces if moving_piece.color == 'white' else sim_board.white_pieces)}
-    original_friendly_pieces = {p.pos for p in (sim_board.white_pieces if moving_piece.color == 'white' else sim_board.black_pieces)}
-    sim_board.make_move(move[0], move[1])
-    final_opponent_pieces = {p.pos for p in (sim_board.black_pieces if moving_piece.color == 'white' else sim_board.white_pieces)}
-    final_friendly_pieces = {p.pos for p in (sim_board.white_pieces if moving_piece.color == 'white' else sim_board.black_pieces)}
-    
+
+def calculate_material_swing(board, move, tapered_vals_by_type):
+    """
+    Calculates the material swing of a move using pre-computed tapered values.
+    This version is extremely fast and correctly handles promotions.
+    """
+    # --- THIS IS THE FIX ---
+    # It now correctly unpacks all THREE values from get_move_outcome.
+    friendly_lost, opponent_captured, promotion_type = board.get_move_outcome(move)
+
+    if not friendly_lost and not opponent_captured and promotion_type is None:
+        return 0
+
     swing = 0
-    # Re-create piece objects from positions to get their value
-    original_board_pieces = {p.pos: p for p in board.white_pieces + board.black_pieces}
-    for pos in original_opponent_pieces - final_opponent_pieces:
-        swing += value_func(original_board_pieces[pos], sim_board)
-    for pos in original_friendly_pieces - final_friendly_pieces:
-        swing -= value_func(original_board_pieces[pos], sim_board)
+    for piece in opponent_captured:
+        swing += tapered_vals_by_type.get(type(piece), 0)
+    for piece in friendly_lost:
+        swing -= tapered_vals_by_type.get(type(piece), 0)
+        
+    # Correctly account for the value of the new piece in a promotion
+    if promotion_type is not None:
+        swing += tapered_vals_by_type.get(promotion_type, 0)
+        
     return swing
 
 def is_draw(board, turn_to_move, position_counts, ply_count, max_moves):
@@ -510,6 +599,7 @@ def generate_all_captures(board, color):
 
     for piece in piece_list:
         start_pos = piece.pos
+        if start_pos is None: continue # Safety check
         # Promotions are always tactical, so we can check the piece type first
         if isinstance(piece, Pawn):
             promotion_rank = 0 if piece.color == "white" else (ROWS - 1)
