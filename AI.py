@@ -1,4 +1,4 @@
-# v75 - Qsearch and Negamax fixed for Jungle Chess
+# v75.1 - Qsearch and Negamax fixed for Jungle Chess
 
 import time
 from GameLogic import generate_legal_moves_generator
@@ -382,15 +382,18 @@ class ChessBot:
         if not tapered_vals_by_type:
             return self.DRAW_SCORE
 
-        # Use our fast, authoritative swing calculator for move ordering.
-        move_scores = {move: calculate_material_swing(board, move, tapered_vals_by_type) for move in promising_moves}
-        promising_moves.sort(key=lambda m: move_scores.get(m, 0), reverse=True)
-
+        # --- FINAL OPTIMIZATION: Create a list of (score, move) tuples directly ---
+        # This is more direct than creating a separate dictionary for scores.
+        scored_moves = []
         for move in promising_moves:
-            swing = move_scores.get(move, 0)
-            
-            # --- THE SAFE PRUNING FIX (DELTA PRUNING) ---
-            # Prune only if the move has no realistic chance of raising alpha.
+            swing = calculate_material_swing(board, move, tapered_vals_by_type)
+            scored_moves.append((swing, move))
+
+        # Sort moves in descending order of their score.
+        scored_moves.sort(key=lambda item: item[0], reverse=True)
+
+        for swing, move in scored_moves:
+            # The safe Delta Pruning remains.
             if not is_in_check_flag and stand_pat + swing + self.Q_SEARCH_SAFETY_MARGIN < alpha:
                 continue
                 
@@ -405,7 +408,6 @@ class ChessBot:
                 return beta
             alpha = max(alpha, search_score)
             
-        # If in check and no legal moves were found, it's checkmate.
         if is_in_check_flag and alpha < self.MATE_SCORE - 100 and not has_legal_moves(board, turn):
             return -self.MATE_SCORE + ply
 
