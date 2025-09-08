@@ -11,7 +11,7 @@ PIECE_VALUES_MG = {
     Pawn: 100, Knight: 850, Bishop: 700, Rook: 600, Queen: 900, King: 20000
 }
 PIECE_VALUES_EG = {
-    Pawn: 100, Knight: 800, Bishop: 650, Rook: 750, Queen: 700, King: 20000
+    Pawn: 100, Knight: 800, Bishop: 650, Rook: 700, Queen: 700, King: 20000
 }
 INITIAL_PHASE_MATERIAL = (PIECE_VALUES_MG[Rook] * 4 + PIECE_VALUES_MG[Knight] * 4 +
                           PIECE_VALUES_MG[Bishop] * 4 + PIECE_VALUES_MG[Queen] * 2)
@@ -442,7 +442,6 @@ class ChessBot:
         return score_for_player, tapered_vals_by_type
 
 # --- Piece-Square Tables (PSTs) ---
-# ... (PSTs are unchanged and omitted for brevity) ...
 pawn_pst = [
     [  0,   0,   0,   0,   0,   0,   0,   0],
     [ 90,  90,  90,  90,  90,  90,  90,  90],
