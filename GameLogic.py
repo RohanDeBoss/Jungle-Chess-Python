@@ -230,7 +230,8 @@ class Board:
             if piece.color == 'white': self.white_pieces.remove(piece)
             else: self.black_pieces.remove(piece)
         except ValueError:
-            # Piece might have been already removed by another effect in the same turn
+            # This is safe. It just means the piece was already removed by another
+            # effect in the same turn (e.g., Rook pierce + Knight AoE).
             pass
             
         if isinstance(piece, King):

@@ -1,5 +1,4 @@
-# v76.2 - Simplified and fixed tapered eval, centralised
-# PIECE VALUES FROM v73.99 BASELINE
+# v77.1 - Small optimiations + see
 
 import time
 from GameLogic import generate_legal_moves_generator
@@ -221,9 +220,9 @@ class ChessBot:
                 target_piece = board.grid[move[1][0]][move[1][1]]
                 
                 if target_piece is not None:
-                    moving_val = tapered_vals_by_type.get(type(moving_piece), 0)
-                    target_val = tapered_vals_by_type.get(type(target_piece), 0)
-                    score = self.BONUS_CAPTURE + (target_val * 10 - moving_val)
+                    # Use the true material swing for more intelligent ordering.
+                    swing = calculate_material_swing(board, move, tapered_vals_by_type)
+                    score = self.BONUS_CAPTURE + swing
                 else:
                     if move in killers: score = self.BONUS_KILLER_1 if move == killers[0] else self.BONUS_KILLER_2
                     elif isinstance(moving_piece, (Queen, Knight)): score = self.BONUS_QN_TACTIC
@@ -356,8 +355,9 @@ class ChessBot:
             if search_score >= beta: return beta
             alpha = max(alpha, search_score)
             
-        if is_in_check_flag and alpha < self.MATE_SCORE - 100 and not has_legal_moves(board, turn):
-            return -self.MATE_SCORE + ply
+        if is_in_check_flag and alpha < -self.MATE_SCORE + 100:
+             return -self.MATE_SCORE + ply
+
         return alpha
 
     def evaluate_board(self, board, turn_to_move):
