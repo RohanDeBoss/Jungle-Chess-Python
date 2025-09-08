@@ -1,4 +1,4 @@
-# v75.1 - Qsearch and Negamax fixed for Jungle Chess
+# v76.1 - Simplified and fixed tapered eval, centralised
 
 import time
 from GameLogic import generate_legal_moves_generator
@@ -109,51 +109,6 @@ class ChessBot:
         eg_val = PIECE_VALUES_EG.get(type(piece), 0)
         return (mg_val * phase + eg_val * (256 - phase)) >> 8
 
-    def order_moves(self, board, moves, ply, hash_move=None, tapered_vals_by_type=None):
-        if not moves: return []
-        
-        # If the pre-computed map isn't provided (e.g., from the root search), calculate it once.
-        if tapered_vals_by_type is None:
-            all_pieces = board.white_pieces + board.black_pieces
-            phase_material_score = sum(PIECE_VALUES_MG.get(type(p), 0) for p in all_pieces if not isinstance(p, (Pawn, King)))
-            phase = min(256, (phase_material_score * 256) // INITIAL_PHASE_MATERIAL) if INITIAL_PHASE_MATERIAL > 0 else 0
-            tapered_vals_by_type = {
-                ptype: (vals_mg * phase + PIECE_VALUES_EG[ptype] * (256 - phase)) >> 8
-                for ptype, vals_mg in PIECE_VALUES_MG.items()
-            }
-
-        scores = {}
-        killers = self.killer_moves[ply] if ply < len(self.killer_moves) else [None, None]
-        moving_color = self.color if ply % 2 == 0 else self.opponent_color
-        color_index = 0 if moving_color == 'white' else 1
-        
-        for move in moves:
-            score = 0
-            if move == hash_move:
-                score = self.BONUS_PV_MOVE
-            else:
-                moving_piece = board.grid[move[0][0]][move[0][1]]
-                target_piece = board.grid[move[1][0]][move[1][1]]
-                
-                if target_piece is not None:
-                    # Use the fast, pre-computed map
-                    moving_val = tapered_vals_by_type.get(type(moving_piece), 0)
-                    target_val = tapered_vals_by_type.get(type(target_piece), 0)
-                    score = self.BONUS_CAPTURE + (target_val * 10 - moving_val)
-                else:
-                    if move in killers:
-                        score = self.BONUS_KILLER_1 if move == killers[0] else self.BONUS_KILLER_2
-                    elif isinstance(moving_piece, (Queen, Knight)):
-                        score = self.BONUS_QN_TACTIC
-                    else:
-                        from_idx = move[0][0] * COLS + move[0][1]
-                        to_idx = move[1][0] * COLS + move[1][1]
-                        score = self.history_heuristic_table[color_index][from_idx][to_idx]
-
-            scores[move] = score
-        moves.sort(key=lambda m: scores.get(m, 0), reverse=True)
-        return moves
-
     def make_move(self):
         try:
             root_moves = get_all_legal_moves(self.board, self.color)
@@ -220,13 +175,21 @@ class ChessBot:
         best_score_this_iter, best_move_this_iter = -float('inf'), None
         alpha, beta = -float('inf'), float('inf')
         
-        ordered_root_moves = self.order_moves(self.board, root_moves, 0, pv_move)
+        # Calculate the tapered map ONCE for the entire search iteration.
+        all_pieces = self.board.white_pieces + self.board.black_pieces
+        phase_material_score = sum(PIECE_VALUES_MG.get(type(p), 0) for p in all_pieces if not isinstance(p, (Pawn, King)))
+        phase = min(256, (phase_material_score * 256) // INITIAL_PHASE_MATERIAL) if INITIAL_PHASE_MATERIAL > 0 else 0
+        tapered_vals_by_type = {
+            ptype: (vals_mg * phase + PIECE_VALUES_EG[ptype] * (256 - phase)) >> 8
+            for ptype, vals_mg in PIECE_VALUES_MG.items()
+        }
+        
+        ordered_root_moves = self.order_moves(self.board, root_moves, 0, pv_move, tapered_vals_by_type)
         
         all_moves_draw = True
         for i, move in enumerate(ordered_root_moves):
             if self.cancellation_event.is_set(): raise SearchCancelledException()
             
-            # AI FIX: Manually create the board for the next state
             child_board = self.board.clone()
             child_board.make_move(move[0], move[1])
 
@@ -234,7 +197,8 @@ class ChessBot:
             child_hash = board_hash(child_board, self.opponent_color)
             self.position_counts[child_hash] = self.position_counts.get(child_hash, 0) + 1
             
-            score = -self.negamax(child_board, depth - 1, -beta, -alpha, self.opponent_color, 1, search_path)
+            # Pass the pre-calculated map down to the first negamax call.
+            score = -self.negamax(child_board, depth - 1, -beta, -alpha, self.opponent_color, 1, search_path, tapered_vals_by_type)
             
             self.position_counts[child_hash] -= 1
 
@@ -252,8 +216,42 @@ class ChessBot:
 
         return best_score_this_iter, best_move_this_iter
 
+    def order_moves(self, board, moves, ply, hash_move, tapered_vals_by_type):
+        """Final version: Relies on the caller to provide the pre-computed map."""
+        if not moves: return []
+        
+        scores = {}
+        killers = self.killer_moves[ply] if ply < len(self.killer_moves) else [None, None]
+        moving_color = self.color if ply % 2 == 0 else self.opponent_color
+        color_index = 0 if moving_color == 'white' else 1
+        
+        for move in moves:
+            score = 0
+            if move == hash_move:
+                score = self.BONUS_PV_MOVE
+            else:
+                moving_piece = board.grid[move[0][0]][move[0][1]]
+                target_piece = board.grid[move[1][0]][move[1][1]]
+                
+                if target_piece is not None:
+                    moving_val = tapered_vals_by_type.get(type(moving_piece), 0)
+                    target_val = tapered_vals_by_type.get(type(target_piece), 0)
+                    score = self.BONUS_CAPTURE + (target_val * 10 - moving_val)
+                else:
+                    if move in killers:
+                        score = self.BONUS_KILLER_1 if move == killers[0] else self.BONUS_KILLER_2
+                    elif isinstance(moving_piece, (Queen, Knight)):
+                        score = self.BONUS_QN_TACTIC
+                    else:
+                        from_idx = move[0][0] * COLS + move[0][1]
+                        to_idx = move[1][0] * COLS + move[1][1]
+                        score = self.history_heuristic_table[color_index][from_idx][to_idx]
 
-    def negamax(self, board, depth, alpha, beta, turn, ply, search_path):
+            scores[move] = score
+        moves.sort(key=lambda m: scores.get(m, 0), reverse=True)
+        return moves
+
+    def negamax(self, board, depth, alpha, beta, turn, ply, search_path, tapered_vals_by_type):
         self.nodes_searched += 1
         if self.cancellation_event.is_set(): raise SearchCancelledException()
         
@@ -289,7 +287,8 @@ class ChessBot:
             any(not isinstance(p, (Pawn, King)) for p in (board.white_pieces if turn == 'white' else board.black_pieces))):
             
             nmp_reduction = self.NMP_BASE_REDUCTION + (depth // self.NMP_DEPTH_DIVISOR)
-            score = -self.negamax(board, depth - 1 - nmp_reduction, -beta, -beta + 1, opponent_turn, ply + 1, search_path | {hash_val})
+            # --- THE FIX --- Pass the map down in the recursive call
+            score = -self.negamax(board, depth - 1 - nmp_reduction, -beta, -beta + 1, opponent_turn, ply + 1, search_path | {hash_val}, tapered_vals_by_type)
             
             if score >= beta:
                 self.tt[hash_val] = TTEntry(beta, depth, TT_FLAG_LOWERBOUND, None)
@@ -303,19 +302,15 @@ class ChessBot:
         move_to_board_map = dict(legal_moves_with_boards)
 
         hash_move = tt_entry.best_move if tt_entry else None
-        ordered_moves = self.order_moves(board, legal_moves_list, ply, hash_move)
+        ordered_moves = self.order_moves(board, legal_moves_list, ply, hash_move, tapered_vals_by_type)
         
-        # --- THE CONSOLIDATION FIX ---
-        # Generate the set of all tactical moves ONCE. This is our single source of truth.
         tactical_moves_set = set(generate_all_tactical_moves(board, turn))
-        
         best_move_for_node = None
         
         for i, move in enumerate(ordered_moves):
             child_board = move_to_board_map.get(move)
             if not child_board: continue
 
-            # The LMR check is now a simple, fast, and authoritative lookup.
             is_tactical = move in tactical_moves_set
 
             reduction = 0
@@ -323,21 +318,21 @@ class ChessBot:
                 not is_in_check_flag and not is_tactical):
                 reduction = self.LMR_REDUCTION
 
-            score = -self.negamax(child_board, depth - 1 - reduction, -beta, -alpha, opponent_turn, ply + 1, search_path | {hash_val})
+            # --- THE FIX --- Pass the map down in the recursive calls
+            score = -self.negamax(child_board, depth - 1 - reduction, -beta, -alpha, opponent_turn, ply + 1, search_path | {hash_val}, tapered_vals_by_type)
 
             if reduction > 0 and score > alpha:
-                score = -self.negamax(child_board, depth - 1, -beta, -alpha, opponent_turn, ply + 1, search_path | {hash_val})
+                score = -self.negamax(child_board, depth - 1, -beta, -alpha, opponent_turn, ply + 1, search_path | {hash_val}, tapered_vals_by_type)
             
             if score > alpha:
                 alpha = score
                 best_move_for_node = move
                 
             if alpha >= beta:
-                if not is_tactical: # Use our new authoritative flag
+                if not is_tactical:
                     if ply < len(self.killer_moves) and self.killer_moves[ply][0] != move:
                         self.killer_moves[ply][1] = self.killer_moves[ply][0]
                         self.killer_moves[ply][0] = move
-                    
                     moving_piece = board.grid[move[0][0]][move[0][1]]
                     if moving_piece:
                         color_index = 0 if moving_piece.color == 'white' else 1
@@ -415,42 +410,22 @@ class ChessBot:
 
     def evaluate_board(self, board, turn_to_move):
         if is_insufficient_material(board):
-            # OPTIMIZATION: Return an empty dict as there's no need for tapered values here.
             return self.DRAW_SCORE, {}
         
-        white_pieces = board.white_pieces
-        black_pieces = board.black_pieces
-        grid = board.grid
+        # --- SIMPLIFIED: Call the authoritative helper to get both the map and phase ---
+        tapered_vals_by_type, phase = self._calculate_tapered_map(board)
 
-        QUEEN_AOE_POTENTIAL_BONUS = 25
-        ROOK_PIERCING_POTENTIAL_BONUS = 20
+        white_pieces, black_pieces, grid = board.white_pieces, board.black_pieces, board.grid
+        QUEEN_AOE_POTENTIAL_BONUS, ROOK_PIERCING_POTENTIAL_BONUS = 25, 20
+        white_pst_mg, white_pst_eg, black_pst_mg, black_pst_eg = 0, 0, 0, 0
 
-        white_pst_mg, white_pst_eg = 0, 0
-        black_pst_mg, black_pst_eg = 0, 0
-        
-        phase_material_score = sum(PIECE_VALUES_MG.get(type(p), 0) for p in white_pieces + black_pieces if not isinstance(p, (Pawn, King)))
-        if INITIAL_PHASE_MATERIAL == 0:
-            phase = 0
-        else:
-            phase = min(256, (phase_material_score * 256) // INITIAL_PHASE_MATERIAL)
-
-        # --- This pre-computation is now done once and shared with qsearch ---
-        tapered_vals_by_type = {
-            ptype: (vals_mg * phase + PIECE_VALUES_EG[ptype] * (256 - phase)) >> 8
-            for ptype, vals_mg in PIECE_VALUES_MG.items()
-        }
-
-        # --- Material and PST Calculation (White) ---
+        # --- White piece loop is unchanged ---
         for piece in white_pieces:
             piece_type = type(piece)
             r, c = piece.pos
-            
-            mg_val = PIECE_VALUES_MG.get(piece_type, 0)
-            eg_val = PIECE_VALUES_EG.get(piece_type, 0)
-            
+            mg_val, eg_val = PIECE_VALUES_MG.get(piece_type, 0), PIECE_VALUES_EG.get(piece_type, 0)
             white_pst_mg += mg_val
             white_pst_eg += eg_val
-
             if piece_type is King:
                 white_pst_mg += PIECE_SQUARE_TABLES['king_midgame'][r][c]
                 white_pst_eg += PIECE_SQUARE_TABLES['king_endgame'][r][c]
@@ -458,22 +433,17 @@ class ChessBot:
                 pst_val = PIECE_SQUARE_TABLES[piece_type][r][c]
                 white_pst_mg += pst_val
                 white_pst_eg += pst_val
-
             if piece_type is Queen:
                 for adj_r, adj_c in ADJACENT_SQUARES_MAP.get(piece.pos, set()):
                     target = grid[adj_r][adj_c]
-                    if target and target.color == 'black':
-                        white_pst_mg += QUEEN_AOE_POTENTIAL_BONUS
-            
+                    if target and target.color == 'black': white_pst_mg += QUEEN_AOE_POTENTIAL_BONUS
             elif piece_type is Rook:
                 for dr, dc in DIRECTIONS['rook']:
                     for i in range(1, 8):
                         nr, nc = r + dr*i, c + dc*i
                         if not (0 <= nr < ROWS and 0 <= nc < COLS): break
                         target = grid[nr][nc]
-                        if target and target.color == 'black':
-                            white_pst_mg += ROOK_PIERCING_POTENTIAL_BONUS
-
+                        if target and target.color == 'black': white_pst_mg += ROOK_PIERCING_POTENTIAL_BONUS
             elif piece_type is Knight:
                 knight_tapered_value = tapered_vals_by_type[Knight]
                 for threatened_pos in KNIGHT_ATTACKS_FROM.get(piece.pos, set()):
@@ -483,18 +453,14 @@ class ChessBot:
                         bonus = (target_val - knight_tapered_value) if type(target) is Knight else target_val
                         white_pst_mg += bonus // 4
 
-        # --- Material and PST Calculation (Black) ---
+        # --- Black piece loop is unchanged ---
         for piece in black_pieces:
             piece_type = type(piece)
             r, c = piece.pos
             r_flipped = ROWS - 1 - r
-            
-            mg_val = PIECE_VALUES_MG.get(piece_type, 0)
-            eg_val = PIECE_VALUES_EG.get(piece_type, 0)
-
+            mg_val, eg_val = PIECE_VALUES_MG.get(piece_type, 0), PIECE_VALUES_EG.get(piece_type, 0)
             black_pst_mg += mg_val
             black_pst_eg += eg_val
-
             if piece_type is King:
                 black_pst_mg += PIECE_SQUARE_TABLES['king_midgame'][r_flipped][c]
                 black_pst_eg += PIECE_SQUARE_TABLES['king_endgame'][r_flipped][c]
@@ -502,22 +468,17 @@ class ChessBot:
                 pst_val = PIECE_SQUARE_TABLES[piece_type][r_flipped][c]
                 black_pst_mg += pst_val
                 black_pst_eg += pst_val
-
             if piece_type is Queen:
                 for adj_r, adj_c in ADJACENT_SQUARES_MAP.get(piece.pos, set()):
                     target = grid[adj_r][adj_c]
-                    if target and target.color == 'white':
-                        black_pst_mg += QUEEN_AOE_POTENTIAL_BONUS
-
+                    if target and target.color == 'white': black_pst_mg += QUEEN_AOE_POTENTIAL_BONUS
             elif piece_type is Rook:
                 for dr, dc in DIRECTIONS['rook']:
                     for i in range(1, 8):
                         nr, nc = r + dr*i, c + dc*i
                         if not (0 <= nr < ROWS and 0 <= nc < COLS): break
                         target = grid[nr][nc]
-                        if target and target.color == 'white':
-                            black_pst_mg += ROOK_PIERCING_POTENTIAL_BONUS
-
+                        if target and target.color == 'white': black_pst_mg += ROOK_PIERCING_POTENTIAL_BONUS
             elif piece_type is Knight:
                 knight_tapered_value = tapered_vals_by_type[Knight]
                 for threatened_pos in KNIGHT_ATTACKS_FROM.get(piece.pos, set()):
@@ -527,15 +488,30 @@ class ChessBot:
                         bonus = (target_val - knight_tapered_value) if type(target) is Knight else target_val
                         black_pst_mg += bonus // 4
 
-        # --- Final Score Calculation ---
+        # --- THIS IS THE FIX ---
+        # Use the standard tapered evaluation formula with the correct `phase` variable.
         mg_score = white_pst_mg - black_pst_mg
         eg_score = white_pst_eg - black_pst_eg
         final_score = (mg_score * phase + eg_score * (256 - phase)) >> 8
         
         score_for_player = final_score if turn_to_move == 'white' else -final_score
-        
-        # --- RETURN BOTH the score and the pre-computed map ---
         return score_for_player, tapered_vals_by_type
+
+    def _calculate_tapered_map(self, board):
+        """
+        Authoritative helper to calculate the game phase and tapered piece values.
+        This logic now exists in only one place.
+        Returns both the map and the calculated phase.
+        """
+        all_pieces = board.white_pieces + board.black_pieces
+        phase_material_score = sum(PIECE_VALUES_MG.get(type(p), 0) for p in all_pieces if not isinstance(p, (Pawn, King)))
+        phase = min(256, (phase_material_score * 256) // INITIAL_PHASE_MATERIAL) if INITIAL_PHASE_MATERIAL > 0 else 0
+        
+        tapered_map = {
+            ptype: (vals_mg * phase + PIECE_VALUES_EG[ptype] * (256 - phase)) >> 8
+            for ptype, vals_mg in PIECE_VALUES_MG.items()
+        }
+        return tapered_map, phase
 
 
 # --- Piece-Square Tables (PSTs) ---

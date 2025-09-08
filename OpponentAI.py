@@ -60,7 +60,8 @@ class OpponentAI:
     BONUS_PV_MOVE = 10_000_000
     BONUS_CAPTURE = 8_000_000
     BONUS_KILLER_1 = 4_000_000
-    BONUS_KILLER_2 = 3_500_000
+    BONUS_KILLER_2 = 3_000_000
+    BONUS_QN_TACTIC = 3_500_000
     
     def __init__(self, board, color, position_counts, comm_queue, cancellation_event, bot_name=None, ply_count=0, game_mode="bot", max_moves=200):
         self.board = board
