@@ -1,4 +1,4 @@
-# v28.4 (Final Audit & Bug Fixes)
+# v28.5 (Optimized Board.clone() for performance)
 
 # -----------------------------
 # Global Constants
@@ -229,8 +229,6 @@ class Board:
             if piece.color == 'white': self.white_pieces.remove(piece)
             else: self.black_pieces.remove(piece)
         except ValueError:
-            # This is safe. It just means the piece was already removed by another
-            # effect in the same turn (e.g., Rook pierce + Knight AoE).
             pass
             
         if isinstance(piece, King):
@@ -254,7 +252,13 @@ class Board:
 
     def clone(self):
         new_board = Board(setup=False)
-        for piece in self.white_pieces + self.black_pieces:
+        # By iterating over the two piece lists separately, we avoid creating a new
+        # temporary list from concatenation (self.white_pieces + self.black_pieces)
+        # on every call. This is a pure performance gain with zero logical change.
+        for piece in self.white_pieces:
+            p_clone = piece.clone()
+            new_board.add_piece(p_clone, p_clone.pos[0], p_clone.pos[1])
+        for piece in self.black_pieces:
             p_clone = piece.clone()
             new_board.add_piece(p_clone, p_clone.pos[0], p_clone.pos[1])
         return new_board
@@ -278,7 +282,6 @@ class Board:
                 self.remove_piece(end[0], end[1])
                 self.add_piece(Queen(moving_piece.color), end[0], end[1])
 
-        # Your original, tested knight logic is preserved and centralized here.
         self._apply_knight_aoe(end if isinstance(moving_piece, Knight) else None)
 
     def _apply_queen_aoe(self, pos, queen_color):
@@ -458,7 +461,6 @@ def has_legal_moves(board, color):
     except StopIteration:
         return False
         
-# --- REVERTED: Insufficient Material Logic back to your tested version ---
 def is_insufficient_material(board):
     """Checks for endgames that are automatic draws."""
     total_pieces = len(board.white_pieces) + len(board.black_pieces)
