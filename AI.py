@@ -1,4 +1,4 @@
-# v77.1 - Small optimiations + see
+# v78.0 (High-Impact "Just-in-Time" Cloning in Search)
 
 import time
 from GameLogic import generate_legal_moves_generator
@@ -218,7 +218,6 @@ class ChessBot:
                 target_piece = board.grid[move[1][0]][move[1][1]]
                 
                 if target_piece is not None:
-                    # Use the true material swing for more intelligent ordering.
                     swing = calculate_material_swing(board, move, tapered_vals_by_type)
                     score = self.BONUS_CAPTURE + swing
                 else:
@@ -267,12 +266,13 @@ class ChessBot:
                 self.tt[hash_val] = TTEntry(beta, depth, TT_FLAG_LOWERBOUND, None)
                 return beta 
 
-        legal_moves_with_boards = list(generate_legal_moves_generator(board, turn, yield_boards=True))
-        if not legal_moves_with_boards:
+        # --- THE KEY IMPROVEMENT: JUST-IN-TIME CLONING ---
+        # Instead of pre-generating all resulting board states, we get only the legal moves.
+        # The board is cloned inside the loop, only when a move is actually searched.
+        # This avoids creating dozens of useless board clones that would be pruned by alpha-beta.
+        legal_moves_list = get_all_legal_moves(board, turn)
+        if not legal_moves_list:
             return -self.MATE_SCORE + ply if is_in_check_flag else self.DRAW_SCORE
-
-        legal_moves_list = [move for move, _ in legal_moves_with_boards]
-        move_to_board_map = dict(legal_moves_with_boards)
 
         hash_move = tt_entry.best_move if tt_entry else None
         tapered_vals_by_type, _ = self._calculate_tapered_map(board)
@@ -282,8 +282,9 @@ class ChessBot:
         best_move_for_node = None
         
         for i, move in enumerate(ordered_moves):
-            child_board = move_to_board_map.get(move)
-            if not child_board: continue
+            # The board is cloned here, "just-in-time"
+            child_board = board.clone()
+            child_board.make_move(move[0], move[1])
 
             is_tactical = move in tactical_moves_set
             reduction = 0

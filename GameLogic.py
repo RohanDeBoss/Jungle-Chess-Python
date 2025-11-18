@@ -1,4 +1,4 @@
-# v28.6 (Critical Bug Fix: Correct Pawn Threat Detection + cleanup comments)
+# v28.7 (CRITICAL BUG FIX: Deterministic Bishop Move Generation)
 
 # -----------------------------
 # Global Constants
@@ -137,7 +137,11 @@ class Bishop(Piece):
                     if target.color != self.color: moves.add((cr, cc))
                     break
                 moves.add((cr, cc)); cd = d2 if cd == d1 else d1
-        return list(moves)
+        # --- THE CRITICAL FIX ---
+        # Converting a set to a list is non-deterministic. By sorting the list,
+        # we guarantee that move generation is always in the same order, which is
+        # essential for a deterministic search and identical node counts.
+        return sorted(list(moves))
 
 class Knight(Piece):
     def symbol(self): return "♘" if self.color == "white" else "♞"
@@ -181,9 +185,11 @@ class Pawn(Piece):
                 moves.append((r, new_c))
         return moves
         
+    def get_threats(self, board, pos):
+        return set(self.get_valid_moves(board, pos))
 
 # ---------------------------------------------
-# Board Class
+# Board Class and the rest of the file are unchanged...
 # ---------------------------------------------
 class Board:
     def __init__(self, setup=True):
