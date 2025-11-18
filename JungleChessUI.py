@@ -1,5 +1,4 @@
-# JungleChessUI.py (v8.4 - On drag end fix)
-
+# JungleChessUI.py (v9.0 - Final Layout fix to Undo/Redo Implemented)
 import tkinter as tk
 from tkinter import ttk
 import math
@@ -18,12 +17,10 @@ class GameMode(Enum):
     AI_VS_AI = "ai_vs_ai"
 
 def run_ai_process(board, color, position_counts, comm_queue, cancellation_event, bot_class, bot_name, search_depth, ply_count, game_mode):
-    # FIX: Intelligently decide how to initialize the bot based on its class
     if bot_class == ChessBot:
         # The new AI is aware of the game state
         bot = bot_class(board, color, position_counts, comm_queue, cancellation_event, bot_name, ply_count, game_mode)
     else:
-        # The old OpponentAI is not, so call its original constructor
         bot = bot_class(board, color, position_counts, comm_queue, cancellation_event, bot_name)
         
     bot.search_depth = search_depth
@@ -47,9 +44,7 @@ class EnhancedChessApp:
         self.comm_queue = mp.Queue()
         self.ai_process = None
         self.ai_cancellation_event = mp.Event()
-        self.ai_search_start_time = None
 
-        # FIX: Directly instantiate the Board class instead of calling the removed function.
         self.board = Board()
         
         self.turn = "white"
@@ -60,8 +55,11 @@ class EnhancedChessApp:
         self.dragging = False
         self.drag_piece_ghost = None
         self.drag_start = None
-        self.position_history = []
+
+        self.full_history = []
+        self.history_pointer = -1
         self.position_counts = {}
+
         self.current_opening_move = None
         self.square_size = 75
         self.base_sidebar_width = 265
@@ -84,11 +82,13 @@ class EnhancedChessApp:
         self.master.configure(bg=self.COLORS['bg_dark'])
         self.build_ui()
         
+        self.master.bind("<Key>", self.handle_key_press)
+        
         self.process_comm_queue()
         self.reset_game()
 
     def build_ui(self):
-        screen_w = self.master.winfo_screenwidth(); screen_h = self.master.winfo_screenheight()
+        screen_w, screen_h = self.master.winfo_screenwidth(), self.master.winfo_screenheight()
         self.master.geometry(f"{screen_w}x{screen_h}+0+0"); self.master.state('zoomed')
         
         self.main_frame = ttk.Frame(self.master, style='Left.TFrame')
@@ -109,40 +109,56 @@ class EnhancedChessApp:
         self._build_status_widgets(self.bottom_status_frame)
         
         self.right_panel = ttk.Frame(self.main_frame, style='Right.TFrame')
-        self.right_panel.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=12, pady=12)
+        self.right_panel.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=(5, 10), pady=10)
         
         self.canvas_container = ttk.Frame(self.right_panel, style='Canvas.TFrame')
         self.canvas_container.pack(expand=True, fill=tk.BOTH)
         self.canvas_container.grid_rowconfigure(0, weight=1); self.canvas_container.grid_columnconfigure(0, weight=1)
         
-        self.canvas_frame = ttk.Frame(self.canvas_container, style='Canvas.TFrame'); self.canvas_frame.grid(row=0, column=0)
+        self.canvas_frame = ttk.Frame(self.canvas_container, style='Canvas.TFrame')
         
-        self.canvas = tk.Canvas(self.canvas_frame, width=1, height=1, bg=self.COLORS['bg_light'], highlightthickness=0)
-        self.board_image_white = None; self.board_image_black = None
-        self.board_image_id = self.canvas.create_image(0, 0, anchor='nw', tags="board"); self.canvas.pack()
+        self.canvas = tk.Canvas(self.canvas_frame, width=COLS * self.square_size, height=ROWS * self.square_size, bg=self.COLORS['bg_light'], highlightthickness=0)
+        
+        self.board_image_white = self.create_board_image("white")
+        self.board_image_black = self.create_board_image("black")
+        self.board_image_id = self.canvas.create_image(0, 0, anchor='nw', tags="board")
+        self.canvas.pack()
+
+        self.navigation_frame = ttk.Frame(self.right_panel, style='Right.TFrame')
+        self.navigation_frame.pack(fill=tk.X, pady=(10, 0))
+        self.start_button = ttk.Button(self.navigation_frame, text="«", command=self.go_to_start, style='Nav.TButton', state=tk.DISABLED)
+        self.undo_button = ttk.Button(self.navigation_frame, text="‹", command=self.undo_move, style='Nav.TButton', state=tk.DISABLED)
+        self.redo_button = ttk.Button(self.navigation_frame, text="›", command=self.redo_move, style='Nav.TButton', state=tk.DISABLED)
+        self.end_button = ttk.Button(self.navigation_frame, text="»", command=self.go_to_end, style='Nav.TButton', state=tk.DISABLED)
+        self.navigation_frame.columnconfigure(0, weight=1)
+        self.navigation_frame.columnconfigure(5, weight=1)
+        self.start_button.grid(row=0, column=1, padx=5); self.undo_button.grid(row=0, column=2, padx=5)
+        self.redo_button.grid(row=0, column=3, padx=5); self.end_button.grid(row=0, column=4, padx=5)
 
         self._build_scoreboard_and_labels()
         
         self.main_frame.bind("<Configure>", self.handle_main_resize)
         self.right_panel.bind("<Configure>", self.handle_board_resize)
+        
+    def handle_key_press(self, event):
+        if self.is_ai_thinking() and self.ai_process.name != self.ANALYSIS_AI_NAME: return
+        if event.keysym == 'Left': self.undo_move()
+        elif event.keysym == 'Right': self.redo_move()
+        elif event.keysym == 'Home': self.go_to_start()
+        elif event.keysym == 'End': self.go_to_end()
 
     def handle_main_resize(self, event):
         new_sidebar_width = max(self.base_sidebar_width, int(event.width * 0.22))
         if new_sidebar_width == self.left_panel.winfo_width(): return
-
         self.left_panel.config(width=new_sidebar_width)
-
         raw_scaling_factor = new_sidebar_width / self.base_sidebar_width
         dampened_scaling_factor = 1.0 + (raw_scaling_factor - 1.0) * 0.5
-
         title_font_size = max(20, int(24 * dampened_scaling_factor))
         header_font_size = max(12, int(14 * dampened_scaling_factor))
         small_header_font_size = max(11, int(13 * dampened_scaling_factor))
         control_font_size = max(10, int(11 * dampened_scaling_factor))
         status_font_size = max(12, int(14 * dampened_scaling_factor))
-        
         self.title_label.config(font=('Helvetica', title_font_size, 'bold'))
-        
         style = ttk.Style()
         style.configure('Header.TLabel', font=('Helvetica', header_font_size, 'bold'))
         style.configure('SmallHeader.TLabel', font=('Helvetica', small_header_font_size, 'bold'))
@@ -150,27 +166,10 @@ class EnhancedChessApp:
         style.configure('Custom.TRadiobutton', font=('Helvetica', control_font_size))
         style.configure('Custom.TCheckbutton', font=('Helvetica', control_font_size))
         style.configure('Status.TLabel', font=('Helvetica', status_font_size, 'bold'))
-
         button_padding_y = max(6, int(7 * dampened_scaling_factor))
         style.configure('Control.TButton', padding=(10, button_padding_y))
-        
         new_eval_bar_height = max(26, int(26 * dampened_scaling_factor))
         self.eval_bar_canvas.config(height=new_eval_bar_height)
-        
-    def handle_board_resize(self, event):
-        view_width = event.width - 40
-        view_height = event.height - 80
-        
-        if view_width <= 1 or view_height <= 1: return
-
-        new_square_size = min(view_width // COLS, view_height // ROWS)
-
-        if new_square_size != self.square_size and new_square_size > 0:
-            self.square_size = new_square_size
-            self.canvas.config(width=COLS * self.square_size, height=ROWS * self.square_size)
-            self.board_image_white = self.create_board_image("white")
-            self.board_image_black = self.create_board_image("black")
-            self.draw_board()
             
     def _build_control_widgets(self, parent_frame):
         self.game_mode_frame = ttk.Frame(parent_frame, style='Left.TFrame')
@@ -191,7 +190,7 @@ class EnhancedChessApp:
         self.bot_depth_slider = tk.Scale(self.controls_frame, from_=1, to=self.slidermaxvalue, orient=tk.HORIZONTAL, bg=self.COLORS['bg_dark'], fg=self.COLORS['text_light'], highlightthickness=0, relief='flat')
         self.bot_depth_slider.set(3); self.bot_depth_slider.pack(fill=tk.X, pady=(0,2))
         self.instant_move = tk.BooleanVar(value=False); ttk.Checkbutton(self.controls_frame, text="Instant Moves", variable=self.instant_move, style='Custom.TCheckbutton').pack(anchor=tk.W, pady=(2,2))
-        self.analysis_checkbox = ttk.Checkbutton(self.controls_frame, text="Analysis Mode (H-vs-H)", variable=self.analysis_mode_var, style='Custom.TCheckbutton', command=self.toggle_analysis_mode)
+        self.analysis_checkbox = ttk.Checkbutton(self.controls_frame, text="Analysis Mode (H-vs-H)", variable=self.analysis_mode_var, style='Custom.TCheckbutton', command=self._update_analysis_after_state_change)
         self.analysis_checkbox.pack(anchor=tk.W, pady=(2,2))
 
     def _build_status_widgets(self, parent_frame):
@@ -207,231 +206,187 @@ class EnhancedChessApp:
 
     def _build_scoreboard_and_labels(self):
         self.scoreboard_frame = ttk.Frame(self.right_panel, style='Right.TFrame')
-        self.scoreboard_label = ttk.Label(self.scoreboard_frame, text="", font=("Helvetica", 10), justify=tk.LEFT, background=self.COLORS['bg_medium'], foreground=self.COLORS['text_light']); self.scoreboard_label.pack()
-        self.top_bot_label = ttk.Label(self.right_panel, text="", font=("Helvetica", 12), background=self.COLORS['bg_medium'], foreground=self.COLORS['text_light']); self.top_bot_label.place(relx=0.5, rely=0.02, anchor='n')
-        self.bottom_bot_label = ttk.Label(self.right_panel, text="", font=("Helvetica", 12), background=self.COLORS['bg_medium'], foreground=self.COLORS['text_light']); self.bottom_bot_label.place(relx=0.5, rely=0.98, anchor='s')
+        self.scoreboard_label = ttk.Label(self.scoreboard_frame, text="", font=("Helvetica", 10), justify=tk.LEFT, background=self.COLORS['bg_medium'], foreground=self.COLORS['text_light'])
+        self.scoreboard_label.pack()
         
+        # --- LAYOUT FIX: Create labels first, then pack everything together ---
+        # The parent is now the canvas_container, and we use pack for stability.
+        self.top_bot_label = ttk.Label(self.canvas_container, text="", font=("Helvetica", 12), background=self.COLORS['bg_medium'], foreground=self.COLORS['text_light'])
+        self.bottom_bot_label = ttk.Label(self.canvas_container, text="", font=("Helvetica", 12), background=self.COLORS['bg_medium'], foreground=self.COLORS['text_light'])
+
+        # Pack them vertically to ensure they stick to the canvas
+        self.top_bot_label.pack(side=tk.TOP, pady=(5, 2))
+        self.canvas_frame.pack(side=tk.TOP, expand=True) # The canvas_frame is now packed
+        self.bottom_bot_label.pack(side=tk.TOP, pady=(2, 5))
+
+    # Also, replace this function to adjust padding:
+
+    def handle_board_resize(self, event):
+        # Adjust vertical padding to account for labels AND nav buttons
+        view_width, view_height = event.width - 20, event.height - 120 
+        if view_width <= 1 or view_height <= 1: return
+        
+        new_square_size = min(view_width // COLS, view_height // ROWS)
+        if new_square_size != self.square_size and new_square_size > 0:
+            self.square_size = new_square_size
+            self.canvas.config(width=COLS * self.square_size, height=ROWS * self.square_size)
+            self.board_image_white = self.create_board_image("white")
+            self.board_image_black = self.create_board_image("black")
+            self.draw_board()    
+
+
     def draw_piece_at_canvas_coords(self, piece, r, c):
         x, y = self.board_to_canvas(r, c)
-        x_center = x + self.square_size // 2
-        y_center = y + self.square_size // 2 + 2
+        x_center, y_center = x + self.square_size // 2, y + self.square_size // 2 + 2
         font_size = int(self.square_size * 0.67)
-
-        y_correction = int(font_size / 20)
-        y_center -= y_correction
-        
+        y_center -= int(font_size / 20)
         symbol, font = piece.symbol(), ("Arial Unicode MS", font_size)
-
-        if piece.color == "black":
-            shadow_offset = max(1, self.square_size // 40)
-        else:
-            shadow_offset = max(1, self.square_size // 25)
-        
+        shadow_offset = max(1, self.square_size // (40 if piece.color == "black" else 25))
         self.canvas.create_text(x_center + shadow_offset, y_center + shadow_offset, text=symbol, font=font, fill="#444444", tags="piece")
         self.canvas.create_text(x_center, y_center, text=symbol, font=font, fill=piece.color, tags="piece")
-
-    def toggle_analysis_mode(self):
-        self.update_analysis_process()
 
     def process_comm_queue(self):
         try:
             while not self.comm_queue.empty():
                 message = self.comm_queue.get_nowait()
                 msg_type, *payload = message
-                
-                if msg_type == 'log':
-                    print(payload[0])
+                if msg_type == 'log': print(payload[0])
                 elif msg_type == 'eval':
-                    self.last_eval_score = payload[0]
-                    self.last_eval_depth = payload[1]
+                    self.last_eval_score, self.last_eval_depth = payload[0], payload[1]
                     self.draw_eval_bar(self.last_eval_score, self.last_eval_depth)
-                elif msg_type == 'move':
-                    the_move = payload[0]
-                    self._execute_ai_move(the_move)
-        except Exception:
-            pass
-        finally:
-            self.master.after(100, self.process_comm_queue)
+                elif msg_type == 'move': self._execute_ai_move(payload[0])
+        except Exception: pass
+        finally: self.master.after(100, self.process_comm_queue)
 
     def _execute_ai_move(self, the_move):
         if self.game_over: return
-
         if the_move:
-            player_who_moved = self.turn
             self.board.make_move(the_move[0], the_move[1])
-            self.execute_move_and_check_state(player_who_moved=player_who_moved)
-            
+            self.execute_move_and_check_state(player_who_moved=self.turn)
             delay = 4 if self.instant_move.get() else 20
             if not self.game_over and self.game_mode.get() == GameMode.AI_VS_AI.value:
                 self.master.after(delay, self._make_game_ai_move)
-        else:
-            print("AI reported no valid move was made or was cancelled.")
-        
-        self.update_bot_labels()
-        self.set_interactivity(True)
+        else: print("AI reported no valid move was made or was cancelled.")
+        self.update_bot_labels(); self.set_interactivity(True)
     
-
     def _start_ai_process(self, bot_class, bot_name, search_depth):
         if self.ai_process and self.ai_process.is_alive(): return
         self.ai_cancellation_event.clear()
-
-        ply_count = len(self.position_history)
+        ply_count = self.history_pointer
         game_mode_str = self.game_mode.get()
         args = (self.board.clone(), self.turn, self.position_counts.copy(), self.comm_queue, self.ai_cancellation_event, bot_class, bot_name, search_depth, ply_count, game_mode_str)
-        
         self.ai_process = mp.Process(target=run_ai_process, args=args, daemon=True)
-        self.ai_process.name = bot_name 
-        self.ai_process.start()
+        self.ai_process.name = bot_name; self.ai_process.start()
         if bot_name != self.ANALYSIS_AI_NAME: self.set_interactivity(False)
         self.update_bot_labels()
 
     def _stop_ai_process(self):
         if self.ai_process and self.ai_process.is_alive():
             self.ai_cancellation_event.set()
-            self.ai_process.join(timeout=0.5)
+            self.ai_process.join(timeout=0.1) 
             if self.ai_process.is_alive(): self.ai_process.terminate()
             self.ai_process = None
         while not self.comm_queue.empty():
             try: self.comm_queue.get_nowait()
             except Exception: break
-        self.set_interactivity(True); self.update_bot_labels()
         if self.game_mode.get() == GameMode.HUMAN_VS_HUMAN.value and not self.analysis_mode_var.get():
-             self.draw_eval_bar(0); self.eval_score_label.config(text="Even")
+            self.last_eval_score, self.last_eval_depth = 0.0, None
+            self.draw_eval_bar(0); self.eval_score_label.config(text="Even")
+        self.set_interactivity(True); self.update_bot_labels()
 
     def reset_game(self):
         if self.game_mode.get() != GameMode.AI_VS_AI.value:
             self.ai_series_running = False
         self._stop_ai_process()
-        
-        # FIX: Directly instantiate the Board class.
         self.board = Board()
-
         self.turn = "white"
         self.game_started = False
         self.last_move_timestamp = time.time()
         self.selected, self.valid_moves, self.game_over, self.game_result = None, [], False, None
-        self.position_history = [board_hash(self.board, self.turn)]
-        self.position_counts = {self.position_history[0]: 1}
-        
-        self.last_eval_score = 0.0
-        self.last_eval_depth = None
+        self.full_history = [(self.board.clone(), self.turn)]
+        self.history_pointer = 0
+        self.position_counts = {board_hash(self.board, self.turn): 1}
+        self.last_eval_score, self.last_eval_depth = 0.0, None
         self.draw_eval_bar(0)
-        
-        # Start game log here to fix order issue
         self._start_game_if_needed()
-
         mode = self.game_mode.get()
         if mode == GameMode.AI_VS_AI.value:
             self.white_playing_bot_type = "op" if self.ai_series_running and self.ai_series_stats['game_count'] % 2 == 1 else "main"
             self.board_orientation = "white" if self.white_playing_bot_type == "main" else "black"
-            
-            if self.ai_series_running:
-                self.apply_series_opening_move()
-
-            if not self.game_over:
-                delay = 4 if self.instant_move.get() else 20
-                self.master.after(delay, self._make_game_ai_move)
+            if self.ai_series_running: self.apply_series_opening_move()
+            if not self.game_over: self.master.after(4 if self.instant_move.get() else 20, self._make_game_ai_move)
         elif mode == GameMode.HUMAN_VS_BOT.value:
             self.board_orientation = self.human_color
-            if self.turn != self.human_color:
-                delay = 4 if self.instant_move.get() else 20
-                self.master.after(delay, self._make_game_ai_move)
-        else:
-            self.board_orientation = "white"
-        self.update_turn_label()
-        self.draw_board()
-        self.set_interactivity(True)
-        self.update_bot_labels()
-        self.update_scoreboard()
-        self.update_analysis_process()
+            if self.turn != self.human_color: self.master.after(4 if self.instant_move.get() else 20, self._make_game_ai_move)
+        else: self.board_orientation = "white"
+        self.update_ui_after_state_change()
+        self._update_analysis_after_state_change()
 
     def _make_game_ai_move(self):
         if self.game_over: return
-
-        # Print header and start timer HERE
-        print(f"\n--- Turn {len(self.position_history)} ({self.turn.capitalize()}) ---")
+        print(f"\n--- Turn {self.history_pointer + 1} ({self.turn.capitalize()}) ---")
         self.last_move_timestamp = time.time()
-
         mode = self.game_mode.get()
         bot_class, bot_name = None, None
         if mode == GameMode.HUMAN_VS_BOT.value:
             if self.turn != self.human_color: bot_class, bot_name = ChessBot, self.MAIN_AI_NAME
         elif mode == GameMode.AI_VS_AI.value:
-            if self.turn == 'white':
-                bot_class, bot_name = (ChessBot, self.MAIN_AI_NAME) if self.white_playing_bot_type == 'main' else (OpponentAI, self.OPPONENT_AI_NAME)
-            else:
-                bot_class, bot_name = (OpponentAI, self.OPPONENT_AI_NAME) if self.white_playing_bot_type == 'main' else (ChessBot, self.MAIN_AI_NAME)
-        if bot_class:
-            self._start_ai_process(bot_class, bot_name, self.bot_depth_slider.get())
+            bot_class, bot_name = (ChessBot, self.MAIN_AI_NAME) if self.turn == self.board_orientation else (OpponentAI, self.OPPONENT_AI_NAME)
+        if bot_class: self._start_ai_process(bot_class, bot_name, self.bot_depth_slider.get())
     
-    def update_analysis_process(self):
+    def _update_analysis_after_state_change(self):
         self._stop_ai_process()
-        should_run_analysis = (self.analysis_mode_var.get() and 
-                               self.game_mode.get() == GameMode.HUMAN_VS_HUMAN.value and 
-                               not self.game_over)
-        if should_run_analysis:
-            self.master.after(20, lambda: self._start_ai_process(ChessBot, self.ANALYSIS_AI_NAME, 99))
+        should_run = (self.analysis_mode_var.get() and self.game_mode.get() == GameMode.HUMAN_VS_HUMAN.value and not self.game_over)
+        if should_run: self.master.after(50, lambda: self._start_ai_process(ChessBot, self.ANALYSIS_AI_NAME, 99))
 
     def on_drag_end(self, event):
-        is_analysis_process_running = self.is_ai_thinking() and self.ai_process.name == self.ANALYSIS_AI_NAME
-        if self.is_ai_thinking() and not is_analysis_process_running:
+        is_analysis = self.is_ai_thinking() and self.ai_process.name == self.ANALYSIS_AI_NAME
+        if self.is_ai_thinking() and not is_analysis:
             self.valid_moves = []; self.draw_board(); return
         if not self.dragging:
             self.valid_moves = []; self.draw_board(); return
 
         self.dragging = False; self.canvas.delete("drag_ghost")
         row, col = self.canvas_to_board(event.x, event.y)
-        
         if row == -1 or not self.drag_start:
-            self.drag_start, self.selected, self.valid_moves, self.valid_moves_for_highlight = None, None, [], []; self.draw_board(); self.set_interactivity(True); return
+            self.update_ui_after_state_change(); self.set_interactivity(True); return
 
         start_pos, end_pos = self.drag_start, (row, col)
-        
         move_to_check = (start_pos, end_pos)
 
         if move_to_check in self.valid_moves:
             move_time = time.time() - self.last_move_timestamp
-            move_str = self._format_move(move_to_check)
-            print(f"\n--- Turn {len(self.position_history)} ({self.turn.capitalize()}) ---")
-            print(f"Human played: {move_str}, Time={move_time:.2f}s")
-            
-            player_who_moved = self.turn
+            print(f"\n--- Turn {self.history_pointer + 1} ({self.turn.capitalize()}) ---")
+            print(f"Human played: {format_move(move_to_check)}, Time={move_time:.2f}s")
             self.board.make_move(start_pos, end_pos)
-            self.execute_move_and_check_state(player_who_moved=player_who_moved)
-
+            self.execute_move_and_check_state(player_who_moved=self.turn)
             if not self.game_over:
                 mode = self.game_mode.get()
                 if mode == GameMode.HUMAN_VS_BOT.value and self.turn != self.human_color:
-                    delay = 4 if self.instant_move.get() else 20
-                    self.master.after(delay, self._make_game_ai_move)
+                    self.master.after(4 if self.instant_move.get() else 20, self._make_game_ai_move)
                 elif mode == GameMode.HUMAN_VS_HUMAN.value:
-                    self.update_analysis_process()
-                
-        # CRITICAL FIX: Reset all move-related state variables, including the highlight list.
-        self.drag_start, self.selected, self.valid_moves, self.valid_moves_for_highlight = None, None, [], []
-        self.draw_board()
+                    self._update_analysis_after_state_change()
+        self.drag_start = None
+        self.update_ui_after_state_change()
         self.set_interactivity(True)
 
-
     def execute_move_and_check_state(self, player_who_moved):
-        """Handles post-move logic for ALL moves (human and AI)."""
         self.switch_turn()
+        if self.history_pointer < len(self.full_history) - 1:
+            self.full_history = self.full_history[:self.history_pointer + 1]
+            self.position_counts.clear()
+            for board, turn in self.full_history:
+                self.position_counts[board_hash(board, turn)] = self.position_counts.get(board_hash(board, turn), 0) + 1
+        self.full_history.append((self.board.clone(), self.turn))
+        self.history_pointer += 1
         key = board_hash(self.board, self.turn)
-        self.position_history.append(key)
         self.position_counts[key] = self.position_counts.get(key, 0) + 1
-        
-        status, winner = get_game_state(self.board, self.turn, self.position_counts, len(self.position_history), self.MAX_GAME_MOVES)
-
+        status, winner = get_game_state(self.board, self.turn, self.position_counts, self.history_pointer, self.MAX_GAME_MOVES)
         if status != "ongoing":
-            self.game_over = True
-            self.game_result = (status, winner)
-            
-        self.update_turn_label()
-        self.draw_board()
-
+            self.game_over, self.game_result = True, (status, winner)
+        self.update_ui_after_state_change()
         if self.game_over:
-            self._log_game_over()
-            self._stop_ai_process()
+            self._log_game_over(); self._stop_ai_process()
             if self.game_mode.get() == GameMode.AI_VS_AI.value and self.ai_series_running:
                 self.process_ai_series_result()
 
@@ -449,7 +404,6 @@ class EnhancedChessApp:
         current_bot_name = self.ai_process.name if self.ai_process else ""
         is_thinking_for_move = is_thinking and (current_bot_name != self.ANALYSIS_AI_NAME)
         thinking_text = " (Thinking...)" if is_thinking_for_move else ""
-        
         mode = self.game_mode.get()
         if mode == GameMode.HUMAN_VS_BOT.value:
             if self.human_color == "white": white_label, black_label = "Human", f"{self.MAIN_AI_NAME}{thinking_text}"
@@ -460,24 +414,22 @@ class EnhancedChessApp:
             white_label = f"{white_name}{thinking_text if self.turn == 'white' else ''}"
             black_label = f"{black_name}{thinking_text if self.turn == 'black' else ''}"
         else: white_label, black_label = "Human (White)", "Human (Black)"
-
         if self.board_orientation == "white":
             self.bottom_bot_label.config(text=white_label); self.top_bot_label.config(text=black_label)
         else:
             self.bottom_bot_label.config(text=black_label); self.top_bot_label.config(text=white_label)
 
     def on_drag_start(self, event):
-        is_analysis_process_running = self.is_ai_thinking() and self.ai_process.name == self.ANALYSIS_AI_NAME
-        if self.game_over or (self.is_ai_thinking() and not is_analysis_process_running): return
+        is_analysis = self.is_ai_thinking() and self.ai_process.name == self.ANALYSIS_AI_NAME
+        if self.game_over or (self.is_ai_thinking() and not is_analysis): return
         r, c = self.canvas_to_board(event.x, event.y)
         if r != -1:
             piece = self.board.grid[r][c]
             is_human_turn = (self.game_mode.get() != GameMode.HUMAN_VS_BOT.value or self.turn == self.human_color)
             if piece and piece.color == self.turn and is_human_turn:
-                self.last_move_timestamp = time.time() # Start timer on click
-                self.selected = (r, c); self.dragging = True; self.drag_start = (r, c)
+                self.last_move_timestamp = time.time()
+                self.selected, self.dragging, self.drag_start = (r, c), True, (r, c)
                 self.valid_moves = get_all_legal_moves(self.board, self.turn)
-                # Filter valid_moves for the selected piece only for drawing highlights
                 self.valid_moves_for_highlight = [end for start, end in self.valid_moves if start == self.selected]
                 font_size = int(self.square_size * 0.7)
                 self.drag_piece_ghost = self.canvas.create_text(event.x, event.y, text=piece.symbol(), font=("Arial Unicode MS", font_size), fill=piece.color, tags="drag_ghost")
@@ -493,9 +445,7 @@ class EnhancedChessApp:
         self.reset_game()
 
     def switch_turn(self):
-        if self.game_over:
-            return
-        self.turn = "black" if self.turn == "white" else "white"
+        if not self.game_over: self.turn = "black" if self.turn == "white" else "white"
 
     def board_to_canvas(self, r, c):
         if self.square_size == 0: return 0, 0
@@ -510,14 +460,12 @@ class EnhancedChessApp:
         return (r, c) if 0 <= r < ROWS and 0 <= c < COLS else (-1, -1)
 
     def draw_eval_bar(self, eval_score, depth=None):
-        score = eval_score / 100.0
-        w, h = self.eval_bar_canvas.winfo_width(), self.eval_bar_canvas.winfo_height()
+        score = eval_score / 100.0; w, h = self.eval_bar_canvas.winfo_width(), self.eval_bar_canvas.winfo_height()
         self.eval_bar_canvas.delete("all")
         if w <= 1 or h <= 1: return
         for x_pixel in range(w):
             intensity = int(255 * (x_pixel / float(w - 1)))
-            color = f"#{intensity:02x}{intensity:02x}{intensity:02x}"
-            self.eval_bar_canvas.create_line(x_pixel, 0, x_pixel, h, fill=color)
+            self.eval_bar_canvas.create_line(x_pixel, 0, x_pixel, h, fill=f"#{intensity:02x}{intensity:02x}{intensity:02x}")
         marker_score = max(-1.0, min(1.0, math.tanh(score / 20.0)))
         marker_x = int(((marker_score + 1) / 2.0) * w)
         self.eval_bar_canvas.create_line(marker_x, 0, marker_x, h, fill=self.COLORS['accent'], width=3)
@@ -538,6 +486,8 @@ class EnhancedChessApp:
         style.configure('Status.TLabel', background=C['bg_light'], foreground=C['text_light'], font=('Helvetica', 14, 'bold'), padding=(11, 4), relief='flat')
         style.configure('Control.TButton', background=C['accent'], foreground=C['text_light'], font=('Helvetica', 11, 'bold'), padding=(10, 8), borderwidth=0, relief='flat')
         style.map('Control.TButton', background=[('active', C['accent']), ('pressed', '#d13550')])
+        style.configure('Nav.TButton', background=C['bg_light'], foreground=C['text_light'], font=('Helvetica', 16, 'bold'), padding=(10, 5), borderwidth=0, relief='flat')
+        style.map('Nav.TButton', background=[('active', C['bg_light']), ('pressed', C['bg_medium'])], foreground=[('disabled', C['text_dark'])])
         style.configure('Custom.TRadiobutton', background=C['bg_dark'], foreground=C['text_light'], font=('Helvetica', 11), padding=(5, 8))
         style.map('Custom.TRadiobutton', background=[('active', C['bg_dark'])], indicatorcolor=[('selected', C['accent'])], foreground=[('active', C['accent'])])
         style.configure('Custom.TCheckbutton', background=C['bg_dark'], foreground=C['text_light'], font=('Helvetica', 11), padding=(5, 8))
@@ -546,12 +496,8 @@ class EnhancedChessApp:
 
     def create_board_image(self, orientation):
         if self.square_size <= 0: return None
-        img_width = COLS * self.square_size
-        img_height = ROWS * self.square_size
-        img = tk.PhotoImage(width=img_width, height=img_height)
-        # Board colors
-        BOARD_COLOR_1 = "#D2B48C"
-        BOARD_COLOR_2 = "#8B5A2B"
+        img = tk.PhotoImage(width=COLS*self.square_size, height=ROWS*self.square_size)
+        BOARD_COLOR_1, BOARD_COLOR_2 = "#D2B48C", "#8B5A2B"
         for r_draw in range(ROWS):
             for c_draw in range(COLS):
                 color = BOARD_COLOR_1 if (r_draw + c_draw) % 2 == 0 else BOARD_COLOR_2
@@ -561,20 +507,15 @@ class EnhancedChessApp:
 
     def draw_board(self):
         current_image = self.board_image_white if self.board_orientation == "white" else self.board_image_black
-        if not current_image:
-            return
-            
+        if not current_image: return
         self.canvas.itemconfig(self.board_image_id, image=current_image)
         self.canvas.delete("highlight", "piece", "check_highlight")
-        
-        # Use valid_moves_for_highlight if available, otherwise default to empty
         moves_to_highlight = getattr(self, 'valid_moves_for_highlight', [])
         for r_move, c_move in moves_to_highlight:
             x1, y1 = self.board_to_canvas(r_move, c_move)
             radius = self.square_size // 5
             center_x, center_y = x1 + self.square_size // 2, y1 + self.square_size // 2
             self.canvas.create_oval(center_x - radius, center_y - radius, center_x + radius, center_y + radius, fill="#1E90FF", outline="", tags="highlight")
-        
         for r in range(ROWS):
             for c in range(COLS):
                 if self.board.grid[r][c]: self.draw_piece_with_check(r, c)
@@ -588,56 +529,44 @@ class EnhancedChessApp:
         if (r, c) != self.drag_start: self.draw_piece_at_canvas_coords(piece, r, c)
 
     def _start_game_if_needed(self):
-        if not self.game_started:
-            self.game_started = True
-            
-            mode = self.game_mode.get()
-            if mode == GameMode.HUMAN_VS_BOT.value:
-                mode_name = f"Human ({self.human_color.capitalize()}) vs. AI ({('Black' if self.human_color == 'white' else 'White')})"
-            elif mode == GameMode.HUMAN_VS_HUMAN.value:
-                mode_name = "Human vs. Human"
-            elif mode == GameMode.AI_VS_AI.value:
-                if self.white_playing_bot_type == 'main':
-                    mode_name = f"{self.MAIN_AI_NAME} (White) vs. {self.OPPONENT_AI_NAME} (Black)"
-                else:
-                    mode_name = f"{self.OPPONENT_AI_NAME} (White) vs. {self.MAIN_AI_NAME} (Black)"
-            else:
-                mode_name = mode.replace("_", " ").title()
-
-            print("\n" + "="*60 + f"\nNEW GAME: {mode_name}\n" + "="*60)
-            self.update_analysis_process()
+        if self.game_started: return
+        self.game_started = True
+        mode = self.game_mode.get()
+        if mode == GameMode.HUMAN_VS_BOT.value: mode_name = f"Human ({self.human_color.capitalize()}) vs. AI"
+        elif mode == GameMode.HUMAN_VS_HUMAN.value: mode_name = "Human vs. Human"
+        elif mode == GameMode.AI_VS_AI.value:
+            if self.white_playing_bot_type == 'main': mode_name = f"{self.MAIN_AI_NAME} (W) vs. {self.OPPONENT_AI_NAME} (B)"
+            else: mode_name = f"{self.OPPONENT_AI_NAME} (W) vs. {self.MAIN_AI_NAME} (B)"
+        else: mode_name = mode.replace("_", " ").title()
+        print("\n" + "="*60 + f"\nNEW GAME: {mode_name}\n" + "="*60)
+        self._update_analysis_after_state_change()
     
     def _log_game_over(self):
         if not self.game_result: return
         result_type, winner = self.game_result
-        message = ""
         if result_type == "checkmate": message = f"Checkmate! {winner.capitalize()} wins!"
         elif result_type == "stalemate": message = "Stalemate! It's a draw."
         elif result_type == "repetition": message = "Draw by Repetition!"
         elif result_type == "move_limit": message = f"Draw by {self.MAX_GAME_MOVES} move limit!"
         elif result_type == "insufficient_material": message = "Draw by Insufficient Material!"
-        
-        print("\n" + "-"*25 + " GAME OVER " + "-"*24)
-        print(f"Result: {message}")
-        print("-" * 60)
+        else: message = "Game Over"
+        print("\n" + "-"*25 + " GAME OVER " + "-"*24 + f"\nResult: {message}\n" + "-" * 60)
 
     def update_turn_label(self):
-        message = f"Turn: {self.turn.capitalize()}"
+        message = f"TURN: {self.turn.upper()}"
         if self.game_result:
             result_type, winner = self.game_result
-            if result_type == "checkmate": message = f"Checkmate! {winner.capitalize()} wins!"
-            elif result_type == "stalemate": message = "Stalemate! It's a draw."
-            elif result_type == "repetition": message = "Draw by Repetition!"
-            elif result_type == "move_limit": message = f"Draw by {self.MAX_GAME_MOVES} move limit!"
-            elif result_type == "insufficient_material": message = "Draw by Insufficient Material!"
+            if result_type == "checkmate": message = f"CHECKMATE! {winner.upper()} WINS!"
+            elif result_type == "stalemate": message = "STALEMATE! IT'S A DRAW."
+            else: message = "GAME OVER: DRAW"
         self.turn_label.config(text=message)
         
     def process_ai_series_result(self):
         self.ai_series_stats['game_count'] += 1
-        result_type, winner_color = self.game_result
+        _, winner_color = self.game_result
         if winner_color:
-            main_ai_color_for_completed_game = 'white' if self.white_playing_bot_type == 'main' else 'black'
-            if winner_color == main_ai_color_for_completed_game: self.ai_series_stats['my_ai_wins'] += 1
+            main_ai_color = 'white' if self.white_playing_bot_type == 'main' else 'black'
+            if winner_color == main_ai_color: self.ai_series_stats['my_ai_wins'] += 1
             else: self.ai_series_stats['op_ai_wins'] += 1
         else: self.ai_series_stats['draws'] += 1
         self.update_scoreboard()
@@ -645,7 +574,7 @@ class EnhancedChessApp:
             self.master.after(1000, self.reset_game)
         else:
             self.ai_series_running = False
-            self.turn_label.config(text="AI Series Complete!")
+            self.turn_label.config(text="AI SERIES COMPLETE!")
 
     def start_ai_series(self):
         self._stop_ai_process()
@@ -657,17 +586,14 @@ class EnhancedChessApp:
         
     def apply_series_opening_move(self):
         if self.ai_series_stats['game_count'] % 2 == 0:
-            print()
-            print("--- Generating new opening for game pair ---")
+            print("\n--- Generating new opening for game pair ---")
             moves = get_all_legal_moves(self.board, "white")
             self.current_opening_move = random.choice(moves) if moves else None
         
         if self.current_opening_move:
-            print(f"Applying opening move: {self._format_move(self.current_opening_move)}")
-            print()
-            player_who_moved = self.turn
+            print(f"Applying opening move: {format_move(self.current_opening_move)}")
             self.board.make_move(self.current_opening_move[0], self.current_opening_move[1])
-            self.execute_move_and_check_state(player_who_moved=player_who_moved)
+            self.execute_move_and_check_state(player_who_moved=self.turn)
 
     def update_scoreboard(self):
         if self.game_mode.get() == GameMode.AI_VS_AI.value and self.ai_series_running:
@@ -682,10 +608,66 @@ class EnhancedChessApp:
         else:
             self.scoreboard_frame.place_forget()
 
-    def _format_move(self, move):
-        if not move: return "None"
-        (r1, c1), (r2, c2) = move
-        return f"{'abcdefgh'[c1]}{'87654321'[r1]}-{'abcdefgh'[c2]}{'87654321'[r2]}"
+    def undo_move(self):
+        if self.game_mode.get() == GameMode.AI_VS_AI.value or self.history_pointer <= 0: return
+        self.history_pointer -= 1
+        self._load_state_from_history()
+
+    def redo_move(self):
+        if self.game_mode.get() == GameMode.AI_VS_AI.value or self.history_pointer >= len(self.full_history) - 1: return
+        self.history_pointer += 1
+        self._load_state_from_history()
+
+    def go_to_start(self):
+        if self.game_mode.get() == GameMode.AI_VS_AI.value or self.history_pointer <= 0: return
+        self.history_pointer = 0
+        self._load_state_from_history()
+    
+    def go_to_end(self):
+        if self.game_mode.get() == GameMode.AI_VS_AI.value or self.history_pointer >= len(self.full_history) - 1: return
+        self.history_pointer = len(self.full_history) - 1
+        self._load_state_from_history()
+        
+    def _load_state_from_history(self):
+        self._stop_ai_process()
+        board_state, turn_state = self.full_history[self.history_pointer]
+        self.board = board_state.clone()
+        self.turn = turn_state
+        self.game_over, self.game_result = False, None
+        
+        self.position_counts.clear()
+        for i in range(self.history_pointer + 1):
+            board, turn = self.full_history[i]
+            h = board_hash(board, turn)
+            self.position_counts[h] = self.position_counts.get(h, 0) + 1
+
+        status, winner = get_game_state(self.board, self.turn, self.position_counts, self.history_pointer, self.MAX_GAME_MOVES)
+        if status != "ongoing":
+            self.game_over, self.game_result = True, (status, winner)
+            
+        self.update_ui_after_state_change()
+        self._update_analysis_after_state_change()
+
+    def update_navigation_buttons(self):
+        if self.game_mode.get() == GameMode.AI_VS_AI.value:
+            state = tk.DISABLED
+            self.start_button.config(state=state); self.undo_button.config(state=state)
+            self.redo_button.config(state=state); self.end_button.config(state=state)
+            return
+
+        can_go_back = self.history_pointer > 0
+        can_go_forward = self.history_pointer < len(self.full_history) - 1
+        
+        self.start_button.config(state=tk.NORMAL if can_go_back else tk.DISABLED)
+        self.undo_button.config(state=tk.NORMAL if can_go_back else tk.DISABLED)
+        self.redo_button.config(state=tk.NORMAL if can_go_forward else tk.DISABLED)
+        self.end_button.config(state=tk.NORMAL if can_go_forward else tk.DISABLED)
+
+    def update_ui_after_state_change(self):
+        self.selected, self.valid_moves, self.valid_moves_for_highlight = None, [], []
+        self.update_turn_label()
+        self.draw_board()
+        self.update_navigation_buttons()
 
 if __name__ == "__main__":
     mp.freeze_support()

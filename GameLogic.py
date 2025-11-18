@@ -1,5 +1,4 @@
 # v28.4 (Final Audit & Bug Fixes)
-import copy
 
 # -----------------------------
 # Global Constants
@@ -574,3 +573,9 @@ def generate_all_tactical_moves(board, color):
                 yield (start_pos, end_pos)
             elif is_quiet_knight_evaporation(board, (start_pos, end_pos)):
                 yield (start_pos, end_pos)
+
+def format_move(move):
+    """Converts a move tuple to a human-readable algebraic string."""
+    if not move: return "None"
+    (r1, c1), (r2, c2) = move
+    return f"{'abcdefgh'[c1]}{'87654321'[r1]}-{'abcdefgh'[c2]}{'87654321'[r2]}"

@@ -95,9 +95,7 @@ class ChessBot:
     def _report_eval(self, score, depth): self.comm_queue.put(('eval', score if self.color == 'white' else -score, depth))
     def _report_move(self, move): self.comm_queue.put(('move', move))
     def _format_move(self, move):
-        if not move: return "None"
-        (r1, c1), (r2, c2) = move
-        return f"{'abcdefgh'[c1]}{'87654321'[r1]}-{'abcdefgh'[c2]}{'87654321'[r2]}"
+        return format_move(move)
 
     def _calculate_tapered_map(self, board):
         all_pieces = board.white_pieces + board.black_pieces
