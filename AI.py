@@ -1,4 +1,4 @@
-# v78.0 (High-Impact "Just-in-Time" Cloning in Search)
+# v78.1 (Simplified order_moves function)
 
 import time
 from GameLogic import generate_legal_moves_generator
@@ -205,29 +205,32 @@ class ChessBot:
 
     def order_moves(self, board, moves, ply, hash_move, tapered_vals_by_type):
         if not moves: return []
-        scores = {}
+
         killers = self.killer_moves[ply] if ply < len(self.killer_moves) else [None, None]
         color_index = 0 if (self.color if ply % 2 == 0 else self.opponent_color) == 'white' else 1
-        
-        for move in moves:
-            score = 0
+
+        def get_move_score(move):
             if move == hash_move:
-                score = self.BONUS_PV_MOVE
-            else:
-                moving_piece = board.grid[move[0][0]][move[0][1]]
-                target_piece = board.grid[move[1][0]][move[1][1]]
-                
-                if target_piece is not None:
-                    swing = calculate_material_swing(board, move, tapered_vals_by_type)
-                    score = self.BONUS_CAPTURE + swing
-                else:
-                    if move in killers: score = self.BONUS_KILLER_1 if move == killers[0] else self.BONUS_KILLER_2
-                    elif isinstance(moving_piece, (Queen, Knight)): score = self.BONUS_QN_TACTIC
-                    else:
-                        from_idx, to_idx = move[0][0]*COLS+move[0][1], move[1][0]*COLS+move[1][1]
-                        score = self.history_heuristic_table[color_index][from_idx][to_idx]
-            scores[move] = score
-        moves.sort(key=lambda m: scores.get(m, 0), reverse=True)
+                return self.BONUS_PV_MOVE
+
+            moving_piece = board.grid[move[0][0]][move[0][1]]
+            target_piece = board.grid[move[1][0]][move[1][1]]
+            
+            if target_piece is not None:
+                swing = calculate_material_swing(board, move, tapered_vals_by_type)
+                return self.BONUS_CAPTURE + swing
+            
+            if move == killers[0]: return self.BONUS_KILLER_1
+            if move == killers[1]: return self.BONUS_KILLER_2
+            
+            if isinstance(moving_piece, (Queen, Knight)):
+                return self.BONUS_QN_TACTIC
+
+            from_idx = move[0][0] * COLS + move[0][1]
+            to_idx = move[1][0] * COLS + move[1][1]
+            return self.history_heuristic_table[color_index][from_idx][to_idx]
+
+        moves.sort(key=get_move_score, reverse=True)
         return moves
 
     def negamax(self, board, depth, alpha, beta, turn, ply, search_path):
@@ -266,10 +269,6 @@ class ChessBot:
                 self.tt[hash_val] = TTEntry(beta, depth, TT_FLAG_LOWERBOUND, None)
                 return beta 
 
-        # --- THE KEY IMPROVEMENT: JUST-IN-TIME CLONING ---
-        # Instead of pre-generating all resulting board states, we get only the legal moves.
-        # The board is cloned inside the loop, only when a move is actually searched.
-        # This avoids creating dozens of useless board clones that would be pruned by alpha-beta.
         legal_moves_list = get_all_legal_moves(board, turn)
         if not legal_moves_list:
             return -self.MATE_SCORE + ply if is_in_check_flag else self.DRAW_SCORE
@@ -282,7 +281,6 @@ class ChessBot:
         best_move_for_node = None
         
         for i, move in enumerate(ordered_moves):
-            # The board is cloned here, "just-in-time"
             child_board = board.clone()
             child_board.make_move(move[0], move[1])
 
