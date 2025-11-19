@@ -1,4 +1,4 @@
-# v79.1 (Evaluation: Pawn Phalanx & Rook Alignment + PST Updates)
+# v79.2 (v79.1 Base + 3-Fold Repetition Fix)
 
 import time
 from GameLogic import generate_legal_moves_generator
@@ -248,12 +248,21 @@ class ChessBot:
         if self.cancellation_event.is_set(): raise SearchCancelledException()
         
         hash_val = board_hash(board, turn)
-        if ply > 0 and hash_val in search_path: return self.DRAW_SCORE
-        
+
+        # --- FIX: Check for 3-Fold Repetition ---
+        # This check MUST happen before anything else to prevent exploring drawn loops.
+        if ply > 0:
+            if hash_val in search_path:
+                return self.DRAW_SCORE
+            # If this position has occurred 2 times in history, this 3rd visit is a draw.
+            if self.position_counts.get(hash_val, 0) >= 2:
+                return self.DRAW_SCORE
+
         # --- OPTIMIZATION 2: INLINED Game State Checks (From v78.3) ---
         if is_insufficient_material(board):
             return self.DRAW_SCORE
         
+        # Note: This check is redundant due to the fix above, but harmless.
         if self.position_counts.get(hash_val, 0) >= 3:
             return self.DRAW_SCORE
 
@@ -337,6 +346,7 @@ class ChessBot:
         self.nodes_searched += 1
         if self.cancellation_event.is_set(): raise SearchCancelledException()
 
+        # Note: We keep get_game_state here because qsearch doesn't generate all legal moves.
         game_status, _ = get_game_state(board, turn, self.position_counts, self.ply_count + ply, self.max_moves)
         if game_status != "ongoing":
             if game_status == "checkmate": return -self.MATE_SCORE + ply
