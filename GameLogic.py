@@ -1,4 +1,4 @@
-# v28.8 (Safe Memory Optimizations)
+# v29 (Expanded Insufficient Material Detection)
 
 # -----------------------------
 # Global Constants
@@ -137,7 +137,6 @@ class Bishop(Piece):
                     if target.color != self.color: moves.add((cr, cc))
                     break
                 moves.add((cr, cc)); cd = d2 if cd == d1 else d1
-        # Sorted for determinism (Fix from v28.7)
         return sorted(list(moves))
 
 class Knight(Piece):
@@ -182,7 +181,6 @@ class Pawn(Piece):
                 moves.append((r, new_c))
         return moves
         
-    # Correctly inherits get_threats from Piece (Fix from v28.6)
 
 # ---------------------------------------------
 # Board Class
@@ -243,7 +241,6 @@ class Board:
 
     def clone(self):
         new_board = Board(setup=False)
-        # --- OPTIMIZATION: Iterate separately to avoid creating a new list ---
         for piece in self.white_pieces:
             p_clone = piece.clone()
             new_board.add_piece(p_clone, p_clone.pos[0], p_clone.pos[1])
@@ -308,7 +305,6 @@ class Board:
                 self.remove_piece(moved_knight_pos[0], moved_knight_pos[1])
             return
 
-        # --- OPTIMIZATION: Build list directly to avoid concatenation ---
         knights_on_board = [p for p in self.white_pieces if isinstance(p, Knight)]
         knights_on_board.extend(p for p in self.black_pieces if isinstance(p, Knight))
         
@@ -416,8 +412,6 @@ def is_in_check(board, color):
 def generate_legal_moves_generator(board, color, yield_boards=False):
     piece_list = board.white_pieces if color == 'white' else board.black_pieces
     opponent_color = "black" if color == "white" else "white"
-    
-    # --- OPTIMIZATION: Removed redundant list() copy ---
     for piece in piece_list: 
         start_pos = piece.pos
         if start_pos is None: continue
@@ -449,16 +443,42 @@ def has_legal_moves(board, color):
     except StopIteration:
         return False
         
+# --- UPDATE: EXPANDED INSUFFICIENT MATERIAL CHECKS ---
 def is_insufficient_material(board):
     """Checks for endgames that are automatic draws."""
-    total_pieces = len(board.white_pieces) + len(board.black_pieces)
-    if total_pieces > 3: return False
+    white_pieces = board.white_pieces
+    black_pieces = board.black_pieces
+    total_pieces = len(white_pieces) + len(black_pieces)
+
+    if total_pieces > 4: return False # Fast exit for most games
+
+    # King vs King
     if total_pieces == 2: return True
+
+    # King vs King + Minor Piece (Bishop or Knight)
     if total_pieces == 3:
-        major_side = board.white_pieces if len(board.white_pieces) == 2 else board.black_pieces
+        major_side = white_pieces if len(white_pieces) == 2 else black_pieces
         piece_types = {type(p) for p in major_side}
         if King in piece_types and (Bishop in piece_types or Knight in piece_types):
             return True
+
+    # King + Rook vs King + Rook (Theoretical Draw)
+    # King + Rook vs King + Bishop (Theoretical Draw)
+    if total_pieces == 4:
+        white_types = {type(p) for p in white_pieces}
+        black_types = {type(p) for p in black_pieces}
+        
+        has_wk_wr = (white_types == {King, Rook})
+        has_bk_br = (black_types == {King, Rook})
+        has_wk_wb = (white_types == {King, Bishop})
+        has_bk_bb = (black_types == {King, Bishop})
+        
+        # K+R vs K+R
+        if has_wk_wr and has_bk_br: return True
+        
+        # K+R vs K+B or K+B vs K+R
+        if (has_wk_wr and has_bk_bb) or (has_wk_wb and has_bk_br): return True
+
     return False
 
 def get_game_state(board, turn_to_move, position_counts, ply_count, max_moves):
@@ -540,10 +560,6 @@ def is_quiet_knight_evaporation(board, move):
     return False
 
 def generate_all_tactical_moves(board, color):
-    """
-    An optimized generator that yields all pseudo-legal tactical moves.
-    This includes captures, promotions, quiet rook skewers, and quiet knight evaporations.
-    """
     piece_list = board.white_pieces if color == 'white' else board.black_pieces
     
     for piece in piece_list:
@@ -556,9 +572,8 @@ def generate_all_tactical_moves(board, color):
             
             if is_capture or is_promotion:
                 yield (start_pos, end_pos)
-                continue # Move has been yielded, no need for further checks
+                continue
             
-            # Check for special quiet tactical moves
             if is_rook_piercing_capture(board, (start_pos, end_pos)):
                 yield (start_pos, end_pos)
             elif is_quiet_knight_evaporation(board, (start_pos, end_pos)):
