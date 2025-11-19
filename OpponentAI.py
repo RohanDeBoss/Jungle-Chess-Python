@@ -1,4 +1,4 @@
-# v77.1 - Small optimiations + see
+# v79.2 (v79.1 Base + 3-Fold Repetition Fix)
 
 import time
 from GameLogic import generate_legal_moves_generator
@@ -6,12 +6,12 @@ from GameLogic import *
 import random
 from collections import namedtuple
 
-# --- Tapered Piece Values from v73.99 baseline ---
+# --- Tapered Piece Values from current baseline ---
 PIECE_VALUES_MG = {
     Pawn: 100, Knight: 850, Bishop: 700, Rook: 600, Queen: 900, King: 20000
 }
 PIECE_VALUES_EG = {
-    Pawn: 100, Knight: 800, Bishop: 650, Rook: 750, Queen: 700, King: 20000
+    Pawn: 100, Knight: 800, Bishop: 650, Rook: 700, Queen: 700, King: 20000
 }
 INITIAL_PHASE_MATERIAL = (PIECE_VALUES_MG[Rook] * 4 + PIECE_VALUES_MG[Knight] * 4 +
                           PIECE_VALUES_MG[Bishop] * 4 + PIECE_VALUES_MG[Queen] * 2)
@@ -38,7 +38,12 @@ initialize_zobrist_table()
 
 def board_hash(board, turn):
     h = 0
-    for piece in board.white_pieces + board.black_pieces:
+    # Optimized in v78.2
+    for piece in board.white_pieces:
+        if piece.pos:
+            key = (piece.pos[0], piece.pos[1], type(piece), piece.color)
+            h ^= ZOBRIST_TABLE.get(key, 0)
+    for piece in board.black_pieces:
         if piece.pos:
             key = (piece.pos[0], piece.pos[1], type(piece), piece.color)
             h ^= ZOBRIST_TABLE.get(key, 0)
@@ -97,9 +102,17 @@ class OpponentAI:
     def _format_move(self, move):
         return format_move(move)
 
+    # --- OPTIMIZATION: No List Concatenation ---
     def _calculate_tapered_map(self, board):
-        all_pieces = board.white_pieces + board.black_pieces
-        phase_material_score = sum(PIECE_VALUES_MG.get(type(p), 0) for p in all_pieces if not isinstance(p, (Pawn, King)))
+        phase_material_score = 0
+        # Iterate lists separately to avoid creating a temporary list with +
+        for p in board.white_pieces:
+            if not isinstance(p, (Pawn, King)):
+                phase_material_score += PIECE_VALUES_MG.get(type(p), 0)
+        for p in board.black_pieces:
+            if not isinstance(p, (Pawn, King)):
+                phase_material_score += PIECE_VALUES_MG.get(type(p), 0)
+
         phase = min(256, (phase_material_score * 256) // INITIAL_PHASE_MATERIAL) if INITIAL_PHASE_MATERIAL > 0 else 0
         
         tapered_map = {
@@ -218,7 +231,6 @@ class OpponentAI:
                 target_piece = board.grid[move[1][0]][move[1][1]]
                 
                 if target_piece is not None:
-                    # Use the true material swing for more intelligent ordering.
                     swing = calculate_material_swing(board, move, tapered_vals_by_type)
                     score = self.BONUS_CAPTURE + swing
                 else:
@@ -236,11 +248,25 @@ class OpponentAI:
         if self.cancellation_event.is_set(): raise SearchCancelledException()
         
         hash_val = board_hash(board, turn)
-        if ply > 0 and hash_val in search_path: return self.DRAW_SCORE
+
+        # --- FIX: Check for 3-Fold Repetition ---
+        # This check MUST happen before anything else to prevent exploring drawn loops.
+        if ply > 0:
+            if hash_val in search_path:
+                return self.DRAW_SCORE
+            # If this position has occurred 2 times in history, this 3rd visit is a draw.
+            if self.position_counts.get(hash_val, 0) >= 2:
+                return self.DRAW_SCORE
+
+        # --- OPTIMIZATION 2: INLINED Game State Checks (From v78.3) ---
+        if is_insufficient_material(board):
+            return self.DRAW_SCORE
         
-        game_status, _ = get_game_state(board, turn, self.position_counts, self.ply_count + ply, self.max_moves)
-        if game_status != "ongoing":
-            if game_status == "checkmate": return -self.MATE_SCORE + ply
+        # Note: This check is redundant due to the fix above, but harmless.
+        if self.position_counts.get(hash_val, 0) >= 3:
+            return self.DRAW_SCORE
+
+        if self.ply_count + ply >= self.max_moves:
             return self.DRAW_SCORE
 
         original_alpha = alpha
@@ -267,9 +293,12 @@ class OpponentAI:
                 self.tt[hash_val] = TTEntry(beta, depth, TT_FLAG_LOWERBOUND, None)
                 return beta 
 
+        # 5. Generate Moves & Check for Mate/Stalemate
         legal_moves_with_boards = list(generate_legal_moves_generator(board, turn, yield_boards=True))
+        
         if not legal_moves_with_boards:
-            return -self.MATE_SCORE + ply if is_in_check_flag else self.DRAW_SCORE
+            if is_in_check_flag: return -self.MATE_SCORE + ply
+            return self.DRAW_SCORE
 
         legal_moves_list = [move for move, _ in legal_moves_with_boards]
         move_to_board_map = dict(legal_moves_with_boards)
@@ -317,6 +346,7 @@ class OpponentAI:
         self.nodes_searched += 1
         if self.cancellation_event.is_set(): raise SearchCancelledException()
 
+        # Note: We keep get_game_state here because qsearch doesn't generate all legal moves.
         game_status, _ = get_game_state(board, turn, self.position_counts, self.ply_count + ply, self.max_moves)
         if game_status != "ongoing":
             if game_status == "checkmate": return -self.MATE_SCORE + ply
@@ -363,81 +393,76 @@ class OpponentAI:
             return self.DRAW_SCORE, {}
         
         tapered_vals_by_type, phase = self._calculate_tapered_map(board)
+        
+        white_pieces = board.white_pieces
+        black_pieces = board.black_pieces
+        grid = board.grid
+        
+        # Heuristic Weights
+        PAWN_PHALANX_BONUS = 5
+        ROOK_ALIGNMENT_BONUS = 15
+        
+        white_score_mg, white_score_eg = 0, 0
+        black_score_mg, black_score_eg = 0, 0
 
-        white_pieces, black_pieces, grid = board.white_pieces, board.black_pieces, board.grid
-        QUEEN_AOE_POTENTIAL_BONUS, ROOK_PIERCING_POTENTIAL_BONUS = 25, 20
-        white_pst_mg, white_pst_eg, black_pst_mg, black_pst_eg = 0, 0, 0, 0
+        white_king_pos = board.white_king_pos
+        black_king_pos = board.black_king_pos
 
+        # --- WHITE PIECES ---
         for piece in white_pieces:
-            piece_type = type(piece)
+            ptype = type(piece)
             r, c = piece.pos
-            mg_val, eg_val = PIECE_VALUES_MG.get(piece_type, 0), PIECE_VALUES_EG.get(piece_type, 0)
-            white_pst_mg += mg_val
-            white_pst_eg += eg_val
-            if piece_type is King:
-                white_pst_mg += PIECE_SQUARE_TABLES['king_midgame'][r][c]
-                white_pst_eg += PIECE_SQUARE_TABLES['king_endgame'][r][c]
-            elif PIECE_SQUARE_TABLES.get(piece_type):
-                pst_val = PIECE_SQUARE_TABLES[piece_type][r][c]
-                white_pst_mg += pst_val; white_pst_eg += pst_val
-            if piece_type is Queen:
-                for adj_r, adj_c in ADJACENT_SQUARES_MAP.get(piece.pos, set()):
-                    target = grid[adj_r][adj_c]
-                    if target and target.color == 'black': white_pst_mg += QUEEN_AOE_POTENTIAL_BONUS
-            elif piece_type is Rook:
-                for dr, dc in DIRECTIONS['rook']:
-                    for i in range(1, 8):
-                        nr, nc = r + dr*i, c + dc*i
-                        if not (0 <= nr < ROWS and 0 <= nc < COLS): break
-                        target = grid[nr][nc]
-                        if target and target.color == 'black': white_pst_mg += ROOK_PIERCING_POTENTIAL_BONUS
-            elif piece_type is Knight:
-                knight_tapered_value = tapered_vals_by_type[Knight]
-                for threatened_pos in KNIGHT_ATTACKS_FROM.get(piece.pos, set()):
-                    target = grid[threatened_pos[0]][threatened_pos[1]]
-                    if target and target.color == 'black':
-                        target_val = tapered_vals_by_type[type(target)]
-                        bonus = (target_val - knight_tapered_value) if type(target) is Knight else target_val
-                        white_pst_mg += bonus // 4
+            
+            mg_val, eg_val = PIECE_VALUES_MG.get(ptype, 0), PIECE_VALUES_EG.get(ptype, 0)
+            white_score_mg += mg_val
+            white_score_eg += eg_val
+            
+            if ptype is King:
+                white_score_mg += PIECE_SQUARE_TABLES['king_midgame'][r][c]
+                white_score_eg += PIECE_SQUARE_TABLES['king_endgame'][r][c]
+            elif PIECE_SQUARE_TABLES.get(ptype):
+                pst_val = PIECE_SQUARE_TABLES[ptype][r][c]
+                white_score_mg += pst_val; white_score_eg += pst_val
 
+            if ptype is Pawn:
+                if (c > 0 and isinstance(grid[r][c-1], Pawn) and grid[r][c-1].color == 'white') or \
+                   (c < COLS-1 and isinstance(grid[r][c+1], Pawn) and grid[r][c+1].color == 'white'):
+                    white_score_mg += PAWN_PHALANX_BONUS
+            elif ptype is Rook:
+                if black_king_pos and (r == black_king_pos[0] or c == black_king_pos[1]):
+                    white_score_mg += ROOK_ALIGNMENT_BONUS
+
+        # --- BLACK PIECES ---
         for piece in black_pieces:
-            piece_type = type(piece)
+            ptype = type(piece)
             r, c = piece.pos
-            r_flipped = ROWS - 1 - r
-            mg_val, eg_val = PIECE_VALUES_MG.get(piece_type, 0), PIECE_VALUES_EG.get(piece_type, 0)
-            black_pst_mg += mg_val
-            black_pst_eg += eg_val
-            if piece_type is King:
-                black_pst_mg += PIECE_SQUARE_TABLES['king_midgame'][r_flipped][c]
-                black_pst_eg += PIECE_SQUARE_TABLES['king_endgame'][r_flipped][c]
-            elif PIECE_SQUARE_TABLES.get(piece_type):
-                pst_val = PIECE_SQUARE_TABLES[piece_type][r_flipped][c]
-                black_pst_mg += pst_val; black_pst_eg += pst_val
-            if piece_type is Queen:
-                for adj_r, adj_c in ADJACENT_SQUARES_MAP.get(piece.pos, set()):
-                    target = grid[adj_r][adj_c]
-                    if target and target.color == 'white': black_pst_mg += QUEEN_AOE_POTENTIAL_BONUS
-            elif piece_type is Rook:
-                for dr, dc in DIRECTIONS['rook']:
-                    for i in range(1, 8):
-                        nr, nc = r + dr*i, c + dc*i
-                        if not (0 <= nr < ROWS and 0 <= nc < COLS): break
-                        target = grid[nr][nc]
-                        if target and target.color == 'white': black_pst_mg += ROOK_PIERCING_POTENTIAL_BONUS
-            elif piece_type is Knight:
-                knight_tapered_value = tapered_vals_by_type[Knight]
-                for threatened_pos in KNIGHT_ATTACKS_FROM.get(piece.pos, set()):
-                    target = grid[threatened_pos[0]][threatened_pos[1]]
-                    if target and target.color == 'white':
-                        target_val = tapered_vals_by_type[type(target)]
-                        bonus = (target_val - knight_tapered_value) if type(target) is Knight else target_val
-                        black_pst_mg += bonus // 4
+            r_flipped = ROWS - 1 - r 
+            
+            mg_val, eg_val = PIECE_VALUES_MG.get(ptype, 0), PIECE_VALUES_EG.get(ptype, 0)
+            black_score_mg += mg_val
+            black_score_eg += eg_val
+            
+            if ptype is King:
+                black_score_mg += PIECE_SQUARE_TABLES['king_midgame'][r_flipped][c]
+                black_score_eg += PIECE_SQUARE_TABLES['king_endgame'][r_flipped][c]
+            elif PIECE_SQUARE_TABLES.get(ptype):
+                pst_val = PIECE_SQUARE_TABLES[ptype][r_flipped][c]
+                # FIXED TYPO HERE: black_pst_eg -> black_score_eg
+                black_score_mg += pst_val; black_score_eg += pst_val
 
-        mg_score = white_pst_mg - black_pst_mg
-        eg_score = white_pst_eg - black_pst_eg
+            if ptype is Pawn:
+                if (c > 0 and isinstance(grid[r][c-1], Pawn) and grid[r][c-1].color == 'black') or \
+                   (c < COLS-1 and isinstance(grid[r][c+1], Pawn) and grid[r][c+1].color == 'black'):
+                    black_score_mg += PAWN_PHALANX_BONUS
+            elif ptype is Rook:
+                if white_king_pos and (r == white_king_pos[0] or c == white_king_pos[1]):
+                    black_score_mg += ROOK_ALIGNMENT_BONUS
+
+        mg_score = white_score_mg - black_score_mg
+        eg_score = white_score_eg - black_score_eg
         final_score = (mg_score * phase + eg_score * (256 - phase)) >> 8
-        score_for_player = final_score if turn_to_move == 'white' else -final_score
-        return score_for_player, tapered_vals_by_type
+        
+        return (final_score if turn_to_move == 'white' else -final_score), tapered_vals_by_type
 
 # --- Piece-Square Tables (PSTs) ---
 pawn_pst = [
@@ -447,69 +472,72 @@ pawn_pst = [
     [ 30,  30,  40,  50,  50,  40,  30,  30],
     [ 20,  20,  30,  40,  40,  30,  20,  20],
     [ 10,  10,  20,  30,  30,  20,  10,  10],
-    [  0,   0,   0,   0,   0,   0,   0,   0],
+    [  0,   0,   0,  -5, -10,   0,   0,   0],
     [  0,   0,   0,   0,   0,   0,   0,   0]
 ]
 knight_pst = [
-    [-50, -40, -30, -30, -30, -30, -40, -50],
+    [-60, -40, -30, -30, -30, -30, -40, -60],
     [-40, -20,   5,  10,  10,   5, -20, -40],
     [-30,   5,  20,  25,  25,  20,   5, -30],
     [-30,  10,  25,  35,  35,  25,  10, -30],
     [-30,  10,  25,  35,  35,  25,  10, -30],
     [-30,  10,  20,  25,  25,  20,  10, -30],
     [-40, -20,   5,  10,  10,   5, -20, -40],
-    [-50, -45, -30, -30, -30, -30, -45, -50]
+    [-60, -45, -30, -30, -30, -30, -45, -60]
 ]
 bishop_pst = [
     [-20, -10, -10, -10, -10, -10, -10, -20],
     [-10,   0,   0,   0,   0,   0,   0, -10],
     [-10,   0,   5,  10,  10,   5,   0, -10],
     [-10,   5,   5,  10,  10,   5,   5, -10],
-    [-10,   0,  15,  10,  10,  15,   0, -10],
+    [-10,   5,  15,  10,  10,  15,   5, -10],
     [-10,  10,  10,  10,  10,  10,  10, -10],
     [-10,   5,   0,   0,   0,   0,   5, -10],
     [-20, -10, -10, -15, -15, -10, -10, -20]
 ]
 rook_pst = [
-    [  0,   0,   0,  10,  10,   0,   0,   0],
-    [  5,  10,  10,  20,  20,  10,  10,   5],
-    [ -5,   0,   0,   5,   5,   0,   0,  -5],
-    [ -5,   0,   0,   5,   5,   0,   0,  -5],
-    [ -5,   0,   0,   5,   5,   0,   0,  -5],
-    [ -5,   0,   0,   5,   5,   0,   0,  -5],
-    [ -5,   0,   0,   5,   5,   0,   0,  -5],
-    [  0,   5,   5,  10,  10,   5,   5,   0]
+    [  10, 10,  10,  10,  10,  10,  10,  10],
+    [  15, 10,  10,  20,  20,  10,  10,  15],
+    [  5,   0,   0,   5,   5,   0,   0,   5],
+    [  5,   0,   0,   5,   5,   0,   0,   5],
+    [  5,   0,   0,   5,   5,   0,   0,   5],
+    [  5,   0,   0,   5,   5,   0,   0,   5],
+    [  0,   0,   0,   0,   0,   0,   0,   0],
+    [  0,   0,   0,   5,   5,   5,   5,   0]
 ]
 queen_pst = [
-    [-20, -10, -10,  -5,  -5, -10, -10, -20],
-    [-10,   0,   0,   0,   0,   0,   0, -10],
+    [-30, -20, -10, -10, -10, -10, -20, -30],
+    [-20,   0,   0,   0,   0,   0,   0, -20],
     [-10,   0,   5,   5,   5,   5,   0, -10],
-    [ -5,   0,  10,  15,  15,  10,   0,  -5],
-    [  0,   0,  10,  15,  15,  10,   0,  -5],
-    [-10,   5,  15,   5,   5,  15,   5, -10],
-    [-10,   0,   5,   0,   0,   0,   5, -10],
-    [-20, -10, -10,  -5, -15, -10, -10, -20]
+    [ -5,  10,  20,  30,  30,  20,  10,  -5], # Activity in the center is good
+    [ -5,   0,  20,  30,  30,  20,   0,  -5],
+    [-10,   5,  15,  15,  15,  15,   5, -10],
+    [-20, -10,   0,   5,   5,   0, -10, -20],
+    [-30, -20, -20, -10, -20, -20, -20, -30]
 ]
 king_midgame_pst = [
-    [-30, -40, -40, -50, -50, -40, -40, -30],
-    [-30, -40, -40, -50, -50, -40, -40, -30],
-    [-30, -40, -40, -50, -50, -40, -40, -30],
-    [-30, -40, -40, -50, -50, -40, -40, -30],
-    [-20, -30, -30, -40, -40, -30, -30, -20],
+    [-60, -50, -50, -50, -50, -50, -50, -60], # Rank 8 (Deep Enemy Territory)
+    [-40, -50, -50, -60, -60, -50, -50, -40],
+    [-40, -50, -50, -60, -60, -50, -50, -40],
+    [-40, -50, -50, -60, -60, -50, -50, -40],
+    [-30, -40, -40, -40, -40, -40, -40, -30],
     [-10, -20, -20, -20, -20, -20, -20, -10],
-    [ 20,  20,   0,   0,   0,   0,  20,  20],
-    [ 20,  30,  10,   0,   5,  10,  30,  20]
+    [ -5,   0,   5,   5,   5,   5,   0,  -5], # Rank 2
+    [-20,  10,  20,  30,  30,  20,  10, -20]  # Rank 1 (Corners bad, Center safe)
 ]
+
+# Endgame King becomes a mediocre active piece, but still not desperate to rush the center.
 king_endgame_pst = [
-    [-50, -40, -30, -20, -20, -30, -40, -50],
-    [-30, -20, -10,   0,   0, -10, -20, -30],
-    [-30, -10,  20,  30,  30,  20, -10, -30],
-    [-30, -10,  30,  40,  40,  30, -10, -30],
-    [-30, -10,  30,  40,  40,  30, -10, -30],
-    [-30, -10,  20,  30,  30,  20, -10, -30],
-    [-30, -30,   0,   0,   0,   0, -30, -30],
-    [-50, -30, -30, -30, -30, -30, -30, -50]
+    [-40, -30, -30, -30, -30, -30, -30, -40], 
+    [-30, -10,   0,   0,   0,   0, -10, -30],
+    [-30,   0,  10,  20,  20,  10,   0, -30],
+    [-30,   5,  20,  20,  20,  20,   5, -30], # Activity zone, but cautious
+    [-30,   5,  15,  20,  20,  15,   5, -30], 
+    [-30,   0,  10,  10,  10,  10,   0, -30],
+    [-30, -10,   5,   5,   5,   5, -10, -30],
+    [-40, -30, -10, -10, -10, -10, -30, -40]
 ]
+
 
 PIECE_SQUARE_TABLES = {
     Pawn: pawn_pst, Knight: knight_pst, Bishop: bishop_pst, Rook: rook_pst, 
