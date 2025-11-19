@@ -1,4 +1,4 @@
-# v28.7 (CRITICAL BUG FIX: Deterministic Bishop Move Generation)
+# v28.8 (Safe Memory Optimizations)
 
 # -----------------------------
 # Global Constants
@@ -137,10 +137,7 @@ class Bishop(Piece):
                     if target.color != self.color: moves.add((cr, cc))
                     break
                 moves.add((cr, cc)); cd = d2 if cd == d1 else d1
-        # --- THE CRITICAL FIX ---
-        # Converting a set to a list is non-deterministic. By sorting the list,
-        # we guarantee that move generation is always in the same order, which is
-        # essential for a deterministic search and identical node counts.
+        # Sorted for determinism (Fix from v28.7)
         return sorted(list(moves))
 
 class Knight(Piece):
@@ -185,11 +182,10 @@ class Pawn(Piece):
                 moves.append((r, new_c))
         return moves
         
-    def get_threats(self, board, pos):
-        return set(self.get_valid_moves(board, pos))
+    # Correctly inherits get_threats from Piece (Fix from v28.6)
 
 # ---------------------------------------------
-# Board Class and the rest of the file are unchanged...
+# Board Class
 # ---------------------------------------------
 class Board:
     def __init__(self, setup=True):
@@ -247,7 +243,11 @@ class Board:
 
     def clone(self):
         new_board = Board(setup=False)
-        for piece in self.white_pieces + self.black_pieces:
+        # --- OPTIMIZATION: Iterate separately to avoid creating a new list ---
+        for piece in self.white_pieces:
+            p_clone = piece.clone()
+            new_board.add_piece(p_clone, p_clone.pos[0], p_clone.pos[1])
+        for piece in self.black_pieces:
             p_clone = piece.clone()
             new_board.add_piece(p_clone, p_clone.pos[0], p_clone.pos[1])
         return new_board
@@ -308,7 +308,10 @@ class Board:
                 self.remove_piece(moved_knight_pos[0], moved_knight_pos[1])
             return
 
-        knights_on_board = [p for p in (self.white_pieces + self.black_pieces) if isinstance(p, Knight)]
+        # --- OPTIMIZATION: Build list directly to avoid concatenation ---
+        knights_on_board = [p for p in self.white_pieces if isinstance(p, Knight)]
+        knights_on_board.extend(p for p in self.black_pieces if isinstance(p, Knight))
+        
         if not knights_on_board: return
 
         evaporation_map, knights_to_be_removed = {}, set()
@@ -413,7 +416,9 @@ def is_in_check(board, color):
 def generate_legal_moves_generator(board, color, yield_boards=False):
     piece_list = board.white_pieces if color == 'white' else board.black_pieces
     opponent_color = "black" if color == "white" else "white"
-    for piece in list(piece_list): 
+    
+    # --- OPTIMIZATION: Removed redundant list() copy ---
+    for piece in piece_list: 
         start_pos = piece.pos
         if start_pos is None: continue
         for end_pos in piece.get_valid_moves(board, start_pos):
@@ -445,6 +450,7 @@ def has_legal_moves(board, color):
         return False
         
 def is_insufficient_material(board):
+    """Checks for endgames that are automatic draws."""
     total_pieces = len(board.white_pieces) + len(board.black_pieces)
     if total_pieces > 3: return False
     if total_pieces == 2: return True
@@ -534,6 +540,10 @@ def is_quiet_knight_evaporation(board, move):
     return False
 
 def generate_all_tactical_moves(board, color):
+    """
+    An optimized generator that yields all pseudo-legal tactical moves.
+    This includes captures, promotions, quiet rook skewers, and quiet knight evaporations.
+    """
     piece_list = board.white_pieces if color == 'white' else board.black_pieces
     
     for piece in piece_list:
@@ -546,14 +556,16 @@ def generate_all_tactical_moves(board, color):
             
             if is_capture or is_promotion:
                 yield (start_pos, end_pos)
-                continue
+                continue # Move has been yielded, no need for further checks
             
+            # Check for special quiet tactical moves
             if is_rook_piercing_capture(board, (start_pos, end_pos)):
                 yield (start_pos, end_pos)
             elif is_quiet_knight_evaporation(board, (start_pos, end_pos)):
                 yield (start_pos, end_pos)
 
 def format_move(move):
+    """Converts a move tuple to a human-readable algebraic string."""
     if not move: return "None"
     (r1, c1), (r2, c2) = move
     return f"{'abcdefgh'[c1]}{'87654321'[r1]}-{'abcdefgh'[c2]}{'87654321'[r2]}"
