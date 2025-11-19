@@ -1,4 +1,4 @@
-# JungleChessUI.py (v9.1 - Fixed "Thinking..." Label Bug)
+# JungleChessUI.py (v9.2 - Optimized Eval Bar Rendering)
 import tkinter as tk
 from tkinter import ttk
 import math
@@ -76,6 +76,10 @@ class EnhancedChessApp:
 
         self.last_eval_score = 0.0
         self.last_eval_depth = None
+        
+        # Optimization: Track eval bar dimensions to avoid needless redraws
+        self.last_eval_bar_w = 0
+        self.last_eval_bar_h = 0
 
         self.COLORS = self.setup_styles()
         self.master.configure(bg=self.COLORS['bg_dark'])
@@ -260,11 +264,7 @@ class EnhancedChessApp:
                 self.master.after(delay, self._make_game_ai_move)
         else: print("AI reported no valid move was made or was cancelled.")
         
-        # --- BUG FIX: Explicitly stop/cleanup the AI process here. ---
-        # This ensures the process handle is cleared (self.ai_process = None),
-        # so is_ai_thinking() returns False immediately, updating the label correctly.
         self._stop_ai_process()
-        
         self.update_bot_labels(); self.set_interactivity(True)
     
     def _start_ai_process(self, bot_class, bot_name, search_depth):
@@ -457,17 +457,29 @@ class EnhancedChessApp:
         r = (ROWS - 1) - (y // self.square_size) if self.board_orientation == "black" else y // self.square_size
         return (r, c) if 0 <= r < ROWS and 0 <= c < COLS else (-1, -1)
 
+    # --- FREE OPTIMIZATION: CACHED EVAL BAR RENDERING ---
     def draw_eval_bar(self, eval_score, depth=None):
-        score = eval_score / 100.0; w, h = self.eval_bar_canvas.winfo_width(), self.eval_bar_canvas.winfo_height()
-        self.eval_bar_canvas.delete("all")
+        score = eval_score / 100.0
+        w, h = self.eval_bar_canvas.winfo_width(), self.eval_bar_canvas.winfo_height()
         if w <= 1 or h <= 1: return
-        for x_pixel in range(w):
-            intensity = int(255 * (x_pixel / float(w - 1)))
-            self.eval_bar_canvas.create_line(x_pixel, 0, x_pixel, h, fill=f"#{intensity:02x}{intensity:02x}{intensity:02x}")
+        
+        # Only redraw the expensive gradient if the canvas size changed
+        if w != self.last_eval_bar_w or h != self.last_eval_bar_h:
+            self.eval_bar_canvas.delete("gradient")
+            for x_pixel in range(w):
+                intensity = int(255 * (x_pixel / float(w - 1)))
+                color = f"#{intensity:02x}{intensity:02x}{intensity:02x}"
+                self.eval_bar_canvas.create_line(x_pixel, 0, x_pixel, h, fill=color, tags="gradient")
+            self.last_eval_bar_w = w
+            self.last_eval_bar_h = h
+            
+        # Always update the marker (cheap)
+        self.eval_bar_canvas.delete("marker")
         marker_score = max(-1.0, min(1.0, math.tanh(score / 20.0)))
         marker_x = int(((marker_score + 1) / 2.0) * w)
-        self.eval_bar_canvas.create_line(marker_x, 0, marker_x, h, fill=self.COLORS['accent'], width=3)
-        self.eval_bar_canvas.create_line(w // 2, 0, w // 2, h, fill="#666666", width=1)
+        self.eval_bar_canvas.create_line(marker_x, 0, marker_x, h, fill=self.COLORS['accent'], width=3, tags="marker")
+        self.eval_bar_canvas.create_line(w // 2, 0, w // 2, h, fill="#666666", width=1, tags="marker") # Center line
+        
         if depth: eval_text = f"{'+' if score > 0 else ''}{score:.2f} (D{depth})"
         elif abs(score) < 0.05: eval_text = "Even"
         else: eval_text = f"{'+' if score > 0 else ''}{score:.2f}"
@@ -644,8 +656,7 @@ class EnhancedChessApp:
             self.game_over, self.game_result = True, (status, winner)
             
         self.update_ui_after_state_change()
-        # Debounce analysis to prevent churn on rapid history navigation
-        self.master.after(250, self._update_analysis_after_state_change)
+        self._update_analysis_after_state_change()
 
     def update_navigation_buttons(self):
         if self.game_mode.get() == GameMode.AI_VS_AI.value:
