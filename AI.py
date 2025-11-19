@@ -1,4 +1,4 @@
-# v78.1 (Simplified order_moves function)
+# v78.2 (Board_hash Simplification, no logical change)
 
 import time
 from GameLogic import generate_legal_moves_generator
@@ -38,10 +38,18 @@ initialize_zobrist_table()
 
 def board_hash(board, turn):
     h = 0
-    for piece in board.white_pieces + board.black_pieces:
+    # By iterating over the two lists separately, we avoid creating a new
+    # temporary list on every call. This is a major performance gain in a hot path.
+    # The result is identical due to the commutative property of XOR.
+    for piece in board.white_pieces:
         if piece.pos:
             key = (piece.pos[0], piece.pos[1], type(piece), piece.color)
             h ^= ZOBRIST_TABLE.get(key, 0)
+    for piece in board.black_pieces:
+        if piece.pos:
+            key = (piece.pos[0], piece.pos[1], type(piece), piece.color)
+            h ^= ZOBRIST_TABLE.get(key, 0)
+
     if turn == 'black': h ^= ZOBRIST_TABLE['turn']
     return h
 
@@ -205,32 +213,29 @@ class ChessBot:
 
     def order_moves(self, board, moves, ply, hash_move, tapered_vals_by_type):
         if not moves: return []
-
+        scores = {}
         killers = self.killer_moves[ply] if ply < len(self.killer_moves) else [None, None]
         color_index = 0 if (self.color if ply % 2 == 0 else self.opponent_color) == 'white' else 1
-
-        def get_move_score(move):
+        
+        for move in moves:
+            score = 0
             if move == hash_move:
-                return self.BONUS_PV_MOVE
-
-            moving_piece = board.grid[move[0][0]][move[0][1]]
-            target_piece = board.grid[move[1][0]][move[1][1]]
-            
-            if target_piece is not None:
-                swing = calculate_material_swing(board, move, tapered_vals_by_type)
-                return self.BONUS_CAPTURE + swing
-            
-            if move == killers[0]: return self.BONUS_KILLER_1
-            if move == killers[1]: return self.BONUS_KILLER_2
-            
-            if isinstance(moving_piece, (Queen, Knight)):
-                return self.BONUS_QN_TACTIC
-
-            from_idx = move[0][0] * COLS + move[0][1]
-            to_idx = move[1][0] * COLS + move[1][1]
-            return self.history_heuristic_table[color_index][from_idx][to_idx]
-
-        moves.sort(key=get_move_score, reverse=True)
+                score = self.BONUS_PV_MOVE
+            else:
+                moving_piece = board.grid[move[0][0]][move[0][1]]
+                target_piece = board.grid[move[1][0]][move[1][1]]
+                
+                if target_piece is not None:
+                    swing = calculate_material_swing(board, move, tapered_vals_by_type)
+                    score = self.BONUS_CAPTURE + swing
+                else:
+                    if move in killers: score = self.BONUS_KILLER_1 if move == killers[0] else self.BONUS_KILLER_2
+                    elif isinstance(moving_piece, (Queen, Knight)): score = self.BONUS_QN_TACTIC
+                    else:
+                        from_idx, to_idx = move[0][0]*COLS+move[0][1], move[1][0]*COLS+move[1][1]
+                        score = self.history_heuristic_table[color_index][from_idx][to_idx]
+            scores[move] = score
+        moves.sort(key=lambda m: scores.get(m, 0), reverse=True)
         return moves
 
     def negamax(self, board, depth, alpha, beta, turn, ply, search_path):
