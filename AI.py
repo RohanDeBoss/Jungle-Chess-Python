@@ -1,4 +1,4 @@
-# v80.1 (Refined Heuristics: Subtle Dominance, Exponential Scarcity, Dynamic Lone Wolf)
+# v82 (Removed Tampered evaluation and added King Proximity Bonus for endgame)
 
 import time
 from GameLogic import generate_legal_moves_generator
@@ -6,16 +6,13 @@ from GameLogic import *
 import random
 from collections import namedtuple
 
-# --- Tapered Piece Values from current baseline ---
-PIECE_VALUES_MG = {
-    Pawn: 100, Knight: 850, Bishop: 700, Rook: 600, Queen: 900, King: 20000
+# --- CONSTANT PIECE VALUES (User Specified) ---
+PIECE_VALUES = {
+    Pawn: 100, Knight: 800, Bishop: 650, Rook: 600, Queen: 850, King: 20000
 }
-PIECE_VALUES_EG = {
-    Pawn: 100, Knight: 800, Bishop: 650, Rook: 700, Queen: 700, King: 20000
-}
-INITIAL_PHASE_MATERIAL = (PIECE_VALUES_MG[Rook] * 4 + PIECE_VALUES_MG[Knight] * 4 +
-                          PIECE_VALUES_MG[Bishop] * 4 + PIECE_VALUES_MG[Queen] * 2)
 
+INITIAL_PHASE_MATERIAL = (PIECE_VALUES[Rook] * 4 + PIECE_VALUES[Knight] * 4 +
+                          PIECE_VALUES[Bishop] * 4 + PIECE_VALUES[Queen] * 2)
 
 # Zobrist/TT setup is unchanged
 ZOBRIST_TABLE = None
@@ -38,7 +35,6 @@ initialize_zobrist_table()
 
 def board_hash(board, turn):
     h = 0
-    # Optimized in v78.2
     for piece in board.white_pieces:
         if piece.pos:
             key = (piece.pos[0], piece.pos[1], type(piece), piece.color)
@@ -101,25 +97,6 @@ class ChessBot:
     def _report_move(self, move): self.comm_queue.put(('move', move))
     def _format_move(self, move):
         return format_move(move)
-
-    # --- OPTIMIZATION: No List Concatenation ---
-    def _calculate_tapered_map(self, board):
-        phase_material_score = 0
-        # Iterate lists separately to avoid creating a temporary list with +
-        for p in board.white_pieces:
-            if not isinstance(p, (Pawn, King)):
-                phase_material_score += PIECE_VALUES_MG.get(type(p), 0)
-        for p in board.black_pieces:
-            if not isinstance(p, (Pawn, King)):
-                phase_material_score += PIECE_VALUES_MG.get(type(p), 0)
-
-        phase = min(256, (phase_material_score * 256) // INITIAL_PHASE_MATERIAL) if INITIAL_PHASE_MATERIAL > 0 else 0
-        
-        tapered_map = {
-            ptype: (vals_mg * phase + PIECE_VALUES_EG[ptype] * (256 - phase)) >> 8
-            for ptype, vals_mg in PIECE_VALUES_MG.items()
-        }
-        return tapered_map, phase
 
     def make_move(self):
         try:
@@ -189,8 +166,7 @@ class ChessBot:
         best_score_this_iter, best_move_this_iter = -float('inf'), None
         alpha, beta = -float('inf'), float('inf')
         
-        tapered_vals_by_type, _ = self._calculate_tapered_map(self.board)
-        ordered_root_moves = self.order_moves(self.board, root_moves, 0, pv_move, tapered_vals_by_type)
+        ordered_root_moves = self.order_moves(self.board, root_moves, 0, pv_move)
         
         all_moves_draw = True
         for i, move in enumerate(ordered_root_moves):
@@ -216,7 +192,7 @@ class ChessBot:
         if all_moves_draw: best_score_this_iter = self.DRAW_SCORE
         return best_score_this_iter, best_move_this_iter
 
-    def order_moves(self, board, moves, ply, hash_move, tapered_vals_by_type):
+    def order_moves(self, board, moves, ply, hash_move):
         if not moves: return []
         scores = {}
         killers = self.killer_moves[ply] if ply < len(self.killer_moves) else [None, None]
@@ -231,7 +207,7 @@ class ChessBot:
                 target_piece = board.grid[move[1][0]][move[1][1]]
                 
                 if target_piece is not None:
-                    swing = calculate_material_swing(board, move, tapered_vals_by_type)
+                    swing = calculate_material_swing(board, move, PIECE_VALUES)
                     score = self.BONUS_CAPTURE + swing
                 else:
                     if move in killers: score = self.BONUS_KILLER_1 if move == killers[0] else self.BONUS_KILLER_2
@@ -249,20 +225,16 @@ class ChessBot:
         
         hash_val = board_hash(board, turn)
         
-        # --- FIX: Check for 3-Fold Repetition ---
         if ply > 0:
             if hash_val in search_path:
                 return self.DRAW_SCORE
             if self.position_counts.get(hash_val, 0) >= 2:
                 return self.DRAW_SCORE
 
-        # --- OPTIMIZATION 2: INLINED Game State Checks ---
         if is_insufficient_material(board):
             return self.DRAW_SCORE
-        
         if self.position_counts.get(hash_val, 0) >= 3:
             return self.DRAW_SCORE
-
         if self.ply_count + ply >= self.max_moves:
             return self.DRAW_SCORE
 
@@ -290,26 +262,20 @@ class ChessBot:
                 self.tt[hash_val] = TTEntry(beta, depth, TT_FLAG_LOWERBOUND, None)
                 return beta 
 
-        # 5. Generate Moves & Check for Mate/Stalemate
-        legal_moves_with_boards = list(generate_legal_moves_generator(board, turn, yield_boards=True))
-        
-        if not legal_moves_with_boards:
+        legal_moves_list = get_all_legal_moves(board, turn)
+        if not legal_moves_list:
             if is_in_check_flag: return -self.MATE_SCORE + ply
             return self.DRAW_SCORE
 
-        legal_moves_list = [move for move, _ in legal_moves_with_boards]
-        move_to_board_map = dict(legal_moves_with_boards)
-
         hash_move = tt_entry.best_move if tt_entry else None
-        tapered_vals_by_type, _ = self._calculate_tapered_map(board)
-        ordered_moves = self.order_moves(board, legal_moves_list, ply, hash_move, tapered_vals_by_type)
+        ordered_moves = self.order_moves(board, legal_moves_list, ply, hash_move)
         
         tactical_moves_set = set(generate_all_tactical_moves(board, turn))
         best_move_for_node = None
         
         for i, move in enumerate(ordered_moves):
-            child_board = move_to_board_map.get(move)
-            if not child_board: continue
+            child_board = board.clone()
+            child_board.make_move(move[0], move[1])
 
             is_tactical = move in tactical_moves_set
             reduction = 0
@@ -343,18 +309,16 @@ class ChessBot:
         self.nodes_searched += 1
         if self.cancellation_event.is_set(): raise SearchCancelledException()
 
-        # Note: We keep get_game_state here because qsearch doesn't generate all legal moves.
         game_status, _ = get_game_state(board, turn, self.position_counts, self.ply_count + ply, self.max_moves)
         if game_status != "ongoing":
             if game_status == "checkmate": return -self.MATE_SCORE + ply
             return self.DRAW_SCORE
 
         if ply >= self.MAX_Q_SEARCH_DEPTH:
-            score, _ = self.evaluate_board(board, turn)
+            score = self.evaluate_board(board, turn)
             return score
         
-        stand_pat, tapered_vals_by_type = self.evaluate_board(board, turn)
-        if not tapered_vals_by_type: return self.DRAW_SCORE
+        stand_pat = self.evaluate_board(board, turn)
         
         is_in_check_flag = is_in_check(board, turn)
         if not is_in_check_flag:
@@ -365,7 +329,7 @@ class ChessBot:
         
         scored_moves = []
         for move in promising_moves:
-            swing = calculate_material_swing(board, move, tapered_vals_by_type)
+            swing = calculate_material_swing(board, move, PIECE_VALUES)
             scored_moves.append((swing, move))
         scored_moves.sort(key=lambda item: item[0], reverse=True)
 
@@ -385,12 +349,9 @@ class ChessBot:
 
         return alpha
 
-    # --- UPDATED EVALUATION LOGIC (v80.2 - Type Safe) ---
     def evaluate_board(self, board, turn_to_move):
         if is_insufficient_material(board):
-            return self.DRAW_SCORE, {}
-        
-        tapered_vals_by_type, phase = self._calculate_tapered_map(board)
+            return self.DRAW_SCORE
         
         white_pieces = board.white_pieces
         black_pieces = board.black_pieces
@@ -399,34 +360,32 @@ class ChessBot:
         # Heuristic Weights
         PAWN_PHALANX_BONUS = 5
         ROOK_ALIGNMENT_BONUS = 15
+        PIECE_DOMINANCE_FACTOR = 40
         
         white_score_mg, white_score_eg = 0, 0
         black_score_mg, black_score_eg = 0, 0
+        
+        # Phase Material Counter
+        phase_material_score = 0
 
         white_king_pos = board.white_king_pos
         black_king_pos = board.black_king_pos
 
-        # Counters
-        white_piece_count = 0
-        white_pawn_count = 0
-        white_last_piece_type = None
-        black_piece_count = 0
-        black_pawn_count = 0
-        black_last_piece_type = None
+        white_piece_count = 0; white_pawn_count = 0; white_last_piece_type = None
+        black_piece_count = 0; black_pawn_count = 0; black_last_piece_type = None
 
         # --- WHITE PIECES ---
         for piece in white_pieces:
-            ptype = type(piece)
-            r, c = piece.pos
+            ptype = type(piece); r, c = piece.pos
             
             if ptype is Pawn: white_pawn_count += 1
             elif ptype is not King: 
-                white_piece_count += 1
-                white_last_piece_type = ptype
+                white_piece_count += 1; white_last_piece_type = ptype
+                phase_material_score += PIECE_VALUES[ptype]
 
-            mg_val, eg_val = PIECE_VALUES_MG.get(ptype, 0), PIECE_VALUES_EG.get(ptype, 0)
-            white_score_mg += mg_val
-            white_score_eg += eg_val
+            # Static Material Value
+            val = PIECE_VALUES[ptype]
+            white_score_mg += val; white_score_eg += val
             
             if ptype is King:
                 white_score_mg += PIECE_SQUARE_TABLES['king_midgame'][r][c]
@@ -439,25 +398,21 @@ class ChessBot:
                 if (c > 0 and isinstance(grid[r][c-1], Pawn) and grid[r][c-1].color == 'white') or \
                    (c < COLS-1 and isinstance(grid[r][c+1], Pawn) and grid[r][c+1].color == 'white'):
                     white_score_mg += PAWN_PHALANX_BONUS
-            
             elif ptype is Rook:
                 if black_king_pos and (r == black_king_pos[0] or c == black_king_pos[1]):
                     white_score_mg += ROOK_ALIGNMENT_BONUS
 
         # --- BLACK PIECES ---
         for piece in black_pieces:
-            ptype = type(piece)
-            r, c = piece.pos
-            r_flipped = ROWS - 1 - r 
+            ptype = type(piece); r, c = piece.pos; r_flipped = ROWS - 1 - r 
             
             if ptype is Pawn: black_pawn_count += 1
             elif ptype is not King: 
-                black_piece_count += 1
-                black_last_piece_type = ptype
+                black_piece_count += 1; black_last_piece_type = ptype
+                phase_material_score += PIECE_VALUES[ptype]
 
-            mg_val, eg_val = PIECE_VALUES_MG.get(ptype, 0), PIECE_VALUES_EG.get(ptype, 0)
-            black_score_mg += mg_val
-            black_score_eg += eg_val
+            val = PIECE_VALUES[ptype]
+            black_score_mg += val; black_score_eg += val
             
             if ptype is King:
                 black_score_mg += PIECE_SQUARE_TABLES['king_midgame'][r_flipped][c]
@@ -470,22 +425,23 @@ class ChessBot:
                 if (c > 0 and isinstance(grid[r][c-1], Pawn) and grid[r][c-1].color == 'black') or \
                    (c < COLS-1 and isinstance(grid[r][c+1], Pawn) and grid[r][c+1].color == 'black'):
                     black_score_mg += PAWN_PHALANX_BONUS
-
             elif ptype is Rook:
                 if white_king_pos and (r == white_king_pos[0] or c == white_king_pos[1]):
                     black_score_mg += ROOK_ALIGNMENT_BONUS
 
-        # 3. Subtle Piece Dominance (Use integer division)
-        PIECE_DOMINANCE_FACTOR = 40
+        # --- PHASE CALCULATION ---
+        phase = min(256, (phase_material_score * 256) // INITIAL_PHASE_MATERIAL) if INITIAL_PHASE_MATERIAL > 0 else 0
+        inv_phase = 256 - phase
+
+        # 3. Piece Dominance
         if white_piece_count > black_piece_count:
              white_score_eg += PIECE_DOMINANCE_FACTOR // (black_piece_count + 1)
         elif black_piece_count > white_piece_count:
              black_score_eg += PIECE_DOMINANCE_FACTOR // (white_piece_count + 1)
 
-        # 4. Exponential Pawn Scarcity (Use integers)
+        # 4. Exponential Pawn Scarcity
         def get_pawn_penalty(count):
             if count >= 4: return 0
-            # Integer calculation
             return int(-250 * (4 - count)**2 / 16)
 
         white_score_mg += get_pawn_penalty(white_pawn_count)
@@ -493,7 +449,7 @@ class ChessBot:
         black_score_mg += get_pawn_penalty(black_pawn_count)
         black_score_eg += get_pawn_penalty(black_pawn_count)
 
-        # 5. Dynamic Lone Wolf Penalty (Integers)
+        # 5. Dynamic Lone Wolf Penalty
         if white_piece_count == 1 and white_last_piece_type in (Rook, Bishop):
              penalty = -200 + (white_pawn_count * 50)
              white_score_eg += min(0, penalty)
@@ -501,11 +457,27 @@ class ChessBot:
              penalty = -200 + (black_pawn_count * 50)
              black_score_eg += min(0, penalty)
 
+        # 6. King Tropism (Winning side gets closer to Enemy King)
+        white_total = white_score_eg
+        black_total = black_score_eg
+        
+        if white_king_pos and black_king_pos:
+            dist = abs(white_king_pos[0] - black_king_pos[0]) + abs(white_king_pos[1] - black_king_pos[1])
+            # Penalty = (dist^2 * inv_phase * 50) / (MaxDist^2 * 256)
+            # MaxDist = 14, 14^2 = 196
+            penalty = (dist * dist * inv_phase * 50) // (196 * 256)
+            
+            if white_total > black_total:
+                white_score_eg -= penalty
+            elif black_total > white_total:
+                black_score_eg -= penalty
+
         mg_score = white_score_mg - black_score_mg
         eg_score = white_score_eg - black_score_eg
-        final_score = (mg_score * phase + eg_score * (256 - phase)) >> 8
         
-        return (final_score if turn_to_move == 'white' else -final_score), tapered_vals_by_type
+        final_score = (mg_score * phase + eg_score * inv_phase) >> 8
+        
+        return (final_score if turn_to_move == 'white' else -final_score)
 
 # --- Piece-Square Tables (PSTs) ---
 pawn_pst = [
