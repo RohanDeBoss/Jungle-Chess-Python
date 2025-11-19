@@ -1,4 +1,4 @@
-# v78.2 (Board_hash Simplification, no logical change)
+# v78.3 (Optimized Tapered Map & Inlined Game State Check)
 
 import time
 from GameLogic import generate_legal_moves_generator
@@ -6,15 +6,14 @@ from GameLogic import *
 import random
 from collections import namedtuple
 
-# --- Tapered Piece Values from v73.99 baseline ---
+# --- Tapered Piece Values from current baseline ---
 PIECE_VALUES_MG = {
     Pawn: 100, Knight: 850, Bishop: 700, Rook: 600, Queen: 900, King: 20000
 }
 PIECE_VALUES_EG = {
     Pawn: 100, Knight: 800, Bishop: 650, Rook: 700, Queen: 700, King: 20000
 }
-INITIAL_PHASE_MATERIAL = (PIECE_VALUES_MG[Rook] * 4 + PIECE_VALUES_MG[Knight] * 4 +
-                          PIECE_VALUES_MG[Bishop] * 4 + PIECE_VALUES_MG[Queen] * 2)
+INITIAL_PHASE_MATERIAL = (PIECE_VALUES_MG[Rook] * 4 + PIECE_VALUES_MG[Knight] * 4 + PIECE_VALUES_MG[Bishop] * 4 + PIECE_VALUES_MG[Queen] * 2)
 
 
 # Zobrist/TT setup is unchanged
@@ -38,9 +37,7 @@ initialize_zobrist_table()
 
 def board_hash(board, turn):
     h = 0
-    # By iterating over the two lists separately, we avoid creating a new
-    # temporary list on every call. This is a major performance gain in a hot path.
-    # The result is identical due to the commutative property of XOR.
+    # Optimized in v78.2 - Kept here
     for piece in board.white_pieces:
         if piece.pos:
             key = (piece.pos[0], piece.pos[1], type(piece), piece.color)
@@ -49,7 +46,6 @@ def board_hash(board, turn):
         if piece.pos:
             key = (piece.pos[0], piece.pos[1], type(piece), piece.color)
             h ^= ZOBRIST_TABLE.get(key, 0)
-
     if turn == 'black': h ^= ZOBRIST_TABLE['turn']
     return h
 
@@ -105,9 +101,17 @@ class ChessBot:
     def _format_move(self, move):
         return format_move(move)
 
+    # --- OPTIMIZATION 1: No List Concatenation ---
     def _calculate_tapered_map(self, board):
-        all_pieces = board.white_pieces + board.black_pieces
-        phase_material_score = sum(PIECE_VALUES_MG.get(type(p), 0) for p in all_pieces if not isinstance(p, (Pawn, King)))
+        phase_material_score = 0
+        # Iterate lists separately to avoid creating a temporary list with +
+        for p in board.white_pieces:
+            if not isinstance(p, (Pawn, King)):
+                phase_material_score += PIECE_VALUES_MG.get(type(p), 0)
+        for p in board.black_pieces:
+            if not isinstance(p, (Pawn, King)):
+                phase_material_score += PIECE_VALUES_MG.get(type(p), 0)
+
         phase = min(256, (phase_material_score * 256) // INITIAL_PHASE_MATERIAL) if INITIAL_PHASE_MATERIAL > 0 else 0
         
         tapered_map = {
@@ -245,11 +249,22 @@ class ChessBot:
         hash_val = board_hash(board, turn)
         if ply > 0 and hash_val in search_path: return self.DRAW_SCORE
         
-        game_status, _ = get_game_state(board, turn, self.position_counts, self.ply_count + ply, self.max_moves)
-        if game_status != "ongoing":
-            if game_status == "checkmate": return -self.MATE_SCORE + ply
+        # --- OPTIMIZATION 2: INLINED Game State Checks ---
+        # Replaces `get_game_state` to avoid redundant `has_legal_moves` generation.
+        
+        # 1. Check for simple draws first (fastest)
+        if is_insufficient_material(board):
+             return self.DRAW_SCORE
+             
+        # 2. Check for Repetition (using existing hash)
+        if self.position_counts.get(hash_val, 0) >= 3:
+             return self.DRAW_SCORE
+
+        # 3. Check for Move Limit
+        if self.ply_count + ply >= self.max_moves:
             return self.DRAW_SCORE
 
+        # 4. Transposition Table Lookup
         original_alpha = alpha
         tt_entry = self.tt.get(hash_val)
         if ply > 0 and tt_entry and tt_entry.depth >= depth:
@@ -274,9 +289,16 @@ class ChessBot:
                 self.tt[hash_val] = TTEntry(beta, depth, TT_FLAG_LOWERBOUND, None)
                 return beta 
 
-        legal_moves_list = get_all_legal_moves(board, turn)
-        if not legal_moves_list:
-            return -self.MATE_SCORE + ply if is_in_check_flag else self.DRAW_SCORE
+        # 5. Generate Moves & Check for Mate/Stalemate
+        legal_moves_with_boards = list(generate_legal_moves_generator(board, turn, yield_boards=True))
+        
+        if not legal_moves_with_boards:
+            # If no moves, we are in Mate or Stalemate.
+            if is_in_check_flag: return -self.MATE_SCORE + ply
+            return self.DRAW_SCORE
+
+        legal_moves_list = [move for move, _ in legal_moves_with_boards]
+        move_to_board_map = dict(legal_moves_with_boards)
 
         hash_move = tt_entry.best_move if tt_entry else None
         tapered_vals_by_type, _ = self._calculate_tapered_map(board)
@@ -286,8 +308,8 @@ class ChessBot:
         best_move_for_node = None
         
         for i, move in enumerate(ordered_moves):
-            child_board = board.clone()
-            child_board.make_move(move[0], move[1])
+            child_board = move_to_board_map.get(move)
+            if not child_board: continue
 
             is_tactical = move in tactical_moves_set
             reduction = 0
@@ -321,6 +343,7 @@ class ChessBot:
         self.nodes_searched += 1
         if self.cancellation_event.is_set(): raise SearchCancelledException()
 
+        # Note: We keep get_game_state here because qsearch doesn't generate all legal moves so we need it to reliably detect game-ending conditions if necessary.
         game_status, _ = get_game_state(board, turn, self.position_counts, self.ply_count + ply, self.max_moves)
         if game_status != "ongoing":
             if game_status == "checkmate": return -self.MATE_SCORE + ply
