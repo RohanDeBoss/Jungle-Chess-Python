@@ -1,4 +1,4 @@
-# JungleChessUI.py (v9.0 - Final Layout fix to Undo/Redo Implemented)
+# JungleChessUI.py (v9.1 - Fixed "Thinking..." Label Bug)
 import tkinter as tk
 from tkinter import ttk
 import math
@@ -18,7 +18,6 @@ class GameMode(Enum):
 
 def run_ai_process(board, color, position_counts, comm_queue, cancellation_event, bot_class, bot_name, search_depth, ply_count, game_mode):
     if bot_class == ChessBot:
-        # The new AI is aware of the game state
         bot = bot_class(board, color, position_counts, comm_queue, cancellation_event, bot_name, ply_count, game_mode)
     else:
         bot = bot_class(board, color, position_counts, comm_queue, cancellation_event, bot_name)
@@ -209,20 +208,14 @@ class EnhancedChessApp:
         self.scoreboard_label = ttk.Label(self.scoreboard_frame, text="", font=("Helvetica", 10), justify=tk.LEFT, background=self.COLORS['bg_medium'], foreground=self.COLORS['text_light'])
         self.scoreboard_label.pack()
         
-        # --- LAYOUT FIX: Create labels first, then pack everything together ---
-        # The parent is now the canvas_container, and we use pack for stability.
         self.top_bot_label = ttk.Label(self.canvas_container, text="", font=("Helvetica", 12), background=self.COLORS['bg_medium'], foreground=self.COLORS['text_light'])
         self.bottom_bot_label = ttk.Label(self.canvas_container, text="", font=("Helvetica", 12), background=self.COLORS['bg_medium'], foreground=self.COLORS['text_light'])
 
-        # Pack them vertically to ensure they stick to the canvas
         self.top_bot_label.pack(side=tk.TOP, pady=(5, 2))
-        self.canvas_frame.pack(side=tk.TOP, expand=True) # The canvas_frame is now packed
+        self.canvas_frame.pack(side=tk.TOP, expand=True)
         self.bottom_bot_label.pack(side=tk.TOP, pady=(2, 5))
 
-    # Also, replace this function to adjust padding:
-
     def handle_board_resize(self, event):
-        # Adjust vertical padding to account for labels AND nav buttons
         view_width, view_height = event.width - 20, event.height - 120 
         if view_width <= 1 or view_height <= 1: return
         
@@ -233,7 +226,6 @@ class EnhancedChessApp:
             self.board_image_white = self.create_board_image("white")
             self.board_image_black = self.create_board_image("black")
             self.draw_board()    
-
 
     def draw_piece_at_canvas_coords(self, piece, r, c):
         x, y = self.board_to_canvas(r, c)
@@ -267,6 +259,12 @@ class EnhancedChessApp:
             if not self.game_over and self.game_mode.get() == GameMode.AI_VS_AI.value:
                 self.master.after(delay, self._make_game_ai_move)
         else: print("AI reported no valid move was made or was cancelled.")
+        
+        # --- BUG FIX: Explicitly stop/cleanup the AI process here. ---
+        # This ensures the process handle is cleared (self.ai_process = None),
+        # so is_ai_thinking() returns False immediately, updating the label correctly.
+        self._stop_ai_process()
+        
         self.update_bot_labels(); self.set_interactivity(True)
     
     def _start_ai_process(self, bot_class, bot_name, search_depth):
@@ -646,7 +644,8 @@ class EnhancedChessApp:
             self.game_over, self.game_result = True, (status, winner)
             
         self.update_ui_after_state_change()
-        self._update_analysis_after_state_change()
+        # Debounce analysis to prevent churn on rapid history navigation
+        self.master.after(250, self._update_analysis_after_state_change)
 
     def update_navigation_buttons(self):
         if self.game_mode.get() == GameMode.AI_VS_AI.value:
