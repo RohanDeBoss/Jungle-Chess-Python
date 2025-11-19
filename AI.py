@@ -1,4 +1,4 @@
-# v82 (Removed Tampered evaluation and added King Proximity Bonus for endgame)
+# v83.0 (Refactored Evaluation: Combined White/Black Logic Loop)
 
 import time
 from GameLogic import generate_legal_moves_generator
@@ -14,7 +14,7 @@ PIECE_VALUES = {
 INITIAL_PHASE_MATERIAL = (PIECE_VALUES[Rook] * 4 + PIECE_VALUES[Knight] * 4 +
                           PIECE_VALUES[Bishop] * 4 + PIECE_VALUES[Queen] * 2)
 
-# Zobrist/TT setup is unchanged
+# Zobrist/TT setup
 ZOBRIST_TABLE = None
 def initialize_zobrist_table():
     global ZOBRIST_TABLE
@@ -226,17 +226,12 @@ class ChessBot:
         hash_val = board_hash(board, turn)
         
         if ply > 0:
-            if hash_val in search_path:
-                return self.DRAW_SCORE
-            if self.position_counts.get(hash_val, 0) >= 2:
-                return self.DRAW_SCORE
+            if hash_val in search_path: return self.DRAW_SCORE
+            if self.position_counts.get(hash_val, 0) >= 2: return self.DRAW_SCORE
 
-        if is_insufficient_material(board):
-            return self.DRAW_SCORE
-        if self.position_counts.get(hash_val, 0) >= 3:
-            return self.DRAW_SCORE
-        if self.ply_count + ply >= self.max_moves:
-            return self.DRAW_SCORE
+        if is_insufficient_material(board): return self.DRAW_SCORE
+        if self.position_counts.get(hash_val, 0) >= 3: return self.DRAW_SCORE
+        if self.ply_count + ply >= self.max_moves: return self.DRAW_SCORE
 
         original_alpha = alpha
         tt_entry = self.tt.get(hash_val)
@@ -319,7 +314,6 @@ class ChessBot:
             return score
         
         stand_pat = self.evaluate_board(board, turn)
-        
         is_in_check_flag = is_in_check(board, turn)
         if not is_in_check_flag:
             if stand_pat >= beta: return beta
@@ -334,27 +328,21 @@ class ChessBot:
         scored_moves.sort(key=lambda item: item[0], reverse=True)
 
         for swing, move in scored_moves:
-            if not is_in_check_flag and stand_pat + swing + self.Q_SEARCH_SAFETY_MARGIN < alpha:
-                continue
+            if not is_in_check_flag and stand_pat + swing + self.Q_SEARCH_SAFETY_MARGIN < alpha: continue
             sim_board = board.clone()
             sim_board.make_move(move[0], move[1])
             if is_in_check(sim_board, turn): continue
-            
             search_score = -self.qsearch(sim_board, -beta, -alpha, ('black' if turn == 'white' else 'white'), ply + 1)
             if search_score >= beta: return beta
             alpha = max(alpha, search_score)
             
-        if is_in_check_flag and alpha < -self.MATE_SCORE + 100:
-             return -self.MATE_SCORE + ply
-
+        if is_in_check_flag and alpha < -self.MATE_SCORE + 100: return -self.MATE_SCORE + ply
         return alpha
 
+    # --- SIMPLIFIED EVALUATION: SINGLE LOOP FOR BOTH SIDES ---
     def evaluate_board(self, board, turn_to_move):
-        if is_insufficient_material(board):
-            return self.DRAW_SCORE
+        if is_insufficient_material(board): return self.DRAW_SCORE
         
-        white_pieces = board.white_pieces
-        black_pieces = board.black_pieces
         grid = board.grid
         
         # Heuristic Weights
@@ -362,122 +350,73 @@ class ChessBot:
         ROOK_ALIGNMENT_BONUS = 15
         PIECE_DOMINANCE_FACTOR = 40
         
-        white_score_mg, white_score_eg = 0, 0
-        black_score_mg, black_score_eg = 0, 0
+        scores = {'white': {'mg': 0, 'eg': 0, 'pawn': 0, 'piece': 0, 'last': None, 'phase': 0}, 
+                  'black': {'mg': 0, 'eg': 0, 'pawn': 0, 'piece': 0, 'last': None, 'phase': 0}}
+
+        # 1. Main Loop: Material, PST, Piece Counts, Basic Heuristics
+        for color, pieces, enemy_king_pos in [('white', board.white_pieces, board.black_king_pos), 
+                                              ('black', board.black_pieces, board.white_king_pos)]:
+            stats = scores[color]
+            is_white = (color == 'white')
+            
+            for piece in pieces:
+                ptype = type(piece); r, c = piece.pos
+                r_idx = r if is_white else ROWS - 1 - r
+                
+                if ptype is Pawn: stats['pawn'] += 1
+                elif ptype is not King: 
+                    stats['piece'] += 1; stats['last'] = ptype
+                    stats['phase'] += PIECE_VALUES[ptype]
+
+                val = PIECE_VALUES[ptype]
+                stats['mg'] += val; stats['eg'] += val
+                
+                if ptype is King:
+                    stats['mg'] += PIECE_SQUARE_TABLES['king_midgame'][r_idx][c]
+                    stats['eg'] += PIECE_SQUARE_TABLES['king_endgame'][r_idx][c]
+                elif PIECE_SQUARE_TABLES.get(ptype):
+                    pst = PIECE_SQUARE_TABLES[ptype][r_idx][c]
+                    stats['mg'] += pst; stats['eg'] += pst
+
+                if ptype is Pawn:
+                    if (c > 0 and isinstance(grid[r][c-1], Pawn) and grid[r][c-1].color == color) or \
+                       (c < COLS-1 and isinstance(grid[r][c+1], Pawn) and grid[r][c+1].color == color):
+                        stats['mg'] += PAWN_PHALANX_BONUS
+                elif ptype is Rook:
+                    if enemy_king_pos and (r == enemy_king_pos[0] or c == enemy_king_pos[1]):
+                        stats['mg'] += ROOK_ALIGNMENT_BONUS
+
+        # 2. Relative Heuristics
+        w, b = scores['white'], scores['black']
         
-        # Phase Material Counter
-        phase_material_score = 0
+        # Piece Dominance
+        if w['piece'] > b['piece']: w['eg'] += PIECE_DOMINANCE_FACTOR // (b['piece'] + 1)
+        elif b['piece'] > w['piece']: b['eg'] += PIECE_DOMINANCE_FACTOR // (w['piece'] + 1)
 
-        white_king_pos = board.white_king_pos
-        black_king_pos = board.black_king_pos
+        # Pawn Scarcity & Lone Wolf
+        for stats in [w, b]:
+            if stats['pawn'] < 4:
+                penalty = int(-250 * (4 - stats['pawn'])**2 / 16)
+                stats['mg'] += penalty; stats['eg'] += penalty
+            if stats['piece'] == 1 and stats['last'] in (Rook, Bishop):
+                stats['eg'] += min(0, -200 + (stats['pawn'] * 50))
 
-        white_piece_count = 0; white_pawn_count = 0; white_last_piece_type = None
-        black_piece_count = 0; black_pawn_count = 0; black_last_piece_type = None
-
-        # --- WHITE PIECES ---
-        for piece in white_pieces:
-            ptype = type(piece); r, c = piece.pos
-            
-            if ptype is Pawn: white_pawn_count += 1
-            elif ptype is not King: 
-                white_piece_count += 1; white_last_piece_type = ptype
-                phase_material_score += PIECE_VALUES[ptype]
-
-            # Static Material Value
-            val = PIECE_VALUES[ptype]
-            white_score_mg += val; white_score_eg += val
-            
-            if ptype is King:
-                white_score_mg += PIECE_SQUARE_TABLES['king_midgame'][r][c]
-                white_score_eg += PIECE_SQUARE_TABLES['king_endgame'][r][c]
-            elif PIECE_SQUARE_TABLES.get(ptype):
-                pst_val = PIECE_SQUARE_TABLES[ptype][r][c]
-                white_score_mg += pst_val; white_score_eg += pst_val
-
-            if ptype is Pawn:
-                if (c > 0 and isinstance(grid[r][c-1], Pawn) and grid[r][c-1].color == 'white') or \
-                   (c < COLS-1 and isinstance(grid[r][c+1], Pawn) and grid[r][c+1].color == 'white'):
-                    white_score_mg += PAWN_PHALANX_BONUS
-            elif ptype is Rook:
-                if black_king_pos and (r == black_king_pos[0] or c == black_king_pos[1]):
-                    white_score_mg += ROOK_ALIGNMENT_BONUS
-
-        # --- BLACK PIECES ---
-        for piece in black_pieces:
-            ptype = type(piece); r, c = piece.pos; r_flipped = ROWS - 1 - r 
-            
-            if ptype is Pawn: black_pawn_count += 1
-            elif ptype is not King: 
-                black_piece_count += 1; black_last_piece_type = ptype
-                phase_material_score += PIECE_VALUES[ptype]
-
-            val = PIECE_VALUES[ptype]
-            black_score_mg += val; black_score_eg += val
-            
-            if ptype is King:
-                black_score_mg += PIECE_SQUARE_TABLES['king_midgame'][r_flipped][c]
-                black_score_eg += PIECE_SQUARE_TABLES['king_endgame'][r_flipped][c]
-            elif PIECE_SQUARE_TABLES.get(ptype):
-                pst_val = PIECE_SQUARE_TABLES[ptype][r_flipped][c]
-                black_score_mg += pst_val; black_score_eg += pst_val
-
-            if ptype is Pawn:
-                if (c > 0 and isinstance(grid[r][c-1], Pawn) and grid[r][c-1].color == 'black') or \
-                   (c < COLS-1 and isinstance(grid[r][c+1], Pawn) and grid[r][c+1].color == 'black'):
-                    black_score_mg += PAWN_PHALANX_BONUS
-            elif ptype is Rook:
-                if white_king_pos and (r == white_king_pos[0] or c == white_king_pos[1]):
-                    black_score_mg += ROOK_ALIGNMENT_BONUS
-
-        # --- PHASE CALCULATION ---
-        phase = min(256, (phase_material_score * 256) // INITIAL_PHASE_MATERIAL) if INITIAL_PHASE_MATERIAL > 0 else 0
+        # King Tropism
+        white_king, black_king = board.white_king_pos, board.black_king_pos
+        phase = min(256, ((w['phase'] + b['phase']) * 256) // INITIAL_PHASE_MATERIAL) if INITIAL_PHASE_MATERIAL > 0 else 0
         inv_phase = 256 - phase
-
-        # 3. Piece Dominance
-        if white_piece_count > black_piece_count:
-             white_score_eg += PIECE_DOMINANCE_FACTOR // (black_piece_count + 1)
-        elif black_piece_count > white_piece_count:
-             black_score_eg += PIECE_DOMINANCE_FACTOR // (white_piece_count + 1)
-
-        # 4. Exponential Pawn Scarcity
-        def get_pawn_penalty(count):
-            if count >= 4: return 0
-            return int(-250 * (4 - count)**2 / 16)
-
-        white_score_mg += get_pawn_penalty(white_pawn_count)
-        white_score_eg += get_pawn_penalty(white_pawn_count)
-        black_score_mg += get_pawn_penalty(black_pawn_count)
-        black_score_eg += get_pawn_penalty(black_pawn_count)
-
-        # 5. Dynamic Lone Wolf Penalty
-        if white_piece_count == 1 and white_last_piece_type in (Rook, Bishop):
-             penalty = -200 + (white_pawn_count * 50)
-             white_score_eg += min(0, penalty)
-        if black_piece_count == 1 and black_last_piece_type in (Rook, Bishop):
-             penalty = -200 + (black_pawn_count * 50)
-             black_score_eg += min(0, penalty)
-
-        # 6. King Tropism (Winning side gets closer to Enemy King)
-        white_total = white_score_eg
-        black_total = black_score_eg
         
-        if white_king_pos and black_king_pos:
-            dist = abs(white_king_pos[0] - black_king_pos[0]) + abs(white_king_pos[1] - black_king_pos[1])
-            # Penalty = (dist^2 * inv_phase * 50) / (MaxDist^2 * 256)
-            # MaxDist = 14, 14^2 = 196
+        if white_king and black_king:
+            dist = abs(white_king[0] - black_king[0]) + abs(white_king[1] - black_king[1])
             penalty = (dist * dist * inv_phase * 50) // (196 * 256)
-            
-            if white_total > black_total:
-                white_score_eg -= penalty
-            elif black_total > white_total:
-                black_score_eg -= penalty
+            if w['eg'] > b['eg']: w['eg'] -= penalty
+            elif b['eg'] > w['eg']: b['eg'] -= penalty
 
-        mg_score = white_score_mg - black_score_mg
-        eg_score = white_score_eg - black_score_eg
-        
+        mg_score = w['mg'] - b['mg']
+        eg_score = w['eg'] - b['eg']
         final_score = (mg_score * phase + eg_score * inv_phase) >> 8
         
-        return (final_score if turn_to_move == 'white' else -final_score)
+        return final_score if turn_to_move == 'white' else -final_score
 
 # --- Piece-Square Tables (PSTs) ---
 pawn_pst = [
@@ -523,22 +462,22 @@ rook_pst = [
 queen_pst = [
     [-30, -20, -10, -10, -10, -10, -20, -30],
     [-20,   0,   0,   0,   0,   0,   0, -20],
-    [-10,   0,   5,   5,   5,   5,   0, -10],
-    [ -5,  10,  20,  30,  30,  20,  10,  -5], # Activity in the center is good
+    [-10,   0,   5,  10,  10,   5,   0, -10],
+    [ -5,  10,  20,  30,  30,  20,  10,  -5],
     [ -5,   5,  20,  30,  30,  20,   5,  -5],
     [-10,   5,  15,  15,  15,  15,   5, -10],
     [-20, -10,   0,   5,   5,   0, -10, -20],
     [-30, -20, -20, -10, -20, -20, -20, -30]
 ]
 king_midgame_pst = [
-    [-60, -50, -50, -50, -50, -50, -50, -60], # Rank 8 (Deep Enemy Territory)
+    [-60, -50, -50, -50, -50, -50, -50, -60],
     [-40, -50, -50, -60, -60, -50, -50, -40],
     [-40, -50, -50, -60, -60, -50, -50, -40],
     [-40, -50, -50, -60, -60, -50, -50, -40],
     [-30, -40, -40, -40, -40, -40, -40, -30],
     [-10, -10, -20, -20, -20, -20, -10, -10],
-    [ -5,   0,   5,   5,   5,   5,   0,  -5], # Rank 2
-    [-20,  10,  20,  30,  30,  20,  10, -20]  # Rank 1 (Corners bad, Center safe)
+    [ -5,   0,   5,   5,   5,   5,   0,  -5],
+    [-20,  10,  20,  30,  30,  20,  10, -20]
 ]
 
 # Endgame King becomes a mediocre active piece, but still not desperate to rush the center.
@@ -546,7 +485,7 @@ king_endgame_pst = [
     [-40, -30, -30, -30, -30, -30, -30, -40], 
     [-30, -10,   0,   0,   0,   0, -10, -30],
     [-30,   0,  10,  20,  20,  10,   0, -30],
-    [-30,   5,  20,  20,  20,  20,   5, -30], # Activity zone, but cautious
+    [-30,   5,  20,  20,  20,  20,   5, -30],
     [-30,   5,  15,  20,  20,  15,   5, -30], 
     [-30,   0,  10,  10,  10,  10,   0, -30],
     [-30,   0,   5,   5,   5,   5,   0, -30],
