@@ -475,7 +475,12 @@ class EnhancedChessApp:
             
         # Always update the marker (cheap)
         self.eval_bar_canvas.delete("marker")
-        marker_score = max(-1.0, min(1.0, math.tanh(score / 20.0)))
+        
+        # --- CHANGE IS HERE ---
+        # Changed divisor from 20 to 10 for better sensitivity
+        marker_score = max(-1.0, min(1.0, math.tanh(score / 10.0)))
+        # ----------------------
+        
         marker_x = int(((marker_score + 1) / 2.0) * w)
         self.eval_bar_canvas.create_line(marker_x, 0, marker_x, h, fill=self.COLORS['accent'], width=3, tags="marker")
         self.eval_bar_canvas.create_line(w // 2, 0, w // 2, h, fill="#666666", width=1, tags="marker") # Center line
