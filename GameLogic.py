@@ -1,4 +1,4 @@
-# v29 (Expanded Insufficient Material Detection)
+# v29.2 (Endgame Logic Fix: K+N is a Win, K+R/K+B are Draws)
 
 # -----------------------------
 # Global Constants
@@ -443,7 +443,7 @@ def has_legal_moves(board, color):
     except StopIteration:
         return False
         
-# --- UPDATE: EXPANDED INSUFFICIENT MATERIAL CHECKS ---
+# --- UPDATE: CORRECTED INSUFFICIENT MATERIAL CHECKS ---
 def is_insufficient_material(board):
     """Checks for endgames that are automatic draws."""
     white_pieces = board.white_pieces
@@ -452,33 +452,44 @@ def is_insufficient_material(board):
 
     if total_pieces > 4: return False # Fast exit for most games
 
-    # King vs King
+    # If anyone has a Pawn or Queen, it's NOT a draw.
+    for p in white_pieces:
+        if isinstance(p, (Pawn, Queen)): return False
+    for p in black_pieces:
+        if isinstance(p, (Pawn, Queen)): return False
+
+    # 2. K vs K
     if total_pieces == 2: return True
 
-    # King vs King + Minor Piece (Bishop or Knight)
+    # 3. K vs K + 1 piece
+    # In this variant:
+    # - Knight vs King is a WIN (False).
+    # - Rook vs King is a DRAW (True).
+    # - Bishop vs King is a DRAW (True).
     if total_pieces == 3:
-        major_side = white_pieces if len(white_pieces) == 2 else black_pieces
-        piece_types = {type(p) for p in major_side}
-        if King in piece_types and (Bishop in piece_types or Knight in piece_types):
-            return True
+        all_pieces = white_pieces + black_pieces
+        for p in all_pieces:
+            if isinstance(p, Knight): return False
+        return True
 
-    # King + Rook vs King + Rook (Theoretical Draw)
-    # King + Rook vs King + Bishop (Theoretical Draw)
+    # 4. K+1 vs K+1
     if total_pieces == 4:
-        white_types = {type(p) for p in white_pieces}
-        black_types = {type(p) for p in black_pieces}
+        w_has_rook = any(isinstance(p, Rook) for p in white_pieces)
+        b_has_rook = any(isinstance(p, Rook) for p in black_pieces)
+        w_has_bishop = any(isinstance(p, Bishop) for p in white_pieces)
+        b_has_bishop = any(isinstance(p, Bishop) for p in black_pieces)
+        w_has_knight = any(isinstance(p, Knight) for p in white_pieces)
+        b_has_knight = any(isinstance(p, Knight) for p in black_pieces)
         
-        has_wk_wr = (white_types == {King, Rook})
-        has_bk_br = (black_types == {King, Rook})
-        has_wk_wb = (white_types == {King, Bishop})
-        has_bk_bb = (black_types == {King, Bishop})
+        # R vs R (Draw)
+        if w_has_rook and b_has_rook: return True
+        # R vs B (Draw)
+        if (w_has_rook and b_has_bishop) or (w_has_bishop and b_has_rook): return True
+        # B vs B (Draw)
+        if w_has_bishop and b_has_bishop: return True
+        # N vs N (Draw)
+        if w_has_knight and b_has_knight: return True
         
-        # K+R vs K+R
-        if has_wk_wr and has_bk_br: return True
-        
-        # K+R vs K+B or K+B vs K+R
-        if (has_wk_wr and has_bk_bb) or (has_wk_wb and has_bk_br): return True
-
     return False
 
 def get_game_state(board, turn_to_move, position_counts, ply_count, max_moves):

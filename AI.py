@@ -345,7 +345,6 @@ class ChessBot:
 
         scores_mg = [0, 0]; scores_eg = [0, 0]
         piece_counts = [0, 0]; pawn_counts = [0, 0]; last_piece_type = [None, None]
-        # Track specific counts for synergy
         rook_counts = [0, 0]; bishop_counts = [0, 0]; knight_counts = [0, 0]
         
         king_pos = [board.white_king_pos, board.black_king_pos]
@@ -360,7 +359,7 @@ class ChessBot:
         PAIR_BONUS = 20
         DOUBLE_ROOK_PENALTY = 15
 
-        # --- 1. Main Evaluation Loop (Combined for both colors) ---
+        # 1. Main Loop
         for color_idx in (0, 1):
             pieces = piece_lists[color_idx]
             enemy_king = king_pos[1 - color_idx]
@@ -370,7 +369,8 @@ class ChessBot:
             for piece in pieces:
                 ptype = type(piece); r, c = piece.pos
                 
-                if ptype is Pawn: pawn_counts[color_idx] += 1
+                if ptype is Pawn: 
+                    pawn_counts[color_idx] += 1
                 elif ptype is not King:
                     piece_counts[color_idx] += 1
                     last_piece_type[color_idx] = ptype
@@ -387,16 +387,13 @@ class ChessBot:
                     scores_mg[color_idx] += PIECE_SQUARE_TABLES['king_midgame'][r_pst][c]
                     scores_eg[color_idx] += PIECE_SQUARE_TABLES['king_endgame'][r_pst][c]
                 else:
-                    scores_mg[color_idx] += val
-                    scores_eg[color_idx] += val
+                    scores_mg[color_idx] += val; scores_eg[color_idx] += val
                     if PIECE_SQUARE_TABLES.get(ptype):
                         pst_val = PIECE_SQUARE_TABLES[ptype][r_pst][c]
-                        scores_mg[color_idx] += pst_val
-                        scores_eg[color_idx] += pst_val
+                        scores_mg[color_idx] += pst_val; scores_eg[color_idx] += pst_val
 
                 # Variant Heuristics
                 if ptype is Pawn:
-                    # Phalanx (Side-by-side support)
                     if (c > 0 and isinstance(grid[r][c-1], Pawn) and grid[r][c-1].color == my_color_name) or \
                        (c < COLS-1 and isinstance(grid[r][c+1], Pawn) and grid[r][c+1].color == my_color_name):
                         scores_mg[color_idx] += PAWN_PHALANX_BONUS
@@ -404,9 +401,7 @@ class ChessBot:
                     if enemy_king and (r == enemy_king[0] or c == enemy_king[1]):
                         scores_mg[color_idx] += ROOK_ALIGNMENT_BONUS
 
-        # --- 2. Global Calculations ---
-        
-        # Phase Interpolation
+        # 2. Global Calculations
         phase = min(256, (phase_material_score * 256) // INITIAL_PHASE_MATERIAL) if INITIAL_PHASE_MATERIAL > 0 else 0
         inv_phase = 256 - phase
 
@@ -414,17 +409,12 @@ class ChessBot:
         elif piece_counts[1] > piece_counts[0]: scores_eg[1] += PIECE_DOMINANCE_FACTOR // (piece_counts[0] + 1)
 
         for i in (0, 1):
+            # Pawn Scarcity
             if pawn_counts[i] < 4:
                 penalty = int(-250 * (4 - pawn_counts[i])**2 / 16)
-                scores_mg[i] += penalty
-                scores_eg[i] += penalty
+                scores_mg[i] += penalty; scores_eg[i] += penalty
             
-            # Dynamic Lone Wolf
-            if piece_counts[i] == 1 and last_piece_type[i] in (Rook, Bishop):
-                 penalty = -200 + (pawn_counts[i] * 50)
-                 scores_eg[i] += min(0, penalty)
-
-            # Synergy Bonuses/Penalties
+            # Synergy
             if bishop_counts[i] >= 2: 
                 scores_mg[i] += PAIR_BONUS; scores_eg[i] += PAIR_BONUS
             if knight_counts[i] >= 2: 
@@ -432,20 +422,39 @@ class ChessBot:
             if rook_counts[i] >= 2:
                 scores_mg[i] -= DOUBLE_ROOK_PENALTY; scores_eg[i] -= DOUBLE_ROOK_PENALTY
 
+        # King Tropism
         if king_pos[0] and king_pos[1]:
             dist = abs(king_pos[0][0] - king_pos[1][0]) + abs(king_pos[0][1] - king_pos[1][1])
-            # Penalty scales up as phase decreases (Endgame) and distance increases
-            # Formula: (dist^2 * inv_phase * 50) / (MaxDist^2 * 256)
-            tropism_penalty = (dist * dist * inv_phase * 50) // 50176 # 14^2 * 256 = 50176
-            
-            if scores_eg[0] > scores_eg[1]:
-                scores_eg[0] -= tropism_penalty
-            elif scores_eg[1] > scores_eg[0]:
-                scores_eg[1] -= tropism_penalty
+            tropism_penalty = (dist * dist * inv_phase * 50) // 50176 
+            if scores_eg[0] > scores_eg[1]: scores_eg[0] -= tropism_penalty
+            elif scores_eg[1] > scores_eg[0]: scores_eg[1] -= tropism_penalty
 
-        # Final Tapered Score
         mg_score = scores_mg[0] - scores_mg[1]
         eg_score = scores_eg[0] - scores_eg[1]
+        
+        # --- LONE WOLF "DAMPING" LOGIC ---
+        # This clamps the evaluation towards 0 if we have a winning score but
+        # insufficient material to guarantee a win in this variant.
+        
+        # Penalties by pawn count: 0->625, 1->190, 2->140, 3->80, 4->40
+        LONE_WOLF_PENALTIES = [625, 190, 140, 80, 40] 
+
+        for i in (0, 1):
+            # Condition: Exactly 1 Piece (Rook/Bishop) AND <= 4 Pawns
+            if piece_counts[i] == 1 and last_piece_type[i] in (Rook, Bishop) and pawn_counts[i] <= 4:
+                penalty = LONE_WOLF_PENALTIES[pawn_counts[i]]
+                
+                if i == 0: # White
+                    # Only apply if White is currently WINNING (eg_score > 0)
+                    # Reduce score, but stop at 0. Do not turn a win into a loss.
+                    if eg_score > 0:
+                        eg_score = max(0, eg_score - penalty)
+                else: # Black
+                    # Only apply if Black is currently WINNING (eg_score < 0)
+                    # Increase score (towards 0), but stop at 0.
+                    if eg_score < 0:
+                        eg_score = min(0, eg_score + penalty)
+
         final_score = (mg_score * phase + eg_score * inv_phase) >> 8
         return final_score if turn_to_move == 'white' else -final_score
 
