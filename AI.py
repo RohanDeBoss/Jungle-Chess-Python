@@ -1,4 +1,4 @@
-# v83.1 (Refactored Evaluation: Combined White/Black Logic Loop, using indexed arrays)
+# v83.2 (Evaluation Update: Piece Synergy Bonuses/Penalties)
 
 import time
 from GameLogic import generate_legal_moves_generator
@@ -343,23 +343,22 @@ class ChessBot:
         if is_insufficient_material(board):
             return self.DRAW_SCORE
 
-        # Data structures for [White, Black]
-        scores_mg = [0, 0]
-        scores_eg = [0, 0]
-        piece_counts = [0, 0]
-        pawn_counts = [0, 0]
-        last_piece_type = [None, None]
+        scores_mg = [0, 0]; scores_eg = [0, 0]
+        piece_counts = [0, 0]; pawn_counts = [0, 0]; last_piece_type = [None, None]
+        # Track specific counts for synergy
+        rook_counts = [0, 0]; bishop_counts = [0, 0]; knight_counts = [0, 0]
         
         king_pos = [board.white_king_pos, board.black_king_pos]
         piece_lists = [board.white_pieces, board.black_pieces]
         grid = board.grid
-        
         phase_material_score = 0
         
         # Heuristic Constants
         PAWN_PHALANX_BONUS = 5
         ROOK_ALIGNMENT_BONUS = 15
         PIECE_DOMINANCE_FACTOR = 40
+        PAIR_BONUS = 20
+        DOUBLE_ROOK_PENALTY = 15
 
         # --- 1. Main Evaluation Loop (Combined for both colors) ---
         for color_idx in (0, 1):
@@ -371,18 +370,17 @@ class ChessBot:
             for piece in pieces:
                 ptype = type(piece); r, c = piece.pos
                 
-                # Track Counts & Phase
-                if ptype is Pawn:
-                    pawn_counts[color_idx] += 1
+                if ptype is Pawn: pawn_counts[color_idx] += 1
                 elif ptype is not King:
                     piece_counts[color_idx] += 1
                     last_piece_type[color_idx] = ptype
                     phase_material_score += PIECE_VALUES[ptype]
+                    
+                    if ptype is Rook: rook_counts[color_idx] += 1
+                    elif ptype is Bishop: bishop_counts[color_idx] += 1
+                    elif ptype is Knight: knight_counts[color_idx] += 1
 
-                # Material & PST
                 val = PIECE_VALUES[ptype]
-                
-                # Flip rank for Black PSTs
                 r_pst = r if is_white else 7 - r
                 
                 if ptype is King:
@@ -403,7 +401,6 @@ class ChessBot:
                        (c < COLS-1 and isinstance(grid[r][c+1], Pawn) and grid[r][c+1].color == my_color_name):
                         scores_mg[color_idx] += PAWN_PHALANX_BONUS
                 elif ptype is Rook:
-                    # Alignment (Sniping lane)
                     if enemy_king and (r == enemy_king[0] or c == enemy_king[1]):
                         scores_mg[color_idx] += ROOK_ALIGNMENT_BONUS
 
@@ -413,15 +410,10 @@ class ChessBot:
         phase = min(256, (phase_material_score * 256) // INITIAL_PHASE_MATERIAL) if INITIAL_PHASE_MATERIAL > 0 else 0
         inv_phase = 256 - phase
 
-        # Piece Dominance (Bonus for having more pieces)
-        if piece_counts[0] > piece_counts[1]:
-             scores_eg[0] += PIECE_DOMINANCE_FACTOR // (piece_counts[1] + 1)
-        elif piece_counts[1] > piece_counts[0]:
-             scores_eg[1] += PIECE_DOMINANCE_FACTOR // (piece_counts[0] + 1)
+        if piece_counts[0] > piece_counts[1]: scores_eg[0] += PIECE_DOMINANCE_FACTOR // (piece_counts[1] + 1)
+        elif piece_counts[1] > piece_counts[0]: scores_eg[1] += PIECE_DOMINANCE_FACTOR // (piece_counts[0] + 1)
 
-        # Apply Penalties to both sides
         for i in (0, 1):
-            # Exponential Pawn Scarcity
             if pawn_counts[i] < 4:
                 penalty = int(-250 * (4 - pawn_counts[i])**2 / 16)
                 scores_mg[i] += penalty
@@ -432,7 +424,14 @@ class ChessBot:
                  penalty = -200 + (pawn_counts[i] * 50)
                  scores_eg[i] += min(0, penalty)
 
-        # King Tropism (Attacker gets bonus for proximity in Endgame)
+            # Synergy Bonuses/Penalties
+            if bishop_counts[i] >= 2: 
+                scores_mg[i] += PAIR_BONUS; scores_eg[i] += PAIR_BONUS
+            if knight_counts[i] >= 2: 
+                scores_mg[i] += PAIR_BONUS; scores_eg[i] += PAIR_BONUS
+            if rook_counts[i] >= 2:
+                scores_mg[i] -= DOUBLE_ROOK_PENALTY; scores_eg[i] -= DOUBLE_ROOK_PENALTY
+
         if king_pos[0] and king_pos[1]:
             dist = abs(king_pos[0][0] - king_pos[1][0]) + abs(king_pos[0][1] - king_pos[1][1])
             # Penalty scales up as phase decreases (Endgame) and distance increases
@@ -447,19 +446,17 @@ class ChessBot:
         # Final Tapered Score
         mg_score = scores_mg[0] - scores_mg[1]
         eg_score = scores_eg[0] - scores_eg[1]
-        
         final_score = (mg_score * phase + eg_score * inv_phase) >> 8
-        
         return final_score if turn_to_move == 'white' else -final_score
 
 # --- Piece-Square Tables (PSTs) ---
 pawn_pst = [
     [  0,   0,   0,   0,   0,   0,   0,   0],
     [ 90,  90,  90,  90,  90,  90,  90,  90],
-    [ 50,  50,  50,  50,  50,  50,  50,  50],
-    [ 30,  30,  40,  50,  50,  40,  30,  30],
-    [ 20,  20,  30,  40,  40,  30,  20,  20],
-    [ 10,  10,  20,  30,  30,  20,  10,  10],
+    [ 50,  50,  50,  50,  55,  50,  50,  50],
+    [ 25,  25,  30,  45,  50,  30,  25,  25],
+    [ 15,  15,  20,  30,  35,  20,  15,  15],
+    [ 10,  10,  20,  25,  30,  20,  10,  10],
     [  0,   0,   0,  -5, -10,   0,   0,   0],
     [  0,   0,   0,   0,   0,   0,   0,   0]
 ]
@@ -468,7 +465,7 @@ knight_pst = [
     [-40, -20,   5,  10,  10,   5, -20, -40],
     [-30,   5,  20,  25,  25,  20,   5, -30],
     [-30,  10,  25,  35,  35,  25,  10, -30],
-    [-30,  10,  25,  35,  35,  25,  10, -30],
+    [-20,  15,  25,  35,  35,  25,  15, -20], # Just out out danger of pawns capturing in 1 move
     [-30,  10,  20,  25,  25,  30,  10, -30],
     [-40, -20,   5,  10,  10,   5, -20, -40],
     [-60, -50, -30, -30, -30, -30, -50, -60]
@@ -479,7 +476,7 @@ bishop_pst = [
     [-10,   0,   5,  10,  10,   5,   0, -10],
     [-10,   5,   5,  10,  10,   5,   5, -10],
     [-10,   5,  15,  10,  10,  15,   5, -10],
-    [-10,  10,  10,  10,  10,  10,  10, -10],
+    [-10,  10,  10,   5,   5,  10,  10, -10],
     [-10,   5,   0,   0,   0,   0,   5, -10],
     [-20, -10, -10, -15, -15, -10, -10, -20]
 ]
