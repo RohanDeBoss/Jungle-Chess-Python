@@ -6,3 +6,4 @@
 /__pycache__
 __pycache__/GameLogic.cpython-313.pyc
 __pycache__/OpponentAI.cpython-313.pyc
+*.pyc
