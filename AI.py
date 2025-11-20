@@ -1,4 +1,4 @@
-# v83.2 (Evaluation Update: Piece Synergy Bonuses/Penalties)
+# v84.0 (Evaluation: Rook Scaling based on Pawn Density)
 
 import time
 from GameLogic import generate_legal_moves_generator
@@ -6,9 +6,9 @@ from GameLogic import *
 import random
 from collections import namedtuple
 
-# --- CONSTANT PIECE VALUES (User Specified) ---
+# --- CONSTANT PIECE VALUES ---
 PIECE_VALUES = {
-    Pawn: 100, Knight: 800, Bishop: 650, Rook: 600, Queen: 850, King: 20000
+    Pawn: 100, Knight: 800, Bishop: 650, Rook: 550, Queen: 850, King: 20000
 }
 
 INITIAL_PHASE_MATERIAL = (PIECE_VALUES[Rook] * 4 + PIECE_VALUES[Knight] * 4 +
@@ -97,6 +97,18 @@ class ChessBot:
     def _report_move(self, move): self.comm_queue.put(('move', move))
     def _format_move(self, move):
         return format_move(move)
+
+    def _calculate_tapered_map(self, board):
+        phase_material_score = 0
+        for p in board.white_pieces:
+            if not isinstance(p, (Pawn, King)):
+                phase_material_score += PIECE_VALUES.get(type(p), 0)
+        for p in board.black_pieces:
+            if not isinstance(p, (Pawn, King)):
+                phase_material_score += PIECE_VALUES.get(type(p), 0)
+
+        phase = min(256, (phase_material_score * 256) // INITIAL_PHASE_MATERIAL) if INITIAL_PHASE_MATERIAL > 0 else 0
+        return PIECE_VALUES, phase
 
     def make_move(self):
         try:
@@ -339,6 +351,7 @@ class ChessBot:
         if is_in_check_flag and alpha < -self.MATE_SCORE + 100: return -self.MATE_SCORE + ply
         return alpha
 
+    # --- EVALUATION FUNCTION ---
     def evaluate_board(self, board, turn_to_move):
         if is_insufficient_material(board):
             return self.DRAW_SCORE
@@ -352,12 +365,12 @@ class ChessBot:
         grid = board.grid
         phase_material_score = 0
         
-        # Heuristic Constants
         PAWN_PHALANX_BONUS = 5
         ROOK_ALIGNMENT_BONUS = 15
         PIECE_DOMINANCE_FACTOR = 40
         PAIR_BONUS = 20
         DOUBLE_ROOK_PENALTY = 15
+        ROOK_PAWN_SCALING = 5
 
         # 1. Main Loop
         for color_idx in (0, 1):
@@ -404,16 +417,36 @@ class ChessBot:
         # 2. Global Calculations
         phase = min(256, (phase_material_score * 256) // INITIAL_PHASE_MATERIAL) if INITIAL_PHASE_MATERIAL > 0 else 0
         inv_phase = 256 - phase
+        
+        total_pawns_on_board = pawn_counts[0] + pawn_counts[1]
 
         if piece_counts[0] > piece_counts[1]: scores_eg[0] += PIECE_DOMINANCE_FACTOR // (piece_counts[1] + 1)
         elif piece_counts[1] > piece_counts[0]: scores_eg[1] += PIECE_DOMINANCE_FACTOR // (piece_counts[0] + 1)
 
+        # Define Penalty Tables
+        # Index = pawn_counts[i] (0 to 4+)
+        LONE_ROOK_PENALTIES   = [550, 200, 150, 80, 40]
+        LONE_BISHOP_PENALTIES = [650, 250, 170, 100, 50]
+
         for i in (0, 1):
-            # Pawn Scarcity
             if pawn_counts[i] < 4:
                 penalty = int(-250 * (4 - pawn_counts[i])**2 / 16)
                 scores_mg[i] += penalty; scores_eg[i] += penalty
             
+            # Apply Lone Wolf "Draw Damping" LAST
+            if piece_counts[i] == 1 and pawn_counts[i] <= 4:
+                penalty = 0
+                if last_piece_type[i] is Rook:
+                     penalty = LONE_ROOK_PENALTIES[pawn_counts[i]]
+                elif last_piece_type[i] is Bishop:
+                     penalty = LONE_BISHOP_PENALTIES[pawn_counts[i]]
+                
+                if penalty > 0:
+                    if i == 0 and scores_eg[0] > scores_eg[1]: # White winning
+                        scores_eg[0] = max(scores_eg[1], scores_eg[0] - penalty) # Damp towards even, but don't cross
+                    elif i == 1 and scores_eg[1] > scores_eg[0]: # Black winning
+                        scores_eg[1] = max(scores_eg[0], scores_eg[1] - penalty)
+
             # Synergy
             if bishop_counts[i] >= 2: 
                 scores_mg[i] += PAIR_BONUS; scores_eg[i] += PAIR_BONUS
@@ -421,40 +454,20 @@ class ChessBot:
                 scores_mg[i] += PAIR_BONUS; scores_eg[i] += PAIR_BONUS
             if rook_counts[i] >= 2:
                 scores_mg[i] -= DOUBLE_ROOK_PENALTY; scores_eg[i] -= DOUBLE_ROOK_PENALTY
+            
+            # Rook Scaling
+            if rook_counts[i] > 0:
+                bonus = rook_counts[i] * total_pawns_on_board * ROOK_PAWN_SCALING
+                scores_mg[i] += bonus; scores_eg[i] += bonus
 
-        # King Tropism
         if king_pos[0] and king_pos[1]:
             dist = abs(king_pos[0][0] - king_pos[1][0]) + abs(king_pos[0][1] - king_pos[1][1])
-            tropism_penalty = (dist * dist * inv_phase * 50) // 50176 
+            tropism_penalty = (dist * dist * inv_phase * 50) // 50176
             if scores_eg[0] > scores_eg[1]: scores_eg[0] -= tropism_penalty
             elif scores_eg[1] > scores_eg[0]: scores_eg[1] -= tropism_penalty
 
         mg_score = scores_mg[0] - scores_mg[1]
         eg_score = scores_eg[0] - scores_eg[1]
-        
-        # --- LONE WOLF "DAMPING" LOGIC ---
-        # This clamps the evaluation towards 0 if we have a winning score but
-        # insufficient material to guarantee a win in this variant.
-        
-        # Penalties by pawn count: 0->625, 1->190, 2->140, 3->80, 4->40
-        LONE_WOLF_PENALTIES = [625, 190, 140, 80, 40] 
-
-        for i in (0, 1):
-            # Condition: Exactly 1 Piece (Rook/Bishop) AND <= 4 Pawns
-            if piece_counts[i] == 1 and last_piece_type[i] in (Rook, Bishop) and pawn_counts[i] <= 4:
-                penalty = LONE_WOLF_PENALTIES[pawn_counts[i]]
-                
-                if i == 0: # White
-                    # Only apply if White is currently WINNING (eg_score > 0)
-                    # Reduce score, but stop at 0. Do not turn a win into a loss.
-                    if eg_score > 0:
-                        eg_score = max(0, eg_score - penalty)
-                else: # Black
-                    # Only apply if Black is currently WINNING (eg_score < 0)
-                    # Increase score (towards 0), but stop at 0.
-                    if eg_score < 0:
-                        eg_score = min(0, eg_score + penalty)
-
         final_score = (mg_score * phase + eg_score * inv_phase) >> 8
         return final_score if turn_to_move == 'white' else -final_score
 
