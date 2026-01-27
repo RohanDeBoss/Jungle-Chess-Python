@@ -1,4 +1,4 @@
-# JungleChessUI.py (v9.2 - Optimized Eval Bar Rendering)
+# JungleChessUI.py (v9.3 - Small Conciseness update)
 import tkinter as tk
 from tkinter import ttk
 import math
@@ -623,25 +623,20 @@ class EnhancedChessApp:
         else:
             self.scoreboard_frame.place_forget()
 
-    def undo_move(self):
-        if self.game_mode.get() == GameMode.AI_VS_AI.value or self.history_pointer <= 0: return
-        self.history_pointer -= 1
-        self._load_state_from_history()
+    def _navigate_history(self, target_index):
+        if self.game_mode.get() == GameMode.AI_VS_AI.value: return
+        
+        # Clamp index between 0 and the last available move
+        new_index = max(0, min(target_index, len(self.full_history) - 1))
+        
+        if new_index != self.history_pointer:
+            self.history_pointer = new_index
+            self._load_state_from_history()
 
-    def redo_move(self):
-        if self.game_mode.get() == GameMode.AI_VS_AI.value or self.history_pointer >= len(self.full_history) - 1: return
-        self.history_pointer += 1
-        self._load_state_from_history()
-
-    def go_to_start(self):
-        if self.game_mode.get() == GameMode.AI_VS_AI.value or self.history_pointer <= 0: return
-        self.history_pointer = 0
-        self._load_state_from_history()
-    
-    def go_to_end(self):
-        if self.game_mode.get() == GameMode.AI_VS_AI.value or self.history_pointer >= len(self.full_history) - 1: return
-        self.history_pointer = len(self.full_history) - 1
-        self._load_state_from_history()
+    def undo_move(self): self._navigate_history(self.history_pointer - 1)
+    def redo_move(self): self._navigate_history(self.history_pointer + 1)
+    def go_to_start(self): self._navigate_history(0)
+    def go_to_end(self): self._navigate_history(len(self.full_history) - 1)
         
     def _load_state_from_history(self):
         self._stop_ai_process()

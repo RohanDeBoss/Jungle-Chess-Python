@@ -1,4 +1,4 @@
-# v29.2 (Endgame Logic Fix: K+N is a Win, K+R/K+B are Draws)
+# v30 Optimised Knight Moves to use the pre-computed map and fixed determinism
 
 # -----------------------------
 # Global Constants
@@ -18,8 +18,9 @@ DIRECTIONS = {
 ADJACENT_DIRS = DIRECTIONS['king']
 
 # --- Pre-computation Maps for Performance ---
-KNIGHT_ATTACKS_FROM = { (r, c): {(r+dr, c+dc) for dr, dc in DIRECTIONS['knight'] if 0 <= r+dr < ROWS and 0 <= c+dc < COLS} for r in range(ROWS) for c in range(COLS) }
-ADJACENT_SQUARES_MAP = { (r, c): {(r+dr, c+dc) for dr, dc in ADJACENT_DIRS if 0 <= r+dr < ROWS and 0 <= c+dc < COLS} for r in range(ROWS) for c in range(COLS) }
+# Change the inner {} to [] to preserve order
+KNIGHT_ATTACKS_FROM = { (r, c): [(r+dr, c+dc) for dr, dc in DIRECTIONS['knight'] if 0 <= r+dr < ROWS and 0 <= c+dc < COLS] for r in range(ROWS) for c in range(COLS) }
+ADJACENT_SQUARES_MAP = { (r, c): [(r+dr, c+dc) for dr, dc in ADJACENT_DIRS if 0 <= r+dr < ROWS and 0 <= c+dc < COLS] for r in range(ROWS) for c in range(COLS) }
 
 # ---------------------------------------------------
 # PIECE CLASSES: THE SINGLE SOURCE OF TRUTH
@@ -142,12 +143,8 @@ class Bishop(Piece):
 class Knight(Piece):
     def symbol(self): return "♘" if self.color == "white" else "♞"
     def get_valid_moves(self, board, pos):
-        moves = []
-        for dr, dc in DIRECTIONS['knight']:
-            nr, nc = pos[0] + dr, pos[1] + dc
-            if 0 <= nr < ROWS and 0 <= nc < COLS and (board.grid[nr][nc] is None or board.grid[nr][nc].color != self.color):
-                moves.append((nr,nc))
-        return moves
+        return [(r, c) for r, c in KNIGHT_ATTACKS_FROM[pos] 
+                if (p := board.grid[r][c]) is None or p.color != self.color]
 
     def get_threats(self, board, pos):
         threats = set()
