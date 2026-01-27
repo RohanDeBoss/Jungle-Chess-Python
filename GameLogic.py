@@ -1,4 +1,4 @@
-# v32 Get threats now uses scanning the list directly as its faster
+# v33 Optimised Pawn.get_valid_moves by unrolling the loops and caching the grid lookup
 
 # -----------------------------
 # Global Constants
@@ -165,17 +165,34 @@ class Pawn(Piece):
     def get_valid_moves(self, board, pos):
         moves = []
         r, c = pos
-        one_r = r + self.direction
-        if 0 <= one_r < ROWS and (board.grid[one_r][c] is None or board.grid[one_r][c].color == self.opponent_color):
-            moves.append((one_r, c))
-        if r == self.starting_row and board.grid[one_r][c] is None:
-            two_r = r + (2 * self.direction)
-            if 0 <= two_r < ROWS and (board.grid[two_r][c] is None or board.grid[two_r][c].color == self.opponent_color):
-                moves.append((two_r, c))
-        for dc_offset in [-1, 1]:
-            new_c = c + dc_offset
-            if 0 <= new_c < COLS and board.grid[r][new_c] is not None and board.grid[r][new_c].color == self.opponent_color:
-                moves.append((r, new_c))
+        direction = self.direction
+        grid = board.grid
+        
+        # 1. Forward Moves
+        one_r = r + direction
+        if 0 <= one_r < ROWS:
+            target1 = grid[one_r][c]
+            # Check 1st square (Move or Capture)
+            if target1 is None or target1.color == self.opponent_color:
+                moves.append((one_r, c))
+                
+                # 2. Forward 2 (Only if 1st was empty, not a capture)
+                if r == self.starting_row and target1 is None:
+                    two_r = r + (2 * direction)
+                    target2 = grid[two_r][c]
+                    if target2 is None or target2.color == self.opponent_color:
+                        moves.append((two_r, c))
+
+        # 3. Sideways Captures (Unrolled for speed)
+        if c > 0:
+            target = grid[r][c-1]
+            if target and target.color == self.opponent_color:
+                moves.append((r, c-1))
+        if c < COLS - 1:
+            target = grid[r][c+1]
+            if target and target.color == self.opponent_color:
+                moves.append((r, c+1))
+                
         return moves
         
 
