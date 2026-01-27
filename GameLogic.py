@@ -1,4 +1,4 @@
-# v30 Optimised Knight Moves to use the pre-computed map and fixed determinism
+# v31 manually populating the new board's data structures for performance in clone method
 
 # -----------------------------
 # Global Constants
@@ -238,12 +238,20 @@ class Board:
 
     def clone(self):
         new_board = Board(setup=False)
-        for piece in self.white_pieces:
-            p_clone = piece.clone()
-            new_board.add_piece(p_clone, p_clone.pos[0], p_clone.pos[1])
-        for piece in self.black_pieces:
-            p_clone = piece.clone()
-            new_board.add_piece(p_clone, p_clone.pos[0], p_clone.pos[1])
+        
+        # Clone lists directly to avoid add_piece() function call overhead
+        new_board.white_pieces = [p.clone() for p in self.white_pieces]
+        new_board.black_pieces = [p.clone() for p in self.black_pieces]
+        
+        # Populate grid and king positions directly
+        for p in new_board.white_pieces:
+            new_board.grid[p.pos[0]][p.pos[1]] = p
+            if isinstance(p, King): new_board.white_king_pos = p.pos
+            
+        for p in new_board.black_pieces:
+            new_board.grid[p.pos[0]][p.pos[1]] = p
+            if isinstance(p, King): new_board.black_king_pos = p.pos
+            
         return new_board
 
     def make_move(self, start, end):
