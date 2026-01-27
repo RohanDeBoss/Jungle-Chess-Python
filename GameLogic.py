@@ -1,4 +1,4 @@
-# v34 Optimised Bishop.get_valid_moves to remove the expensive sorted() call while maintaining determinism
+# v35 Optimised the passive Knight Evaporation logic in Board._apply_knight_aoe (and its call in make_move)
 
 # -----------------------------
 # Global Constants
@@ -296,7 +296,7 @@ class Board:
                 self.remove_piece(end[0], end[1])
                 self.add_piece(Queen(moving_piece.color), end[0], end[1])
 
-        self._apply_knight_aoe(end if isinstance(moving_piece, Knight) else None)
+        self._apply_knight_aoe(end, is_active_move=isinstance(moving_piece, Knight))
 
     def _apply_queen_aoe(self, pos, queen_color):
         if self.grid[pos[0]][pos[1]]: self.remove_piece(pos[0], pos[1])
@@ -313,53 +313,45 @@ class Board:
             if target and target.color != rook_color: self.remove_piece(cr, cc)
             cr += dr; cc += dc
 
-    def _apply_knight_aoe(self, moved_knight_pos=None):
-        if moved_knight_pos:
-            knight_instance = self.grid[moved_knight_pos[0]][moved_knight_pos[1]]
+    def _apply_knight_aoe(self, pos, is_active_move):
+        grid = self.grid
+        
+        # 1. Active Evaporation (The Knight itself moved)
+        if is_active_move:
+            knight_instance = grid[pos[0]][pos[1]]
             if not knight_instance: return
             
+            # Use the precomputed list (optimized in v30)
             to_remove, enemy_knights_destroyed = [], False
-            for r, c in KNIGHT_ATTACKS_FROM.get(moved_knight_pos, set()):
-                target = self.grid[r][c]
+            for r, c in KNIGHT_ATTACKS_FROM[pos]:
+                target = grid[r][c]
                 if target and target.color != knight_instance.color:
                     to_remove.append(target)
                     if isinstance(target, Knight):
                         enemy_knights_destroyed = True
-                        
+            
             for piece in to_remove:
-                if piece.pos: self.remove_piece(piece.pos[0], piece.pos[1])
+                self.remove_piece(piece.pos[0], piece.pos[1])
 
             if enemy_knights_destroyed:
-                self.remove_piece(moved_knight_pos[0], moved_knight_pos[1])
-            return
-
-        knights_on_board = [p for p in self.white_pieces if isinstance(p, Knight)]
-        knights_on_board.extend(p for p in self.black_pieces if isinstance(p, Knight))
-        
-        if not knights_on_board: return
-
-        evaporation_map, knights_to_be_removed = {}, set()
-
-        for knight in knights_on_board:
-            evaporation_map[knight] = set()
-            for r_aoe, c_aoe in KNIGHT_ATTACKS_FROM.get(knight.pos, set()):
-                target = self.grid[r_aoe][c_aoe]
-                if target and target.color != knight.color:
-                    evaporation_map[knight].add(target)
-
-        for targets in evaporation_map.values():
-            for target in targets:
-                if isinstance(target, Knight):
-                    knights_to_be_removed.add(target)
-
-        pieces_to_remove = set()
-        for targets in evaporation_map.values():
-            pieces_to_remove.update(target for target in targets if not isinstance(target, Knight))
-
-        for piece in pieces_to_remove:
-            if piece.pos: self.remove_piece(piece.pos[0], piece.pos[1])
-        for knight in knights_to_be_removed:
-            if knight.pos: self.remove_piece(knight.pos[0], knight.pos[1])
+                self.remove_piece(pos[0], pos[1])
+                
+        # 2. Passive Evaporation (Another piece moved into a Knight's range)
+        else:
+            # We only need to check if the specific square 'pos' is targeted by an enemy Knight.
+            # KNIGHT_ATTACKS_FROM is symmetric: if Knight at A hits B, a Knight at B hits A.
+            victim = grid[pos[0]][pos[1]]
+            if not victim: return
+            
+            for r, c in KNIGHT_ATTACKS_FROM[pos]:
+                potential_killer = grid[r][c]
+                # Check if there is a Knight here, and if it is an enemy
+                if (potential_killer and 
+                    isinstance(potential_killer, Knight) and 
+                    potential_killer.color != victim.color):
+                    
+                    self.remove_piece(pos[0], pos[1])
+                    return # Piece is gone, stop checking
 
     def _get_rook_piercing_captures(self, start, end, rook_color):
         captured = []
