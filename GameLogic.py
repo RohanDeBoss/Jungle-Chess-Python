@@ -1,4 +1,4 @@
-# v33 Optimised Pawn.get_valid_moves by unrolling the loops and caching the grid lookup
+# v34 Optimised Bishop.get_valid_moves to remove the expensive sorted() call while maintaining determinism
 
 # -----------------------------
 # Global Constants
@@ -117,16 +117,21 @@ class Rook(Piece):
 class Bishop(Piece):
     def symbol(self): return "♗" if self.color == "white" else "♝"
     def get_valid_moves(self, board, pos):
-        moves = set()
+        moves = {} # Dict keys preserve order and ensure uniqueness
         r_start, c_start = pos
+        
+        # 1. Normal Diagonal
         for dr, dc in DIRECTIONS['bishop']:
             r, c = r_start + dr, c_start + dc
             while 0 <= r < ROWS and 0 <= c < COLS:
                 target = board.grid[r][c]
                 if target:
-                    if target.color != self.color: moves.add((r, c))
+                    if target.color != self.color: moves[(r, c)] = None
                     break
-                moves.add((r, c)); r += dr; c += dc
+                moves[(r, c)] = None; r += dr; c += dc
+                
+        # 2. Zig-Zag Movement
+        # (Moved this tuple out of the loop for tiny speedup too)
         direction_pairs = (((-1, 1), (-1, -1)), ((-1, -1), (-1, 1)), ((1, 1), (1, -1)), ((1, -1), (1, 1)), ((-1, 1), (1, 1)), ((1, 1), (-1, 1)), ((-1, -1), (1, -1)), ((1, -1), (-1, -1)))
         for d1, d2 in direction_pairs:
             cr, cc, cd = r_start, c_start, d1
@@ -135,11 +140,12 @@ class Bishop(Piece):
                 if not (0 <= cr < ROWS and 0 <= cc < COLS): break
                 target = board.grid[cr][cc]
                 if target:
-                    if target.color != self.color: moves.add((cr, cc))
+                    if target.color != self.color: moves[(cr, cc)] = None
                     break
-                moves.add((cr, cc)); cd = d2 if cd == d1 else d1
-        return sorted(list(moves))
-
+                moves[(cr, cc)] = None; cd = d2 if cd == d1 else d1
+                
+        return list(moves)
+    
 class Knight(Piece):
     def symbol(self): return "♘" if self.color == "white" else "♞"
     def get_valid_moves(self, board, pos):
