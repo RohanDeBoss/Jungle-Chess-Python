@@ -1,4 +1,4 @@
-# v31 manually populating the new board's data structures for performance in clone method
+# v32 Get threats now uses scanning the list directly as its faster
 
 # -----------------------------
 # Global Constants
@@ -42,7 +42,7 @@ class Piece:
         return []
 
     def get_threats(self, board, pos):
-        return set(self.get_valid_moves(board, pos))
+        return self.get_valid_moves(board, pos)
 
 class King(Piece):
     def symbol(self): return "♔" if self.color == "white" else "♚"
