@@ -1,4 +1,4 @@
-# v36 Rook get_threats Redundancy, class optimisations
+# v37 - King check optimisation, plus boolean maths optimisation
 
 # -----------------------------
 # Global Constants
@@ -213,11 +213,11 @@ class Board:
         self.white_king_pos = None
         self.black_king_pos = None
         self.white_pieces = []
-        self.black_pieces = []
+        self.black_pieces =[]
         if setup: self._setup_initial_board()
 
     def _setup_initial_board(self):
-        pieces = {0: [(0, Rook), (1, Knight), (2, Bishop), (3, Queen), (4, King), (5, Bishop), (6, Knight), (7, Rook)], 1: [(i, Pawn) for i in range(8)], 6: [(i, Pawn) for i in range(8)], 7: [(0, Rook), (1, Knight), (2, Bishop), (3, Queen), (4, King), (5, Bishop), (6, Knight), (7, Rook)]}
+        pieces = {0:[(0, Rook), (1, Knight), (2, Bishop), (3, Queen), (4, King), (5, Bishop), (6, Knight), (7, Rook)], 1:[(i, Pawn) for i in range(8)], 6: [(i, Pawn) for i in range(8)], 7:[(0, Rook), (1, Knight), (2, Bishop), (3, Queen), (4, King), (5, Bishop), (6, Knight), (7, Rook)]}
         for r, piece_list in pieces.items():
             color = "black" if r < 2 else "white"
             for c, piece_class in piece_list: self.add_piece(piece_class(color), r, c)
@@ -236,11 +236,10 @@ class Board:
         piece = self.grid[r][c]
         if not piece: return
         
-        try:
-            if piece.color == 'white': self.white_pieces.remove(piece)
-            else: self.black_pieces.remove(piece)
-        except ValueError:
-            pass
+        if piece.color == 'white':
+            if piece in self.white_pieces: self.white_pieces.remove(piece)
+        else: 
+            if piece in self.black_pieces: self.black_pieces.remove(piece)
             
         if isinstance(piece, King):
             if piece.color == "white": self.white_king_pos = None
@@ -264,18 +263,19 @@ class Board:
     def clone(self):
         new_board = Board(setup=False)
         
-        # Clone lists directly to avoid add_piece() function call overhead
+        # Clone lists directly
         new_board.white_pieces = [p.clone() for p in self.white_pieces]
         new_board.black_pieces = [p.clone() for p in self.black_pieces]
         
-        # Populate grid and king positions directly
+        # Populate grid directly (Removed slow isinstance(King) checks from loop)
         for p in new_board.white_pieces:
             new_board.grid[p.pos[0]][p.pos[1]] = p
-            if isinstance(p, King): new_board.white_king_pos = p.pos
-            
         for p in new_board.black_pieces:
             new_board.grid[p.pos[0]][p.pos[1]] = p
-            if isinstance(p, King): new_board.black_king_pos = p.pos
+            
+        # Directly copy King positions from the parent board (Massive Speedup)
+        new_board.white_king_pos = self.white_king_pos
+        new_board.black_king_pos = self.black_king_pos
             
         return new_board
 
@@ -307,8 +307,10 @@ class Board:
             if adj_piece and adj_piece.color != queen_color: self.remove_piece(r, c)
 
     def _apply_rook_piercing(self, start, end, rook_color):
-        dr = 0 if start[0] == end[0] else 1 if end[0] > start[0] else -1
-        dc = 0 if start[1] == end[1] else 1 if end[1] > start[1] else -1
+        # Optimized vector calculation
+        dr = (end[0] > start[0]) - (start[0] > end[0])
+        dc = (end[1] > start[1]) - (start[1] > end[1])
+        
         cr, cc = start[0] + dr, start[1] + dc
         while (cr, cc) != end:
             target = self.grid[cr][cc]
@@ -318,13 +320,12 @@ class Board:
     def _apply_knight_aoe(self, pos, is_active_move):
         grid = self.grid
         
-        # 1. Active Evaporation (The Knight itself moved)
+        # 1. Active Evaporation
         if is_active_move:
             knight_instance = grid[pos[0]][pos[1]]
             if not knight_instance: return
             
-            # Use the precomputed list (optimized in v30)
-            to_remove, enemy_knights_destroyed = [], False
+            to_remove, enemy_knights_destroyed =[], False
             for r, c in KNIGHT_ATTACKS_FROM[pos]:
                 target = grid[r][c]
                 if target and target.color != knight_instance.color:
@@ -338,27 +339,23 @@ class Board:
             if enemy_knights_destroyed:
                 self.remove_piece(pos[0], pos[1])
                 
-        # 2. Passive Evaporation (Another piece moved into a Knight's range)
+        # 2. Passive Evaporation
         else:
-            # We only need to check if the specific square 'pos' is targeted by an enemy Knight.
-            # KNIGHT_ATTACKS_FROM is symmetric: if Knight at A hits B, a Knight at B hits A.
             victim = grid[pos[0]][pos[1]]
             if not victim: return
             
             for r, c in KNIGHT_ATTACKS_FROM[pos]:
                 potential_killer = grid[r][c]
-                # Check if there is a Knight here, and if it is an enemy
-                if (potential_killer and 
-                    isinstance(potential_killer, Knight) and 
-                    potential_killer.color != victim.color):
-                    
+                if (potential_killer and isinstance(potential_killer, Knight) and potential_killer.color != victim.color):
                     self.remove_piece(pos[0], pos[1])
-                    return # Piece is gone, stop checking
+                    return
 
     def _get_rook_piercing_captures(self, start, end, rook_color):
         captured = []
-        dr = 0 if start[0] == end[0] else 1 if end[0] > start[0] else -1
-        dc = 0 if start[1] == end[1] else 1 if end[1] > start[1] else -1
+        # Optimized vector calculation
+        dr = (end[0] > start[0]) - (start[0] > end[0])
+        dc = (end[1] > start[1]) - (start[1] > end[1])
+        
         cr, cc = start[0] + dr, start[1] + dc
         while (cr, cc) != end:
             target = self.grid[cr][cc]
@@ -368,7 +365,7 @@ class Board:
         return captured
 
     def _get_queen_aoe_captures(self, pos, queen_color):
-        captured = []
+        captured =[]
         for r, c in ADJACENT_SQUARES_MAP.get(pos, set()):
             adj_piece = self.grid[r][c]
             if adj_piece and adj_piece.color != queen_color:
@@ -376,7 +373,7 @@ class Board:
         return captured
     
     def _get_knight_aoe_outcome(self, knight_pos, knight_color):
-        captured, self_evaporates = [], False
+        captured, self_evaporates =[], False
         for r, c in KNIGHT_ATTACKS_FROM.get(knight_pos, set()):
             target = self.grid[r][c]
             if target and target.color != knight_color:
@@ -451,7 +448,7 @@ def get_all_legal_moves(board, color):
     return list(generate_legal_moves_generator(board, color))
 
 def get_all_pseudo_legal_moves(board, color):
-    moves = []
+    moves =[]
     piece_list = board.white_pieces if color == 'white' else board.black_pieces
     for piece in piece_list:
         if piece.pos is not None:
@@ -465,36 +462,24 @@ def has_legal_moves(board, color):
     except StopIteration:
         return False
         
-# --- UPDATE: CORRECTED INSUFFICIENT MATERIAL CHECKS ---
 def is_insufficient_material(board):
-    """Checks for endgames that are automatic draws."""
     white_pieces = board.white_pieces
     black_pieces = board.black_pieces
     total_pieces = len(white_pieces) + len(black_pieces)
 
-    if total_pieces > 4: return False # Fast exit for most games
+    if total_pieces > 4: return False 
 
-    # If anyone has a Pawn or Queen, it's NOT a draw.
     for p in white_pieces:
         if isinstance(p, (Pawn, Queen)): return False
     for p in black_pieces:
         if isinstance(p, (Pawn, Queen)): return False
 
-    # 2. K vs K
     if total_pieces == 2: return True
-
-    # 3. K vs K + 1 piece
-    # In this variant:
-    # - Knight vs King is a WIN (False).
-    # - Rook vs King is a DRAW (True).
-    # - Bishop vs King is a DRAW (True).
     if total_pieces == 3:
         all_pieces = white_pieces + black_pieces
         for p in all_pieces:
             if isinstance(p, Knight): return False
         return True
-
-    # 4. K+1 vs K+1
     if total_pieces == 4:
         w_has_rook = any(isinstance(p, Rook) for p in white_pieces)
         b_has_rook = any(isinstance(p, Rook) for p in black_pieces)
@@ -503,13 +488,9 @@ def is_insufficient_material(board):
         w_has_knight = any(isinstance(p, Knight) for p in white_pieces)
         b_has_knight = any(isinstance(p, Knight) for p in black_pieces)
         
-        # R vs R (Draw)
         if w_has_rook and b_has_rook: return True
-        # R vs B (Draw)
         if (w_has_rook and b_has_bishop) or (w_has_bishop and b_has_rook): return True
-        # B vs B (Draw)
         if w_has_bishop and b_has_bishop: return True
-        # N vs N (Draw)
         if w_has_knight and b_has_knight: return True
         
     return False
@@ -545,15 +526,15 @@ def calculate_material_swing(board, move, tapered_vals_by_type):
 
 def is_draw(board, turn_to_move, position_counts, ply_count, max_moves):
     state, _ = get_game_state(board, turn_to_move, position_counts, ply_count, max_moves)
-    return state in ["stalemate", "insufficient_material", "repetition", "move_limit"]
+    return state in["stalemate", "insufficient_material", "repetition", "move_limit"]
 
 def is_rook_piercing_capture(board, move):
     start, end = move
     moving_piece = board.grid[start[0]][start[1]]
     if not isinstance(moving_piece, Rook): return False
     if board.grid[end[0]][end[1]] is not None: return False
-    dr = 0 if start[0] == end[0] else 1 if end[0] > start[0] else -1
-    dc = 0 if start[1] == end[1] else 1 if end[1] > start[1] else -1
+    dr = (end[0] > start[0]) - (start[0] > end[0])
+    dc = (end[1] > start[1]) - (start[1] > end[1])
     cr, cc = start[0] + dr, start[1] + dc
     while (cr, cc) != end:
         target = board.grid[cr][cc]
@@ -572,13 +553,10 @@ def generate_all_captures(board, color):
             for end_pos in piece.get_valid_moves(board, start_pos):
                 if board.grid[end_pos[0]][end_pos[1]] is not None or end_pos[0] == promotion_rank:
                     yield (start_pos, end_pos)
-        elif isinstance(piece, Rook):
-             for end_pos in piece.get_valid_moves(board, start_pos):
-                if board.grid[end_pos[0]][end_pos[1]] is not None or is_rook_piercing_capture(board, (start_pos, end_pos)):
-                    yield (start_pos, end_pos)
         else:
             for end_pos in piece.get_valid_moves(board, start_pos):
-                if board.grid[end_pos[0]][end_pos[1]] is not None:
+                # Short-circuit checking ensures is_rook_piercing is only called when needed
+                if board.grid[end_pos[0]][end_pos[1]] is not None or (isinstance(piece, Rook) and is_rook_piercing_capture(board, (start_pos, end_pos))):
                     yield (start_pos, end_pos)
 
 def is_quiet_knight_evaporation(board, move):
@@ -607,13 +585,13 @@ def generate_all_tactical_moves(board, color):
                 yield (start_pos, end_pos)
                 continue
             
-            if is_rook_piercing_capture(board, (start_pos, end_pos)):
+            # Utilizing Short-Circuit Evaluation: Only calls the function if the piece type matches
+            if isinstance(piece, Rook) and is_rook_piercing_capture(board, (start_pos, end_pos)):
                 yield (start_pos, end_pos)
-            elif is_quiet_knight_evaporation(board, (start_pos, end_pos)):
+            elif isinstance(piece, Knight) and is_quiet_knight_evaporation(board, (start_pos, end_pos)):
                 yield (start_pos, end_pos)
 
 def format_move(move):
-    """Converts a move tuple to a human-readable algebraic string."""
     if not move: return "None"
     (r1, c1), (r2, c2) = move
     return f"{'abcdefgh'[c1]}{'87654321'[r1]}-{'abcdefgh'[c2]}{'87654321'[r2]}"
