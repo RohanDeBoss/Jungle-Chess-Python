@@ -1,5 +1,4 @@
-# JungleChessUI.py (v10.1 - Professional UI Redesign, 3-Panels, PGN & Moves List)
-
+# JungleChessUI.py (v10.2 - Dark Theme Restored & Missing AI Function Fixed)
 import tkinter as tk
 from tkinter import ttk, messagebox
 import math
@@ -56,7 +55,6 @@ class EnhancedChessApp:
         self.drag_piece_ghost = None
         self.drag_start = None
 
-        # History now stores: (Board_State, Turn, Move_That_Reached_This_State)
         self.full_history =[]
         self.history_pointer = -1
         self.position_counts = {}
@@ -109,7 +107,7 @@ class EnhancedChessApp:
         self.center_panel = ttk.Frame(self.main_frame, style='Right.TFrame')
         self.center_panel.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         
-        self.top_bot_label = ttk.Label(self.center_panel, text="", font=("Helvetica", 14, "bold"), background=self.COLORS['bg_medium'], foreground=self.COLORS['text_main'])
+        self.top_bot_label = ttk.Label(self.center_panel, text="", font=("Helvetica", 11, "bold"), background=self.COLORS['bg_medium'], foreground=self.COLORS['text_light'])
         self.top_bot_label.pack(side=tk.TOP, pady=(5, 5))
 
         self.eval_frame = ttk.Frame(self.center_panel, style='Right.TFrame')
@@ -128,7 +126,7 @@ class EnhancedChessApp:
         self.canvas.pack(expand=True)
         self.canvas_frame.pack(expand=True, fill=tk.BOTH)
 
-        self.bottom_bot_label = ttk.Label(self.center_panel, text="", font=("Helvetica", 14, "bold"), background=self.COLORS['bg_medium'], foreground=self.COLORS['text_main'])
+        self.bottom_bot_label = ttk.Label(self.center_panel, text="", font=("Helvetica", 11, "bold"), background=self.COLORS['bg_medium'], foreground=self.COLORS['text_light'])
         self.bottom_bot_label.pack(side=tk.TOP, pady=(5, 5))
 
         self.navigation_frame = ttk.Frame(self.center_panel, style='Right.TFrame')
@@ -164,14 +162,13 @@ class EnhancedChessApp:
         ttk.Button(self.controls_frame, text="AI vs OP Series", command=self.start_ai_series, style='Control.TButton').pack(fill=tk.X, pady=3)
         
         ttk.Label(self.controls_frame, text="Bot Depth:", style='SmallHeader.TLabel').pack(anchor=tk.W, pady=(10,0))
-        self.bot_depth_slider = tk.Scale(self.controls_frame, from_=1, to=self.slidermaxvalue, orient=tk.HORIZONTAL, bg=self.COLORS['bg_dark'], fg=self.COLORS['text_main'], highlightthickness=0, relief='flat')
+        self.bot_depth_slider = tk.Scale(self.controls_frame, from_=1, to=self.slidermaxvalue, orient=tk.HORIZONTAL, bg=self.COLORS['bg_dark'], fg=self.COLORS['text_light'], highlightthickness=0, relief='flat')
         self.bot_depth_slider.set(3); self.bot_depth_slider.pack(fill=tk.X, pady=(0,5))
         self.instant_move = tk.BooleanVar(value=False); ttk.Checkbutton(self.controls_frame, text="Instant Moves", variable=self.instant_move, style='Custom.TCheckbutton').pack(anchor=tk.W, pady=(2,2))
         self.analysis_checkbox = ttk.Checkbutton(self.controls_frame, text="Analysis Mode (H-vs-H)", variable=self.analysis_mode_var, style='Custom.TCheckbutton', command=self._update_analysis_after_state_change)
         self.analysis_checkbox.pack(anchor=tk.W, pady=(2,2))
 
     def _build_right_sidebar_widgets(self, parent_frame):
-        # Info & Turn Label
         self.info_frame = ttk.Frame(parent_frame, style='Left.TFrame')
         self.info_frame.pack(fill=tk.X, pady=(0, 5))
         self.game_info_label = ttk.Label(self.info_frame, text="Match Info", style='Header.TLabel')
@@ -179,7 +176,6 @@ class EnhancedChessApp:
         self.turn_label = ttk.Label(self.info_frame, text="WHITE'S TURN", style='Status.TLabel')
         self.turn_label.pack(fill=tk.X, pady=(5,10))
 
-        # Moves List (Treeview)
         ttk.Label(parent_frame, text="Move History", style='SmallHeader.TLabel').pack(anchor=tk.W)
         self.tree_frame = ttk.Frame(parent_frame)
         self.tree_frame.pack(fill=tk.BOTH, expand=True, pady=(2, 10))
@@ -194,25 +190,22 @@ class EnhancedChessApp:
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         self.moves_tree.bind('<ButtonRelease-1>', self.on_move_selected)
 
-        # Scoreboard (for Series)
-        self.scoreboard_label = ttk.Label(parent_frame, text="", font=("Helvetica", 11), justify=tk.LEFT, background=self.COLORS['bg_dark'], foreground=self.COLORS['text_main'])
+        self.scoreboard_label = ttk.Label(parent_frame, text="", font=("Helvetica", 11), justify=tk.LEFT, background=self.COLORS['bg_dark'], foreground=self.COLORS['text_light'])
         self.scoreboard_label.pack(fill=tk.X, pady=(0, 10))
 
-        # FEN Frame
         self.fen_frame = ttk.Frame(parent_frame, style='Left.TFrame')
         self.fen_frame.pack(fill=tk.X, pady=(5, 5))
         ttk.Label(self.fen_frame, text="FEN String:", style='SmallHeader.TLabel').pack(anchor=tk.W)
-        self.fen_entry = ttk.Entry(self.fen_frame, font=('Courier', 10))
+        self.fen_entry = ttk.Entry(self.fen_frame, font=('Courier', 10), background=self.COLORS['bg_medium'], foreground=self.COLORS['text_light'])
         self.fen_entry.pack(fill=tk.X, pady=(2, 4))
         self.fen_btn_frame = ttk.Frame(self.fen_frame, style='Left.TFrame'); self.fen_btn_frame.pack(fill=tk.X)
         ttk.Button(self.fen_btn_frame, text="Load FEN", command=self.load_fen_from_entry, style='Control.TButton').pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 2))
         ttk.Button(self.fen_btn_frame, text="Copy FEN", command=self.copy_fen_to_clipboard, style='Control.TButton').pack(side=tk.RIGHT, fill=tk.X, expand=True, padx=(2, 0))
 
-        # PGN Frame
         self.pgn_frame = ttk.Frame(parent_frame, style='Left.TFrame')
         self.pgn_frame.pack(fill=tk.X, pady=(5, 5))
         ttk.Label(self.pgn_frame, text="PGN Record:", style='SmallHeader.TLabel').pack(anchor=tk.W)
-        self.pgn_entry = ttk.Entry(self.pgn_frame, font=('Courier', 10))
+        self.pgn_entry = ttk.Entry(self.pgn_frame, font=('Courier', 10), background=self.COLORS['bg_medium'], foreground=self.COLORS['text_light'])
         self.pgn_entry.pack(fill=tk.X, pady=(2, 4))
         self.pgn_btn_frame = ttk.Frame(self.pgn_frame, style='Left.TFrame'); self.pgn_btn_frame.pack(fill=tk.X)
         ttk.Button(self.pgn_btn_frame, text="Load PGN", command=self.load_pgn_from_entry, style='Control.TButton').pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 2))
@@ -220,40 +213,34 @@ class EnhancedChessApp:
 
     def setup_styles(self):
         style = ttk.Style(); style.theme_use('clam')
-        # LIGHT THEME OVERHAUL
-        C = {
-            'bg_dark': '#E0E0E0',      # App background
-            'bg_medium': '#F5F5F5',    # Panel background
-            'bg_light': '#FFFFFF',     # Canvas/Entries background
-            'accent': '#B0BEC5',       # Buttons (Soft Blue-Gray)
-            'text_main': '#000000',    # Black Text
-            'text_dark': '#666666'     # Subdued text
-        }
-        style.configure('.', background=C['bg_dark'], foreground=C['text_main'])
+        # DARK THEME OVERHAUL (Restored)
+        C = {'bg_dark': '#1a1a2e', 'bg_medium': '#16213e', 'bg_light': '#0f3460', 'accent': '#e94560', 'text_light': '#ffffff', 'text_dark': '#a2a2a2'}
+        
+        style.configure('.', background=C['bg_dark'], foreground=C['text_light'])
         style.configure('TFrame', background=C['bg_dark'])
         style.configure('Left.TFrame', background=C['bg_dark'])
         style.configure('Right.TFrame', background=C['bg_medium'])
         style.configure('Canvas.TFrame', background=C['bg_medium'])
         
-        style.configure('Header.TLabel', background=C['bg_dark'], foreground=C['text_main'], font=('Helvetica', 14, 'bold'), padding=(0, 5))
-        style.configure('SmallHeader.TLabel', background=C['bg_dark'], foreground=C['text_main'], font=('Helvetica', 12, 'bold'), padding=(0, 1))
-        style.configure('Status.TLabel', background=C['bg_light'], foreground=C['text_main'], font=('Helvetica', 14, 'bold'), padding=(6, 4), relief='solid', borderwidth=1)
+        style.configure('Header.TLabel', background=C['bg_dark'], foreground=C['text_light'], font=('Helvetica', 14, 'bold'), padding=(0, 5))
+        style.configure('SmallHeader.TLabel', background=C['bg_dark'], foreground=C['text_light'], font=('Helvetica', 12, 'bold'), padding=(0, 1))
+        style.configure('Status.TLabel', background=C['bg_light'], foreground=C['text_light'], font=('Helvetica', 14, 'bold'), padding=(6, 4), relief='solid', borderwidth=1)
         
-        style.configure('Control.TButton', background=C['accent'], foreground=C['text_main'], font=('Helvetica', 11, 'bold'), padding=(8, 6), borderwidth=1)
-        style.map('Control.TButton', background=[('active', '#90A4AE'), ('pressed', '#78909C')])
+        style.configure('Control.TButton', background=C['accent'], foreground=C['text_light'], font=('Helvetica', 11, 'bold'), padding=(8, 6), borderwidth=0)
+        style.map('Control.TButton', background=[('active', C['accent']), ('pressed', '#d13550')])
         
-        style.configure('Nav.TButton', background=C['bg_light'], foreground=C['text_main'], font=('Helvetica', 16, 'bold'), padding=(10, 5), borderwidth=1)
-        style.map('Nav.TButton', background=[('active', '#E0E0E0'), ('pressed', '#CCCCCC')], foreground=[('disabled', C['text_dark'])])
+        style.configure('Nav.TButton', background=C['bg_light'], foreground=C['text_light'], font=('Helvetica', 16, 'bold'), padding=(10, 5), borderwidth=0)
+        style.map('Nav.TButton', background=[('active', C['bg_light']), ('pressed', C['bg_medium'])], foreground=[('disabled', C['text_dark'])])
         
-        style.configure('Custom.TRadiobutton', background=C['bg_dark'], foreground=C['text_main'], font=('Helvetica', 11))
-        style.map('Custom.TRadiobutton', background=[('active', C['bg_dark'])], indicatorcolor=[('selected', '#4A90E2')])
-        style.configure('Custom.TCheckbutton', background=C['bg_dark'], foreground=C['text_main'], font=('Helvetica', 11))
-        style.map('Custom.TCheckbutton', background=[('active', C['bg_dark'])], indicatorcolor=[('selected', '#4A90E2')])
+        style.configure('Custom.TRadiobutton', background=C['bg_dark'], foreground=C['text_light'], font=('Helvetica', 11))
+        style.map('Custom.TRadiobutton', background=[('active', C['bg_dark'])], indicatorcolor=[('selected', C['accent'])])
+        style.configure('Custom.TCheckbutton', background=C['bg_dark'], foreground=C['text_light'], font=('Helvetica', 11))
+        style.map('Custom.TCheckbutton', background=[('active', C['bg_dark'])], indicatorcolor=[('selected', C['accent'])])
 
-        # Treeview (Moves List) Setup
-        style.configure('Treeview', font=('Courier', 11), rowheight=25, background=C['bg_light'], foreground=C['text_main'], fieldbackground=C['bg_light'])
-        style.configure('Treeview.Heading', font=('Helvetica', 11, 'bold'), background=C['bg_dark'], foreground=C['text_main'])
-        style.map('Treeview', background=[('selected', '#B3D4FF')], foreground=[('selected', '#000000')])
+        # Treeview (Moves List) Dark Setup
+        style.configure('Treeview', font=('Courier', 11), rowheight=25, background=C['bg_medium'], foreground=C['text_light'], fieldbackground=C['bg_medium'], borderwidth=0)
+        style.configure('Treeview.Heading', font=('Helvetica', 11, 'bold'), background=C['bg_light'], foreground=C['text_light'], borderwidth=0)
+        style.map('Treeview', background=[('selected', C['accent'])], foreground=[('selected', C['text_light'])])
         return C
 
     def handle_main_resize(self, event):
@@ -280,7 +267,6 @@ class EnhancedChessApp:
         elif event.keysym == 'Home': self.go_to_start()
         elif event.keysym == 'End': self.go_to_end()
 
-    # --- MISSING FUNCTION RESTORED HERE ---
     def redraw_eval_bar_on_resize(self, event):
         self.draw_eval_bar(self.last_eval_score, self.last_eval_depth)
 
@@ -387,7 +373,7 @@ class EnhancedChessApp:
     # --- MOVES LIST & UI UPDATES ---
     def update_moves_list(self):
         for item in self.moves_tree.get_children(): self.moves_tree.delete(item)
-        moves =[hist[2] for hist in self.full_history[1:self.history_pointer+1]]
+        moves = [hist[2] for hist in self.full_history[1:self.history_pointer+1]]
         start_turn = self.full_history[0][1]
         formatted_moves =[format_move(m) for m in moves if m]
         
@@ -487,8 +473,8 @@ class EnhancedChessApp:
         self._stop_ai_process()
         self.board = Board(); self.turn = "white"; self.game_started = False
         self.last_move_timestamp = time.time()
-        self.selected, self.valid_moves, self.game_over, self.game_result = None, [], False, None
-        self.full_history =[(self.board.clone(), self.turn, None)]
+        self.selected, self.valid_moves, self.game_over, self.game_result = None,[], False, None
+        self.full_history = [(self.board.clone(), self.turn, None)]
         self.history_pointer = 0
         self.position_counts = {board_hash(self.board, self.turn): 1}
         self.last_eval_score, self.last_eval_depth = 0.0, None
@@ -508,6 +494,19 @@ class EnhancedChessApp:
         else: self.board_orientation = "white"
         self.update_ui_after_state_change()
         self._update_analysis_after_state_change()
+
+    # --- MISSING AI MOVE LOGIC RESTORED HERE ---
+    def _make_game_ai_move(self):
+        if self.game_over: return
+        print(f"\n--- Turn {self.history_pointer + 1} ({self.turn.capitalize()}) ---")
+        self.last_move_timestamp = time.time()
+        mode = self.game_mode.get()
+        bot_class, bot_name = None, None
+        if mode == GameMode.HUMAN_VS_BOT.value:
+            if self.turn != self.human_color: bot_class, bot_name = ChessBot, self.MAIN_AI_NAME
+        elif mode == GameMode.AI_VS_AI.value:
+            bot_class, bot_name = (ChessBot, self.MAIN_AI_NAME) if self.turn == self.board_orientation else (OpponentAI, self.OPPONENT_AI_NAME)
+        if bot_class: self._start_ai_process(bot_class, bot_name, self.bot_depth_slider.get())
 
     def update_ui_after_state_change(self):
         self.selected, self.valid_moves, self.valid_moves_for_highlight = None, [],[]
@@ -549,11 +548,10 @@ class EnhancedChessApp:
         else: text = "Human vs Human Analysis"
         self.game_info_label.config(text=text)
 
-    # --- BOILERPLATE/UNCHANGED UI DRAWING METHODS ---
     def create_board_image(self, orientation):
         if self.square_size <= 0: return None
         img = tk.PhotoImage(width=COLS*self.square_size, height=ROWS*self.square_size)
-        BOARD_COLOR_1, BOARD_COLOR_2 = "#F0D9B5", "#B58863" # Chess.com board colors
+        BOARD_COLOR_1, BOARD_COLOR_2 = "#D2B48C", "#8B5A2B" 
         for r_draw in range(ROWS):
             for c_draw in range(COLS):
                 color = BOARD_COLOR_1 if (r_draw + c_draw) % 2 == 0 else BOARD_COLOR_2
@@ -765,7 +763,6 @@ class EnhancedChessApp:
             self.scoreboard_label.config(text=score_text)
             self.scoreboard_frame.place(relx=1.0, rely=0.0, anchor='ne', x=-15, y=15)
         else:
-            # We don't have a place_forget here since it's packed in the right sidebar now
             self.scoreboard_label.config(text="")
 
 if __name__ == "__main__":
