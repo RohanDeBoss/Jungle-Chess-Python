@@ -1,4 +1,4 @@
-# JungleChessUI.py (v10.2 - Dark Theme Restored & Missing AI Function Fixed)
+# JungleChessUI.py (v10.3 - Fixed Text Colors & Improved History Navigation)
 import tkinter as tk
 from tkinter import ttk, messagebox
 import math
@@ -48,14 +48,15 @@ class EnhancedChessApp:
         
         self.turn = "white"
         self.selected = None
-        self.valid_moves =[]
+        self.valid_moves = []
         self.game_over = False
         self.game_result = None
         self.dragging = False
         self.drag_piece_ghost = None
         self.drag_start = None
 
-        self.full_history =[]
+        # History: (Board, Turn, Move_To_Get_Here)
+        self.full_history = []
         self.history_pointer = -1
         self.position_counts = {}
 
@@ -95,7 +96,7 @@ class EnhancedChessApp:
         self.main_frame = ttk.Frame(self.master, style='Left.TFrame')
         self.main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
         
-        # --- LEFT PANEL: Controls & Settings ---
+        # --- LEFT PANEL ---
         self.left_panel = ttk.Frame(self.main_frame, style='Left.TFrame')
         self.left_panel.pack(side=tk.LEFT, fill=tk.Y, padx=(0, 10)); self.left_panel.pack_propagate(False)
         
@@ -103,7 +104,7 @@ class EnhancedChessApp:
         self.title_label.pack(pady=(0,15))
         self._build_control_widgets(self.left_panel)
         
-        # --- CENTER PANEL: Board & Nav ---
+        # --- CENTER PANEL ---
         self.center_panel = ttk.Frame(self.main_frame, style='Right.TFrame')
         self.center_panel.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         
@@ -139,7 +140,7 @@ class EnhancedChessApp:
         self.start_button.grid(row=0, column=1, padx=5); self.undo_button.grid(row=0, column=2, padx=5)
         self.redo_button.grid(row=0, column=3, padx=5); self.end_button.grid(row=0, column=4, padx=5)
 
-        # --- RIGHT PANEL: Moves List, FEN, PGN ---
+        # --- RIGHT PANEL ---
         self.right_panel = ttk.Frame(self.main_frame, style='Left.TFrame')
         self.right_panel.pack(side=tk.RIGHT, fill=tk.Y, padx=(10, 0)); self.right_panel.pack_propagate(False)
         self._build_right_sidebar_widgets(self.right_panel)
@@ -180,6 +181,7 @@ class EnhancedChessApp:
         self.tree_frame = ttk.Frame(parent_frame)
         self.tree_frame.pack(fill=tk.BOTH, expand=True, pady=(2, 10))
         
+        # Style the Treeview
         self.moves_tree = ttk.Treeview(self.tree_frame, columns=('White', 'Black'), show='headings', selectmode='browse')
         self.moves_tree.heading('White', text='White'); self.moves_tree.heading('Black', text='Black')
         self.moves_tree.column('White', width=100, anchor=tk.CENTER); self.moves_tree.column('Black', width=100, anchor=tk.CENTER)
@@ -193,19 +195,21 @@ class EnhancedChessApp:
         self.scoreboard_label = ttk.Label(parent_frame, text="", font=("Helvetica", 11), justify=tk.LEFT, background=self.COLORS['bg_dark'], foreground=self.COLORS['text_light'])
         self.scoreboard_label.pack(fill=tk.X, pady=(0, 10))
 
+        # FEN Frame
         self.fen_frame = ttk.Frame(parent_frame, style='Left.TFrame')
         self.fen_frame.pack(fill=tk.X, pady=(5, 5))
         ttk.Label(self.fen_frame, text="FEN String:", style='SmallHeader.TLabel').pack(anchor=tk.W)
-        self.fen_entry = ttk.Entry(self.fen_frame, font=('Courier', 10), background=self.COLORS['bg_medium'], foreground=self.COLORS['text_light'])
+        self.fen_entry = ttk.Entry(self.fen_frame, font=('Courier', 10), style='TEntry')
         self.fen_entry.pack(fill=tk.X, pady=(2, 4))
         self.fen_btn_frame = ttk.Frame(self.fen_frame, style='Left.TFrame'); self.fen_btn_frame.pack(fill=tk.X)
         ttk.Button(self.fen_btn_frame, text="Load FEN", command=self.load_fen_from_entry, style='Control.TButton').pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 2))
         ttk.Button(self.fen_btn_frame, text="Copy FEN", command=self.copy_fen_to_clipboard, style='Control.TButton').pack(side=tk.RIGHT, fill=tk.X, expand=True, padx=(2, 0))
 
+        # PGN Frame
         self.pgn_frame = ttk.Frame(parent_frame, style='Left.TFrame')
         self.pgn_frame.pack(fill=tk.X, pady=(5, 5))
         ttk.Label(self.pgn_frame, text="PGN Record:", style='SmallHeader.TLabel').pack(anchor=tk.W)
-        self.pgn_entry = ttk.Entry(self.pgn_frame, font=('Courier', 10), background=self.COLORS['bg_medium'], foreground=self.COLORS['text_light'])
+        self.pgn_entry = ttk.Entry(self.pgn_frame, font=('Courier', 10), style='TEntry')
         self.pgn_entry.pack(fill=tk.X, pady=(2, 4))
         self.pgn_btn_frame = ttk.Frame(self.pgn_frame, style='Left.TFrame'); self.pgn_btn_frame.pack(fill=tk.X)
         ttk.Button(self.pgn_btn_frame, text="Load PGN", command=self.load_pgn_from_entry, style='Control.TButton').pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 2))
@@ -213,7 +217,6 @@ class EnhancedChessApp:
 
     def setup_styles(self):
         style = ttk.Style(); style.theme_use('clam')
-        # DARK THEME OVERHAUL (Restored)
         C = {'bg_dark': '#1a1a2e', 'bg_medium': '#16213e', 'bg_light': '#0f3460', 'accent': '#e94560', 'text_light': '#ffffff', 'text_dark': '#a2a2a2'}
         
         style.configure('.', background=C['bg_dark'], foreground=C['text_light'])
@@ -237,10 +240,14 @@ class EnhancedChessApp:
         style.configure('Custom.TCheckbutton', background=C['bg_dark'], foreground=C['text_light'], font=('Helvetica', 11))
         style.map('Custom.TCheckbutton', background=[('active', C['bg_dark'])], indicatorcolor=[('selected', C['accent'])])
 
-        # Treeview (Moves List) Dark Setup
+        # Treeview Dark
         style.configure('Treeview', font=('Courier', 11), rowheight=25, background=C['bg_medium'], foreground=C['text_light'], fieldbackground=C['bg_medium'], borderwidth=0)
         style.configure('Treeview.Heading', font=('Helvetica', 11, 'bold'), background=C['bg_light'], foreground=C['text_light'], borderwidth=0)
         style.map('Treeview', background=[('selected', C['accent'])], foreground=[('selected', C['text_light'])])
+        
+        # ENTRY BOX STYLE - FORCE BLACK TEXT ON WHITE BACKGROUND FOR VISIBILITY
+        style.configure('TEntry', fieldbackground='#FFFFFF', foreground='#000000', insertcolor='#000000')
+        
         return C
 
     def handle_main_resize(self, event):
@@ -325,16 +332,23 @@ class EnhancedChessApp:
         self._update_analysis_after_state_change()
 
     def get_current_pgn(self):
-        start_turn = self.full_history[0][1]
+        # Generate PGN from full history, ignoring current history pointer
         moves = [format_move(hist[2]) for hist in self.full_history[1:] if hist[2]]
-        pgn = ""; move_num = 1
+        pgn = ""
+        move_num = 1
+        
+        # Check start turn of the entire history (usually white, but could be FEN loaded)
+        start_turn = self.full_history[0][1]
         
         if start_turn == 'black' and moves:
-            pgn += f"{move_num}... {moves[0]} "; moves = moves[1:]; move_num += 1
+            pgn += f"{move_num}... {moves[0]} "
+            moves = moves[1:]
+            move_num += 1
             
         for i in range(0, len(moves), 2):
             pgn += f"{move_num}. {moves[i]} "
-            if i+1 < len(moves): pgn += f"{moves[i+1]} "
+            if i+1 < len(moves):
+                pgn += f"{moves[i+1]} "
             move_num += 1
             
         if self.game_result:
@@ -342,7 +356,8 @@ class EnhancedChessApp:
             if res == 'white': pgn += "1-0"
             elif res == 'black': pgn += "0-1"
             else: pgn += "1/2-1/2"
-        else: pgn += "*"
+        else:
+            pgn += "*"
         return pgn.strip()
 
     def copy_pgn_to_clipboard(self):
@@ -353,6 +368,7 @@ class EnhancedChessApp:
     def load_pgn_from_entry(self):
         pgn_text = self.pgn_entry.get().strip()
         if not pgn_text: return
+        # Simple parser for long algebraic (e2-e4)
         raw_moves = re.findall(r'[a-h][1-8]-[a-h][1-8]', pgn_text)
         
         self.reset_game() 
@@ -370,46 +386,93 @@ class EnhancedChessApp:
             self.execute_move_and_check_state(self.turn, move)
             if self.game_over: break
 
-    # --- MOVES LIST & UI UPDATES ---
+    # --- UPDATED MOVES LIST LOGIC (Keeps future ghosted) ---
     def update_moves_list(self):
-        for item in self.moves_tree.get_children(): self.moves_tree.delete(item)
-        moves = [hist[2] for hist in self.full_history[1:self.history_pointer+1]]
+        # 1. Clear current list
+        for item in self.moves_tree.get_children():
+            self.moves_tree.delete(item)
+            
+        # 2. Get ALL moves from history (past AND future relative to pointer)
+        moves = [hist[2] for hist in self.full_history[1:]] 
         start_turn = self.full_history[0][1]
-        formatted_moves =[format_move(m) for m in moves if m]
+        formatted_moves = [format_move(m) for m in moves if m]
         
-        pairs =[]
+        pairs = []
+        # Handle Black starting (from FEN)
         if start_turn == 'black' and formatted_moves:
             pairs.append(["...", formatted_moves[0]])
             formatted_moves = formatted_moves[1:]
             
+        # Pair up moves (White, Black)
         for i in range(0, len(formatted_moves), 2):
             w = formatted_moves[i]
             b = formatted_moves[i+1] if i+1 < len(formatted_moves) else ""
             pairs.append([w, b])
             
+        # 3. Populate Tree
         for i, pair in enumerate(pairs):
             self.moves_tree.insert('', 'end', iid=str(i), text=str(i+1), values=(pair[0], pair[1]))
             
-        if self.moves_tree.get_children():
-            last = self.moves_tree.get_children()[-1]
-            self.moves_tree.see(last)
-            self.moves_tree.selection_set(last)
+        # 4. Highlight the current move based on history_pointer
+        # Pointer 0 = Start. Pointer 1 = 1st move made.
+        # We need to find which Row (i) and which Column (W/B) matches pointer.
+        
+        if self.history_pointer > 0:
+            # Adjust for 0-based index vs 1-based pointer
+            # If Black started, offset logic changes slightly.
+            moves_count = self.history_pointer - 1 # Index of last played move
+            
+            if start_turn == 'black':
+                # Move 0 is Black (Row 0, Col 1)
+                # Move 1 is White (Row 1, Col 0)
+                row = (moves_count + 1) // 2
+            else:
+                # Move 0 is White (Row 0, Col 0)
+                # Move 1 is Black (Row 0, Col 1)
+                row = moves_count // 2
+                
+            if str(row) in self.moves_tree.get_children():
+                self.moves_tree.selection_set(str(row))
+                self.moves_tree.see(str(row))
+        else:
+            # Start of game
+            self.moves_tree.selection_set()
 
     def on_move_selected(self, event):
         selected_items = self.moves_tree.selection()
         if not selected_items: return
         index = int(selected_items[0])
+        
+        # Calculate approximate history pointer to jump to END of that row
+        # This is a simplification; usually clicking a row jumps to the move made on that row.
+        # Defaulting to White's move on that row unless clicked specifically (advanced).
+        # For now, let's jump to the Black move of that row (end of full move).
+        
         start_turn = self.full_history[0][1]
-        offset = 1 if start_turn == 'black' else 2
-        click_pointer = (index * 2) + offset
-        self._navigate_history(click_pointer)
+        
+        # Row 0 -> Moves 1 & 2. Pointer should be 2.
+        # Index * 2 + 2.
+        
+        pointer_target = (index * 2) + 2
+        
+        # Adjust if Black started
+        if start_turn == 'black':
+            pointer_target = (index * 2) + 1
+            
+        # Clamp to max history
+        pointer_target = min(pointer_target, len(self.full_history) - 1)
+        
+        self._navigate_history(pointer_target)
 
     # --- GAME FLOW & LOGIC ---
     def execute_move_and_check_state(self, player_who_moved, move):
         self.switch_turn()
+        
+        # CRITICAL: If we are in the past, truncate history (overwrite branch)
         if self.history_pointer < len(self.full_history) - 1:
             self.full_history = self.full_history[:self.history_pointer + 1]
             self.position_counts.clear()
+            # Rebuild repetition counts
             for board, turn, _ in self.full_history:
                 self.position_counts[board_hash(board, turn)] = self.position_counts.get(board_hash(board, turn), 0) + 1
         
@@ -495,7 +558,7 @@ class EnhancedChessApp:
         self.update_ui_after_state_change()
         self._update_analysis_after_state_change()
 
-    # --- MISSING AI MOVE LOGIC RESTORED HERE ---
+    # --- RESTORED AI MOVE FUNCTION ---
     def _make_game_ai_move(self):
         if self.game_over: return
         print(f"\n--- Turn {self.history_pointer + 1} ({self.turn.capitalize()}) ---")
