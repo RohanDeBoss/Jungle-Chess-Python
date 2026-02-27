@@ -1,4 +1,4 @@
-# v35 Optimised the passive Knight Evaporation logic in Board._apply_knight_aoe (and its call in make_move)
+# v36 Rook get_threats Redundancy, class optimisations
 
 # -----------------------------
 # Global Constants
@@ -17,10 +17,17 @@ DIRECTIONS = {
 }
 ADJACENT_DIRS = DIRECTIONS['king']
 
+# BISHOP_ZIGZAG_DIRS pulled out to a constant to avoid reallocation inside the loop
+BISHOP_ZIGZAG_DIRS = (
+    ((-1, 1), (-1, -1)), ((-1, -1), (-1, 1)), # Forward zig-zags
+    ((1, 1), (1, -1)), ((1, -1), (1, 1)),     # Backward zig-zags
+    ((-1, 1), (1, 1)), ((1, 1), (-1, 1)),     # Rightward zig-zags
+    ((-1, -1), (1, -1)), ((1, -1), (-1, -1))  # Leftward zig-zags
+)
+
 # --- Pre-computation Maps for Performance ---
-# Change the inner {} to [] to preserve order
-KNIGHT_ATTACKS_FROM = { (r, c): [(r+dr, c+dc) for dr, dc in DIRECTIONS['knight'] if 0 <= r+dr < ROWS and 0 <= c+dc < COLS] for r in range(ROWS) for c in range(COLS) }
-ADJACENT_SQUARES_MAP = { (r, c): [(r+dr, c+dc) for dr, dc in ADJACENT_DIRS if 0 <= r+dr < ROWS and 0 <= c+dc < COLS] for r in range(ROWS) for c in range(COLS) }
+KNIGHT_ATTACKS_FROM = { (r, c):[(r+dr, c+dc) for dr, dc in DIRECTIONS['knight'] if 0 <= r+dr < ROWS and 0 <= c+dc < COLS] for r in range(ROWS) for c in range(COLS) }
+ADJACENT_SQUARES_MAP = { (r, c):[(r+dr, c+dc) for dr, dc in ADJACENT_DIRS if 0 <= r+dr < ROWS and 0 <= c+dc < COLS] for r in range(ROWS) for c in range(COLS) }
 
 # ---------------------------------------------------
 # PIECE CLASSES: THE SINGLE SOURCE OF TRUTH
@@ -39,20 +46,22 @@ class Piece:
     def symbol(self): return "?"
 
     def get_valid_moves(self, board, pos):
-        return []
+        return[]
 
     def get_threats(self, board, pos):
-        return self.get_valid_moves(board, pos)
+        # By default, a piece threatens exactly the squares it can validly move to
+        return set(self.get_valid_moves(board, pos))
 
 class King(Piece):
     def symbol(self): return "♔" if self.color == "white" else "♚"
     def get_valid_moves(self, board, pos):
-        moves = []
+        moves =[]
         r_start, c_start = pos
         for dr, dc in DIRECTIONS['king']:
             r1, c1 = r_start + dr, c_start + dc
             if 0 <= r1 < ROWS and 0 <= c1 < COLS and (board.grid[r1][c1] is None or board.grid[r1][c1].color == self.opponent_color):
                 moves.append((r1, c1))
+                # Only allow moving a 2nd square if the 1st square was empty (Kings can't jump captured pieces)
                 if board.grid[r1][c1] is None:
                     r2, c2 = r1 + dr, c1 + dc
                     if 0 <= r2 < ROWS and 0 <= c2 < COLS and (board.grid[r2][c2] is None or board.grid[r2][c2].color == self.opponent_color):
@@ -82,19 +91,21 @@ class Queen(Piece):
         for move in valid_moves:
             threats.add(move)
             target_piece = board.grid[move[0]][move[1]]
+            # Explosive Proxy Check logic: If capturing an enemy, the explosion radius is also a threat
             if target_piece is not None and target_piece.color == self.opponent_color:
-                threats.update(ADJACENT_SQUARES_MAP.get(move, set()))
+                threats.update(ADJACENT_SQUARES_MAP.get(move,[]))
         return threats
 
 class Rook(Piece):
     def symbol(self): return "♖" if self.color == "white" else "♜"
     def get_valid_moves(self, board, pos):
-        moves = []
+        moves =[]
         grid = board.grid
         for dr, dc in DIRECTIONS['rook']:
             r, c = pos[0] + dr, pos[1] + dc
             while 0 <= r < ROWS and 0 <= c < COLS:
                 target = grid[r][c]
+                # Railgun logic: Stops at friendly pieces, but NOT at enemy pieces
                 if target and target.color == self.color:
                     break
                 moves.append((r, c))
@@ -102,17 +113,8 @@ class Rook(Piece):
         return moves
         
     def get_threats(self, board, pos):
-        threats = set()
-        grid = board.grid
-        for dr, dc in DIRECTIONS['rook']:
-            r, c = pos[0] + dr, pos[1] + dc
-            while 0 <= r < ROWS and 0 <= c < COLS:
-                target = grid[r][c]
-                if target and target.color == self.color:
-                    break
-                threats.add((r, c))
-                r += dr; c += dc
-        return threats
+        # Because the Railgun Rook pierces, its threats are exactly equal to its valid moves
+        return set(self.get_valid_moves(board, pos))
 
 class Bishop(Piece):
     def symbol(self): return "♗" if self.color == "white" else "♝"
@@ -131,9 +133,7 @@ class Bishop(Piece):
                 moves[(r, c)] = None; r += dr; c += dc
                 
         # 2. Zig-Zag Movement
-        # (Moved this tuple out of the loop for tiny speedup too)
-        direction_pairs = (((-1, 1), (-1, -1)), ((-1, -1), (-1, 1)), ((1, 1), (1, -1)), ((1, -1), (1, 1)), ((-1, 1), (1, 1)), ((1, 1), (-1, 1)), ((-1, -1), (1, -1)), ((1, -1), (-1, -1)))
-        for d1, d2 in direction_pairs:
+        for d1, d2 in BISHOP_ZIGZAG_DIRS:
             cr, cc, cd = r_start, c_start, d1
             while True:
                 cr += cd[0]; cc += cd[1]
@@ -149,7 +149,8 @@ class Bishop(Piece):
 class Knight(Piece):
     def symbol(self): return "♘" if self.color == "white" else "♞"
     def get_valid_moves(self, board, pos):
-        return [(r, c) for r, c in KNIGHT_ATTACKS_FROM[pos] 
+        # Walrus operator assignment optimization
+        return[(r, c) for r, c in KNIGHT_ATTACKS_FROM[pos] 
                 if (p := board.grid[r][c]) is None or p.color != self.color]
 
     def get_threats(self, board, pos):
@@ -157,7 +158,8 @@ class Knight(Piece):
         valid_moves = self.get_valid_moves(board, pos)
         for move in valid_moves:
             threats.add(move)
-            threats.update(KNIGHT_ATTACKS_FROM.get(move, set()))
+            # Active Evaporation Check: Threatens the squares it would land on AND their blast radii
+            threats.update(KNIGHT_ATTACKS_FROM.get(move,[]))
         return threats
 
 class Pawn(Piece):
@@ -169,20 +171,20 @@ class Pawn(Piece):
     def symbol(self): return "♙" if self.color == "white" else "♟"
 
     def get_valid_moves(self, board, pos):
-        moves = []
+        moves =[]
         r, c = pos
         direction = self.direction
         grid = board.grid
         
-        # 1. Forward Moves
+        # 1. Forward Moves & Captures
         one_r = r + direction
         if 0 <= one_r < ROWS:
             target1 = grid[one_r][c]
-            # Check 1st square (Move or Capture)
+            # Check 1st square (Empty OR Enemy Capture)
             if target1 is None or target1.color == self.opponent_color:
                 moves.append((one_r, c))
                 
-                # 2. Forward 2 (Only if 1st was empty, not a capture)
+                # 2. Forward 2 (Only if 1st was empty so pawn isn't jumping pieces)
                 if r == self.starting_row and target1 is None:
                     two_r = r + (2 * direction)
                     target2 = grid[two_r][c]

@@ -1,0 +1,15 @@
+[Variant "Jungle Chess"]
+[Result "0-1"]
+Nf3, d5
+d4, Nc6 (xd4)
+Ne5 (xc6 xf7 xe5), e5
+e3, Bf5
+Bxf5, Nh6 (xf5)
+Qh5+, g6
+Nc3 (xd5), Nf5 (xe3)
+Nd5 (xc7), exd5
+Qxg6 (xf5 xh7), Rxh1+ (xh2)
+Ke2, Rxa1 (xc1)
+c4, Qh4+
+Kd2, Be5+
+Kc2, Rc8#
