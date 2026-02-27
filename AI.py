@@ -1,4 +1,4 @@
-# v84.0 (Evaluation: Rook Scaling based on Pawn Density)
+# v85 Deferred Legality Checking (Big potential speedup)
 
 import time
 from GameLogic import generate_legal_moves_generator
@@ -21,7 +21,7 @@ def initialize_zobrist_table():
     if ZOBRIST_TABLE is not None: return
     random.seed(42)
     table = {}
-    piece_types = [Pawn, Knight, Bishop, Rook, Queen, King, None]
+    piece_types =[Pawn, Knight, Bishop, Rook, Queen, King, None]
     colors = ['white', 'black', None]
     for r in range(ROWS):
         for c in range(COLS):
@@ -35,15 +35,14 @@ initialize_zobrist_table()
 
 def board_hash(board, turn):
     h = 0
+    zt = ZOBRIST_TABLE # Local lookup optimization
     for piece in board.white_pieces:
         if piece.pos:
-            key = (piece.pos[0], piece.pos[1], type(piece), piece.color)
-            h ^= ZOBRIST_TABLE.get(key, 0)
+            h ^= zt.get((piece.pos[0], piece.pos[1], type(piece), piece.color), 0)
     for piece in board.black_pieces:
         if piece.pos:
-            key = (piece.pos[0], piece.pos[1], type(piece), piece.color)
-            h ^= ZOBRIST_TABLE.get(key, 0)
-    if turn == 'black': h ^= ZOBRIST_TABLE['turn']
+            h ^= zt.get((piece.pos[0], piece.pos[1], type(piece), piece.color), 0)
+    if turn == 'black': h ^= zt['turn']
     return h
 
 TTEntry = namedtuple('TTEntry', ['score', 'depth', 'flag', 'best_move'])
@@ -95,8 +94,7 @@ class ChessBot:
     def _report_log(self, message): self.comm_queue.put(('log', message))
     def _report_eval(self, score, depth): self.comm_queue.put(('eval', score if self.color == 'white' else -score, depth))
     def _report_move(self, move): self.comm_queue.put(('move', move))
-    def _format_move(self, move):
-        return format_move(move)
+    def _format_move(self, move): return format_move(move)
 
     def _calculate_tapered_map(self, board):
         phase_material_score = 0
@@ -112,6 +110,7 @@ class ChessBot:
 
     def make_move(self):
         try:
+            # We must use strict legal moves for the root so it doesn't try to play an illegal move.
             root_moves = get_all_legal_moves(self.board, self.color)
             if not root_moves:
                 self._report_move(None)
@@ -218,7 +217,13 @@ class ChessBot:
                 moving_piece = board.grid[move[0][0]][move[0][1]]
                 target_piece = board.grid[move[1][0]][move[1][1]]
                 
-                if target_piece is not None:
+                # Check for ANY tactical move to correctly apply capture swing bonuses
+                is_promotion = isinstance(moving_piece, Pawn) and (move[1][0] == 0 or move[1][0] == ROWS - 1)
+                is_tactical = target_piece is not None or is_promotion or \
+                              (isinstance(moving_piece, Rook) and is_rook_piercing_capture(board, move)) or \
+                              (isinstance(moving_piece, Knight) and is_quiet_knight_evaporation(board, move))
+
+                if is_tactical:
                     swing = calculate_material_swing(board, move, PIECE_VALUES)
                     score = self.BONUS_CAPTURE + swing
                 else:
@@ -269,24 +274,36 @@ class ChessBot:
                 self.tt[hash_val] = TTEntry(beta, depth, TT_FLAG_LOWERBOUND, None)
                 return beta 
 
-        legal_moves_list = get_all_legal_moves(board, turn)
-        if not legal_moves_list:
-            if is_in_check_flag: return -self.MATE_SCORE + ply
-            return self.DRAW_SCORE
-
+        # OPTIMIZATION: Generate Pseudo-Legal moves. Do NOT test legality here!
+        pseudo_moves = get_all_pseudo_legal_moves(board, turn)
+        
         hash_move = tt_entry.best_move if tt_entry else None
-        ordered_moves = self.order_moves(board, legal_moves_list, ply, hash_move)
+        ordered_moves = self.order_moves(board, pseudo_moves, ply, hash_move)
         
-        tactical_moves_set = set(generate_all_tactical_moves(board, turn))
         best_move_for_node = None
+        legal_moves_count = 0
         
-        for i, move in enumerate(ordered_moves):
+        for move in ordered_moves:
+            # Inline Tactical Check to avoid generating all moves twice
+            target_piece = board.grid[move[1][0]][move[1][1]]
+            moving_piece = board.grid[move[0][0]][move[0][1]]
+            is_tactical = target_piece is not None or \
+                          (isinstance(moving_piece, Pawn) and (move[1][0] == 0 or move[1][0] == ROWS - 1)) or \
+                          (isinstance(moving_piece, Rook) and is_rook_piercing_capture(board, move)) or \
+                          (isinstance(moving_piece, Knight) and is_quiet_knight_evaporation(board, move))
+
             child_board = board.clone()
             child_board.make_move(move[0], move[1])
 
-            is_tactical = move in tactical_moves_set
+            # OPTIMIZATION: Deferred Legality Check. 
+            # We only verify legality if Alpha-Beta allows us to explore this move.
+            if is_in_check(child_board, turn):
+                continue
+                
+            legal_moves_count += 1
+            
             reduction = 0
-            if (depth >= self.LMR_DEPTH_THRESHOLD and i >= self.LMR_MOVE_COUNT_THRESHOLD and 
+            if (depth >= self.LMR_DEPTH_THRESHOLD and legal_moves_count > self.LMR_MOVE_COUNT_THRESHOLD and 
                 not is_in_check_flag and not is_tactical):
                 reduction = self.LMR_REDUCTION
 
@@ -300,13 +317,17 @@ class ChessBot:
                 if not is_tactical:
                     if ply < len(self.killer_moves) and self.killer_moves[ply][0] != move:
                         self.killer_moves[ply][1], self.killer_moves[ply][0] = self.killer_moves[ply][0], move
-                    moving_piece = board.grid[move[0][0]][move[0][1]]
                     if moving_piece:
                         color_index = 0 if moving_piece.color == 'white' else 1
                         from_sq, to_sq = move[0][0]*COLS+move[0][1], move[1][0]*COLS+move[1][1]
                         self.history_heuristic_table[color_index][from_sq][to_sq] += depth * depth
                 self.tt[hash_val] = TTEntry(beta, depth, TT_FLAG_LOWERBOUND, move)
                 return beta
+
+        # If we got to the end and 0 pseudo-legal moves turned out to be actually legal
+        if legal_moves_count == 0:
+            if is_in_check_flag: return -self.MATE_SCORE + ply
+            return self.DRAW_SCORE
 
         flag = TT_FLAG_EXACT if alpha > original_alpha else TT_FLAG_UPPERBOUND
         self.tt[hash_val] = TTEntry(alpha, depth, flag, best_move_for_node)
@@ -316,14 +337,11 @@ class ChessBot:
         self.nodes_searched += 1
         if self.cancellation_event.is_set(): raise SearchCancelledException()
 
-        game_status, _ = get_game_state(board, turn, self.position_counts, self.ply_count + ply, self.max_moves)
-        if game_status != "ongoing":
-            if game_status == "checkmate": return -self.MATE_SCORE + ply
-            return self.DRAW_SCORE
+        # OPTIMIZATION: Removed get_game_state entirely. It was forcing legality checks at every leaf!
+        if is_insufficient_material(board): return self.DRAW_SCORE
 
         if ply >= self.MAX_Q_SEARCH_DEPTH:
-            score = self.evaluate_board(board, turn)
-            return score
+            return self.evaluate_board(board, turn)
         
         stand_pat = self.evaluate_board(board, turn)
         is_in_check_flag = is_in_check(board, turn)
@@ -331,24 +349,48 @@ class ChessBot:
             if stand_pat >= beta: return beta
             alpha = max(alpha, stand_pat)
 
-        promising_moves = get_all_legal_moves(board, turn) if is_in_check_flag else list(generate_all_tactical_moves(board, turn))
+        # OPTIMIZATION: Filter pseudo-legal moves inline
+        promising_moves =[]
+        pseudo_moves = get_all_pseudo_legal_moves(board, turn)
         
-        scored_moves = []
+        for move in pseudo_moves:
+            if is_in_check_flag:
+                promising_moves.append(move) # Must evaluate evasions
+            else:
+                target_piece = board.grid[move[1][0]][move[1][1]]
+                moving_piece = board.grid[move[0][0]][move[0][1]]
+                is_tactical = target_piece is not None or \
+                              (isinstance(moving_piece, Pawn) and (move[1][0] == 0 or move[1][0] == ROWS - 1)) or \
+                              (isinstance(moving_piece, Rook) and is_rook_piercing_capture(board, move)) or \
+                              (isinstance(moving_piece, Knight) and is_quiet_knight_evaporation(board, move))
+                if is_tactical:
+                    promising_moves.append(move)
+        
+        scored_moves =[]
         for move in promising_moves:
             swing = calculate_material_swing(board, move, PIECE_VALUES)
             scored_moves.append((swing, move))
         scored_moves.sort(key=lambda item: item[0], reverse=True)
 
+        legal_moves_count = 0
         for swing, move in scored_moves:
             if not is_in_check_flag and stand_pat + swing + self.Q_SEARCH_SAFETY_MARGIN < alpha: continue
+            
             sim_board = board.clone()
             sim_board.make_move(move[0], move[1])
+            
+            # DEFERRED LEGALITY CHECK
             if is_in_check(sim_board, turn): continue
+            
+            legal_moves_count += 1
             search_score = -self.qsearch(sim_board, -beta, -alpha, ('black' if turn == 'white' else 'white'), ply + 1)
             if search_score >= beta: return beta
             alpha = max(alpha, search_score)
             
-        if is_in_check_flag and alpha < -self.MATE_SCORE + 100: return -self.MATE_SCORE + ply
+        # Catch checkmates at the leaves
+        if is_in_check_flag and legal_moves_count == 0: 
+            return -self.MATE_SCORE + ply
+            
         return alpha
 
     # --- EVALUATION FUNCTION ---
