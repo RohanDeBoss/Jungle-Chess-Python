@@ -1,10 +1,12 @@
-# v86.1 Mate Distance Pruning block inside negamax added + 3 fold repetition fix
+# v87 3 man tb probing implemented, witb instant returns
 
 import time
 from GameLogic import generate_legal_moves_generator
 from GameLogic import *
 import random
 from collections import namedtuple
+from TablebaseManager import TablebaseManager
+
 
 # --- CONSTANT PIECE VALUES ---
 PIECE_VALUES = {
@@ -74,6 +76,7 @@ class ChessBot:
         self.ply_count = ply_count
         self.game_mode = game_mode
         self.max_moves = max_moves
+        self.tb_manager = TablebaseManager()
         
         if bot_name is None:
             if self.__class__.__name__ == "OpponentAI":
@@ -243,6 +246,18 @@ class ChessBot:
     def negamax(self, board, depth, alpha, beta, turn, ply, search_path):
         self.nodes_searched += 1
         if self.cancellation_event.is_set(): raise SearchCancelledException()
+
+        # 1. Check Tablebase
+        if len(board.white_pieces) + len(board.black_pieces) == 3:
+            tb_score = self.tb_manager.probe(board, turn)
+            if tb_score is not None:
+                # IMPORTANT: Adjust the score by the current ply
+                # This ensures the engine correctly calculates the distance from the ROOT.
+                if tb_score > self.MATE_SCORE - 1000:
+                    return tb_score - ply
+                elif tb_score < -self.MATE_SCORE + 1000:
+                    return tb_score + ply
+                return tb_score
 
         # --- OPTIMIZATION: MATE DISTANCE PRUNING ---
         # This is the key logic that makes searching deeper depths fast 
