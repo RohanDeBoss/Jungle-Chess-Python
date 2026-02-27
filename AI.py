@@ -1,4 +1,4 @@
-# v86 Checkmate search bugfix + Iterative Deepening Stops at Forced Mate
+# v86.1 Mate Distance Pruning block inside negamax added + 3 fold repetition fix
 
 import time
 from GameLogic import generate_legal_moves_generator
@@ -134,10 +134,9 @@ class ChessBot:
                     self._report_log(log_msg)
                     self._report_eval(best_score_this_iter, current_depth)
 
-                    # --- OPTIMIZATION: Early exit if a forced mate is found ---
-                    if best_score_this_iter > self.MATE_SCORE - 1000:
-                        self._report_log(f"  > {self.bot_name} found a forced mate! Stopping search early.")
-                        break
+                    # NOTE: "Violent Stop" (break) removed per your request.
+                    # The engine will continue to deeper depths to verify if a faster mate exists.
+                    # Mate Distance Pruning in negamax will ensure these depths are fast.
                 else:
                     raise SearchCancelledException()
             
@@ -172,11 +171,6 @@ class ChessBot:
                     log_msg = f"  > {self.bot_name} (D{current_depth}): {move_str}, Eval={eval_for_ui/100:+.2f}, Nodes={self.nodes_searched}, KNPS={knps:.1f}, Time={iter_duration:.2f}s"
                     self._report_log(log_msg)
                     self._report_eval(best_score_this_iter, current_depth)
-
-                    # --- OPTIMIZATION: Early exit if a forced mate is found ---
-                    if best_score_this_iter > self.MATE_SCORE - 1000:
-                        self._report_log(f"  > {self.bot_name} found a forced mate! Stopping ponder.")
-                        break
                 else:
                     raise SearchCancelledException()
         except SearchCancelledException: pass
@@ -249,22 +243,40 @@ class ChessBot:
     def negamax(self, board, depth, alpha, beta, turn, ply, search_path):
         self.nodes_searched += 1
         if self.cancellation_event.is_set(): raise SearchCancelledException()
+
+        # --- OPTIMIZATION: MATE DISTANCE PRUNING ---
+        # This is the key logic that makes searching deeper depths fast 
+        # when a mate is already known.
+        
+        # 1. Cap Beta: We can't do better than mating immediately (MATE - ply)
+        mate_value = self.MATE_SCORE - ply
+        if beta > mate_value:
+            beta = mate_value
+            if alpha >= mate_value:
+                return mate_value
+        
+        # 2. Raise Alpha: We can't do worse than getting mated immediately (-MATE + ply)
+        mated_value = -self.MATE_SCORE + ply
+        if alpha < mated_value:
+            alpha = mated_value
+            if beta <= mated_value:
+                return mated_value
+        # -------------------------------------------
         
         hash_val = board_hash(board, turn)
         
         if ply > 0:
             if hash_val in search_path: return self.DRAW_SCORE
-            if self.position_counts.get(hash_val, 0) >= 2: return self.DRAW_SCORE
+            if self.position_counts.get(hash_val, 0) >= 3: return self.DRAW_SCORE
 
         if is_insufficient_material(board): return self.DRAW_SCORE
-        if self.position_counts.get(hash_val, 0) >= 3: return self.DRAW_SCORE
         if self.ply_count + ply >= self.max_moves: return self.DRAW_SCORE
 
         original_alpha = alpha
         tt_entry = self.tt.get(hash_val)
         if ply > 0 and tt_entry and tt_entry.depth >= depth:
             tt_score = tt_entry.score
-            # --- OPTIMIZATION: Extract true mate score based on current ply ---
+            # Normalize TT mate score to current ply
             if tt_score > self.MATE_SCORE - 1000: tt_score -= ply
             elif tt_score < -self.MATE_SCORE + 1000: tt_score += ply
 
@@ -286,16 +298,13 @@ class ChessBot:
             nmp_reduction = self.NMP_BASE_REDUCTION + (depth // self.NMP_DEPTH_DIVISOR)
             score = -self.negamax(board, depth - 1 - nmp_reduction, -beta, -beta + 1, opponent_turn, ply + 1, search_path | {hash_val})
             if score >= beta:
-                # Need to adjust nmp cutoff mate scores just in case
                 store_score = beta
                 if store_score > self.MATE_SCORE - 1000: store_score += ply
                 elif store_score < -self.MATE_SCORE + 1000: store_score -= ply
                 self.tt[hash_val] = TTEntry(store_score, depth, TT_FLAG_LOWERBOUND, None)
                 return beta 
 
-        # OPTIMIZATION: Generate Pseudo-Legal moves. Do NOT test legality here!
         pseudo_moves = get_all_pseudo_legal_moves(board, turn)
-        
         hash_move = tt_entry.best_move if tt_entry else None
         ordered_moves = self.order_moves(board, pseudo_moves, ply, hash_move)
         
@@ -303,7 +312,6 @@ class ChessBot:
         legal_moves_count = 0
         
         for move in ordered_moves:
-            # Inline Tactical Check to avoid generating all moves twice
             target_piece = board.grid[move[1][0]][move[1][1]]
             moving_piece = board.grid[move[0][0]][move[0][1]]
             is_tactical = target_piece is not None or \
@@ -314,8 +322,6 @@ class ChessBot:
             child_board = board.clone()
             child_board.make_move(move[0], move[1])
 
-            # OPTIMIZATION: Deferred Legality Check. 
-            # We only verify legality if Alpha-Beta allows us to explore this move.
             if is_in_check(child_board, turn):
                 continue
                 
@@ -341,20 +347,16 @@ class ChessBot:
                         from_sq, to_sq = move[0][0]*COLS+move[0][1], move[1][0]*COLS+move[1][1]
                         self.history_heuristic_table[color_index][from_sq][to_sq] += depth * depth
                 
-                # --- OPTIMIZATION: Save corrected lowerbound mate score to TT ---
                 store_score = beta
                 if store_score > self.MATE_SCORE - 1000: store_score += ply
                 elif store_score < -self.MATE_SCORE + 1000: store_score -= ply
-
                 self.tt[hash_val] = TTEntry(store_score, depth, TT_FLAG_LOWERBOUND, move)
                 return beta
 
-        # If we got to the end and 0 pseudo-legal moves turned out to be actually legal
         if legal_moves_count == 0:
             if is_in_check_flag: return -self.MATE_SCORE + ply
             return self.DRAW_SCORE
 
-        # --- OPTIMIZATION: Save corrected exact/upperbound mate score to TT ---
         store_score = alpha
         if store_score > self.MATE_SCORE - 1000: store_score += ply
         elif store_score < -self.MATE_SCORE + 1000: store_score -= ply
@@ -362,6 +364,7 @@ class ChessBot:
         flag = TT_FLAG_EXACT if alpha > original_alpha else TT_FLAG_UPPERBOUND
         self.tt[hash_val] = TTEntry(store_score, depth, flag, best_move_for_node)
         return alpha
+    
 
     def qsearch(self, board, alpha, beta, turn, ply):
         self.nodes_searched += 1
