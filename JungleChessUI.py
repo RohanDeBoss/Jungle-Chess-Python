@@ -1,4 +1,4 @@
-# JungleChessUI.py (v10.3 - Fixed Text Colors & Improved History Navigation)
+# JungleChessUI.py (v10.7 - True Swap Sides, Non-Resetting Modes, Fixed Logic)
 import tkinter as tk
 from tkinter import ttk, messagebox
 import math
@@ -48,15 +48,14 @@ class EnhancedChessApp:
         
         self.turn = "white"
         self.selected = None
-        self.valid_moves = []
+        self.valid_moves =[]
         self.game_over = False
         self.game_result = None
         self.dragging = False
         self.drag_piece_ghost = None
         self.drag_start = None
 
-        # History: (Board, Turn, Move_To_Get_Here)
-        self.full_history = []
+        self.full_history =[]
         self.history_pointer = -1
         self.position_counts = {}
 
@@ -154,12 +153,17 @@ class EnhancedChessApp:
         ttk.Label(self.game_mode_frame, text="GAME MODE", style='Header.TLabel').pack(anchor=tk.W)
         for mode in GameMode:
             text = mode.name.replace("_", " ").title()
-            ttk.Radiobutton(self.game_mode_frame, text=text, variable=self.game_mode, value=mode.value, command=self.reset_game, style='Custom.TRadiobutton').pack(anchor=tk.W, pady=(2,0))
+            ttk.Radiobutton(self.game_mode_frame, text=text, variable=self.game_mode, value=mode.value, command=self.on_mode_changed, style='Custom.TRadiobutton').pack(anchor=tk.W, pady=(2,0))
         
         self.controls_frame = ttk.Frame(parent_frame, style='Left.TFrame')
         self.controls_frame.pack(fill=tk.X, pady=10)
+        
         ttk.Button(self.controls_frame, text="NEW GAME", command=self.reset_game, style='Control.TButton').pack(fill=tk.X, pady=3)
         ttk.Button(self.controls_frame, text="SWAP SIDES", command=self.swap_sides, style='Control.TButton').pack(fill=tk.X, pady=3)
+        
+        self.flip_view_btn = ttk.Button(self.controls_frame, text="FLIP VIEW", command=self.toggle_board_view, style='Control.TButton')
+        self.flip_view_btn.pack(fill=tk.X, pady=3)
+        
         ttk.Button(self.controls_frame, text="AI vs OP Series", command=self.start_ai_series, style='Control.TButton').pack(fill=tk.X, pady=3)
         
         ttk.Label(self.controls_frame, text="Bot Depth:", style='SmallHeader.TLabel').pack(anchor=tk.W, pady=(10,0))
@@ -181,7 +185,6 @@ class EnhancedChessApp:
         self.tree_frame = ttk.Frame(parent_frame)
         self.tree_frame.pack(fill=tk.BOTH, expand=True, pady=(2, 10))
         
-        # Style the Treeview
         self.moves_tree = ttk.Treeview(self.tree_frame, columns=('White', 'Black'), show='headings', selectmode='browse')
         self.moves_tree.heading('White', text='White'); self.moves_tree.heading('Black', text='Black')
         self.moves_tree.column('White', width=100, anchor=tk.CENTER); self.moves_tree.column('Black', width=100, anchor=tk.CENTER)
@@ -195,7 +198,6 @@ class EnhancedChessApp:
         self.scoreboard_label = ttk.Label(parent_frame, text="", font=("Helvetica", 11), justify=tk.LEFT, background=self.COLORS['bg_dark'], foreground=self.COLORS['text_light'])
         self.scoreboard_label.pack(fill=tk.X, pady=(0, 10))
 
-        # FEN Frame
         self.fen_frame = ttk.Frame(parent_frame, style='Left.TFrame')
         self.fen_frame.pack(fill=tk.X, pady=(5, 5))
         ttk.Label(self.fen_frame, text="FEN String:", style='SmallHeader.TLabel').pack(anchor=tk.W)
@@ -205,7 +207,6 @@ class EnhancedChessApp:
         ttk.Button(self.fen_btn_frame, text="Load FEN", command=self.load_fen_from_entry, style='Control.TButton').pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 2))
         ttk.Button(self.fen_btn_frame, text="Copy FEN", command=self.copy_fen_to_clipboard, style='Control.TButton').pack(side=tk.RIGHT, fill=tk.X, expand=True, padx=(2, 0))
 
-        # PGN Frame
         self.pgn_frame = ttk.Frame(parent_frame, style='Left.TFrame')
         self.pgn_frame.pack(fill=tk.X, pady=(5, 5))
         ttk.Label(self.pgn_frame, text="PGN Record:", style='SmallHeader.TLabel').pack(anchor=tk.W)
@@ -217,7 +218,7 @@ class EnhancedChessApp:
 
     def setup_styles(self):
         style = ttk.Style(); style.theme_use('clam')
-        C = {'bg_dark': '#1a1a2e', 'bg_medium': '#16213e', 'bg_light': '#0f3460', 'accent': '#e94560', 'text_light': '#ffffff', 'text_dark': '#a2a2a2'}
+        C = {'bg_dark': '#1a1a2e', 'bg_medium': '#16213e', 'bg_light': '#0f3460', 'accent': '#e94560', 'text_light': '#ffffff', 'text_dark': '#a2a2a2', 'warning': '#FF8C00'}
         
         style.configure('.', background=C['bg_dark'], foreground=C['text_light'])
         style.configure('TFrame', background=C['bg_dark'])
@@ -232,6 +233,9 @@ class EnhancedChessApp:
         style.configure('Control.TButton', background=C['accent'], foreground=C['text_light'], font=('Helvetica', 11, 'bold'), padding=(8, 6), borderwidth=0)
         style.map('Control.TButton', background=[('active', C['accent']), ('pressed', '#d13550')])
         
+        style.configure('Flipped.TButton', background=C['warning'], foreground=C['text_light'], font=('Helvetica', 11, 'bold'), padding=(8, 6), borderwidth=0)
+        style.map('Flipped.TButton', background=[('active', C['warning']), ('pressed', '#E07B00')])
+
         style.configure('Nav.TButton', background=C['bg_light'], foreground=C['text_light'], font=('Helvetica', 16, 'bold'), padding=(10, 5), borderwidth=0)
         style.map('Nav.TButton', background=[('active', C['bg_light']), ('pressed', C['bg_medium'])], foreground=[('disabled', C['text_dark'])])
         
@@ -240,14 +244,11 @@ class EnhancedChessApp:
         style.configure('Custom.TCheckbutton', background=C['bg_dark'], foreground=C['text_light'], font=('Helvetica', 11))
         style.map('Custom.TCheckbutton', background=[('active', C['bg_dark'])], indicatorcolor=[('selected', C['accent'])])
 
-        # Treeview Dark
         style.configure('Treeview', font=('Courier', 11), rowheight=25, background=C['bg_medium'], foreground=C['text_light'], fieldbackground=C['bg_medium'], borderwidth=0)
         style.configure('Treeview.Heading', font=('Helvetica', 11, 'bold'), background=C['bg_light'], foreground=C['text_light'], borderwidth=0)
         style.map('Treeview', background=[('selected', C['accent'])], foreground=[('selected', C['text_light'])])
         
-        # ENTRY BOX STYLE - FORCE BLACK TEXT ON WHITE BACKGROUND FOR VISIBILITY
         style.configure('TEntry', fieldbackground='#FFFFFF', foreground='#000000', insertcolor='#000000')
-        
         return C
 
     def handle_main_resize(self, event):
@@ -276,6 +277,69 @@ class EnhancedChessApp:
 
     def redraw_eval_bar_on_resize(self, event):
         self.draw_eval_bar(self.last_eval_score, self.last_eval_depth)
+
+    # --- FLIP VIEW / SWAP SIDES / MODE SWITCH ---
+    def toggle_board_view(self):
+        self.board_orientation = "black" if self.board_orientation == "white" else "white"
+        
+        show_warning = False
+        if self.game_mode.get() == GameMode.HUMAN_VS_BOT.value:
+            if self.board_orientation != self.human_color:
+                show_warning = True
+        else:
+            if self.board_orientation == "black":
+                show_warning = True
+                
+        if show_warning:
+            self.flip_view_btn.configure(style='Flipped.TButton')
+        else:
+            self.flip_view_btn.configure(style='Control.TButton')
+            
+        self.update_bot_labels()
+        self.draw_board()
+
+    def on_mode_changed(self):
+        self._stop_ai_process()
+        mode = self.game_mode.get()
+        
+        if mode == GameMode.HUMAN_VS_BOT.value:
+            self.board_orientation = self.human_color
+            if not self.game_over and self.turn != self.human_color:
+                self.master.after(20, self._make_game_ai_move)
+        elif mode == GameMode.AI_VS_AI.value:
+            if not self.game_over:
+                self.master.after(20, self._make_game_ai_move)
+        elif mode == GameMode.HUMAN_VS_HUMAN.value:
+            self._update_analysis_after_state_change()
+
+        show_warning = False
+        if self.board_orientation == "black":
+            if mode == GameMode.HUMAN_VS_BOT.value:
+                if self.human_color != "black": show_warning = True
+            else:
+                show_warning = True
+        
+        if show_warning:
+            self.flip_view_btn.configure(style='Flipped.TButton')
+        else:
+            self.flip_view_btn.configure(style='Control.TButton')
+            
+        self.update_ui_after_state_change()
+
+    def swap_sides(self):
+        self._stop_ai_process()
+        
+        if self.game_mode.get() == GameMode.HUMAN_VS_BOT.value:
+            self.human_color = "black" if self.human_color == "white" else "white"
+            self.board_orientation = self.human_color
+            
+            self.flip_view_btn.configure(style='Control.TButton')
+            self.update_ui_after_state_change()
+            
+            if not self.game_over and self.turn != self.human_color:
+                print(f"Swapped sides. AI ({self.turn}) taking over...")
+                delay = 4 if self.instant_move.get() else 20
+                self.master.after(delay, self._make_game_ai_move)
 
     # --- PGN & FEN LOGIC ---
     def get_current_fen(self):
@@ -309,7 +373,6 @@ class EnhancedChessApp:
         
         self._stop_ai_process()
         self.board = Board(setup=False) 
-        
         r, c = 0, 0
         for char in board_part:
             if char == '/': r += 1; c = 0
@@ -328,27 +391,26 @@ class EnhancedChessApp:
         self.game_over, self.game_result = False, None
         self.last_eval_score, self.last_eval_depth = 0.0, None
         
+        self.board_orientation = self.human_color
+        self.flip_view_btn.configure(style='Control.TButton')
+        
         self.update_ui_after_state_change()
         self._update_analysis_after_state_change()
+        
+        if self.game_mode.get() == GameMode.HUMAN_VS_BOT.value and self.turn != self.human_color:
+             self.master.after(20, self._make_game_ai_move)
 
     def get_current_pgn(self):
-        # Generate PGN from full history, ignoring current history pointer
         moves = [format_move(hist[2]) for hist in self.full_history[1:] if hist[2]]
-        pgn = ""
-        move_num = 1
-        
-        # Check start turn of the entire history (usually white, but could be FEN loaded)
+        pgn = ""; move_num = 1
         start_turn = self.full_history[0][1]
         
         if start_turn == 'black' and moves:
-            pgn += f"{move_num}... {moves[0]} "
-            moves = moves[1:]
-            move_num += 1
+            pgn += f"{move_num}... {moves[0]} "; moves = moves[1:]; move_num += 1
             
         for i in range(0, len(moves), 2):
             pgn += f"{move_num}. {moves[i]} "
-            if i+1 < len(moves):
-                pgn += f"{moves[i+1]} "
+            if i+1 < len(moves): pgn += f"{moves[i+1]} "
             move_num += 1
             
         if self.game_result:
@@ -356,8 +418,7 @@ class EnhancedChessApp:
             if res == 'white': pgn += "1-0"
             elif res == 'black': pgn += "0-1"
             else: pgn += "1/2-1/2"
-        else:
-            pgn += "*"
+        else: pgn += "*"
         return pgn.strip()
 
     def copy_pgn_to_clipboard(self):
@@ -368,7 +429,6 @@ class EnhancedChessApp:
     def load_pgn_from_entry(self):
         pgn_text = self.pgn_entry.get().strip()
         if not pgn_text: return
-        # Simple parser for long algebraic (e2-e4)
         raw_moves = re.findall(r'[a-h][1-8]-[a-h][1-8]', pgn_text)
         
         self.reset_game() 
@@ -386,93 +446,48 @@ class EnhancedChessApp:
             self.execute_move_and_check_state(self.turn, move)
             if self.game_over: break
 
-    # --- UPDATED MOVES LIST LOGIC (Keeps future ghosted) ---
     def update_moves_list(self):
-        # 1. Clear current list
-        for item in self.moves_tree.get_children():
-            self.moves_tree.delete(item)
-            
-        # 2. Get ALL moves from history (past AND future relative to pointer)
+        for item in self.moves_tree.get_children(): self.moves_tree.delete(item)
         moves = [hist[2] for hist in self.full_history[1:]] 
         start_turn = self.full_history[0][1]
-        formatted_moves = [format_move(m) for m in moves if m]
+        formatted_moves =[format_move(m) for m in moves if m]
         
-        pairs = []
-        # Handle Black starting (from FEN)
+        pairs =[]
         if start_turn == 'black' and formatted_moves:
             pairs.append(["...", formatted_moves[0]])
             formatted_moves = formatted_moves[1:]
             
-        # Pair up moves (White, Black)
         for i in range(0, len(formatted_moves), 2):
             w = formatted_moves[i]
             b = formatted_moves[i+1] if i+1 < len(formatted_moves) else ""
             pairs.append([w, b])
             
-        # 3. Populate Tree
         for i, pair in enumerate(pairs):
             self.moves_tree.insert('', 'end', iid=str(i), text=str(i+1), values=(pair[0], pair[1]))
             
-        # 4. Highlight the current move based on history_pointer
-        # Pointer 0 = Start. Pointer 1 = 1st move made.
-        # We need to find which Row (i) and which Column (W/B) matches pointer.
-        
         if self.history_pointer > 0:
-            # Adjust for 0-based index vs 1-based pointer
-            # If Black started, offset logic changes slightly.
-            moves_count = self.history_pointer - 1 # Index of last played move
-            
-            if start_turn == 'black':
-                # Move 0 is Black (Row 0, Col 1)
-                # Move 1 is White (Row 1, Col 0)
-                row = (moves_count + 1) // 2
-            else:
-                # Move 0 is White (Row 0, Col 0)
-                # Move 1 is Black (Row 0, Col 1)
-                row = moves_count // 2
-                
+            moves_count = self.history_pointer - 1 
+            row = (moves_count + 1) // 2 if start_turn == 'black' else moves_count // 2
             if str(row) in self.moves_tree.get_children():
                 self.moves_tree.selection_set(str(row))
                 self.moves_tree.see(str(row))
-        else:
-            # Start of game
-            self.moves_tree.selection_set()
+        else: self.moves_tree.selection_set()
 
     def on_move_selected(self, event):
         selected_items = self.moves_tree.selection()
         if not selected_items: return
         index = int(selected_items[0])
-        
-        # Calculate approximate history pointer to jump to END of that row
-        # This is a simplification; usually clicking a row jumps to the move made on that row.
-        # Defaulting to White's move on that row unless clicked specifically (advanced).
-        # For now, let's jump to the Black move of that row (end of full move).
-        
         start_turn = self.full_history[0][1]
-        
-        # Row 0 -> Moves 1 & 2. Pointer should be 2.
-        # Index * 2 + 2.
-        
-        pointer_target = (index * 2) + 2
-        
-        # Adjust if Black started
-        if start_turn == 'black':
-            pointer_target = (index * 2) + 1
-            
-        # Clamp to max history
+        pointer_target = (index * 2) + 1 if start_turn == 'black' else (index * 2) + 2
         pointer_target = min(pointer_target, len(self.full_history) - 1)
-        
         self._navigate_history(pointer_target)
 
-    # --- GAME FLOW & LOGIC ---
+    # --- CORE GAMEPLAY ---
     def execute_move_and_check_state(self, player_who_moved, move):
         self.switch_turn()
-        
-        # CRITICAL: If we are in the past, truncate history (overwrite branch)
         if self.history_pointer < len(self.full_history) - 1:
             self.full_history = self.full_history[:self.history_pointer + 1]
             self.position_counts.clear()
-            # Rebuild repetition counts
             for board, turn, _ in self.full_history:
                 self.position_counts[board_hash(board, turn)] = self.position_counts.get(board_hash(board, turn), 0) + 1
         
@@ -558,7 +573,6 @@ class EnhancedChessApp:
         self.update_ui_after_state_change()
         self._update_analysis_after_state_change()
 
-    # --- RESTORED AI MOVE FUNCTION ---
     def _make_game_ai_move(self):
         if self.game_over: return
         print(f"\n--- Turn {self.history_pointer + 1} ({self.turn.capitalize()}) ---")
@@ -575,6 +589,7 @@ class EnhancedChessApp:
         self.selected, self.valid_moves, self.valid_moves_for_highlight = None, [],[]
         self.update_turn_label()
         self.update_game_info_label()
+        self.update_bot_labels()
         self.update_moves_list()
         self.draw_board()
         self.update_navigation_buttons()
@@ -626,7 +641,21 @@ class EnhancedChessApp:
         current_image = self.board_image_white if self.board_orientation == "white" else self.board_image_black
         if not current_image: return
         self.canvas.itemconfig(self.board_image_id, image=current_image)
-        self.canvas.delete("highlight", "piece", "check_highlight")
+        self.canvas.delete("highlight", "piece", "check_highlight", "border_highlight")
+        
+        draw_border = False
+        mode = self.game_mode.get()
+        if mode == GameMode.HUMAN_VS_BOT.value:
+            if self.board_orientation != self.human_color:
+                draw_border = True
+        else:
+            if self.board_orientation == "black":
+                draw_border = True
+
+        if draw_border:
+            w, h = COLS * self.square_size, ROWS * self.square_size
+            self.canvas.create_rectangle(2, 2, w-2, h-2, outline=self.COLORS['warning'], width=4, tags="border_highlight")
+
         for r_move, c_move in getattr(self, 'valid_moves_for_highlight',[]):
             x1, y1 = self.board_to_canvas(r_move, c_move)
             radius = self.square_size // 5
@@ -734,10 +763,6 @@ class EnhancedChessApp:
             self.canvas.unbind("<Button-1>"); self.canvas.unbind("<B1-Motion>"); self.canvas.unbind("<ButtonRelease-1>")
 
     def is_ai_thinking(self): return self.ai_process and self.ai_process.is_alive()
-    def swap_sides(self):
-        self._stop_ai_process()
-        if self.game_mode.get() == GameMode.HUMAN_VS_BOT.value: self.human_color = "black" if self.human_color == "white" else "white"
-        self.reset_game()
 
     def switch_turn(self):
         if not self.game_over: self.turn = "black" if self.turn == "white" else "white"
@@ -779,7 +804,7 @@ class EnhancedChessApp:
         self.start_button.config(state=tk.NORMAL if can_back else tk.DISABLED); self.undo_button.config(state=tk.NORMAL if can_back else tk.DISABLED)
         self.redo_button.config(state=tk.NORMAL if can_fwd else tk.DISABLED); self.end_button.config(state=tk.NORMAL if can_fwd else tk.DISABLED)
 
-    # --- RESTORED AI SERIES LOGIC ---
+    # --- AI SERIES LOGIC ---
     def process_ai_series_result(self):
         self.ai_series_stats['game_count'] += 1
         _, winner_color = self.game_result
