@@ -32,7 +32,7 @@ class EnhancedChessApp:
     MAIN_AI_NAME = "AI Bot"
     OPPONENT_AI_NAME = "OP Bot"
     ANALYSIS_AI_NAME = "Analysis"
-    slidermaxvalue = 10
+    slidermaxvalue = 12
     MAX_GAME_MOVES = 200 
     
     def __init__(self, master):

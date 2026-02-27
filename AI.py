@@ -51,7 +51,7 @@ TT_FLAG_EXACT, TT_FLAG_LOWERBOUND, TT_FLAG_UPPERBOUND = 0, 1, 2
 class SearchCancelledException(Exception): pass
 
 class ChessBot:
-    search_depth = 3
+    search_depth = 6
     MATE_SCORE, DRAW_SCORE = 1000000, 0
     MAX_Q_SEARCH_DEPTH = 8
     LMR_DEPTH_THRESHOLD, LMR_MOVE_COUNT_THRESHOLD, LMR_REDUCTION = 3, 4, 1
@@ -400,7 +400,7 @@ class ChessBot:
 
         scores_mg = [0, 0]; scores_eg = [0, 0]
         piece_counts = [0, 0]; pawn_counts = [0, 0]; last_piece_type = [None, None]
-        rook_counts = [0, 0]; bishop_counts = [0, 0]; knight_counts = [0, 0]
+        rook_counts = [0, 0]; bishop_counts = [0, 0]; knight_counts = [0, 0]; queen_counts = [0, 0]
         
         king_pos = [board.white_king_pos, board.black_king_pos]
         piece_lists = [board.white_pieces, board.black_pieces]
@@ -434,6 +434,7 @@ class ChessBot:
                     if ptype is Rook: rook_counts[color_idx] += 1
                     elif ptype is Bishop: bishop_counts[color_idx] += 1
                     elif ptype is Knight: knight_counts[color_idx] += 1
+                    elif ptype is Queen: queen_counts[color_idx] += 1
 
                 val = PIECE_VALUES[ptype]
                 r_pst = r if is_white else 7 - r
@@ -466,7 +467,6 @@ class ChessBot:
         elif piece_counts[1] > piece_counts[0]: scores_eg[1] += PIECE_DOMINANCE_FACTOR // (piece_counts[0] + 1)
 
         # Define Penalty Tables
-        # Index = pawn_counts[i] (0 to 4+)
         LONE_ROOK_PENALTIES   = [550, 200, 150, 80, 40]
         LONE_BISHOP_PENALTIES = [650, 250, 170, 100, 50]
 
@@ -485,7 +485,7 @@ class ChessBot:
                 
                 if penalty > 0:
                     if i == 0 and scores_eg[0] > scores_eg[1]: # White winning
-                        scores_eg[0] = max(scores_eg[1], scores_eg[0] - penalty) # Damp towards even, but don't cross
+                        scores_eg[0] = max(scores_eg[1], scores_eg[0] - penalty)
                     elif i == 1 and scores_eg[1] > scores_eg[0]: # Black winning
                         scores_eg[1] = max(scores_eg[0], scores_eg[1] - penalty)
 
@@ -511,6 +511,27 @@ class ChessBot:
         mg_score = scores_mg[0] - scores_mg[1]
         eg_score = scores_eg[0] - scores_eg[1]
         final_score = (mg_score * phase + eg_score * inv_phase) >> 8
+        
+        # ----------------------------------------------------------------
+        # KNOWLEDGE BASE: UNWINNABLE ENDGAMES
+        # ----------------------------------------------------------------
+        can_force_mate = [True, True]
+        for i in (0, 1):
+            # A side cannot force checkmate if they have:
+            # 0 Pawns, 0 Knights, 0 Queens, AND less than 2 sliding pieces (Rooks/Bishops)
+            if (pawn_counts[i] == 0 and 
+                knight_counts[i] == 0 and 
+                queen_counts[i] == 0 and 
+                (rook_counts[i] + bishop_counts[i]) < 2):
+                can_force_mate[i] = False
+                
+        # If the "winning" side cannot actually force a checkmate (e.g. lone Bishop vs Pawn),
+        # scale their advantage down massively. Using 8 as divisor per request.
+        if final_score > 0 and not can_force_mate[0]:
+            final_score //= 8
+        elif final_score < 0 and not can_force_mate[1]:
+            final_score //= 8
+            
         return final_score if turn_to_move == 'white' else -final_score
 
 # --- Piece-Square Tables (PSTs) ---
