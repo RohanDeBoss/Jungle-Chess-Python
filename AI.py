@@ -1,4 +1,4 @@
-# v85 Deferred Legality Checking (Big potential speedup)
+# v86 Checkmate search bugfix + Iterative Deepening Stops at Forced Mate
 
 import time
 from GameLogic import generate_legal_moves_generator
@@ -132,7 +132,12 @@ class ChessBot:
                     log_msg = f"  > {self.bot_name} (D{current_depth}): {move_str}, Eval={eval_for_ui/100:+.2f}, Nodes={self.nodes_searched}, KNPS={knps:.1f}, Time={iter_duration:.2f}s"
                     
                     self._report_log(log_msg)
-                    self._report_eval(best_score_this_iter, None)
+                    self._report_eval(best_score_this_iter, current_depth)
+
+                    # --- OPTIMIZATION: Early exit if a forced mate is found ---
+                    if best_score_this_iter > self.MATE_SCORE - 1000:
+                        self._report_log(f"  > {self.bot_name} found a forced mate! Stopping search early.")
+                        break
                 else:
                     raise SearchCancelledException()
             
@@ -167,6 +172,11 @@ class ChessBot:
                     log_msg = f"  > {self.bot_name} (D{current_depth}): {move_str}, Eval={eval_for_ui/100:+.2f}, Nodes={self.nodes_searched}, KNPS={knps:.1f}, Time={iter_duration:.2f}s"
                     self._report_log(log_msg)
                     self._report_eval(best_score_this_iter, current_depth)
+
+                    # --- OPTIMIZATION: Early exit if a forced mate is found ---
+                    if best_score_this_iter > self.MATE_SCORE - 1000:
+                        self._report_log(f"  > {self.bot_name} found a forced mate! Stopping ponder.")
+                        break
                 else:
                     raise SearchCancelledException()
         except SearchCancelledException: pass
@@ -253,10 +263,15 @@ class ChessBot:
         original_alpha = alpha
         tt_entry = self.tt.get(hash_val)
         if ply > 0 and tt_entry and tt_entry.depth >= depth:
-            if tt_entry.flag == TT_FLAG_EXACT: return tt_entry.score
-            elif tt_entry.flag == TT_FLAG_LOWERBOUND: alpha = max(alpha, tt_entry.score)
-            elif tt_entry.flag == TT_FLAG_UPPERBOUND: beta = min(beta, tt_entry.score)
-            if alpha >= beta: return tt_entry.score
+            tt_score = tt_entry.score
+            # --- OPTIMIZATION: Extract true mate score based on current ply ---
+            if tt_score > self.MATE_SCORE - 1000: tt_score -= ply
+            elif tt_score < -self.MATE_SCORE + 1000: tt_score += ply
+
+            if tt_entry.flag == TT_FLAG_EXACT: return tt_score
+            elif tt_entry.flag == TT_FLAG_LOWERBOUND: alpha = max(alpha, tt_score)
+            elif tt_entry.flag == TT_FLAG_UPPERBOUND: beta = min(beta, tt_score)
+            if alpha >= beta: return tt_score
 
         if depth <= 0: return self.qsearch(board, alpha, beta, turn, ply)
 
@@ -271,7 +286,11 @@ class ChessBot:
             nmp_reduction = self.NMP_BASE_REDUCTION + (depth // self.NMP_DEPTH_DIVISOR)
             score = -self.negamax(board, depth - 1 - nmp_reduction, -beta, -beta + 1, opponent_turn, ply + 1, search_path | {hash_val})
             if score >= beta:
-                self.tt[hash_val] = TTEntry(beta, depth, TT_FLAG_LOWERBOUND, None)
+                # Need to adjust nmp cutoff mate scores just in case
+                store_score = beta
+                if store_score > self.MATE_SCORE - 1000: store_score += ply
+                elif store_score < -self.MATE_SCORE + 1000: store_score -= ply
+                self.tt[hash_val] = TTEntry(store_score, depth, TT_FLAG_LOWERBOUND, None)
                 return beta 
 
         # OPTIMIZATION: Generate Pseudo-Legal moves. Do NOT test legality here!
@@ -321,7 +340,13 @@ class ChessBot:
                         color_index = 0 if moving_piece.color == 'white' else 1
                         from_sq, to_sq = move[0][0]*COLS+move[0][1], move[1][0]*COLS+move[1][1]
                         self.history_heuristic_table[color_index][from_sq][to_sq] += depth * depth
-                self.tt[hash_val] = TTEntry(beta, depth, TT_FLAG_LOWERBOUND, move)
+                
+                # --- OPTIMIZATION: Save corrected lowerbound mate score to TT ---
+                store_score = beta
+                if store_score > self.MATE_SCORE - 1000: store_score += ply
+                elif store_score < -self.MATE_SCORE + 1000: store_score -= ply
+
+                self.tt[hash_val] = TTEntry(store_score, depth, TT_FLAG_LOWERBOUND, move)
                 return beta
 
         # If we got to the end and 0 pseudo-legal moves turned out to be actually legal
@@ -329,8 +354,13 @@ class ChessBot:
             if is_in_check_flag: return -self.MATE_SCORE + ply
             return self.DRAW_SCORE
 
+        # --- OPTIMIZATION: Save corrected exact/upperbound mate score to TT ---
+        store_score = alpha
+        if store_score > self.MATE_SCORE - 1000: store_score += ply
+        elif store_score < -self.MATE_SCORE + 1000: store_score -= ply
+
         flag = TT_FLAG_EXACT if alpha > original_alpha else TT_FLAG_UPPERBOUND
-        self.tt[hash_val] = TTEntry(alpha, depth, flag, best_move_for_node)
+        self.tt[hash_val] = TTEntry(store_score, depth, flag, best_move_for_node)
         return alpha
 
     def qsearch(self, board, alpha, beta, turn, ply):
