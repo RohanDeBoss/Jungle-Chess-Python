@@ -1,4 +1,4 @@
-# AI.py (v89.12 aspiration windows: safer iterative deepening speedup)
+# AI.py (v89.15 logging: cumulative NodesTotal per iteration)
 import time
 import random
 from collections import namedtuple
@@ -8,21 +8,21 @@ from TablebaseManager import TablebaseManager
 # --- EVALUATION CONSTANTS ---
 
 MG_PIECE_VALUES = {
-    Pawn: 100, Knight: 800, Bishop: 650, Rook: 550, Queen: 850, King: 20000
+    Pawn: 100, Knight: 950, Bishop: 650, Rook: 550, Queen: 850, King: 20000
 }
 
 # The Tablebase-Proven Meta
 EG_PIECE_VALUES = {
     Pawn: 150,    # Very dangerous, easily promotes or kills sideways
-    Knight: 800,  # 82% win rate. The king killer.
-    Bishop: 500,  # 4% win rate. Mostly a liability.
+    Knight: 850,  # Retuned higher: strongest practical piece in this variant.
+    Bishop: 500,  # Lower value in endgames as it can't change colour or checkmate by itself
     Rook: 600,    # Kept high to prioritize stopping pawns.
     Queen: 850,
     King: 20000
 }
 
 ORDERING_VALUES = {
-    Pawn: 100, Knight: 800, Bishop: 650, Rook: 550, Queen: 850, King: 20000
+    Pawn: 100, Knight: 950, Bishop: 650, Rook: 550, Queen: 850, King: 20000
 }
 
 INITIAL_PHASE_MATERIAL = (MG_PIECE_VALUES[Rook] * 4 + MG_PIECE_VALUES[Knight] * 4 +
@@ -86,6 +86,11 @@ class ChessBot:
     BONUS_KILLER_1 = 4_000_000
     BONUS_KILLER_2 = 3_000_000
     BONUS_QN_TACTIC = 3_500_000
+    OPENING_TOTAL_PIECE_THRESHOLD = 24
+    OPENING_KNIGHT_DEVELOP_BONUS = 120
+    OPENING_KNIGHT_CENTER_WEIGHT = 22
+    OPENING_PAWN_CENTER_WEIGHT = 10
+    OPENING_CENTER_PAWN_BONUS = 28
     
     def __init__(self, board, color, position_counts, comm_queue, cancellation_event, bot_name=None, ply_count=0, game_mode="bot", max_moves=200):
         self.board = board
@@ -162,6 +167,34 @@ class ChessBot:
 
         return swing
 
+    def _is_opening_position(self, board):
+        return (len(board.white_pieces) + len(board.black_pieces)) >= self.OPENING_TOTAL_PIECE_THRESHOLD
+
+    def _opening_development_bonus(self, board, move, moving_piece):
+        if moving_piece is None or not self._is_opening_position(board):
+            return 0
+
+        (fr, fc), (tr, tc) = move
+        from_center = abs(fr - 3.5) + abs(fc - 3.5)
+        to_center = abs(tr - 3.5) + abs(tc - 3.5)
+        center_delta = from_center - to_center
+        bonus = 0
+
+        if isinstance(moving_piece, Knight):
+            bonus += int(center_delta * self.OPENING_KNIGHT_CENTER_WEIGHT)
+            if (moving_piece.color == 'white' and fr == ROWS - 1) or (moving_piece.color == 'black' and fr == 0):
+                bonus += self.OPENING_KNIGHT_DEVELOP_BONUS
+            return bonus
+
+        if isinstance(moving_piece, Pawn):
+            bonus += int(center_delta * self.OPENING_PAWN_CENTER_WEIGHT)
+            central_files = {COLS // 2 - 1, COLS // 2}
+            if tc in central_files:
+                bonus += self.OPENING_CENTER_PAWN_BONUS
+            return bonus
+
+        return 0
+
     def _get_root_tb_eval_relative(self):
         """
         Return current position TB eval from the bot's perspective.
@@ -232,6 +265,7 @@ class ChessBot:
             
             best_move_overall = root_moves[0]
             prev_iter_score = None
+            total_nodes = 0
             for current_depth in range(1, self.search_depth + 1):
                 iter_start_time = time.time()
                 root_hash = board_hash(self.board, self.color)
@@ -263,13 +297,14 @@ class ChessBot:
                 if not self.cancellation_event.is_set():
                     best_move_overall = best_move_this_iter
                     prev_iter_score = best_score_this_iter
+                    total_nodes += self.nodes_searched
                     iter_duration = time.time() - iter_start_time
                     knps = (self.nodes_searched / iter_duration / 1000) if iter_duration > 0 else 0
                     eval_for_ui = best_score_this_iter if self.color == 'white' else -best_score_this_iter
                     move_str = self._format_move(best_move_this_iter)
                     depth_label = "TB" if not self.used_heuristic_eval else current_depth
                     
-                    log_msg = f"  > {self.bot_name} (D{depth_label}): {move_str}, Eval={eval_for_ui/100:+.2f}, Nodes={self.nodes_searched}, KNPS={knps:.1f}, TBhits={self.tb_hits}, Time={iter_duration:.2f}s"
+                    log_msg = f"  > {self.bot_name} (D{depth_label}): {move_str}, Eval={eval_for_ui/100:+.2f}, NodesTotal={total_nodes}, KNPS={knps:.1f}, TBhits={self.tb_hits}, Time={iter_duration:.2f}s"
                     
                     self._report_log(log_msg)
                     self._report_eval(best_score_this_iter, depth_label)
@@ -312,6 +347,7 @@ class ChessBot:
             root_hash = board_hash(self.board, self.color)
             tb_alpha_floor = None
             prev_iter_score = None
+            total_nodes = 0
             for current_depth in range(1, 100):
                 if self.cancellation_event.is_set(): raise SearchCancelledException()
                 iter_start_time = time.time()
@@ -343,11 +379,12 @@ class ChessBot:
                 if not self.cancellation_event.is_set():
                     best_move_overall = best_move_this_iter
                     prev_iter_score = best_score_this_iter
+                    total_nodes += self.nodes_searched
                     iter_duration = time.time() - iter_start_time
                     knps = (self.nodes_searched / iter_duration / 1000) if iter_duration > 0 else 0
                     eval_for_ui = best_score_this_iter if self.color == 'white' else -best_score_this_iter
                     depth_label = "TB" if not self.used_heuristic_eval else current_depth
-                    self._report_log(f"  > {self.bot_name} (D{depth_label}): {self._format_move(best_move_this_iter)}, Eval={eval_for_ui/100:+.2f}, Nodes={self.nodes_searched}, KNPS={knps:.1f}, TBhits={self.tb_hits}, Time={iter_duration:.2f}s")
+                    self._report_log(f"  > {self.bot_name} (D{depth_label}): {self._format_move(best_move_this_iter)}, Eval={eval_for_ui/100:+.2f}, NodesTotal={total_nodes}, KNPS={knps:.1f}, TBhits={self.tb_hits}, Time={iter_duration:.2f}s")
                     self._report_eval(best_score_this_iter, depth_label)
 
                     # If we already found a TB-level winning line, deeper iterations should
@@ -661,6 +698,7 @@ class ChessBot:
                 else:
                     from_idx, to_idx = move[0][0]*COLS+move[0][1], move[1][0]*COLS+move[1][1]
                     score = self.history_heuristic_table[color_index][from_idx][to_idx]
+            score += self._opening_development_bonus(board, move, moving_piece)
             scored_moves.append((score, move))
 
         scored_moves.sort(key=lambda item: item[0], reverse=True)
