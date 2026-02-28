@@ -1,4 +1,4 @@
-# AI.py (v89.1 TB used properly, TBhits added)
+# AI.py (v89.2 - TB floor + root null-window)
 import time
 import random
 from collections import namedtuple
@@ -422,10 +422,13 @@ class ChessBot:
             
             best_move_overall = root_moves[0]
             root_hash = board_hash(self.board, self.color)
+            tb_alpha_floor = None
             for current_depth in range(1, 100):
                 if self.cancellation_event.is_set(): raise SearchCancelledException()
                 iter_start_time = time.time()
-                best_score_this_iter, best_move_this_iter = self._search_at_depth(current_depth, root_moves, root_hash, best_move_overall)
+                best_score_this_iter, best_move_this_iter = self._search_at_depth(
+                    current_depth, root_moves, root_hash, best_move_overall, alpha_floor=tb_alpha_floor
+                )
                 
                 if not self.cancellation_event.is_set():
                     best_move_overall = best_move_this_iter
@@ -435,16 +438,28 @@ class ChessBot:
                     depth_label = "TB" if not self.used_heuristic_eval else current_depth
                     self._report_log(f"  > {self.bot_name} (D{depth_label}): {self._format_move(best_move_this_iter)}, Eval={eval_for_ui/100:+.2f}, Nodes={self.nodes_searched}, KNPS={knps:.1f}, TBhits={self.tb_hits}, Time={iter_duration:.2f}s")
                     self._report_eval(best_score_this_iter, depth_label)
+
+                    # If we already found a TB-level winning line, deeper iterations should
+                    # only try to beat it (shorter win), not re-search longer/equal lines.
+                    if best_score_this_iter > self.MATE_SCORE - 1000:
+                        tb_alpha_floor = best_score_this_iter
+                    else:
+                        tb_alpha_floor = None
                 else:
                     raise SearchCancelledException()
         except SearchCancelledException: pass
 
-    def _search_at_depth(self, depth, root_moves, root_hash, pv_move):
+    def _search_at_depth(self, depth, root_moves, root_hash, pv_move, alpha_floor=None):
         self.nodes_searched = 0
         self.used_heuristic_eval = False
         self.tb_hits = 0
-        best_score_this_iter, best_move_this_iter = -float('inf'), None
-        alpha, beta = -float('inf'), float('inf')
+        if alpha_floor is not None:
+            best_score_this_iter = alpha_floor
+            best_move_this_iter = pv_move if pv_move in root_moves else (root_moves[0] if root_moves else None)
+        else:
+            best_score_this_iter, best_move_this_iter = -float('inf'), None
+        alpha = alpha_floor if alpha_floor is not None else -float('inf')
+        beta = float('inf')
         
         ordered_root_moves = self.order_moves(self.board, root_moves, 0, pv_move)
         
@@ -458,9 +473,23 @@ class ChessBot:
             search_path = {root_hash}
             child_hash = board_hash(child_board, self.opponent_color)
             self.position_counts[child_hash] = self.position_counts.get(child_hash, 0) + 1
-            
-            score = -self.negamax(child_board, depth - 1, -beta, -alpha, self.opponent_color, 1, search_path)
-            
+
+            if alpha_floor is not None:
+                # Null-window root test: only continue if this move can beat current TB floor.
+                probe_score = -self.negamax(
+                    child_board, depth - 1, -(alpha_floor + 1), -alpha_floor,
+                    self.opponent_color, 1, search_path
+                )
+                if probe_score <= alpha_floor:
+                    self.position_counts[child_hash] -= 1
+                    continue
+                score = -self.negamax(
+                    child_board, depth - 1, -beta, -alpha,
+                    self.opponent_color, 1, search_path
+                )
+            else:
+                score = -self.negamax(child_board, depth - 1, -beta, -alpha, self.opponent_color, 1, search_path)
+
             self.position_counts[child_hash] -= 1
             if score != self.DRAW_SCORE: all_moves_draw = False
 
@@ -469,7 +498,8 @@ class ChessBot:
                 best_move_this_iter = move
             alpha = max(alpha, best_score_this_iter)
         
-        if all_moves_draw: best_score_this_iter = self.DRAW_SCORE
+        if alpha_floor is None and all_moves_draw:
+            best_score_this_iter = self.DRAW_SCORE
         return best_score_this_iter, best_move_this_iter
 
     def negamax(self, board, depth, alpha, beta, turn, ply, search_path):
