@@ -1,4 +1,4 @@
-# v38.3 Tactical coverage tuned: passive knight zone tactical, discovered-slider as ordering hint
+# GameLogic.py (v39 attack-map fast path extended to bishop/knight/king/pawn complex threat rules)
 
 # -----------------------------
 # Global Constants
@@ -28,6 +28,20 @@ BISHOP_ZIGZAG_DIRS = (
 # --- Pre-computation Maps for Performance ---
 KNIGHT_ATTACKS_FROM = { (r, c):[(r+dr, c+dc) for dr, dc in DIRECTIONS['knight'] if 0 <= r+dr < ROWS and 0 <= c+dc < COLS] for r in range(ROWS) for c in range(COLS) }
 ADJACENT_SQUARES_MAP = { (r, c):[(r+dr, c+dc) for dr, dc in ADJACENT_DIRS if 0 <= r+dr < ROWS and 0 <= c+dc < COLS] for r in range(ROWS) for c in range(COLS) }
+
+def _clone_piece_fast(piece):
+    """
+    Fast clone for search boards: bypass __init__ and copy stable fields directly.
+    """
+    cls = piece.__class__
+    new_piece = cls.__new__(cls)
+    new_piece.color = piece.color
+    new_piece.opponent_color = piece.opponent_color
+    new_piece.pos = piece.pos
+    if cls is Pawn:
+        new_piece.direction = piece.direction
+        new_piece.starting_row = piece.starting_row
+    return new_piece
 
 # ---------------------------------------------------
 # PIECE CLASSES: THE SINGLE SOURCE OF TRUTH
@@ -263,9 +277,9 @@ class Board:
     def clone(self):
         new_board = Board(setup=False)
         
-        # Clone lists directly
-        new_board.white_pieces = [p.clone() for p in self.white_pieces]
-        new_board.black_pieces = [p.clone() for p in self.black_pieces]
+        # Clone pieces with a fast constructor-bypass path.
+        new_board.white_pieces = [_clone_piece_fast(p) for p in self.white_pieces]
+        new_board.black_pieces = [_clone_piece_fast(p) for p in self.black_pieces]
         
         # Populate grid directly (Removed slow isinstance(King) checks from loop)
         for p in new_board.white_pieces:
@@ -434,11 +448,194 @@ class Board:
 # ----------------------------------------------------
 # GLOBAL GAME LOGIC: ROBUST & CENTRALIZED
 # ----------------------------------------------------
+def _bishop_attacks_square(board, start, target, bishop_color):
+    tr, tc = target
+
+    # 1) Normal diagonal movement
+    for dr, dc in DIRECTIONS['bishop']:
+        r, c = start[0] + dr, start[1] + dc
+        while 0 <= r < ROWS and 0 <= c < COLS:
+            piece = board.grid[r][c]
+            if r == tr and c == tc:
+                return (piece is None) or (piece.color != bishop_color)
+            if piece is not None:
+                break
+            r += dr
+            c += dc
+
+    # 2) Zig-zag movement
+    for d1, d2 in BISHOP_ZIGZAG_DIRS:
+        cr, cc, cd = start[0], start[1], d1
+        while True:
+            cr += cd[0]
+            cc += cd[1]
+            if not (0 <= cr < ROWS and 0 <= cc < COLS):
+                break
+
+            piece = board.grid[cr][cc]
+            if cr == tr and cc == tc:
+                return (piece is None) or (piece.color != bishop_color)
+            if piece is not None:
+                break
+
+            cd = d2 if cd == d1 else d1
+
+    return False
+
+def _knight_attacks_square(board, start, target, knight_color):
+    tr, tc = target
+    grid = board.grid
+
+    for dst in KNIGHT_ATTACKS_FROM[start]:
+        piece_at_dst = grid[dst[0]][dst[1]]
+        # Knight valid-move filter (cannot land on friendly piece).
+        if piece_at_dst is not None and piece_at_dst.color == knight_color:
+            continue
+
+        # Direct knight threat.
+        if dst[0] == tr and dst[1] == tc:
+            return True
+
+        # Active evaporation proxy threat from the landing square.
+        for rr, cc in KNIGHT_ATTACKS_FROM[dst]:
+            if rr == tr and cc == tc:
+                return True
+
+    return False
+
+def _king_attacks_square(board, start, target, king_color):
+    tr, tc = target
+    grid = board.grid
+
+    for dr, dc in DIRECTIONS['king']:
+        r1, c1 = start[0] + dr, start[1] + dc
+        if not (0 <= r1 < ROWS and 0 <= c1 < COLS):
+            continue
+
+        p1 = grid[r1][c1]
+        # 1-step king move threat.
+        if r1 == tr and c1 == tc:
+            if p1 is None or p1.color != king_color:
+                return True
+
+        # 2-step king move threat only if first square is empty.
+        if p1 is not None:
+            continue
+
+        r2, c2 = r1 + dr, c1 + dc
+        if not (0 <= r2 < ROWS and 0 <= c2 < COLS):
+            continue
+        p2 = grid[r2][c2]
+        if r2 == tr and c2 == tc and (p2 is None or p2.color != king_color):
+            return True
+
+    return False
+
+def _pawn_attacks_square(board, start, target, pawn):
+    tr, tc = target
+    r, c = start
+    grid = board.grid
+    direction = pawn.direction
+
+    # 1-step forward (empty or enemy)
+    one_r = r + direction
+    if 0 <= one_r < ROWS:
+        p1 = grid[one_r][c]
+        if one_r == tr and c == tc and (p1 is None or p1.color != pawn.color):
+            return True
+
+        # 2-step forward from starting rank (first square must be empty)
+        if r == pawn.starting_row and p1 is None:
+            two_r = r + 2 * direction
+            if 0 <= two_r < ROWS:
+                p2 = grid[two_r][c]
+                if two_r == tr and c == tc and (p2 is None or p2.color != pawn.color):
+                    return True
+
+    # Sideways captures (only if enemy piece exists there)
+    if r == tr and abs(c - tc) == 1:
+        pt = grid[tr][tc]
+        if pt is not None and pt.color == pawn.opponent_color:
+            return True
+
+    return False
+
 def is_square_attacked(board, r, c, attacking_color):
+    grid = board.grid
+    defending_color = 'black' if attacking_color == 'white' else 'white'
+    queen_type = Queen
+    rook_type = Rook
+
+    # Fast path 1: Direct queen line attacks (normal sliding, blocked by any piece).
+    for dr, dc in DIRECTIONS['queen']:
+        cr, cc = r + dr, c + dc
+        while 0 <= cr < ROWS and 0 <= cc < COLS:
+            piece = grid[cr][cc]
+            if piece is None:
+                cr += dr
+                cc += dc
+                continue
+            if piece.color == attacking_color and type(piece) is queen_type:
+                return True
+            break
+
+    # Fast path 2: Rook railgun attacks (enemy pieces do not block, friendly pieces do).
+    for dr, dc in DIRECTIONS['rook']:
+        cr, cc = r + dr, c + dc
+        while 0 <= cr < ROWS and 0 <= cc < COLS:
+            piece = grid[cr][cc]
+            if piece is None or piece.color != attacking_color:
+                cr += dr
+                cc += dc
+                continue
+            if type(piece) is rook_type:
+                return True
+            break
+
+    # Fast path 3: Queen explosive-proxy checks.
+    # If an adjacent defender piece can be captured by an attacker queen,
+    # the explosion also attacks this square.
+    for ar, ac in ADJACENT_SQUARES_MAP.get((r, c), set()):
+        adj_piece = grid[ar][ac]
+        if adj_piece is None or adj_piece.color != defending_color:
+            continue
+
+        for dr, dc in DIRECTIONS['queen']:
+            cr, cc = ar + dr, ac + dc
+            while 0 <= cr < ROWS and 0 <= cc < COLS:
+                piece = grid[cr][cc]
+                if piece is None:
+                    cr += dr
+                    cc += dc
+                    continue
+                if piece.color == attacking_color and type(piece) is queen_type:
+                    return True
+                break
+
+    # Fast path 4: Complex-piece rules without materializing full threat sets.
     attacking_pieces = board.white_pieces if attacking_color == 'white' else board.black_pieces
     for piece in attacking_pieces:
-        if piece.pos and (r, c) in piece.get_threats(board, piece.pos):
-            return True
+        if not piece.pos:
+            continue
+        ptype = type(piece)
+        if ptype is queen_type or ptype is rook_type:
+            continue
+
+        if ptype is Bishop:
+            if _bishop_attacks_square(board, piece.pos, (r, c), piece.color):
+                return True
+        elif ptype is Knight:
+            if _knight_attacks_square(board, piece.pos, (r, c), piece.color):
+                return True
+        elif ptype is King:
+            if _king_attacks_square(board, piece.pos, (r, c), piece.color):
+                return True
+        elif ptype is Pawn:
+            if _pawn_attacks_square(board, piece.pos, (r, c), piece):
+                return True
+        else:
+            if (r, c) in piece.get_threats(board, piece.pos):
+                return True
     return False
 
 def is_in_check(board, color):
