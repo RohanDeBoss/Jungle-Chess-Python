@@ -1,4 +1,4 @@
-# JungleChessUI.py (v10.7 - True Swap Sides, Non-Resetting Modes, Fixed Logic)
+# JungleChessUI.py (v10.8 - Analysis log separators with move/ply context)
 import tkinter as tk
 from tkinter import ttk, messagebox
 import math

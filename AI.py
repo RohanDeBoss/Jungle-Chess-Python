@@ -1,4 +1,4 @@
-# AI.py (v88.2 - Tapered Eval + Tablebase Integration, bug fixing)
+# AI.py (v89.0 - TB sign fix, root TB eval reporting, immediate mate display fix)
 import time
 import random
 from collections import namedtuple
@@ -120,6 +120,16 @@ class ChessBot:
     def _report_move(self, move): self.comm_queue.put(('move', move))
     def _format_move(self, move): return format_move(move)
 
+    def _get_root_tb_eval_relative(self):
+        """
+        Return current position TB eval from the bot's perspective.
+        This is the value we should display for the current root position.
+        """
+        root_abs = self.tb_manager.probe(self.board, self.color)
+        if root_abs is None:
+            return None
+        return root_abs if self.color == 'white' else -root_abs
+
     def _get_best_tablebase_move_with_eval(self):
         """Finds the absolute best move when only 3 pieces remain."""
         best_move = None
@@ -132,7 +142,10 @@ class ChessBot:
             # Instant win check (Evaporation/Explosion)
             if not sim.find_king_pos(self.opponent_color):
                 return move, self.MATE_SCORE - 1
-                
+            # Also treat immediate checkmate as mate-in-1 for display purposes.
+            if is_in_check(sim, self.opponent_color) and not has_legal_moves(sim, self.opponent_color):
+                return move, self.MATE_SCORE - 1
+                 
             score_abs = self.tb_manager.probe(sim, self.opponent_color)
             
             if score_abs is None:
@@ -156,9 +169,15 @@ class ChessBot:
             if len(self.board.white_pieces) + len(self.board.black_pieces) == 3:
                 tb_move, tb_eval = self._get_best_tablebase_move_with_eval()
                 if tb_move:
-                    eval_for_ui = tb_eval if self.color == 'white' else -tb_eval
+                    # Display the root position score (not the chosen child's score).
+                    root_tb_eval = self._get_root_tb_eval_relative()
+                    display_eval = root_tb_eval if root_tb_eval is not None else tb_eval
+                    # If the chosen move is an immediate mate, show that stronger terminal score.
+                    if tb_eval > self.MATE_SCORE - 1000:
+                        display_eval = tb_eval
+                    eval_for_ui = display_eval if self.color == 'white' else -display_eval
                     self._report_log(f"  > {self.bot_name} (TB): {self._format_move(tb_move)}, Eval={eval_for_ui/100:+.2f}")
-                    self._report_eval(tb_eval, "TB")
+                    self._report_eval(display_eval, "TB")
                     self._report_move(tb_move)
                     return
 
@@ -202,9 +221,15 @@ class ChessBot:
             if len(self.board.white_pieces) + len(self.board.black_pieces) == 3:
                 tb_move, tb_eval = self._get_best_tablebase_move_with_eval()
                 if tb_move:
-                    eval_for_ui = tb_eval if self.color == 'white' else -tb_eval
+                    # Display the root position score (not the chosen child's score).
+                    root_tb_eval = self._get_root_tb_eval_relative()
+                    display_eval = root_tb_eval if root_tb_eval is not None else tb_eval
+                    # If the chosen move is an immediate mate, show that stronger terminal score.
+                    if tb_eval > self.MATE_SCORE - 1000:
+                        display_eval = tb_eval
+                    eval_for_ui = display_eval if self.color == 'white' else -display_eval
                     self._report_log(f"  > {self.bot_name} (TB): {self._format_move(tb_move)}, Eval={eval_for_ui/100:+.2f} (Perfect Play)")
-                    self._report_eval(tb_eval, "TB")
+                    self._report_eval(display_eval, "TB")
                     # Sleep to prevent burning CPU since the position is perfectly solved
                     while not self.cancellation_event.is_set():
                         time.sleep(0.1)

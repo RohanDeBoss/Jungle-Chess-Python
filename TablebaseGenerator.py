@@ -1,6 +1,8 @@
-# TablebaseGenerator.py (v1.3 - strict DTM layering + int16 storage)
+# TablebaseGenerator.py (v1.5 - strict DTM, transition cache, optional parallel cache build)
 import os
 import time
+import __main__
+from concurrent.futures import ProcessPoolExecutor
 import numpy as np
 from GameLogic import *
 
@@ -8,11 +10,126 @@ from GameLogic import *
 TB_DIR = "tablebases"
 os.makedirs(TB_DIR, exist_ok=True)
 
+EXPECTED_TABLE_ENTRIES = 64 * 64 * 64 * 2
+PIECE_CLASS_BY_NAME = {
+    "Queen": Queen,
+    "Rook": Rook,
+    "Knight": Knight,
+    "Bishop": Bishop,
+    "Pawn": Pawn,
+}
+
+# Worker globals for ProcessPool transition construction
+_W_PIECE_NAME = None
+_W_PIECE_CLASS = None
+_W_QUEEN_TABLE = None
+
+def _load_table_file_any_dtype(filename):
+    data16 = np.fromfile(filename, dtype=np.int16)
+    if data16.size == EXPECTED_TABLE_ENTRIES:
+        return data16.reshape((64, 64, 64, 2))
+    data8 = np.fromfile(filename, dtype=np.int8)
+    if data8.size == EXPECTED_TABLE_ENTRIES:
+        return data8.astype(np.int16).reshape((64, 64, 64, 2))
+    raise ValueError(f"Invalid tablebase file size: {filename}")
+
+def _flat_idx_raw(i0, i1, i2, i3):
+    return (((i0 * 64 + i1) * 64 + i2) * 2 + i3)
+
+def _init_transition_worker(piece_name, queen_tb_file):
+    global _W_PIECE_NAME, _W_PIECE_CLASS, _W_QUEEN_TABLE
+    _W_PIECE_NAME = piece_name
+    _W_PIECE_CLASS = PIECE_CLASS_BY_NAME[piece_name]
+    _W_QUEEN_TABLE = None
+    if piece_name == "Pawn":
+        _W_QUEEN_TABLE = _load_table_file_any_dtype(queen_tb_file)
+
+def _build_transition_worker(idx):
+    i0, i1, i2, i3 = idx
+    wk = (i0 // 8, i0 % 8)
+    wp = (i1 // 8, i1 % 8)
+    bk = (i2 // 8, i2 % 8)
+    turn_is_white = (i3 == 0)
+    opp_turn_idx = 1 - i3
+
+    board = Board(setup=False)
+    board.add_piece(King('white'), wk[0], wk[1])
+    board.add_piece(_W_PIECE_CLASS('white'), wp[0], wp[1])
+    board.add_piece(King('black'), bk[0], bk[1])
+    moves = get_all_pseudo_legal_moves(board, 'white' if turn_is_white else 'black')
+
+    if turn_is_white:
+        immediate_win = False
+        promo_win_vals = []
+        child_flats = []
+
+        for m in moves:
+            child = board.clone()
+            child.make_move(m[0], m[1])
+            if is_in_check(child, 'white'):
+                continue
+            if not child.black_king_pos:
+                immediate_win = True
+                continue
+
+            if _W_PIECE_NAME == "Pawn" and isinstance(child.grid[m[1][0]][m[1][1]], Queen):
+                q_idx = (
+                    child.white_king_pos[0] * 8 + child.white_king_pos[1],
+                    m[1][0] * 8 + m[1][1],
+                    child.black_king_pos[0] * 8 + child.black_king_pos[1],
+                    1
+                )
+                q_val = int(_W_QUEEN_TABLE[q_idx])
+                if q_val < 0:
+                    promo_win_vals.append(abs(q_val) + 1)
+                continue
+
+            if len(child.white_pieces) >= 2:
+                p = next((x for x in child.white_pieces if not isinstance(x, King)), None)
+                if p is None:
+                    continue
+                c0 = child.white_king_pos[0] * 8 + child.white_king_pos[1]
+                c1 = p.pos[0] * 8 + p.pos[1]
+                c2 = child.black_king_pos[0] * 8 + child.black_king_pos[1]
+                child_flats.append(_flat_idx_raw(c0, c1, c2, opp_turn_idx))
+
+        return _flat_idx_raw(i0, i1, i2, i3), ('w', immediate_win, tuple(promo_win_vals), tuple(child_flats))
+
+    legal_moves_count = 0
+    has_non_losing_escape = False
+    child_flats = []
+
+    for m in moves:
+        child = board.clone()
+        child.make_move(m[0], m[1])
+        if is_in_check(child, 'black'):
+            continue
+
+        legal_moves_count += 1
+        if not child.white_king_pos or len(child.white_pieces) < 2:
+            has_non_losing_escape = True
+            continue
+        if _W_PIECE_NAME == "Pawn" and isinstance(child.grid[child.white_pieces[1].pos[0]][child.white_pieces[1].pos[1]], Queen):
+            has_non_losing_escape = True
+            continue
+
+        p = next((x for x in child.white_pieces if not isinstance(x, King)), None)
+        if p is None:
+            has_non_losing_escape = True
+            continue
+        c0 = child.white_king_pos[0] * 8 + child.white_king_pos[1]
+        c1 = p.pos[0] * 8 + p.pos[1]
+        c2 = child.black_king_pos[0] * 8 + child.black_king_pos[1]
+        child_flats.append(_flat_idx_raw(c0, c1, c2, opp_turn_idx))
+
+    return _flat_idx_raw(i0, i1, i2, i3), ('b', legal_moves_count, has_non_losing_escape, tuple(child_flats))
+
 class Generator:
     def __init__(self, piece_class):
         self.piece_class = piece_class
         self.piece_name = piece_class.__name__
         self.filename = os.path.join(TB_DIR, f"K_{self.piece_name}_K.bin")
+        self.queen_tb_file = os.path.join(TB_DIR, "K_Queen_K.bin")
         
         # 64 WK * 64 WP * 64 BK * 2 Turns = 524,288 entries
         self.total_positions = 64 * 64 * 64 * 2
@@ -28,30 +145,24 @@ class Generator:
         # Pawn specific: Load Queen TB for promotion lookups
         self.queen_table = None
         if self.piece_name == "Pawn":
-            q_file = os.path.join(TB_DIR, "K_Queen_K.bin")
-            if os.path.exists(q_file):
+            if os.path.exists(self.queen_tb_file):
                 print(f"[Pawn Support] Loading Queen Tablebase for promotion lookups...")
-                self.queen_table = self._load_table_file(q_file)
+                self.queen_table = self._load_table_file(self.queen_tb_file)
             else:
                 print(f"CRITICAL ERROR: Queen Tablebase not found! Generate Queen first.")
                 exit()
+        
+        cpu_default = max(1, (os.cpu_count() or 2) - 1)
+        requested = os.getenv("TB_WORKERS")
+        self.transition_workers = max(1, int(requested)) if requested else min(8, cpu_default)
+        self.transition_parallel_threshold = 5000
 
     def _load_table_file(self, filename):
         """
         Load a tablebase file supporting both legacy int8 and strict int16 formats.
         Returns int16 array shaped (64, 64, 64, 2).
         """
-        expected = 64 * 64 * 64 * 2
-
-        data16 = np.fromfile(filename, dtype=np.int16)
-        if data16.size == expected:
-            return data16.reshape((64, 64, 64, 2))
-
-        data8 = np.fromfile(filename, dtype=np.int8)
-        if data8.size == expected:
-            return data8.astype(np.int16).reshape((64, 64, 64, 2))
-
-        raise ValueError(f"Invalid tablebase file size: {filename}")
+        return _load_table_file_any_dtype(filename)
 
     def encode(self, wk, wp, bk, t_idx):
         return (wk[0]*8+wk[1], wp[0]*8+wp[1], bk[0]*8+bk[1], t_idx)
@@ -61,6 +172,146 @@ class Generator:
         wp = (idx[1] // 8, idx[1] % 8)
         bk = (idx[2] // 8, idx[2] % 8)
         return wk, wp, bk, idx[3]
+
+    def _flat_idx(self, idx):
+        # Fast flatten for shape (64, 64, 64, 2)
+        return (((idx[0] * 64 + idx[1]) * 64 + idx[2]) * 2 + idx[3])
+
+    def _build_transition(self, idx):
+        """
+        Build and return a cached transition descriptor for one state.
+        This is the expensive part (move generation + legality checks), so
+        we do it once per state and reuse across retrograde iterations.
+        """
+        wk, wp, bk, t_idx = self.decode(idx)
+        self.setup_sim(wk, wp, bk)
+        turn = 'white' if t_idx == 0 else 'black'
+        opp_turn_idx = 1 - t_idx
+        moves = get_all_pseudo_legal_moves(self.sim_board, turn)
+
+        if t_idx == 0:
+            # White to move in K+Piece vs K table.
+            immediate_win = False
+            promo_win_vals = []
+            child_flats = []
+
+            for m in moves:
+                child = self.sim_board.clone()
+                child.make_move(m[0], m[1])
+                if is_in_check(child, 'white'):
+                    continue
+
+                if not child.black_king_pos:
+                    immediate_win = True
+                    continue
+
+                if self.piece_name == "Pawn" and isinstance(child.grid[m[1][0]][m[1][1]], Queen):
+                    q_idx = (
+                        child.white_king_pos[0] * 8 + child.white_king_pos[1],
+                        m[1][0] * 8 + m[1][1],
+                        child.black_king_pos[0] * 8 + child.black_king_pos[1],
+                        1
+                    )
+                    q_val = int(self.queen_table[q_idx])
+                    if q_val < 0:
+                        promo_win_vals.append(abs(q_val) + 1)
+                    continue
+
+                if len(child.white_pieces) >= 2:
+                    c_idx = self.encode(
+                        child.white_king_pos,
+                        child.white_pieces[1].pos,
+                        child.black_king_pos,
+                        opp_turn_idx
+                    )
+                    child_flats.append(self._flat_idx(c_idx))
+
+            return ('w', immediate_win, tuple(promo_win_vals), tuple(child_flats))
+
+        # Black to move in K+Piece vs K table.
+        legal_moves_count = 0
+        has_non_losing_escape = False
+        child_flats = []
+
+        for m in moves:
+            child = self.sim_board.clone()
+            child.make_move(m[0], m[1])
+            if is_in_check(child, 'black'):
+                continue
+
+            legal_moves_count += 1
+
+            if not child.white_king_pos or len(child.white_pieces) < 2:
+                has_non_losing_escape = True
+                continue
+
+            if self.piece_name == "Pawn" and isinstance(child.grid[child.white_pieces[1].pos[0]][child.white_pieces[1].pos[1]], Queen):
+                has_non_losing_escape = True
+                continue
+
+            c_idx = self.encode(
+                child.white_king_pos,
+                child.white_pieces[1].pos,
+                child.black_king_pos,
+                opp_turn_idx
+            )
+            child_flats.append(self._flat_idx(c_idx))
+
+        return ('b', legal_moves_count, has_non_losing_escape, tuple(child_flats))
+
+    def _build_transition_cache(self, unsolved_indices):
+        cache = {}
+        total = len(unsolved_indices)
+        if total == 0:
+            return cache
+
+        print(f"[{self.piece_name}] Phase 1.5: Building transition cache ({total} states)...")
+        start = time.time()
+
+        can_parallel = (
+            self.transition_workers > 1 and
+            total >= self.transition_parallel_threshold and
+            not (self.piece_name == "Pawn" and self.queen_table is None)
+        )
+        # On Windows spawn, parallel workers require a real importable main file.
+        main_file = getattr(__main__, "__file__", "")
+        if not main_file or main_file == "<stdin>":
+            can_parallel = False
+
+        if can_parallel:
+            print(f"[{self.piece_name}] Using {self.transition_workers} workers for transition build.")
+            try:
+                with ProcessPoolExecutor(
+                    max_workers=self.transition_workers,
+                    initializer=_init_transition_worker,
+                    initargs=(self.piece_name, self.queen_tb_file)
+                ) as ex:
+                    for done, (flat, transition) in enumerate(
+                        ex.map(_build_transition_worker, unsolved_indices, chunksize=512), start=1
+                    ):
+                        cache[flat] = transition
+                        if done % 50000 == 0:
+                            elapsed = max(0.001, time.time() - start)
+                            speed = done / elapsed
+                            eta = (total - done) / speed
+                            print(f"  > Cache: {done}/{total} ({(done/total)*100:.1f}%) | {speed:.0f} st/s | ETA: {eta:.0f}s")
+            except Exception as e:
+                print(f"[{self.piece_name}] Parallel cache build failed ({e}). Falling back to single-process.")
+                cache.clear()
+                can_parallel = False
+
+        if not can_parallel:
+            for done, idx in enumerate(unsolved_indices, start=1):
+                cache[self._flat_idx(idx)] = self._build_transition(idx)
+                if done % 50000 == 0:
+                    elapsed = max(0.001, time.time() - start)
+                    speed = done / elapsed
+                    eta = (total - done) / speed
+                    print(f"  > Cache: {done}/{total} ({(done/total)*100:.1f}%) | {speed:.0f} st/s | ETA: {eta:.0f}s")
+
+        elapsed = time.time() - start
+        print(f"[{self.piece_name}] Transition cache ready in {elapsed:.1f}s.")
+        return cache
 
     def setup_sim(self, wk, wp, bk):
         """Fast-update the sim_board without creating new objects."""
@@ -89,7 +340,7 @@ class Generator:
         count = 0
         for idx in np.ndindex(self.table.shape):
             count += 1
-            if count % 100000 == 0:
+            if count % 200000 == 0:
                 print(f"  > Scanned {count}/{self.total_positions} positions...")
 
             wk, wp, bk, t_idx = self.decode(idx)
@@ -116,6 +367,7 @@ class Generator:
         print(f"[{self.piece_name}] Initialization complete. Solving {len(unsolved_indices)} non-terminal positions.")
 
         # --- STEP 2: RETROGRADE ANALYSIS ---
+        transition_cache = self._build_transition_cache(unsolved_indices)
         iteration = 1
         while True:
             iter_start = time.time()
@@ -127,51 +379,42 @@ class Generator:
             # Read from the previous iteration's solved frontier only.
             # This prevents same-iteration propagation that can corrupt exact DTM.
             prev_table = self.table.copy()
+            prev_flat = prev_table.reshape(-1)
             
             print(f"\n[{self.piece_name}] Iteration {iteration} (DTM {iteration})")
             
             for idx in unsolved_indices:
                 processed += 1
-                if processed % 10000 == 0:
+                if processed % 20000 == 0:
                     elapsed = time.time() - iter_start
                     speed = processed / elapsed
                     eta = (total_current - processed) / speed
                     print(f"  > Progress: {processed}/{total_current} ({(processed/total_current)*100:.1f}%) | {speed:.0f} pos/s | ETA: {eta:.0f}s")
 
-                wk, wp, bk, t_idx = self.decode(idx)
-                self.setup_sim(wk, wp, bk)
-                turn = 'white' if t_idx == 0 else 'black'
-                opp_turn_idx = 1 - t_idx
-                
-                moves = get_all_pseudo_legal_moves(self.sim_board, turn)
-                
+                t_idx = idx[3]
+                flat = self._flat_idx(idx)
+                transition = transition_cache.get(flat)
+                if transition is None:
+                    transition = self._build_transition(idx)
+                    transition_cache[flat] = transition
+
                 if t_idx == 0: # White's Turn: Looking for a move to a Black LOSS
                     best_win = 0
-                    for m in moves:
-                        child = self.sim_board.clone()
-                        child.make_move(m[0], m[1])
-                        if is_in_check(child, 'white'): continue
-                        
-                        if not child.black_king_pos:
-                            best_win = 1; break
-                        
-                        # Handle Pawn Promotion to Queen lookup
-                        if self.piece_name == "Pawn" and isinstance(child.grid[m[1][0]][m[1][1]], Queen):
-                            q_idx = (child.white_king_pos[0]*8+child.white_king_pos[1], 
-                                     m[1][0]*8+m[1][1], 
-                                     child.black_king_pos[0]*8+child.black_king_pos[1], 1)
-                            res_val = self.queen_table[q_idx]
-                            if res_val < 0: # Black loses in Queen TB
-                                val = abs(res_val) + 1
-                                if best_win == 0 or val < best_win: best_win = val
-                            continue
-                        
-                        if len(child.white_pieces) >= 2:
-                            res_idx = self.encode(child.white_king_pos, child.white_pieces[1].pos, child.black_king_pos, opp_turn_idx)
-                            res_val = prev_table[res_idx]
-                            if res_val < 0:
-                                val = abs(res_val) + 1
-                                if best_win == 0 or val < best_win: best_win = val
+                    _, immediate_win, promo_vals, child_flats = transition
+
+                    if immediate_win:
+                        best_win = 1
+
+                    for val in promo_vals:
+                        if best_win == 0 or val < best_win:
+                            best_win = val
+
+                    for cflat in child_flats:
+                        res_val = int(prev_flat[cflat])
+                        if res_val < 0:
+                            val = abs(res_val) + 1
+                            if best_win == 0 or val < best_win:
+                                best_win = val
                     
                     if best_win > 0:
                         self.table[idx] = best_win
@@ -180,31 +423,20 @@ class Generator:
                         new_unsolved.append(idx)
 
                 else: # Black's Turn: Check if ALL legal moves lead to a White WIN
-                    legal_moves_count = 0
-                    all_moves_lead_to_win = True
+                    _, legal_moves_count, has_non_losing_escape, child_flats = transition
+                    all_moves_lead_to_win = legal_moves_count > 0 and not has_non_losing_escape
                     max_win_val = 0
-                    
-                    for m in moves:
-                        child = self.sim_board.clone()
-                        child.make_move(m[0], m[1])
-                        if is_in_check(child, 'black'): continue
-                        legal_moves_count += 1
-                        
-                        if not child.white_king_pos or len(child.white_pieces) < 2:
-                            all_moves_lead_to_win = False; break
-                        
-                        # Black cannot promote, but handle case where White piece becomes Queen 
-                        # (Not usually possible on black's turn in 3-piece, but logic remains for safety)
-                        if self.piece_name == "Pawn" and isinstance(child.grid[child.white_pieces[1].pos[0]][child.white_pieces[1].pos[1]], Queen):
-                            all_moves_lead_to_win = False; break
 
-                        res_idx = self.encode(child.white_king_pos, child.white_pieces[1].pos, child.black_king_pos, opp_turn_idx)
-                        res_val = prev_table[res_idx]
-                        if res_val <= 0:
-                            all_moves_lead_to_win = False; break
-                        max_win_val = max(max_win_val, res_val)
-                    
-                    if legal_moves_count > 0 and all_moves_lead_to_win:
+                    if all_moves_lead_to_win:
+                        for cflat in child_flats:
+                            res_val = int(prev_flat[cflat])
+                            if res_val <= 0:
+                                all_moves_lead_to_win = False
+                                break
+                            if res_val > max_win_val:
+                                max_win_val = res_val
+
+                    if all_moves_lead_to_win:
                         self.table[idx] = -(max_win_val + 1)
                         changed += 1
                     else:
