@@ -1,4 +1,4 @@
-# JungleChessUI.py (v11.0 - mode bugfixes, stable AI-vs-OP sides, depth default aligned)
+# JungleChessUI.py (v11.5 - smaller adaptive side-label boxes, no board overlap)
 import tkinter as tk
 from tkinter import ttk, messagebox
 import math
@@ -107,27 +107,42 @@ class EnhancedChessApp:
         self.center_panel = ttk.Frame(self.main_frame, style='Right.TFrame')
         self.center_panel.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         
-        self.top_bot_label = ttk.Label(self.center_panel, text="", font=("Helvetica", 11, "bold"), background=self.COLORS['bg_medium'], foreground=self.COLORS['text_light'])
-        self.top_bot_label.pack(side=tk.TOP, pady=(5, 5))
+        self.board_column = ttk.Frame(self.center_panel, style='Right.TFrame')
+        self.board_column.pack(expand=True, fill=tk.BOTH)
 
-        self.eval_frame = ttk.Frame(self.center_panel, style='Right.TFrame')
-        self.eval_frame.pack(fill=tk.X, pady=(0, 5), padx=20)
+        self.eval_frame = ttk.Frame(self.board_column, style='Right.TFrame', width=COLS * self.square_size, height=58)
+        self.eval_frame.pack(side=tk.TOP, anchor=tk.CENTER, pady=(6, 5))
+        self.eval_frame.pack_propagate(False)
         self.eval_score_label = ttk.Label(self.eval_frame, text="Even", style='Status.TLabel', anchor="center")
-        self.eval_score_label.pack(side=tk.LEFT, padx=(0, 10))
-        self.eval_bar_canvas = tk.Canvas(self.eval_frame, height=20, bg=self.COLORS['bg_light'], highlightthickness=1, highlightbackground=self.COLORS['text_dark'])
-        self.eval_bar_canvas.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        self.eval_score_label.pack(side=tk.TOP, pady=(0, 4))
+        self.eval_bar_canvas = tk.Canvas(
+            self.eval_frame, width=COLS * self.square_size, height=20,
+            bg=self.COLORS['bg_light'], highlightthickness=1, highlightbackground=self.COLORS['text_dark']
+        )
+        self.eval_bar_canvas.pack(side=tk.TOP, anchor=tk.CENTER)
         self.eval_bar_canvas.bind("<Configure>", self.redraw_eval_bar_on_resize)
         
-        self.canvas_frame = ttk.Frame(self.center_panel, style='Canvas.TFrame')
+        self.board_row_frame = ttk.Frame(self.board_column, style='Right.TFrame')
+        self.board_row_frame.pack(expand=True, fill=tk.BOTH)
+
+        self.canvas_frame = ttk.Frame(self.board_row_frame, style='Canvas.TFrame')
+        self.canvas_frame.pack(expand=True, fill=tk.BOTH)
         self.canvas = tk.Canvas(self.canvas_frame, width=COLS * self.square_size, height=ROWS * self.square_size, bg=self.COLORS['bg_medium'], highlightthickness=0)
         self.board_image_white = self.create_board_image("white")
         self.board_image_black = self.create_board_image("black")
         self.board_image_id = self.canvas.create_image(0, 0, anchor='nw', tags="board")
         self.canvas.pack(expand=True)
-        self.canvas_frame.pack(expand=True, fill=tk.BOTH)
 
-        self.bottom_bot_label = ttk.Label(self.center_panel, text="", font=("Helvetica", 11, "bold"), background=self.COLORS['bg_medium'], foreground=self.COLORS['text_light'])
-        self.bottom_bot_label.pack(side=tk.TOP, pady=(5, 5))
+        self.top_bot_label = ttk.Label(
+            self.board_row_frame, text="", font=("Helvetica", 11, "bold"),
+            background=self.COLORS['bg_medium'], foreground=self.COLORS['text_light'],
+            anchor="center", justify=tk.CENTER
+        )
+        self.bottom_bot_label = ttk.Label(
+            self.board_row_frame, text="", font=("Helvetica", 11, "bold"),
+            background=self.COLORS['bg_medium'], foreground=self.COLORS['text_light'],
+            anchor="center", justify=tk.CENTER
+        )
 
         self.navigation_frame = ttk.Frame(self.center_panel, style='Right.TFrame')
         self.navigation_frame.pack(fill=tk.X, pady=(5, 10))
@@ -258,15 +273,29 @@ class EnhancedChessApp:
         self.right_panel.config(width=new_sidebar_width + 20)
 
     def handle_board_resize(self, event):
-        view_width, view_height = event.width - 40, event.height - 100 
-        if view_width <= 1 or view_height <= 1: return
+        eval_h = self.eval_frame.winfo_height() if self.eval_frame.winfo_height() > 1 else self.eval_frame.winfo_reqheight()
+        nav_h = self.navigation_frame.winfo_height() if self.navigation_frame.winfo_height() > 1 else self.navigation_frame.winfo_reqheight()
+        reserved_height = eval_h + nav_h + 35
+
+        view_width = event.width - 40
+        view_height = event.height - reserved_height
+        if view_width <= 1 or view_height <= 1:
+            return
+
         new_square_size = min(view_width // COLS, view_height // ROWS)
+        board_pixel_width = COLS * self.square_size
+        self.eval_frame.config(width=board_pixel_width)
+        self.eval_bar_canvas.config(width=board_pixel_width)
         if new_square_size != self.square_size and new_square_size > 0:
             self.square_size = new_square_size
-            self.canvas.config(width=COLS * self.square_size, height=ROWS * self.square_size)
+            board_pixel_width = COLS * self.square_size
+            self.canvas.config(width=board_pixel_width, height=ROWS * self.square_size)
+            self.eval_frame.config(width=board_pixel_width)
+            self.eval_bar_canvas.config(width=board_pixel_width)
             self.board_image_white = self.create_board_image("white")
             self.board_image_black = self.create_board_image("black")
             self.draw_board()    
+        self._position_side_labels()
 
     def handle_key_press(self, event):
         if self.is_ai_thinking() and self.ai_process.name != self.ANALYSIS_AI_NAME: return
@@ -665,6 +694,34 @@ class EnhancedChessApp:
         for r in range(ROWS):
             for c in range(COLS):
                 if self.board.grid[r][c]: self.draw_piece_with_check(r, c)
+        self._position_side_labels()
+
+    def _position_side_labels(self):
+        if not hasattr(self, "canvas"):
+            return
+        desired_label_width = max(96, int(self.square_size * 1.9))
+
+        self.board_row_frame.update_idletasks()
+        canvas_x = self.canvas.winfo_x()
+        canvas_y = self.canvas.winfo_y()
+        board_h = ROWS * self.square_size
+        available_left = max(1, canvas_x - 10)
+        label_width = min(desired_label_width, available_left)
+
+        if label_width < 20:
+            self.top_bot_label.place_forget()
+            self.bottom_bot_label.place_forget()
+            return
+
+        self.top_bot_label.config(wraplength=max(1, label_width - 6), anchor="center", justify=tk.CENTER)
+        self.bottom_bot_label.config(wraplength=max(1, label_width - 6), anchor="center", justify=tk.CENTER)
+        strip_left = 2
+        strip_right = max(strip_left + 1, canvas_x - 8)
+        strip_width = max(1, strip_right - strip_left)
+        left_x = strip_left + max(0, (strip_width - label_width) // 2)
+
+        self.top_bot_label.place(in_=self.board_row_frame, x=left_x, y=canvas_y + 4, width=label_width, anchor="nw")
+        self.bottom_bot_label.place(in_=self.board_row_frame, x=left_x, y=canvas_y + board_h - 4, width=label_width, anchor="sw")
 
     def draw_piece_with_check(self, r, c):
         piece = self.board.grid[r][c]
@@ -699,8 +756,10 @@ class EnhancedChessApp:
         marker_x = int(((marker_score + 1) / 2.0) * w)
         self.eval_bar_canvas.create_line(marker_x, 0, marker_x, h, fill="#FF0000", width=3, tags="marker")
         self.eval_bar_canvas.create_line(w // 2, 0, w // 2, h, fill="#00FF00", width=2, tags="marker") 
-        eval_text = f"{'+' if score > 0 else ''}{score:.2f} (D{depth})" if depth else f"{'+' if score > 0 else ''}{score:.2f}"
-        if abs(score) < 0.05: eval_text = "Even"
+        depth_suffix = f" (D{depth})" if depth is not None else ""
+        eval_text = f"{'+' if score > 0 else ''}{score:.2f}{depth_suffix}"
+        if abs(score) < 0.05:
+            eval_text = f"Even{depth_suffix}"
         self.eval_score_label.config(text=eval_text)
 
     def process_comm_queue(self):
@@ -768,12 +827,13 @@ class EnhancedChessApp:
             black_label = "Black"
 
         if self.turn == "white":
-            white_label += " (to move)"
+            white_label += "\n(to move)"
         else:
-            black_label += " (to move)"
+            black_label += "\n(to move)"
 
         self.bottom_bot_label.config(text=white_label if self.board_orientation == 'white' else black_label)
         self.top_bot_label.config(text=black_label if self.board_orientation == 'white' else white_label)
+        self._position_side_labels()
 
     def set_interactivity(self, is_interactive):
         if is_interactive:
