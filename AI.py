@@ -1,4 +1,4 @@
-# AI.py (v90 Tuning 03 with TT Decay)
+# AI.py (v91.0 - Full History Heuristic Integration)
 
 import time
 import random
@@ -61,8 +61,7 @@ def board_hash(board, turn):
     return h
 
 # --- SEARCH STRUCTURES ---
-# Added 'age' to the TTEntry to track when the entry was created
-TTEntry = namedtuple('TTEntry', ['score', 'depth', 'flag', 'best_move', 'age'])
+TTEntry = namedtuple('TTEntry', ['score', 'depth', 'flag', 'best_move'])
 TT_FLAG_EXACT, TT_FLAG_LOWERBOUND, TT_FLAG_UPPERBOUND = 0, 1, 2
 
 class SearchCancelledException(Exception): pass
@@ -81,15 +80,13 @@ class ChessBot:
     NMP_DEPTH_DIVISOR = 6
     USE_NULL_MOVE_PRUNING = True
     Q_SEARCH_SAFETY_MARGIN = 600
-    
-    # Decay threshold: Entries older than this many game-plies are ignored
-    TT_DECAY_THRESHOLD = 7
 
     BONUS_PV_MOVE = 10_000_000
     BONUS_CAPTURE = 8_000_000
     BONUS_KILLER_1 = 4_000_000
     BONUS_KILLER_2 = 3_000_000
-    BONUS_Q_TACTIC = 3_500_000
+    # This bonus is removed in favor of the history heuristic
+    # BONUS_Q_TACTIC = 3_500_000 
     OPENING_TOTAL_PIECE_THRESHOLD = 23
     OPENING_BONUS_MAX_PLY = 1
     OPENING_KNIGHT_DEVELOP_BONUS = 100
@@ -316,12 +313,17 @@ class ChessBot:
             self._report_move(tb_move)
         return True
 
-    def make_move(self):
-        # Memory Management: Periodically clear out very old entries to save RAM
-        if len(self.tt) > 500000:
-             self.tt = {h: e for h, e in self.tt.items() if e.age >= self.ply_count - self.TT_DECAY_THRESHOLD}
+    def _age_history_table(self):
+        # Decay all scores in the history table to prioritize recent information
+        for color_idx in range(2):
+            for from_sq in range(ROWS*COLS):
+                for to_sq in range(ROWS*COLS):
+                    self.history_heuristic_table[color_idx][from_sq][to_sq] //= 2
 
+    def make_move(self):
         try:
+            self._age_history_table()
+
             if len(self.board.white_pieces) + len(self.board.black_pieces) == 3:
                 tb_move, tb_eval = self._get_best_tablebase_move_with_eval()
                 if self._report_root_tb_solution(tb_move, tb_eval, emit_move=True):
@@ -368,6 +370,8 @@ class ChessBot:
 
     def ponder_indefinitely(self):
         try:
+            self._age_history_table()
+            
             if is_insufficient_material(self.board): return
             
             # Instantly solve 3-piece endgames in Analysis Mode
@@ -493,17 +497,12 @@ class ChessBot:
                 return tb_score
 
         # --- OPTIMIZATION: MATE DISTANCE PRUNING ---
-        # This is the key logic that makes searching deeper depths fast 
-        # when a mate is already known.
-        
-        # 1. Cap Beta: We can't do better than mating immediately (MATE - ply)
         mate_value = self.MATE_SCORE - ply
         if beta > mate_value:
             beta = mate_value
             if alpha >= mate_value:
                 return mate_value
         
-        # 2. Raise Alpha: We can't do worse than getting mated immediately (-MATE + ply)
         mated_value = -self.MATE_SCORE + ply
         if alpha < mated_value:
             alpha = mated_value
@@ -520,18 +519,15 @@ class ChessBot:
 
         original_alpha = alpha
         tt_entry = self.tt.get(hash_val)
-        
-        # PROBE DECAY CHECK: Only use entry if it hasn't decayed
-        if ply > 0 and tt_entry and tt_entry.age >= self.ply_count - self.TT_DECAY_THRESHOLD:
-            if tt_entry.depth >= depth:
-                tt_score = tt_entry.score
-                if tt_score > self.MATE_SCORE - 1000: tt_score -= ply
-                elif tt_score < -self.MATE_SCORE + 1000: tt_score += ply
+        if ply > 0 and tt_entry and tt_entry.depth >= depth:
+            tt_score = tt_entry.score
+            if tt_score > self.MATE_SCORE - 1000: tt_score -= ply
+            elif tt_score < -self.MATE_SCORE + 1000: tt_score += ply
 
-                if tt_entry.flag == TT_FLAG_EXACT: return tt_score
-                elif tt_entry.flag == TT_FLAG_LOWERBOUND: alpha = max(alpha, tt_score)
-                elif tt_entry.flag == TT_FLAG_UPPERBOUND: beta = min(beta, tt_score)
-                if alpha >= beta: return tt_score
+            if tt_entry.flag == TT_FLAG_EXACT: return tt_score
+            elif tt_entry.flag == TT_FLAG_LOWERBOUND: alpha = max(alpha, tt_score)
+            elif tt_entry.flag == TT_FLAG_UPPERBOUND: beta = min(beta, tt_score)
+            if alpha >= beta: return tt_score
 
         if depth <= 0: return self.qsearch(board, alpha, beta, turn, ply)
 
@@ -548,7 +544,6 @@ class ChessBot:
             if (self.USE_NULL_MOVE_PRUNING and depth >= self.NMP_MIN_DEPTH and ply > 0 and not is_in_check_flag and
                 beta < self.MATE_SCORE - 200 and
                 any(not isinstance(p, (Pawn, King)) for p in (board.white_pieces if turn == 'white' else board.black_pieces))):
-                # Safety gate: only null-move prune if static eval already meets/exceeds beta.
                 self.used_heuristic_eval = True
                 static_eval = self.evaluate_board(board, turn)
                 if static_eval >= beta:
@@ -558,8 +553,7 @@ class ChessBot:
                         store_score = beta
                         if store_score > self.MATE_SCORE - 1000: store_score += ply
                         elif store_score < -self.MATE_SCORE + 1000: store_score -= ply
-                        # SAVE WITH CURRENT AGE
-                        self.tt[hash_val] = TTEntry(store_score, depth, TT_FLAG_LOWERBOUND, None, self.ply_count)
+                        self.tt[hash_val] = TTEntry(store_score, depth, TT_FLAG_LOWERBOUND, None)
                         return beta
 
             pseudo_moves = get_all_pseudo_legal_moves(board, turn)
@@ -611,8 +605,7 @@ class ChessBot:
                     store_score = beta
                     if store_score > self.MATE_SCORE - 1000: store_score += ply
                     elif store_score < -self.MATE_SCORE + 1000: store_score -= ply
-                    # SAVE WITH CURRENT AGE
-                    self.tt[hash_val] = TTEntry(store_score, depth, TT_FLAG_LOWERBOUND, move, self.ply_count)
+                    self.tt[hash_val] = TTEntry(store_score, depth, TT_FLAG_LOWERBOUND, move)
                     return beta
 
             if legal_moves_count == 0:
@@ -624,8 +617,7 @@ class ChessBot:
             elif store_score < -self.MATE_SCORE + 1000: store_score -= ply
 
             flag = TT_FLAG_EXACT if alpha > original_alpha else TT_FLAG_UPPERBOUND
-            # SAVE WITH CURRENT AGE
-            self.tt[hash_val] = TTEntry(store_score, depth, flag, best_move_for_node, self.ply_count)
+            self.tt[hash_val] = TTEntry(store_score, depth, flag, best_move_for_node)
             return alpha
         finally:
             if path_added:
@@ -713,11 +705,10 @@ class ChessBot:
             else:
                 if move in killers:
                     score = self.BONUS_KILLER_1 if move == killers[0] else self.BONUS_KILLER_2
-                elif isinstance(moving_piece, Queen):
-                    score = self.BONUS_Q_TACTIC
                 else:
                     from_idx, to_idx = move[0][0]*COLS+move[0][1], move[1][0]*COLS+move[1][1]
                     score = self.history_heuristic_table[color_index][from_idx][to_idx]
+
             if opening_bonus_enabled:
                 score += self._opening_development_bonus(move, moving_piece)
             scored_moves.append((score, move))
@@ -853,16 +844,12 @@ class ChessBot:
         # ----------------------------------------------------------------
         can_force_mate = [True, True]
         for i in (0, 1):
-            # A side cannot force checkmate if they have:
-            # 0 Pawns, 0 Knights, 0 Queens, AND less than 2 sliding pieces (Rooks/Bishops)
             if (pawn_counts[i] == 0 and 
                 knight_counts[i] == 0 and 
                 queen_counts[i] == 0 and 
                 (rook_counts[i] + bishop_counts[i]) < 2):
                 can_force_mate[i] = False
                 
-        # If the "winning" side cannot actually force a checkmate (e.g. lone Bishop vs Pawn),
-        # scale their advantage down massively. Using 8 as divisor per request.
         if final_score > 0 and not can_force_mate[0]:
             final_score //= 8
         elif final_score < 0 and not can_force_mate[1]:
