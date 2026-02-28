@@ -1,4 +1,5 @@
 # TablebaseManager.py (v2.0 - Correct side-to-move score mapping + int8/int16 compatibility)
+
 import os
 import numpy as np
 from GameLogic import King, Board

@@ -1,4 +1,5 @@
 # TablebaseGenerator.py (v1.5 - strict DTM, transition cache, optional parallel cache build)
+
 import os
 import time
 import __main__

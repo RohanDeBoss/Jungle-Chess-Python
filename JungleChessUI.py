@@ -1,4 +1,5 @@
-# JungleChessUI.py (v11.5 - smaller adaptive side-label boxes, no board overlap)
+# JungleChessUI.py (v12.0 - structural logic reductions, cleaner state updates)
+
 import tkinter as tk
 from tkinter import ttk, messagebox
 import math
@@ -213,23 +214,22 @@ class EnhancedChessApp:
         self.scoreboard_label = ttk.Label(parent_frame, text="", font=("Helvetica", 11), justify=tk.LEFT, background=self.COLORS['bg_dark'], foreground=self.COLORS['text_light'])
         self.scoreboard_label.pack(fill=tk.X, pady=(0, 10))
 
-        self.fen_frame = ttk.Frame(parent_frame, style='Left.TFrame')
-        self.fen_frame.pack(fill=tk.X, pady=(5, 5))
-        ttk.Label(self.fen_frame, text="FEN String:", style='SmallHeader.TLabel').pack(anchor=tk.W)
-        self.fen_entry = ttk.Entry(self.fen_frame, font=('Courier', 10), style='TEntry')
-        self.fen_entry.pack(fill=tk.X, pady=(2, 4))
-        self.fen_btn_frame = ttk.Frame(self.fen_frame, style='Left.TFrame'); self.fen_btn_frame.pack(fill=tk.X)
-        ttk.Button(self.fen_btn_frame, text="Load FEN", command=self.load_fen_from_entry, style='Control.TButton').pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 2))
-        ttk.Button(self.fen_btn_frame, text="Copy FEN", command=self.copy_fen_to_clipboard, style='Control.TButton').pack(side=tk.RIGHT, fill=tk.X, expand=True, padx=(2, 0))
+        # Replaced redundant logic with helper method
+        self.fen_entry = self._create_import_export_widget(parent_frame, "FEN String:", self.load_fen_from_entry, self.copy_fen_to_clipboard)
+        self.pgn_entry = self._create_import_export_widget(parent_frame, "PGN Record:", self.load_pgn_from_entry, self.copy_pgn_to_clipboard)
 
-        self.pgn_frame = ttk.Frame(parent_frame, style='Left.TFrame')
-        self.pgn_frame.pack(fill=tk.X, pady=(5, 5))
-        ttk.Label(self.pgn_frame, text="PGN Record:", style='SmallHeader.TLabel').pack(anchor=tk.W)
-        self.pgn_entry = ttk.Entry(self.pgn_frame, font=('Courier', 10), style='TEntry')
-        self.pgn_entry.pack(fill=tk.X, pady=(2, 4))
-        self.pgn_btn_frame = ttk.Frame(self.pgn_frame, style='Left.TFrame'); self.pgn_btn_frame.pack(fill=tk.X)
-        ttk.Button(self.pgn_btn_frame, text="Load PGN", command=self.load_pgn_from_entry, style='Control.TButton').pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 2))
-        ttk.Button(self.pgn_btn_frame, text="Copy PGN", command=self.copy_pgn_to_clipboard, style='Control.TButton').pack(side=tk.RIGHT, fill=tk.X, expand=True, padx=(2, 0))
+    def _create_import_export_widget(self, parent_frame, label_text, load_cmd, copy_cmd):
+        frame = ttk.Frame(parent_frame, style='Left.TFrame')
+        frame.pack(fill=tk.X, pady=(5, 5))
+        ttk.Label(frame, text=label_text, style='SmallHeader.TLabel').pack(anchor=tk.W)
+        entry = ttk.Entry(frame, font=('Courier', 10), style='TEntry')
+        entry.pack(fill=tk.X, pady=(2, 4))
+        btn_frame = ttk.Frame(frame, style='Left.TFrame')
+        btn_frame.pack(fill=tk.X)
+        button_prefix = label_text.split()[0]
+        ttk.Button(btn_frame, text=f"Load {button_prefix}", command=load_cmd, style='Control.TButton').pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 2))
+        ttk.Button(btn_frame, text=f"Copy {button_prefix}", command=copy_cmd, style='Control.TButton').pack(side=tk.RIGHT, fill=tk.X, expand=True, padx=(2, 0))
+        return entry
 
     def setup_styles(self):
         style = ttk.Style(); style.theme_use('clam')
@@ -308,9 +308,7 @@ class EnhancedChessApp:
         self.draw_eval_bar(self.last_eval_score, self.last_eval_depth)
 
     # --- FLIP VIEW / SWAP SIDES / MODE SWITCH ---
-    def toggle_board_view(self):
-        self.board_orientation = "black" if self.board_orientation == "white" else "white"
-        
+    def _update_flip_view_button_style(self):
         show_warning = False
         if self.game_mode.get() == GameMode.HUMAN_VS_BOT.value:
             if self.board_orientation != self.human_color:
@@ -323,7 +321,10 @@ class EnhancedChessApp:
             self.flip_view_btn.configure(style='Flipped.TButton')
         else:
             self.flip_view_btn.configure(style='Control.TButton')
-            
+
+    def toggle_board_view(self):
+        self.board_orientation = "black" if self.board_orientation == "white" else "white"
+        self._update_flip_view_button_style()
         self.update_bot_labels()
         self.draw_board()
 
@@ -341,18 +342,7 @@ class EnhancedChessApp:
         elif mode == GameMode.HUMAN_VS_HUMAN.value:
             self._update_analysis_after_state_change()
 
-        show_warning = False
-        if self.board_orientation == "black":
-            if mode == GameMode.HUMAN_VS_BOT.value:
-                if self.human_color != "black": show_warning = True
-            else:
-                show_warning = True
-        
-        if show_warning:
-            self.flip_view_btn.configure(style='Flipped.TButton')
-        else:
-            self.flip_view_btn.configure(style='Control.TButton')
-            
+        self._update_flip_view_button_style()
         self.update_ui_after_state_change()
 
     def swap_sides(self):
@@ -362,13 +352,23 @@ class EnhancedChessApp:
             self.human_color = "black" if self.human_color == "white" else "white"
             self.board_orientation = self.human_color
             
-            self.flip_view_btn.configure(style='Control.TButton')
+            self._update_flip_view_button_style()
             self.update_ui_after_state_change()
             
             if not self.game_over and self.turn != self.human_color:
                 print(f"Swapped sides. AI ({self.turn}) taking over...")
                 delay = 4 if self.instant_move.get() else 20
                 self.master.after(delay, self._make_game_ai_move)
+
+    def _reset_game_state_vars(self):
+        self.full_history =[(self.board.clone(), self.turn, None)]
+        self.history_pointer = 0
+        self.position_counts = {board_hash(self.board, self.turn): 1}
+        self.game_over = False
+        self.game_result = None
+        self.last_eval_score = 0.0
+        self.last_eval_depth = None
+        self.draw_eval_bar(0)
 
     # --- PGN & FEN LOGIC ---
     def get_current_fen(self):
@@ -414,14 +414,10 @@ class EnhancedChessApp:
                 
         self.turn = "white" if turn_part.lower() == 'w' else "black"
         self.game_started = True
-        self.full_history = [(self.board.clone(), self.turn, None)]
-        self.history_pointer = 0
-        self.position_counts = {board_hash(self.board, self.turn): 1}
-        self.game_over, self.game_result = False, None
-        self.last_eval_score, self.last_eval_depth = 0.0, None
+        self._reset_game_state_vars()
         
         self.board_orientation = self.human_color
-        self.flip_view_btn.configure(style='Control.TButton')
+        self._update_flip_view_button_style()
         
         self.update_ui_after_state_change()
         self._update_analysis_after_state_change()
@@ -477,7 +473,7 @@ class EnhancedChessApp:
 
     def update_moves_list(self):
         for item in self.moves_tree.get_children(): self.moves_tree.delete(item)
-        moves = [hist[2] for hist in self.full_history[1:]] 
+        moves =[hist[2] for hist in self.full_history[1:]] 
         start_turn = self.full_history[0][1]
         formatted_moves =[format_move(m) for m in moves if m]
         
@@ -578,14 +574,13 @@ class EnhancedChessApp:
     def reset_game(self):
         if self.game_mode.get() != GameMode.AI_VS_AI.value: self.ai_series_running = False
         self._stop_ai_process()
-        self.board = Board(); self.turn = "white"; self.game_started = False
+        self.board = Board()
+        self.turn = "white"
+        self.game_started = False
         self.last_move_timestamp = time.time()
-        self.selected, self.valid_moves, self.game_over, self.game_result = None,[], False, None
-        self.full_history = [(self.board.clone(), self.turn, None)]
-        self.history_pointer = 0
-        self.position_counts = {board_hash(self.board, self.turn): 1}
-        self.last_eval_score, self.last_eval_depth = 0.0, None
-        self.draw_eval_bar(0)
+        self.selected, self.valid_moves = None,[]
+        
+        self._reset_game_state_vars()
         self.fen_entry.delete(0, tk.END); self.pgn_entry.delete(0, tk.END)
         self._start_game_if_needed()
         
