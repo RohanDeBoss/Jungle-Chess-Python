@@ -1,4 +1,4 @@
-# v38 - TB confirmed that only kvk is truely always a draw
+# v38.1 Passive knight evaporation fix
 
 # -----------------------------
 # Global Constants
@@ -409,6 +409,25 @@ class Board:
             if end_pos[0] == promotion_rank:
                 promotion_type = Queen
                 friendly_lost.add(moving_piece)
+
+        # Passive knight evaporation: non-knights can evaporate by landing inside
+        # an enemy knight's zone, unless that knight was already captured by this move.
+        if not isinstance(moving_piece, Knight):
+            if isinstance(moving_piece, Queen) and is_capture:
+                passive_victim_type = None  # Explosive queen capture already self-removes.
+            elif promotion_type is not None:
+                passive_victim_type = Queen  # Pawn promoted, so victim would be the promoted queen.
+            else:
+                passive_victim_type = type(moving_piece)
+
+            if passive_victim_type is not None:
+                for r, c in KNIGHT_ATTACKS_FROM.get(end_pos, set()):
+                    potential_killer = self.grid[r][c]
+                    if (potential_killer and isinstance(potential_killer, Knight) and
+                        potential_killer.color != moving_piece.color and
+                        potential_killer not in opponent_captured):
+                        friendly_lost.add(passive_victim_type(moving_piece.color))
+                        break
         
         return friendly_lost, opponent_captured, promotion_type
 
@@ -571,17 +590,9 @@ def generate_all_tactical_moves(board, color):
         if start_pos is None: continue
 
         for end_pos in piece.get_valid_moves(board, start_pos):
-            is_capture = board.grid[end_pos[0]][end_pos[1]] is not None
-            is_promotion = isinstance(piece, Pawn) and (end_pos[0] == 0 or end_pos[0] == ROWS - 1)
-            
-            if is_capture or is_promotion:
-                yield (start_pos, end_pos)
-                continue
-            
-            # Utilizing Short-Circuit Evaluation: Only calls the function if the piece type matches
-            if isinstance(piece, Rook) and is_rook_piercing_capture(board, (start_pos, end_pos)):
-                yield (start_pos, end_pos)
-            elif isinstance(piece, Knight) and is_quiet_knight_evaporation(board, (start_pos, end_pos)):
+            move = (start_pos, end_pos)
+            friendly_lost, opponent_captured, promotion_type = board.get_move_outcome(move)
+            if friendly_lost or opponent_captured or promotion_type is not None:
                 yield (start_pos, end_pos)
 
 def format_move(move):

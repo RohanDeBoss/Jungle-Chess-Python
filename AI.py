@@ -1,4 +1,4 @@
-# AI.py (v89.2 - TB floor + root null-window)
+# AI.py (v89.3 - search optimizations)
 import time
 import random
 from collections import namedtuple
@@ -122,6 +122,20 @@ class ChessBot:
     def _report_move(self, move): self.comm_queue.put(('move', move))
     def _format_move(self, move): return format_move(move)
 
+    def _material_swing_from_outcome(self, friendly_lost, opponent_captured, promotion_type):
+        swing = 0
+        for piece in opponent_captured:
+            swing += ORDERING_VALUES.get(type(piece), 0)
+        for piece in friendly_lost:
+            swing -= ORDERING_VALUES.get(type(piece), 0)
+        if promotion_type is not None:
+            swing += ORDERING_VALUES.get(promotion_type, 0)
+        return swing
+
+    def _is_tactical_move(self, board, move):
+        friendly_lost, opponent_captured, promotion_type = board.get_move_outcome(move)
+        return bool(friendly_lost or opponent_captured or promotion_type is not None)
+
     def _get_root_tb_eval_relative(self):
         """
         Return current position TB eval from the bot's perspective.
@@ -168,149 +182,6 @@ class ChessBot:
                 
         return best_move, best_score
 
-    def _get_tb_frontier_move_with_eval(self):
-        """
-        Optional fast path for 4-piece roots:
-        if every legal move transitions directly to terminal or 3-piece TB,
-        we can solve the root exactly without full search.
-        """
-        if len(self.board.white_pieces) + len(self.board.black_pieces) != 4:
-            return None, None
-
-        legal = get_all_legal_moves(self.board, self.color)
-        if not legal:
-            return None, None
-
-        best_move = None
-        best_score = -float('inf')
-        covered = 0
-
-        for move in legal:
-            sim = self.board.clone()
-            sim.make_move(move[0], move[1])
-
-            # Immediate terminal outcomes
-            if not sim.find_king_pos(self.opponent_color):
-                score = self.MATE_SCORE - 1
-                covered += 1
-            elif not sim.find_king_pos(self.color):
-                score = -self.MATE_SCORE + 1
-                covered += 1
-            else:
-                piece_count = len(sim.white_pieces) + len(sim.black_pieces)
-                if piece_count != 3:
-                    continue
-
-                score_abs = self.tb_manager.probe(sim, self.opponent_color)
-                if score_abs is None:
-                    score = 0
-                else:
-                    self.tb_hits += 1
-                    score = score_abs if self.color == 'white' else -score_abs
-                    # We made one ply to reach child TB.
-                    if score > self.MATE_SCORE - 1000:
-                        score -= 1
-                    elif score < -self.MATE_SCORE + 1000:
-                        score += 1
-                covered += 1
-
-            if score > best_score or (score == best_score and score == 0 and random.random() > 0.5):
-                best_score = score
-                best_move = move
-
-        # Only safe to short-circuit if every legal move is TB-covered.
-        if covered == len(legal) and best_move is not None:
-            return best_move, best_score
-        return None, None
-
-    def _get_tb_tunnel_move_with_eval(self, max_plies=6, max_pieces=6):
-        """
-        Bounded exact solver for near-tablebase positions with more than 3 pieces.
-        We only short-circuit when the explored game tree is fully resolved
-        (terminal/TB) within max_plies; otherwise returns (None, None).
-        Score returned is relative to self.color at the root.
-        """
-        total_pieces = len(self.board.white_pieces) + len(self.board.black_pieces)
-        if total_pieces < 4 or total_pieces > max_pieces:
-            return None, None
-
-        memo = {}
-
-        def solve_rel(board, turn, depth):
-            key = (board_hash(board, turn), depth)
-            if key in memo:
-                return memo[key]
-
-            piece_count = len(board.white_pieces) + len(board.black_pieces)
-            if piece_count == 3:
-                tb_abs = self.tb_manager.probe(board, turn)
-                if tb_abs is None:
-                    memo[key] = 0
-                    return 0
-                rel = tb_abs if turn == 'white' else -tb_abs
-                memo[key] = rel
-                return rel
-
-            if depth <= 0:
-                memo[key] = None
-                return None
-
-            legal = get_all_legal_moves(board, turn)
-            if not legal:
-                if is_in_check(board, turn):
-                    return -self.MATE_SCORE + 1
-                return self.DRAW_SCORE
-
-            opp = 'black' if turn == 'white' else 'white'
-            best = -float('inf')
-            for mv in legal:
-                child = board.clone()
-                child.make_move(mv[0], mv[1])
-
-                if not child.find_king_pos(opp):
-                    sc = self.MATE_SCORE - 1
-                elif not child.find_king_pos(turn):
-                    sc = -self.MATE_SCORE + 1
-                else:
-                    child_rel = solve_rel(child, opp, depth - 1)
-                    if child_rel is None:
-                        memo[key] = None
-                        return None
-                    sc = -child_rel
-
-                if sc > best:
-                    best = sc
-
-            memo[key] = best
-            return best
-
-        root_moves = get_all_legal_moves(self.board, self.color)
-        if not root_moves:
-            return None, None
-
-        best_move = None
-        best_score = -float('inf')
-        opp = self.opponent_color
-        for mv in root_moves:
-            child = self.board.clone()
-            child.make_move(mv[0], mv[1])
-
-            if not child.find_king_pos(opp):
-                sc = self.MATE_SCORE - 1
-            elif not child.find_king_pos(self.color):
-                sc = -self.MATE_SCORE + 1
-            else:
-                child_rel = solve_rel(child, opp, max_plies - 1)
-                if child_rel is None:
-                    return None, None
-                sc = -child_rel
-
-            if sc > best_score or (sc == best_score and sc == 0 and random.random() > 0.5):
-                best_score = sc
-                best_move = mv
-
-        return best_move, best_score
-
     def make_move(self):
         try:
             if len(self.board.white_pieces) + len(self.board.black_pieces) == 3:
@@ -326,22 +197,6 @@ class ChessBot:
                     self._report_log(f"  > {self.bot_name} (TB): {self._format_move(tb_move)}, Eval={eval_for_ui/100:+.2f}, TBhits={self.tb_hits}")
                     self._report_eval(display_eval, "TB")
                     self._report_move(tb_move)
-                    return
-            elif len(self.board.white_pieces) + len(self.board.black_pieces) == 4:
-                frontier_move, frontier_eval = self._get_tb_frontier_move_with_eval()
-                if frontier_move:
-                    eval_for_ui = frontier_eval if self.color == 'white' else -frontier_eval
-                    self._report_log(f"  > {self.bot_name} (TB-Frontier): {self._format_move(frontier_move)}, Eval={eval_for_ui/100:+.2f}, TBhits={self.tb_hits}")
-                    self._report_eval(frontier_eval, "TB")
-                    self._report_move(frontier_move)
-                    return
-            else:
-                tunnel_move, tunnel_eval = self._get_tb_tunnel_move_with_eval(max_plies=6, max_pieces=6)
-                if tunnel_move:
-                    eval_for_ui = tunnel_eval if self.color == 'white' else -tunnel_eval
-                    self._report_log(f"  > {self.bot_name} (TB-Tunnel): {self._format_move(tunnel_move)}, Eval={eval_for_ui/100:+.2f}, TBhits={self.tb_hits}")
-                    self._report_eval(tunnel_eval, "TB")
-                    self._report_move(tunnel_move)
                     return
 
             root_moves = get_all_legal_moves(self.board, self.color)
@@ -395,24 +250,6 @@ class ChessBot:
                     self._report_log(f"  > {self.bot_name} (TB): {self._format_move(tb_move)}, Eval={eval_for_ui/100:+.2f}, TBhits={self.tb_hits} (Perfect Play)")
                     self._report_eval(display_eval, "TB")
                     # Sleep to prevent burning CPU since the position is perfectly solved
-                    while not self.cancellation_event.is_set():
-                        time.sleep(0.1)
-                    return
-            elif len(self.board.white_pieces) + len(self.board.black_pieces) == 4:
-                frontier_move, frontier_eval = self._get_tb_frontier_move_with_eval()
-                if frontier_move:
-                    eval_for_ui = frontier_eval if self.color == 'white' else -frontier_eval
-                    self._report_log(f"  > {self.bot_name} (TB-Frontier): {self._format_move(frontier_move)}, Eval={eval_for_ui/100:+.2f}, TBhits={self.tb_hits} (Perfect Play)")
-                    self._report_eval(frontier_eval, "TB")
-                    while not self.cancellation_event.is_set():
-                        time.sleep(0.1)
-                    return
-            else:
-                tunnel_move, tunnel_eval = self._get_tb_tunnel_move_with_eval(max_plies=6, max_pieces=6)
-                if tunnel_move:
-                    eval_for_ui = tunnel_eval if self.color == 'white' else -tunnel_eval
-                    self._report_log(f"  > {self.bot_name} (TB-Tunnel): {self._format_move(tunnel_move)}, Eval={eval_for_ui/100:+.2f}, TBhits={self.tb_hits} (Perfect Play)")
-                    self._report_eval(tunnel_eval, "TB")
                     while not self.cancellation_event.is_set():
                         time.sleep(0.1)
                     return
@@ -558,79 +395,99 @@ class ChessBot:
         opponent_turn = 'black' if turn == 'white' else 'white'
         is_in_check_flag = is_in_check(board, turn)
         if is_in_check_flag: depth += 1
-        
-        if (depth >= self.NMP_MIN_DEPTH and ply > 0 and not is_in_check_flag and
-            beta < self.MATE_SCORE - 200 and 
-            any(not isinstance(p, (Pawn, King)) for p in (board.white_pieces if turn == 'white' else board.black_pieces))):
-            
-            nmp_reduction = self.NMP_BASE_REDUCTION + (depth // self.NMP_DEPTH_DIVISOR)
-            score = -self.negamax(board, depth - 1 - nmp_reduction, -beta, -beta + 1, opponent_turn, ply + 1, search_path | {hash_val})
-            if score >= beta:
-                store_score = beta
-                if store_score > self.MATE_SCORE - 1000: store_score += ply
-                elif store_score < -self.MATE_SCORE + 1000: store_score -= ply
-                self.tt[hash_val] = TTEntry(store_score, depth, TT_FLAG_LOWERBOUND, None)
-                return beta 
 
-        pseudo_moves = get_all_pseudo_legal_moves(board, turn)
-        hash_move = tt_entry.best_move if tt_entry else None
-        ordered_moves = self.order_moves(board, pseudo_moves, ply, hash_move)
-        
-        best_move_for_node = None
-        legal_moves_count = 0
-        
-        for move in ordered_moves:
-            target_piece = board.grid[move[1][0]][move[1][1]]
-            moving_piece = board.grid[move[0][0]][move[0][1]]
-            is_tactical = target_piece is not None or \
-                          (isinstance(moving_piece, Pawn) and (move[1][0] == 0 or move[1][0] == ROWS - 1)) or \
-                          (isinstance(moving_piece, Rook) and is_rook_piercing_capture(board, move)) or \
-                          (isinstance(moving_piece, Knight) and is_quiet_knight_evaporation(board, move))
+        path_added = False
+        if hash_val not in search_path:
+            search_path.add(hash_val)
+            path_added = True
 
-            child_board = board.clone()
-            child_board.make_move(move[0], move[1])
+        try:
+            if (depth >= self.NMP_MIN_DEPTH and ply > 0 and not is_in_check_flag and
+                beta < self.MATE_SCORE - 200 and
+                any(not isinstance(p, (Pawn, King)) for p in (board.white_pieces if turn == 'white' else board.black_pieces))):
 
-            if is_in_check(child_board, turn): continue
-                
-            legal_moves_count += 1
-            
-            reduction = 0
-            if (depth >= self.LMR_DEPTH_THRESHOLD and legal_moves_count > self.LMR_MOVE_COUNT_THRESHOLD and 
-                not is_in_check_flag and not is_tactical):
-                reduction = self.LMR_REDUCTION
+                nmp_reduction = self.NMP_BASE_REDUCTION + (depth // self.NMP_DEPTH_DIVISOR)
+                score = -self.negamax(board, depth - 1 - nmp_reduction, -beta, -beta + 1, opponent_turn, ply + 1, search_path)
+                if score >= beta:
+                    store_score = beta
+                    if store_score > self.MATE_SCORE - 1000: store_score += ply
+                    elif store_score < -self.MATE_SCORE + 1000: store_score -= ply
+                    self.tt[hash_val] = TTEntry(store_score, depth, TT_FLAG_LOWERBOUND, None)
+                    return beta
 
-            score = -self.negamax(child_board, depth - 1 - reduction, -beta, -alpha, opponent_turn, ply + 1, search_path | {hash_val})
-            if reduction > 0 and score > alpha:
-                score = -self.negamax(child_board, depth - 1, -beta, -alpha, opponent_turn, ply + 1, search_path | {hash_val})
-            
-            if score > alpha:
-                alpha, best_move_for_node = score, move
-            if alpha >= beta:
-                if not is_tactical:
-                    if ply < len(self.killer_moves) and self.killer_moves[ply][0] != move:
-                        self.killer_moves[ply][1], self.killer_moves[ply][0] = self.killer_moves[ply][0], move
-                    if moving_piece:
-                        color_index = 0 if moving_piece.color == 'white' else 1
-                        from_sq, to_sq = move[0][0]*COLS+move[0][1], move[1][0]*COLS+move[1][1]
-                        self.history_heuristic_table[color_index][from_sq][to_sq] += depth * depth
-                
-                store_score = beta
-                if store_score > self.MATE_SCORE - 1000: store_score += ply
-                elif store_score < -self.MATE_SCORE + 1000: store_score -= ply
-                self.tt[hash_val] = TTEntry(store_score, depth, TT_FLAG_LOWERBOUND, move)
-                return beta
+            pseudo_moves = get_all_pseudo_legal_moves(board, turn)
+            hash_move = tt_entry.best_move if tt_entry else None
+            ordered_moves, move_meta = self.order_moves(board, pseudo_moves, ply, hash_move, return_meta=True)
 
-        if legal_moves_count == 0:
-            if is_in_check_flag: return -self.MATE_SCORE + ply
-            return self.DRAW_SCORE
+            best_move_for_node = None
+            legal_moves_count = 0
 
-        store_score = alpha
-        if store_score > self.MATE_SCORE - 1000: store_score += ply
-        elif store_score < -self.MATE_SCORE + 1000: store_score -= ply
+            for move in ordered_moves:
+                meta = move_meta.get(move)
+                if meta is None:
+                    moving_piece = board.grid[move[0][0]][move[0][1]]
+                    is_tactical = self._is_tactical_move(board, move)
+                else:
+                    is_tactical, moving_piece = meta
 
-        flag = TT_FLAG_EXACT if alpha > original_alpha else TT_FLAG_UPPERBOUND
-        self.tt[hash_val] = TTEntry(store_score, depth, flag, best_move_for_node)
-        return alpha
+                child_board = board.clone()
+                child_board.make_move(move[0], move[1])
+
+                if is_in_check(child_board, turn): continue
+
+                legal_moves_count += 1
+
+                reduction = 0
+                if (depth >= self.LMR_DEPTH_THRESHOLD and legal_moves_count > self.LMR_MOVE_COUNT_THRESHOLD and
+                    not is_in_check_flag and not is_tactical):
+                    reduction = self.LMR_REDUCTION
+
+                search_depth = depth - 1 - reduction
+
+                if legal_moves_count == 1 or alpha == -float('inf'):
+                    # Principal variation move gets full window immediately.
+                    score = -self.negamax(child_board, search_depth, -beta, -alpha, opponent_turn, ply + 1, search_path)
+                    if reduction > 0 and score > alpha:
+                        score = -self.negamax(child_board, depth - 1, -beta, -alpha, opponent_turn, ply + 1, search_path)
+                else:
+                    # PVS/null-window for later moves, then re-search only when needed.
+                    score = -self.negamax(child_board, search_depth, -(alpha + 1), -alpha, opponent_turn, ply + 1, search_path)
+                    if reduction > 0 and score > alpha:
+                        score = -self.negamax(child_board, depth - 1, -(alpha + 1), -alpha, opponent_turn, ply + 1, search_path)
+                    if score > alpha and score < beta:
+                        score = -self.negamax(child_board, depth - 1, -beta, -alpha, opponent_turn, ply + 1, search_path)
+
+                if score > alpha:
+                    alpha, best_move_for_node = score, move
+                if alpha >= beta:
+                    if not is_tactical:
+                        if ply < len(self.killer_moves) and self.killer_moves[ply][0] != move:
+                            self.killer_moves[ply][1], self.killer_moves[ply][0] = self.killer_moves[ply][0], move
+                        if moving_piece:
+                            color_index = 0 if moving_piece.color == 'white' else 1
+                            from_sq, to_sq = move[0][0]*COLS+move[0][1], move[1][0]*COLS+move[1][1]
+                            self.history_heuristic_table[color_index][from_sq][to_sq] += depth * depth
+
+                    store_score = beta
+                    if store_score > self.MATE_SCORE - 1000: store_score += ply
+                    elif store_score < -self.MATE_SCORE + 1000: store_score -= ply
+                    self.tt[hash_val] = TTEntry(store_score, depth, TT_FLAG_LOWERBOUND, move)
+                    return beta
+
+            if legal_moves_count == 0:
+                if is_in_check_flag: return -self.MATE_SCORE + ply
+                return self.DRAW_SCORE
+
+            store_score = alpha
+            if store_score > self.MATE_SCORE - 1000: store_score += ply
+            elif store_score < -self.MATE_SCORE + 1000: store_score -= ply
+
+            flag = TT_FLAG_EXACT if alpha > original_alpha else TT_FLAG_UPPERBOUND
+            self.tt[hash_val] = TTEntry(store_score, depth, flag, best_move_for_node)
+            return alpha
+        finally:
+            if path_added:
+                search_path.remove(hash_val)
     
 
     def qsearch(self, board, alpha, beta, turn, ply):
@@ -658,22 +515,11 @@ class ChessBot:
             if stand_pat >= beta: return beta
             alpha = max(alpha, stand_pat)
 
-        # OPTIMIZATION: Filter pseudo-legal moves inline
-        promising_moves =[]
-        pseudo_moves = get_all_pseudo_legal_moves(board, turn)
-        
-        for move in pseudo_moves:
-            if is_in_check_flag:
-                promising_moves.append(move) # Must evaluate evasions
-            else:
-                target_piece = board.grid[move[1][0]][move[1][1]]
-                moving_piece = board.grid[move[0][0]][move[0][1]]
-                is_tactical = target_piece is not None or \
-                              (isinstance(moving_piece, Pawn) and (move[1][0] == 0 or move[1][0] == ROWS - 1)) or \
-                              (isinstance(moving_piece, Rook) and is_rook_piercing_capture(board, move)) or \
-                              (isinstance(moving_piece, Knight) and is_quiet_knight_evaporation(board, move))
-                if is_tactical:
-                    promising_moves.append(move)
+        # In check: all evasions. Otherwise: tactical-only qsearch frontier.
+        if is_in_check_flag:
+            promising_moves = list(get_all_pseudo_legal_moves(board, turn))
+        else:
+            promising_moves = list(generate_all_tactical_moves(board, turn))
         
         scored_moves =[]
         for move in promising_moves:
@@ -701,37 +547,41 @@ class ChessBot:
             
         return alpha
 
-    def order_moves(self, board, moves, ply, hash_move):
-        if not moves: return []
-        scores = {}
+    def order_moves(self, board, moves, ply, hash_move, return_meta=False):
+        if not moves:
+            return ([], {}) if return_meta else []
+
+        scored_moves = []
+        move_meta = {}
         killers = self.killer_moves[ply] if ply < len(self.killer_moves) else [None, None]
         color_index = 0 if (self.color if ply % 2 == 0 else self.opponent_color) == 'white' else 1
         
         for move in moves:
-            score = 0
+            moving_piece = board.grid[move[0][0]][move[0][1]]
+            friendly_lost, opponent_captured, promotion_type = board.get_move_outcome(move)
+            is_tactical = bool(friendly_lost or opponent_captured or promotion_type is not None)
+            move_meta[move] = (is_tactical, moving_piece)
+
             if move == hash_move:
                 score = self.BONUS_PV_MOVE
+            elif is_tactical:
+                swing = self._material_swing_from_outcome(friendly_lost, opponent_captured, promotion_type)
+                score = self.BONUS_CAPTURE + swing
             else:
-                moving_piece = board.grid[move[0][0]][move[0][1]]
-                target_piece = board.grid[move[1][0]][move[1][1]]
-                
-                is_promotion = isinstance(moving_piece, Pawn) and (move[1][0] == 0 or move[1][0] == ROWS - 1)
-                is_tactical = target_piece is not None or is_promotion or \
-                              (isinstance(moving_piece, Rook) and is_rook_piercing_capture(board, move)) or \
-                              (isinstance(moving_piece, Knight) and is_quiet_knight_evaporation(board, move))
-
-                if is_tactical:
-                    swing = calculate_material_swing(board, move, ORDERING_VALUES)
-                    score = self.BONUS_CAPTURE + swing
+                if move in killers:
+                    score = self.BONUS_KILLER_1 if move == killers[0] else self.BONUS_KILLER_2
+                elif isinstance(moving_piece, (Queen, Knight)):
+                    score = self.BONUS_QN_TACTIC
                 else:
-                    if move in killers: score = self.BONUS_KILLER_1 if move == killers[0] else self.BONUS_KILLER_2
-                    elif isinstance(moving_piece, (Queen, Knight)): score = self.BONUS_QN_TACTIC
-                    else:
-                        from_idx, to_idx = move[0][0]*COLS+move[0][1], move[1][0]*COLS+move[1][1]
-                        score = self.history_heuristic_table[color_index][from_idx][to_idx]
-            scores[move] = score
-        moves.sort(key=lambda m: scores.get(m, 0), reverse=True)
-        return moves
+                    from_idx, to_idx = move[0][0]*COLS+move[0][1], move[1][0]*COLS+move[1][1]
+                    score = self.history_heuristic_table[color_index][from_idx][to_idx]
+            scored_moves.append((score, move))
+
+        scored_moves.sort(key=lambda item: item[0], reverse=True)
+        ordered_moves = [move for _, move in scored_moves]
+        if return_meta:
+            return ordered_moves, move_meta
+        return ordered_moves
 
     def evaluate_board(self, board, turn_to_move):
         if is_insufficient_material(board):
