@@ -737,6 +737,10 @@ class EnhancedChessApp:
     def _update_analysis_after_state_change(self):
         self._stop_ai_process()
         if self.analysis_mode_var.get() and self.game_mode.get() == GameMode.HUMAN_VS_HUMAN.value and not self.game_over:
+            # Add a readable boundary so consecutive analysis blocks are easier to scan.
+            # history_pointer is the current ply index from the initial position (ply 0).
+            fullmove = (self.history_pointer + 1) // 2 + 1
+            print(f"\n--- Analysis: Move {fullmove}, Ply {self.history_pointer}, {self.turn.capitalize()} to move ---")
             self.master.after(50, lambda: self._start_ai_process(ChessBot, self.ANALYSIS_AI_NAME, 99))
 
     def _start_game_if_needed(self):

@@ -1,4 +1,4 @@
-# v37 - King check optimisation, plus boolean maths optimisation
+# v38 - TB confirmed that only kvk is truely always a draw
 
 # -----------------------------
 # Global Constants
@@ -463,53 +463,45 @@ def has_legal_moves(board, color):
         return False
         
 def is_insufficient_material(board):
-    white_pieces = board.white_pieces
-    black_pieces = board.black_pieces
-    total_pieces = len(white_pieces) + len(black_pieces)
-
-    if total_pieces > 4: return False 
-
-    for p in white_pieces:
-        if isinstance(p, (Pawn, Queen)): return False
-    for p in black_pieces:
-        if isinstance(p, (Pawn, Queen)): return False
-
-    if total_pieces == 2: return True
-    if total_pieces == 3:
-        all_pieces = white_pieces + black_pieces
-        for p in all_pieces:
-            if isinstance(p, Knight): return False
-        return True
-    if total_pieces == 4:
-        w_has_rook = any(isinstance(p, Rook) for p in white_pieces)
-        b_has_rook = any(isinstance(p, Rook) for p in black_pieces)
-        w_has_bishop = any(isinstance(p, Bishop) for p in white_pieces)
-        b_has_bishop = any(isinstance(p, Bishop) for p in black_pieces)
-        w_has_knight = any(isinstance(p, Knight) for p in white_pieces)
-        b_has_knight = any(isinstance(p, Knight) for p in black_pieces)
-        
-        if w_has_rook and b_has_rook: return True
-        if (w_has_rook and b_has_bishop) or (w_has_bishop and b_has_rook): return True
-        if w_has_bishop and b_has_bishop: return True
-        if w_has_knight and b_has_knight: return True
-        
-    return False
+    """
+    In Jungle Chess, pieces are extremely lethal. 
+    We ONLY declare a draw if only the two Kings remain.
+    As long as any other piece exists, a win is mathematically possible.
+    """
+    return (len(board.white_pieces) + len(board.black_pieces)) <= 2
 
 def get_game_state(board, turn_to_move, position_counts, ply_count, max_moves):
+    """
+    Adjudicates the game state. Responds correctly to Jungle Chess 
+    piece lethality and tablebase outcomes.
+    """
+    # 1. CHECK legal moves first (Checkmate or Stalemate)
     if not has_legal_moves(board, turn_to_move):
         winner = 'black' if turn_to_move == 'white' else 'white'
-        return ("checkmate", winner) if is_in_check(board, turn_to_move) else ("stalemate", None)
+        if is_in_check(board, turn_to_move):
+            return ("checkmate", winner)
+        else:
+            return ("stalemate", None)
+    
+    # 2. Physical Insufficiency (Only King vs King)
     if is_insufficient_material(board):
-        return "insufficient_material", None
+        return ("insufficient_material", None)
+    
+    # 3. Three-fold Repetition
+    # Important: We use 3-fold (not 2-fold) to allow for triangulation 
+    # to reach tablebase wins.
     try:
         from AI import board_hash
         current_hash = board_hash(board, turn_to_move)
         if position_counts.get(current_hash, 0) >= 3:
-            return "repetition", None
+            return ("repetition", None)
     except ImportError:
         pass
+        
+    # 4. Hard Move Limit (The 50-move rule equivalent)
     if ply_count >= max_moves:
-        return "move_limit", None
+        return ("move_limit", None)
+        
     return "ongoing", None
 
 def calculate_material_swing(board, move, tapered_vals_by_type):
@@ -525,8 +517,9 @@ def calculate_material_swing(board, move, tapered_vals_by_type):
     return swing
 
 def is_draw(board, turn_to_move, position_counts, ply_count, max_moves):
+    """Simple wrapper for UI/Search checks."""
     state, _ = get_game_state(board, turn_to_move, position_counts, ply_count, max_moves)
-    return state in["stalemate", "insufficient_material", "repetition", "move_limit"]
+    return state in ["stalemate", "insufficient_material", "repetition", "move_limit"]
 
 def is_rook_piercing_capture(board, move):
     start, end = move
