@@ -1,4 +1,4 @@
-# AI.py (v89.5 - even cheaper search optimizations)
+# AI.py (v89.6 correctness-first: NMP off, variant tactical coverage expanded)
 import time
 import random
 from collections import namedtuple
@@ -78,6 +78,7 @@ class ChessBot:
     NMP_MIN_DEPTH = 3
     NMP_BASE_REDUCTION = 2
     NMP_DEPTH_DIVISOR = 6
+    USE_NULL_MOVE_PRUNING = False
     Q_SEARCH_SAFETY_MARGIN = 850
 
     BONUS_PV_MOVE = 10_000_000
@@ -140,6 +141,8 @@ class ChessBot:
         if isinstance(moving_piece, Knight) and is_quiet_knight_evaporation(board, move):
             return True
         if is_passive_knight_zone_evaporation(board, move):
+            return True
+        if is_discovered_slider_unlock(board, move):
             return True
         return False
 
@@ -427,7 +430,7 @@ class ChessBot:
             path_added = True
 
         try:
-            if (depth >= self.NMP_MIN_DEPTH and ply > 0 and not is_in_check_flag and
+            if (self.USE_NULL_MOVE_PRUNING and depth >= self.NMP_MIN_DEPTH and ply > 0 and not is_in_check_flag and
                 beta < self.MATE_SCORE - 200 and
                 any(not isinstance(p, (Pawn, King)) for p in (board.white_pieces if turn == 'white' else board.black_pieces))):
 

@@ -1,4 +1,4 @@
-# v38.1 Passive knight evaporation fix
+# v38.2 Tactical coverage: passive knight zone + discovered slider unlock detection
 
 # -----------------------------
 # Global Constants
@@ -595,6 +595,66 @@ def is_passive_knight_zone_evaporation(board, move):
             return True
     return False
 
+def _first_piece_in_direction(board, start, dr, dc):
+    r, c = start[0] + dr, start[1] + dc
+    while 0 <= r < ROWS and 0 <= c < COLS:
+        piece = board.grid[r][c]
+        if piece is not None:
+            return piece, (r, c)
+        r += dr
+        c += dc
+    return None, None
+
+def _is_between(a, b, x):
+    dr = (b[0] > a[0]) - (b[0] < a[0])
+    dc = (b[1] > a[1]) - (b[1] < a[1])
+    r, c = a[0] + dr, a[1] + dc
+    while (r, c) != b:
+        if (r, c) == x:
+            return True
+        r += dr
+        c += dc
+    return False
+
+def is_discovered_slider_unlock(board, move):
+    """
+    Moving a blocker can uncover a friendly Queen/Rook line to an enemy piece.
+    Knights are excluded because they do not depend on line-of-sight.
+    """
+    start_pos, end_pos = move
+    moving_piece = board.grid[start_pos[0]][start_pos[1]]
+    if moving_piece is None or isinstance(moving_piece, Knight):
+        return False
+
+    my_color = moving_piece.color
+    opp_color = moving_piece.opponent_color
+
+    for dr, dc in DIRECTIONS['queen']:
+        p_plus, pos_plus = _first_piece_in_direction(board, start_pos, dr, dc)
+        p_minus, pos_minus = _first_piece_in_direction(board, start_pos, -dr, -dc)
+        if p_plus is None or p_minus is None:
+            continue
+
+        # Check both orientations around the moved blocker.
+        for slider, slider_pos, target, target_pos in (
+            (p_plus, pos_plus, p_minus, pos_minus),
+            (p_minus, pos_minus, p_plus, pos_plus),
+        ):
+            if slider.color != my_color or target.color != opp_color:
+                continue
+
+            slider_is_queen = isinstance(slider, Queen)
+            slider_is_rook = isinstance(slider, Rook) and (dr == 0 or dc == 0)
+            if not (slider_is_queen or slider_is_rook):
+                continue
+
+            # If destination still lies between slider and target, line stays blocked.
+            if _is_between(slider_pos, target_pos, end_pos):
+                continue
+            return True
+
+    return False
+
 def generate_all_tactical_moves(board, color):
     piece_list = board.white_pieces if color == 'white' else board.black_pieces
     
@@ -617,6 +677,8 @@ def generate_all_tactical_moves(board, color):
             elif isinstance(piece, Knight) and is_quiet_knight_evaporation(board, move):
                 yield (start_pos, end_pos)
             elif is_passive_knight_zone_evaporation(board, move):
+                yield (start_pos, end_pos)
+            elif is_discovered_slider_unlock(board, move):
                 yield (start_pos, end_pos)
 
 def format_move(move):
