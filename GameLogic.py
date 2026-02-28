@@ -1,4 +1,4 @@
-# v38.2 Tactical coverage: passive knight zone + discovered slider unlock detection
+# v38.3 Tactical coverage tuned: passive knight zone tactical, discovered-slider as ordering hint
 
 # -----------------------------
 # Global Constants
@@ -677,8 +677,6 @@ def generate_all_tactical_moves(board, color):
             elif isinstance(piece, Knight) and is_quiet_knight_evaporation(board, move):
                 yield (start_pos, end_pos)
             elif is_passive_knight_zone_evaporation(board, move):
-                yield (start_pos, end_pos)
-            elif is_discovered_slider_unlock(board, move):
                 yield (start_pos, end_pos)
 
 def format_move(move):

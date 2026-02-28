@@ -1,4 +1,4 @@
-# AI.py (v89.6 correctness-first: NMP off, variant tactical coverage expanded)
+# AI.py (v89.8 balanced search: NMP restored with static-eval safety gate)
 import time
 import random
 from collections import namedtuple
@@ -78,7 +78,7 @@ class ChessBot:
     NMP_MIN_DEPTH = 3
     NMP_BASE_REDUCTION = 2
     NMP_DEPTH_DIVISOR = 6
-    USE_NULL_MOVE_PRUNING = False
+    USE_NULL_MOVE_PRUNING = True
     Q_SEARCH_SAFETY_MARGIN = 850
 
     BONUS_PV_MOVE = 10_000_000
@@ -141,8 +141,6 @@ class ChessBot:
         if isinstance(moving_piece, Knight) and is_quiet_knight_evaporation(board, move):
             return True
         if is_passive_knight_zone_evaporation(board, move):
-            return True
-        if is_discovered_slider_unlock(board, move):
             return True
         return False
 
@@ -433,15 +431,18 @@ class ChessBot:
             if (self.USE_NULL_MOVE_PRUNING and depth >= self.NMP_MIN_DEPTH and ply > 0 and not is_in_check_flag and
                 beta < self.MATE_SCORE - 200 and
                 any(not isinstance(p, (Pawn, King)) for p in (board.white_pieces if turn == 'white' else board.black_pieces))):
-
-                nmp_reduction = self.NMP_BASE_REDUCTION + (depth // self.NMP_DEPTH_DIVISOR)
-                score = -self.negamax(board, depth - 1 - nmp_reduction, -beta, -beta + 1, opponent_turn, ply + 1, search_path)
-                if score >= beta:
-                    store_score = beta
-                    if store_score > self.MATE_SCORE - 1000: store_score += ply
-                    elif store_score < -self.MATE_SCORE + 1000: store_score -= ply
-                    self.tt[hash_val] = TTEntry(store_score, depth, TT_FLAG_LOWERBOUND, None)
-                    return beta
+                # Safety gate: only null-move prune if static eval already meets/exceeds beta.
+                self.used_heuristic_eval = True
+                static_eval = self.evaluate_board(board, turn)
+                if static_eval >= beta:
+                    nmp_reduction = self.NMP_BASE_REDUCTION + (depth // self.NMP_DEPTH_DIVISOR)
+                    score = -self.negamax(board, depth - 1 - nmp_reduction, -beta, -beta + 1, opponent_turn, ply + 1, search_path)
+                    if score >= beta:
+                        store_score = beta
+                        if store_score > self.MATE_SCORE - 1000: store_score += ply
+                        elif store_score < -self.MATE_SCORE + 1000: store_score -= ply
+                        self.tt[hash_val] = TTEntry(store_score, depth, TT_FLAG_LOWERBOUND, None)
+                        return beta
 
             pseudo_moves = get_all_pseudo_legal_moves(board, turn)
             hash_move = tt_entry.best_move if tt_entry else None
@@ -599,6 +600,10 @@ class ChessBot:
             else:
                 if move in killers:
                     score = self.BONUS_KILLER_1 if move == killers[0] else self.BONUS_KILLER_2
+                elif is_discovered_slider_unlock(board, move):
+                    # Quiet line-unlock motif for queen/rook: important ordering cue,
+                    # but not strong enough to disable LMR / flood qsearch.
+                    score = self.BONUS_QN_TACTIC
                 elif isinstance(moving_piece, (Queen, Knight)):
                     score = self.BONUS_QN_TACTIC
                 else:
