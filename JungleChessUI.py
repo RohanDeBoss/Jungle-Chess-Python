@@ -1,4 +1,4 @@
-# JungleChessUI.py (v10.8 - Analysis log separators with move/ply context)
+# JungleChessUI.py (v11.0 - mode bugfixes, stable AI-vs-OP sides, depth default aligned)
 import tkinter as tk
 from tkinter import ttk, messagebox
 import math
@@ -17,10 +17,10 @@ class GameMode(Enum):
     AI_VS_AI = "ai_vs_ai"
 
 def run_ai_process(board, color, position_counts, comm_queue, cancellation_event, bot_class, bot_name, search_depth, ply_count, game_mode):
-    if bot_class == ChessBot:
-        bot = bot_class(board, color, position_counts, comm_queue, cancellation_event, bot_name, ply_count, game_mode)
-    else:
-        bot = bot_class(board, color, position_counts, comm_queue, cancellation_event, bot_name)
+    bot = bot_class(
+        board, color, position_counts, comm_queue, cancellation_event,
+        bot_name, ply_count, game_mode
+    )
         
     bot.search_depth = search_depth
     if search_depth == 99:
@@ -168,7 +168,7 @@ class EnhancedChessApp:
         
         ttk.Label(self.controls_frame, text="Bot Depth:", style='SmallHeader.TLabel').pack(anchor=tk.W, pady=(10,0))
         self.bot_depth_slider = tk.Scale(self.controls_frame, from_=1, to=self.slidermaxvalue, orient=tk.HORIZONTAL, bg=self.COLORS['bg_dark'], fg=self.COLORS['text_light'], highlightthickness=0, relief='flat')
-        self.bot_depth_slider.set(3); self.bot_depth_slider.pack(fill=tk.X, pady=(0,5))
+        self.bot_depth_slider.set(ChessBot.search_depth); self.bot_depth_slider.pack(fill=tk.X, pady=(0,5))
         self.instant_move = tk.BooleanVar(value=False); ttk.Checkbutton(self.controls_frame, text="Instant Moves", variable=self.instant_move, style='Custom.TCheckbutton').pack(anchor=tk.W, pady=(2,2))
         self.analysis_checkbox = ttk.Checkbutton(self.controls_frame, text="Analysis Mode (H-vs-H)", variable=self.analysis_mode_var, style='Custom.TCheckbutton', command=self._update_analysis_after_state_change)
         self.analysis_checkbox.pack(anchor=tk.W, pady=(2,2))
@@ -582,7 +582,8 @@ class EnhancedChessApp:
         if mode == GameMode.HUMAN_VS_BOT.value:
             if self.turn != self.human_color: bot_class, bot_name = ChessBot, self.MAIN_AI_NAME
         elif mode == GameMode.AI_VS_AI.value:
-            bot_class, bot_name = (ChessBot, self.MAIN_AI_NAME) if self.turn == self.board_orientation else (OpponentAI, self.OPPONENT_AI_NAME)
+            main_ai_color = "white" if self.white_playing_bot_type == "main" else "black"
+            bot_class, bot_name = (ChessBot, self.MAIN_AI_NAME) if self.turn == main_ai_color else (OpponentAI, self.OPPONENT_AI_NAME)
         if bot_class: self._start_ai_process(bot_class, bot_name, self.bot_depth_slider.get())
 
     def update_ui_after_state_change(self):
@@ -755,10 +756,24 @@ class EnhancedChessApp:
         self.turn_label.config(text=msg)
 
     def update_bot_labels(self):
-        w_label = "White" if self.turn == 'white' else "White"
-        b_label = "Black" if self.turn == 'black' else "Black"
-        self.bottom_bot_label.config(text=w_label if self.board_orientation == 'white' else b_label)
-        self.top_bot_label.config(text=b_label if self.board_orientation == 'white' else w_label)
+        mode = self.game_mode.get()
+        if mode == GameMode.AI_VS_AI.value:
+            white_label = self.MAIN_AI_NAME if self.white_playing_bot_type == "main" else self.OPPONENT_AI_NAME
+            black_label = self.OPPONENT_AI_NAME if self.white_playing_bot_type == "main" else self.MAIN_AI_NAME
+        elif mode == GameMode.HUMAN_VS_BOT.value:
+            white_label = "Human" if self.human_color == "white" else self.MAIN_AI_NAME
+            black_label = "Human" if self.human_color == "black" else self.MAIN_AI_NAME
+        else:
+            white_label = "White"
+            black_label = "Black"
+
+        if self.turn == "white":
+            white_label += " (to move)"
+        else:
+            black_label += " (to move)"
+
+        self.bottom_bot_label.config(text=white_label if self.board_orientation == 'white' else black_label)
+        self.top_bot_label.config(text=black_label if self.board_orientation == 'white' else white_label)
 
     def set_interactivity(self, is_interactive):
         if is_interactive:
@@ -853,7 +868,6 @@ class EnhancedChessApp:
                           f"  {self.OPPONENT_AI_NAME} Wins: {stats['op_ai_wins']}\n"
                           f"  Draws: {stats['draws']}")
             self.scoreboard_label.config(text=score_text)
-            self.scoreboard_frame.place(relx=1.0, rely=0.0, anchor='ne', x=-15, y=15)
         else:
             self.scoreboard_label.config(text="")
 
