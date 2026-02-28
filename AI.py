@@ -1,4 +1,4 @@
-# AI.py (v89.10 ordering rollback: removed v89.9 history bonus/malus after major nodecount regression)
+# AI.py (v89.11 qsearch speedup: use cheap tactical upper-bound swing ordering)
 import time
 import random
 from collections import namedtuple
@@ -553,7 +553,9 @@ class ChessBot:
         
         scored_moves =[]
         for move in promising_moves:
-            swing = calculate_material_swing(board, move, ORDERING_VALUES)
+            moving_piece = board.grid[move[0][0]][move[0][1]]
+            target_piece = board.grid[move[1][0]][move[1][1]]
+            swing = self._ordering_tactical_swing(board, move, moving_piece, target_piece)
             scored_moves.append((swing, move))
         scored_moves.sort(key=lambda item: item[0], reverse=True)
 
