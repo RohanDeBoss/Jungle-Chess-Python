@@ -1,4 +1,4 @@
-# AI.py (v89.11 qsearch speedup: use cheap tactical upper-bound swing ordering)
+# AI.py (v89.12 aspiration windows: safer iterative deepening speedup)
 import time
 import random
 from collections import namedtuple
@@ -231,13 +231,38 @@ class ChessBot:
                 return
             
             best_move_overall = root_moves[0]
+            prev_iter_score = None
             for current_depth in range(1, self.search_depth + 1):
                 iter_start_time = time.time()
                 root_hash = board_hash(self.board, self.color)
-                best_score_this_iter, best_move_this_iter = self._search_at_depth(current_depth, root_moves, root_hash, best_move_overall)
+                if prev_iter_score is not None and current_depth >= 2:
+                    window = 60
+                    alpha_bound = prev_iter_score - window
+                    beta_bound = prev_iter_score + window
+                    while True:
+                        best_score_this_iter, best_move_this_iter = self._search_at_depth(
+                            current_depth, root_moves, root_hash, best_move_overall,
+                            aspiration_window=(alpha_bound, beta_bound)
+                        )
+                        if self.cancellation_event.is_set():
+                            raise SearchCancelledException()
+                        if best_score_this_iter <= alpha_bound:
+                            alpha_bound -= window
+                            window *= 2
+                            continue
+                        if best_score_this_iter >= beta_bound:
+                            beta_bound += window
+                            window *= 2
+                            continue
+                        break
+                else:
+                    best_score_this_iter, best_move_this_iter = self._search_at_depth(
+                        current_depth, root_moves, root_hash, best_move_overall
+                    )
                 
                 if not self.cancellation_event.is_set():
                     best_move_overall = best_move_this_iter
+                    prev_iter_score = best_score_this_iter
                     iter_duration = time.time() - iter_start_time
                     knps = (self.nodes_searched / iter_duration / 1000) if iter_duration > 0 else 0
                     eval_for_ui = best_score_this_iter if self.color == 'white' else -best_score_this_iter
@@ -286,15 +311,38 @@ class ChessBot:
             best_move_overall = root_moves[0]
             root_hash = board_hash(self.board, self.color)
             tb_alpha_floor = None
+            prev_iter_score = None
             for current_depth in range(1, 100):
                 if self.cancellation_event.is_set(): raise SearchCancelledException()
                 iter_start_time = time.time()
-                best_score_this_iter, best_move_this_iter = self._search_at_depth(
-                    current_depth, root_moves, root_hash, best_move_overall, alpha_floor=tb_alpha_floor
-                )
+                if tb_alpha_floor is None and prev_iter_score is not None and current_depth >= 2:
+                    window = 60
+                    alpha_bound = prev_iter_score - window
+                    beta_bound = prev_iter_score + window
+                    while True:
+                        best_score_this_iter, best_move_this_iter = self._search_at_depth(
+                            current_depth, root_moves, root_hash, best_move_overall,
+                            aspiration_window=(alpha_bound, beta_bound)
+                        )
+                        if self.cancellation_event.is_set():
+                            raise SearchCancelledException()
+                        if best_score_this_iter <= alpha_bound:
+                            alpha_bound -= window
+                            window *= 2
+                            continue
+                        if best_score_this_iter >= beta_bound:
+                            beta_bound += window
+                            window *= 2
+                            continue
+                        break
+                else:
+                    best_score_this_iter, best_move_this_iter = self._search_at_depth(
+                        current_depth, root_moves, root_hash, best_move_overall, alpha_floor=tb_alpha_floor
+                    )
                 
                 if not self.cancellation_event.is_set():
                     best_move_overall = best_move_this_iter
+                    prev_iter_score = best_score_this_iter
                     iter_duration = time.time() - iter_start_time
                     knps = (self.nodes_searched / iter_duration / 1000) if iter_duration > 0 else 0
                     eval_for_ui = best_score_this_iter if self.color == 'white' else -best_score_this_iter
@@ -312,7 +360,7 @@ class ChessBot:
                     raise SearchCancelledException()
         except SearchCancelledException: pass
 
-    def _search_at_depth(self, depth, root_moves, root_hash, pv_move, alpha_floor=None):
+    def _search_at_depth(self, depth, root_moves, root_hash, pv_move, alpha_floor=None, aspiration_window=None):
         self.nodes_searched = 0
         self.used_heuristic_eval = False
         self.tb_hits = 0
@@ -321,8 +369,14 @@ class ChessBot:
             best_move_this_iter = pv_move if pv_move in root_moves else (root_moves[0] if root_moves else None)
         else:
             best_score_this_iter, best_move_this_iter = -float('inf'), None
-        alpha = alpha_floor if alpha_floor is not None else -float('inf')
-        beta = float('inf')
+        if alpha_floor is not None:
+            alpha = alpha_floor
+            beta = float('inf')
+        elif aspiration_window is not None:
+            alpha, beta = aspiration_window
+        else:
+            alpha = -float('inf')
+            beta = float('inf')
         
         ordered_root_moves = self.order_moves(self.board, root_moves, 0, pv_move)
         
