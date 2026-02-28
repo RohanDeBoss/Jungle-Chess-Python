@@ -1,4 +1,4 @@
-# AI.py (v89 NPS pass: cheaper opening bonus + tighter aspiration retries)
+# AI.py (v89.1 simplify pass: shared depth-iteration helper + shared root TB reporting)
 import time
 import random
 from collections import namedtuple
@@ -13,17 +13,16 @@ MG_PIECE_VALUES = {
 
 # The Tablebase-Proven Meta
 EG_PIECE_VALUES = {
-    Pawn: 150,    # Very dangerous, easily promotes or kills sideways
-    Knight: 850,  # Retuned higher: strongest practical piece in this variant.
+    Pawn: 130,    # Dangerous, easily promotes or kills sideways
+    Knight: 850,  # Just as good as a queen in endgames, but less pieces to fork.
     Bishop: 500,  # Lower value in endgames as it can't change colour or checkmate by itself
-    Rook: 600,    # Kept high to prioritize stopping pawns.
+    Rook: 600,    # Kept high, good at eating pawns.
     Queen: 850,
     King: 20000
 }
 
-ORDERING_VALUES = {
-    Pawn: 100, Knight: 950, Bishop: 650, Rook: 550, Queen: 850, King: 20000
-}
+# Move-ordering tactical swing should track the same base scale as MG values.
+ORDERING_VALUES = MG_PIECE_VALUES
 
 INITIAL_PHASE_MATERIAL = (MG_PIECE_VALUES[Rook] * 4 + MG_PIECE_VALUES[Knight] * 4 +
                           MG_PIECE_VALUES[Bishop] * 4 + MG_PIECE_VALUES[Queen] * 2)
@@ -85,7 +84,7 @@ class ChessBot:
     BONUS_CAPTURE = 8_000_000
     BONUS_KILLER_1 = 4_000_000
     BONUS_KILLER_2 = 3_000_000
-    BONUS_QN_TACTIC = 3_500_000
+    BONUS_Q_TACTIC = 3_500_000
     OPENING_TOTAL_PIECE_THRESHOLD = 24
     OPENING_BONUS_MAX_PLY = 1
     OPENING_KNIGHT_DEVELOP_BONUS = 120
@@ -244,21 +243,79 @@ class ChessBot:
                 
         return best_move, best_score
 
+    def _run_depth_iteration(self, depth, root_moves, root_hash, pv_move, prev_iter_score=None, alpha_floor=None):
+        iter_nodes = 0
+        iter_tb_hits = 0
+        use_aspiration = (alpha_floor is None and prev_iter_score is not None and depth >= 2)
+
+        if use_aspiration:
+            window = self.ASP_WINDOW_INIT
+            alpha_bound = prev_iter_score - window
+            beta_bound = prev_iter_score + window
+            retries = 0
+            while True:
+                best_score, best_move = self._search_at_depth(
+                    depth, root_moves, root_hash, pv_move,
+                    aspiration_window=(alpha_bound, beta_bound)
+                )
+                iter_nodes += self.nodes_searched
+                iter_tb_hits += self.tb_hits
+                if self.cancellation_event.is_set():
+                    raise SearchCancelledException()
+
+                if best_score < alpha_bound:
+                    alpha_bound -= window
+                    window *= 2
+                    retries += 1
+                elif best_score > beta_bound:
+                    beta_bound += window
+                    window *= 2
+                    retries += 1
+                else:
+                    break
+
+                if retries >= self.ASP_MAX_RETRIES:
+                    best_score, best_move = self._search_at_depth(
+                        depth, root_moves, root_hash, pv_move, alpha_floor=alpha_floor
+                    )
+                    iter_nodes += self.nodes_searched
+                    iter_tb_hits += self.tb_hits
+                    break
+        else:
+            best_score, best_move = self._search_at_depth(
+                depth, root_moves, root_hash, pv_move, alpha_floor=alpha_floor
+            )
+            iter_nodes = self.nodes_searched
+            iter_tb_hits = self.tb_hits
+
+        self.nodes_searched = iter_nodes
+        self.tb_hits = iter_tb_hits
+        return best_score, best_move
+
+    def _report_root_tb_solution(self, tb_move, tb_eval, perfect_play=False, emit_move=False):
+        if not tb_move:
+            return False
+
+        root_tb_eval = self._get_root_tb_eval_relative()
+        display_eval = root_tb_eval if root_tb_eval is not None else tb_eval
+        if tb_eval > self.MATE_SCORE - 1000:
+            display_eval = tb_eval
+
+        eval_for_ui = display_eval if self.color == 'white' else -display_eval
+        suffix = " (Perfect Play)" if perfect_play else ""
+        self._report_log(
+            f"  > {self.bot_name} (TB): {self._format_move(tb_move)}, Eval={eval_for_ui/100:+.2f}, TBhits={self.tb_hits}{suffix}"
+        )
+        self._report_eval(display_eval, "TB")
+        if emit_move:
+            self._report_move(tb_move)
+        return True
+
     def make_move(self):
         try:
             if len(self.board.white_pieces) + len(self.board.black_pieces) == 3:
                 tb_move, tb_eval = self._get_best_tablebase_move_with_eval()
-                if tb_move:
-                    # Display the root position score (not the chosen child's score).
-                    root_tb_eval = self._get_root_tb_eval_relative()
-                    display_eval = root_tb_eval if root_tb_eval is not None else tb_eval
-                    # If the chosen move is an immediate mate, show that stronger terminal score.
-                    if tb_eval > self.MATE_SCORE - 1000:
-                        display_eval = tb_eval
-                    eval_for_ui = display_eval if self.color == 'white' else -display_eval
-                    self._report_log(f"  > {self.bot_name} (TB): {self._format_move(tb_move)}, Eval={eval_for_ui/100:+.2f}, TBhits={self.tb_hits}")
-                    self._report_eval(display_eval, "TB")
-                    self._report_move(tb_move)
+                if self._report_root_tb_solution(tb_move, tb_eval, emit_move=True):
                     return
 
             root_moves = get_all_legal_moves(self.board, self.color)
@@ -269,50 +326,12 @@ class ChessBot:
             best_move_overall = root_moves[0]
             prev_iter_score = None
             total_nodes = 0
+            root_hash = board_hash(self.board, self.color)
             for current_depth in range(1, self.search_depth + 1):
                 iter_start_time = time.time()
-                root_hash = board_hash(self.board, self.color)
-                iter_nodes = 0
-                iter_tb_hits = 0
-                if prev_iter_score is not None and current_depth >= 2:
-                    window = self.ASP_WINDOW_INIT
-                    alpha_bound = prev_iter_score - window
-                    beta_bound = prev_iter_score + window
-                    retries = 0
-                    while True:
-                        best_score_this_iter, best_move_this_iter = self._search_at_depth(
-                            current_depth, root_moves, root_hash, best_move_overall,
-                            aspiration_window=(alpha_bound, beta_bound)
-                        )
-                        iter_nodes += self.nodes_searched
-                        iter_tb_hits += self.tb_hits
-                        if self.cancellation_event.is_set():
-                            raise SearchCancelledException()
-                        if best_score_this_iter < alpha_bound:
-                            alpha_bound -= window
-                            window *= 2
-                            retries += 1
-                        elif best_score_this_iter > beta_bound:
-                            beta_bound += window
-                            window *= 2
-                            retries += 1
-                        else:
-                            break
-                        if retries >= self.ASP_MAX_RETRIES:
-                            best_score_this_iter, best_move_this_iter = self._search_at_depth(
-                                current_depth, root_moves, root_hash, best_move_overall
-                            )
-                            iter_nodes += self.nodes_searched
-                            iter_tb_hits += self.tb_hits
-                            break
-                else:
-                    best_score_this_iter, best_move_this_iter = self._search_at_depth(
-                        current_depth, root_moves, root_hash, best_move_overall
-                    )
-                    iter_nodes = self.nodes_searched
-                    iter_tb_hits = self.tb_hits
-                self.nodes_searched = iter_nodes
-                self.tb_hits = iter_tb_hits
+                best_score_this_iter, best_move_this_iter = self._run_depth_iteration(
+                    current_depth, root_moves, root_hash, best_move_overall, prev_iter_score=prev_iter_score
+                )
                 
                 if not self.cancellation_event.is_set():
                     best_move_overall = best_move_this_iter
@@ -345,16 +364,7 @@ class ChessBot:
             # Instantly solve 3-piece endgames in Analysis Mode
             if len(self.board.white_pieces) + len(self.board.black_pieces) == 3:
                 tb_move, tb_eval = self._get_best_tablebase_move_with_eval()
-                if tb_move:
-                    # Display the root position score (not the chosen child's score).
-                    root_tb_eval = self._get_root_tb_eval_relative()
-                    display_eval = root_tb_eval if root_tb_eval is not None else tb_eval
-                    # If the chosen move is an immediate mate, show that stronger terminal score.
-                    if tb_eval > self.MATE_SCORE - 1000:
-                        display_eval = tb_eval
-                    eval_for_ui = display_eval if self.color == 'white' else -display_eval
-                    self._report_log(f"  > {self.bot_name} (TB): {self._format_move(tb_move)}, Eval={eval_for_ui/100:+.2f}, TBhits={self.tb_hits} (Perfect Play)")
-                    self._report_eval(display_eval, "TB")
+                if self._report_root_tb_solution(tb_move, tb_eval, perfect_play=True):
                     # Sleep to prevent burning CPU since the position is perfectly solved
                     while not self.cancellation_event.is_set():
                         time.sleep(0.1)
@@ -371,47 +381,14 @@ class ChessBot:
             for current_depth in range(1, 100):
                 if self.cancellation_event.is_set(): raise SearchCancelledException()
                 iter_start_time = time.time()
-                iter_nodes = 0
-                iter_tb_hits = 0
-                if tb_alpha_floor is None and prev_iter_score is not None and current_depth >= 2:
-                    window = self.ASP_WINDOW_INIT
-                    alpha_bound = prev_iter_score - window
-                    beta_bound = prev_iter_score + window
-                    retries = 0
-                    while True:
-                        best_score_this_iter, best_move_this_iter = self._search_at_depth(
-                            current_depth, root_moves, root_hash, best_move_overall,
-                            aspiration_window=(alpha_bound, beta_bound)
-                        )
-                        iter_nodes += self.nodes_searched
-                        iter_tb_hits += self.tb_hits
-                        if self.cancellation_event.is_set():
-                            raise SearchCancelledException()
-                        if best_score_this_iter < alpha_bound:
-                            alpha_bound -= window
-                            window *= 2
-                            retries += 1
-                        elif best_score_this_iter > beta_bound:
-                            beta_bound += window
-                            window *= 2
-                            retries += 1
-                        else:
-                            break
-                        if retries >= self.ASP_MAX_RETRIES:
-                            best_score_this_iter, best_move_this_iter = self._search_at_depth(
-                                current_depth, root_moves, root_hash, best_move_overall
-                            )
-                            iter_nodes += self.nodes_searched
-                            iter_tb_hits += self.tb_hits
-                            break
-                else:
-                    best_score_this_iter, best_move_this_iter = self._search_at_depth(
-                        current_depth, root_moves, root_hash, best_move_overall, alpha_floor=tb_alpha_floor
-                    )
-                    iter_nodes = self.nodes_searched
-                    iter_tb_hits = self.tb_hits
-                self.nodes_searched = iter_nodes
-                self.tb_hits = iter_tb_hits
+                best_score_this_iter, best_move_this_iter = self._run_depth_iteration(
+                    current_depth,
+                    root_moves,
+                    root_hash,
+                    best_move_overall,
+                    prev_iter_score=prev_iter_score,
+                    alpha_floor=tb_alpha_floor
+                )
                 
                 if not self.cancellation_event.is_set():
                     best_move_overall = best_move_this_iter
@@ -725,8 +702,8 @@ class ChessBot:
             else:
                 if move in killers:
                     score = self.BONUS_KILLER_1 if move == killers[0] else self.BONUS_KILLER_2
-                elif isinstance(moving_piece, (Queen, Knight)):
-                    score = self.BONUS_QN_TACTIC
+                elif isinstance(moving_piece, Queen):
+                    score = self.BONUS_Q_TACTIC
                 else:
                     from_idx, to_idx = move[0][0]*COLS+move[0][1], move[1][0]*COLS+move[1][1]
                     score = self.history_heuristic_table[color_index][from_idx][to_idx]
