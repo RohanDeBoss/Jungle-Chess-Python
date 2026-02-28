@@ -1,4 +1,4 @@
-# AI.py (v89.1 simplify pass: shared depth-iteration helper + shared root TB reporting)
+# AI.py (v90 Tuning 03 with TT Decay)
 
 import time
 import random
@@ -61,7 +61,8 @@ def board_hash(board, turn):
     return h
 
 # --- SEARCH STRUCTURES ---
-TTEntry = namedtuple('TTEntry', ['score', 'depth', 'flag', 'best_move'])
+# Added 'age' to the TTEntry to track when the entry was created
+TTEntry = namedtuple('TTEntry', ['score', 'depth', 'flag', 'best_move', 'age'])
 TT_FLAG_EXACT, TT_FLAG_LOWERBOUND, TT_FLAG_UPPERBOUND = 0, 1, 2
 
 class SearchCancelledException(Exception): pass
@@ -79,21 +80,24 @@ class ChessBot:
     NMP_BASE_REDUCTION = 2
     NMP_DEPTH_DIVISOR = 6
     USE_NULL_MOVE_PRUNING = True
-    Q_SEARCH_SAFETY_MARGIN = 850
+    Q_SEARCH_SAFETY_MARGIN = 600
+    
+    # Decay threshold: Entries older than this many game-plies are ignored
+    TT_DECAY_THRESHOLD = 7
 
     BONUS_PV_MOVE = 10_000_000
     BONUS_CAPTURE = 8_000_000
     BONUS_KILLER_1 = 4_000_000
     BONUS_KILLER_2 = 3_000_000
     BONUS_Q_TACTIC = 3_500_000
-    OPENING_TOTAL_PIECE_THRESHOLD = 24
+    OPENING_TOTAL_PIECE_THRESHOLD = 23
     OPENING_BONUS_MAX_PLY = 1
-    OPENING_KNIGHT_DEVELOP_BONUS = 120
+    OPENING_KNIGHT_DEVELOP_BONUS = 100
     OPENING_KNIGHT_CENTER_WEIGHT = 22
     OPENING_PAWN_CENTER_WEIGHT = 10
     OPENING_CENTER_PAWN_BONUS = 28
     OPENING_CENTRAL_FILES = (COLS // 2 - 1, COLS // 2)
-    ASP_WINDOW_INIT = 80
+    ASP_WINDOW_INIT = 100
     ASP_MAX_RETRIES = 4
     
     def __init__(self, board, color, position_counts, comm_queue, cancellation_event, bot_name=None, ply_count=0, game_mode="bot", max_moves=200):
@@ -313,6 +317,10 @@ class ChessBot:
         return True
 
     def make_move(self):
+        # Memory Management: Periodically clear out very old entries to save RAM
+        if len(self.tt) > 500000:
+             self.tt = {h: e for h, e in self.tt.items() if e.age >= self.ply_count - self.TT_DECAY_THRESHOLD}
+
         try:
             if len(self.board.white_pieces) + len(self.board.black_pieces) == 3:
                 tb_move, tb_eval = self._get_best_tablebase_move_with_eval()
@@ -512,15 +520,18 @@ class ChessBot:
 
         original_alpha = alpha
         tt_entry = self.tt.get(hash_val)
-        if ply > 0 and tt_entry and tt_entry.depth >= depth:
-            tt_score = tt_entry.score
-            if tt_score > self.MATE_SCORE - 1000: tt_score -= ply
-            elif tt_score < -self.MATE_SCORE + 1000: tt_score += ply
+        
+        # PROBE DECAY CHECK: Only use entry if it hasn't decayed
+        if ply > 0 and tt_entry and tt_entry.age >= self.ply_count - self.TT_DECAY_THRESHOLD:
+            if tt_entry.depth >= depth:
+                tt_score = tt_entry.score
+                if tt_score > self.MATE_SCORE - 1000: tt_score -= ply
+                elif tt_score < -self.MATE_SCORE + 1000: tt_score += ply
 
-            if tt_entry.flag == TT_FLAG_EXACT: return tt_score
-            elif tt_entry.flag == TT_FLAG_LOWERBOUND: alpha = max(alpha, tt_score)
-            elif tt_entry.flag == TT_FLAG_UPPERBOUND: beta = min(beta, tt_score)
-            if alpha >= beta: return tt_score
+                if tt_entry.flag == TT_FLAG_EXACT: return tt_score
+                elif tt_entry.flag == TT_FLAG_LOWERBOUND: alpha = max(alpha, tt_score)
+                elif tt_entry.flag == TT_FLAG_UPPERBOUND: beta = min(beta, tt_score)
+                if alpha >= beta: return tt_score
 
         if depth <= 0: return self.qsearch(board, alpha, beta, turn, ply)
 
@@ -547,7 +558,8 @@ class ChessBot:
                         store_score = beta
                         if store_score > self.MATE_SCORE - 1000: store_score += ply
                         elif store_score < -self.MATE_SCORE + 1000: store_score -= ply
-                        self.tt[hash_val] = TTEntry(store_score, depth, TT_FLAG_LOWERBOUND, None)
+                        # SAVE WITH CURRENT AGE
+                        self.tt[hash_val] = TTEntry(store_score, depth, TT_FLAG_LOWERBOUND, None, self.ply_count)
                         return beta
 
             pseudo_moves = get_all_pseudo_legal_moves(board, turn)
@@ -575,12 +587,10 @@ class ChessBot:
                 search_depth = depth - 1 - reduction
 
                 if legal_moves_count == 1 or alpha == -float('inf'):
-                    # Principal variation move gets full window immediately.
                     score = -self.negamax(child_board, search_depth, -beta, -alpha, opponent_turn, ply + 1, search_path)
                     if reduction > 0 and score > alpha:
                         score = -self.negamax(child_board, depth - 1, -beta, -alpha, opponent_turn, ply + 1, search_path)
                 else:
-                    # PVS/null-window for later moves, then re-search only when needed.
                     score = -self.negamax(child_board, search_depth, -(alpha + 1), -alpha, opponent_turn, ply + 1, search_path)
                     if reduction > 0 and score > alpha:
                         score = -self.negamax(child_board, depth - 1, -(alpha + 1), -alpha, opponent_turn, ply + 1, search_path)
@@ -601,7 +611,8 @@ class ChessBot:
                     store_score = beta
                     if store_score > self.MATE_SCORE - 1000: store_score += ply
                     elif store_score < -self.MATE_SCORE + 1000: store_score -= ply
-                    self.tt[hash_val] = TTEntry(store_score, depth, TT_FLAG_LOWERBOUND, move)
+                    # SAVE WITH CURRENT AGE
+                    self.tt[hash_val] = TTEntry(store_score, depth, TT_FLAG_LOWERBOUND, move, self.ply_count)
                     return beta
 
             if legal_moves_count == 0:
@@ -613,7 +624,8 @@ class ChessBot:
             elif store_score < -self.MATE_SCORE + 1000: store_score -= ply
 
             flag = TT_FLAG_EXACT if alpha > original_alpha else TT_FLAG_UPPERBOUND
-            self.tt[hash_val] = TTEntry(store_score, depth, flag, best_move_for_node)
+            # SAVE WITH CURRENT AGE
+            self.tt[hash_val] = TTEntry(store_score, depth, flag, best_move_for_node, self.ply_count)
             return alpha
         finally:
             if path_added:
@@ -645,7 +657,6 @@ class ChessBot:
             if stand_pat >= beta: return beta
             alpha = max(alpha, stand_pat)
 
-        # In check: all evasions. Otherwise: tactical-only qsearch frontier.
         if is_in_check_flag:
             promising_moves = list(get_all_pseudo_legal_moves(board, turn))
         else:
@@ -666,7 +677,6 @@ class ChessBot:
             sim_board = board.clone()
             sim_board.make_move(move[0], move[1])
             
-            # DEFERRED LEGALITY CHECK
             if is_in_check(sim_board, turn): continue
             
             legal_moves_count += 1
@@ -877,7 +887,7 @@ knight_pst = [
     [-40, -20,   5,  10,  10,   5, -20, -40],
     [-30,   5,  20,  25,  25,  20,   5, -30],
     [-30,  10,  25,  35,  35,  25,  10, -30],
-    [-20,  15,  25,  35,  35,  25,  15, -20], # Just out out danger of pawns capturing in 1 move
+    [-20,  15,  25,  35,  35,  25,  15, -20],
     [-30,  10,  20,  25,  25,  30,  10, -30],
     [-40, -20,   5,  10,  10,   5, -20, -40],
     [-60, -50, -30, -30, -30, -30, -50, -60]
@@ -922,8 +932,6 @@ king_midgame_pst = [
     [ -5,   0,   5,   5,   5,   5,   0,  -5],
     [-20,  10,  10,  10,  20,  10,  10, -20]
 ]
-
-# Endgame King becomes a mediocre active piece, but still not desperate to rush the center.
 king_endgame_pst = [
     [-40, -30, -30, -30, -30, -30, -30, -40], 
     [-30, -10,   0,   0,   0,   0, -10, -30],
