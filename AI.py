@@ -1,4 +1,4 @@
-# AI.py (v89.3 - search optimizations)
+# AI.py (v89.5 - even cheaper search optimizations)
 import time
 import random
 from collections import namedtuple
@@ -122,19 +122,44 @@ class ChessBot:
     def _report_move(self, move): self.comm_queue.put(('move', move))
     def _format_move(self, move): return format_move(move)
 
-    def _material_swing_from_outcome(self, friendly_lost, opponent_captured, promotion_type):
-        swing = 0
-        for piece in opponent_captured:
-            swing += ORDERING_VALUES.get(type(piece), 0)
-        for piece in friendly_lost:
-            swing -= ORDERING_VALUES.get(type(piece), 0)
-        if promotion_type is not None:
-            swing += ORDERING_VALUES.get(promotion_type, 0)
-        return swing
+    def _is_tactical_move(self, board, move, moving_piece=None, target_piece=None):
+        if moving_piece is None:
+            moving_piece = board.grid[move[0][0]][move[0][1]]
+        if moving_piece is None:
+            return False
 
-    def _is_tactical_move(self, board, move):
-        friendly_lost, opponent_captured, promotion_type = board.get_move_outcome(move)
-        return bool(friendly_lost or opponent_captured or promotion_type is not None)
+        if target_piece is None:
+            target_piece = board.grid[move[1][0]][move[1][1]]
+        if target_piece is not None:
+            return True
+
+        if isinstance(moving_piece, Pawn) and (move[1][0] == 0 or move[1][0] == ROWS - 1):
+            return True
+        if isinstance(moving_piece, Rook) and is_rook_piercing_capture(board, move):
+            return True
+        if isinstance(moving_piece, Knight) and is_quiet_knight_evaporation(board, move):
+            return True
+        if is_passive_knight_zone_evaporation(board, move):
+            return True
+        return False
+
+    def _ordering_tactical_swing(self, board, move, moving_piece, target_piece):
+        # For complex variant effects, keep exact swing.
+        if isinstance(moving_piece, (Queen, Knight, Rook)):
+            return calculate_material_swing(board, move, ORDERING_VALUES)
+
+        swing = 0
+        if target_piece is not None:
+            swing += ORDERING_VALUES.get(type(target_piece), 0)
+
+        if isinstance(moving_piece, Pawn) and (move[1][0] == 0 or move[1][0] == ROWS - 1):
+            swing += ORDERING_VALUES.get(Queen, 0)
+
+        # Passive knight-zone evaporations are tactical; approximate their downside cheaply.
+        if target_piece is None and is_passive_knight_zone_evaporation(board, move):
+            swing -= ORDERING_VALUES.get(type(moving_piece), 0)
+
+        return swing
 
     def _get_root_tb_eval_relative(self):
         """
@@ -426,7 +451,8 @@ class ChessBot:
                 meta = move_meta.get(move)
                 if meta is None:
                     moving_piece = board.grid[move[0][0]][move[0][1]]
-                    is_tactical = self._is_tactical_move(board, move)
+                    target_piece = board.grid[move[1][0]][move[1][1]]
+                    is_tactical = self._is_tactical_move(board, move, moving_piece=moving_piece, target_piece=target_piece)
                 else:
                     is_tactical, moving_piece = meta
 
@@ -558,14 +584,14 @@ class ChessBot:
         
         for move in moves:
             moving_piece = board.grid[move[0][0]][move[0][1]]
-            friendly_lost, opponent_captured, promotion_type = board.get_move_outcome(move)
-            is_tactical = bool(friendly_lost or opponent_captured or promotion_type is not None)
+            target_piece = board.grid[move[1][0]][move[1][1]]
+            is_tactical = self._is_tactical_move(board, move, moving_piece=moving_piece, target_piece=target_piece)
             move_meta[move] = (is_tactical, moving_piece)
 
             if move == hash_move:
                 score = self.BONUS_PV_MOVE
             elif is_tactical:
-                swing = self._material_swing_from_outcome(friendly_lost, opponent_captured, promotion_type)
+                swing = self._ordering_tactical_swing(board, move, moving_piece, target_piece)
                 score = self.BONUS_CAPTURE + swing
             else:
                 if move in killers:

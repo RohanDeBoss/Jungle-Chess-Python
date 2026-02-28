@@ -582,6 +582,19 @@ def is_quiet_knight_evaporation(board, move):
             return True
     return False
 
+def is_passive_knight_zone_evaporation(board, move):
+    start_pos, end_pos = move
+    moving_piece = board.grid[start_pos[0]][start_pos[1]]
+    if moving_piece is None or isinstance(moving_piece, Knight):
+        return False
+
+    for r, c in KNIGHT_ATTACKS_FROM.get(end_pos, set()):
+        potential_killer = board.grid[r][c]
+        if (potential_killer and isinstance(potential_killer, Knight) and
+            potential_killer.color != moving_piece.color):
+            return True
+    return False
+
 def generate_all_tactical_moves(board, color):
     piece_list = board.white_pieces if color == 'white' else board.black_pieces
     
@@ -590,9 +603,20 @@ def generate_all_tactical_moves(board, color):
         if start_pos is None: continue
 
         for end_pos in piece.get_valid_moves(board, start_pos):
+            is_capture = board.grid[end_pos[0]][end_pos[1]] is not None
+            is_promotion = isinstance(piece, Pawn) and (end_pos[0] == 0 or end_pos[0] == ROWS - 1)
+
+            if is_capture or is_promotion:
+                yield (start_pos, end_pos)
+                continue
+
+            # Include variant-specific tactical motifs without full outcome simulation.
             move = (start_pos, end_pos)
-            friendly_lost, opponent_captured, promotion_type = board.get_move_outcome(move)
-            if friendly_lost or opponent_captured or promotion_type is not None:
+            if isinstance(piece, Rook) and is_rook_piercing_capture(board, move):
+                yield (start_pos, end_pos)
+            elif isinstance(piece, Knight) and is_quiet_knight_evaporation(board, move):
+                yield (start_pos, end_pos)
+            elif is_passive_knight_zone_evaporation(board, move):
                 yield (start_pos, end_pos)
 
 def format_move(move):
