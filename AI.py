@@ -1,4 +1,4 @@
-# AI.py (v91.0 - Full History Heuristic Integration)
+# AI.py (v91.1 - Full History Heuristic Integration + asp window 150 + retry 3)
 
 import time
 import random
@@ -85,8 +85,7 @@ class ChessBot:
     BONUS_CAPTURE = 8_000_000
     BONUS_KILLER_1 = 4_000_000
     BONUS_KILLER_2 = 3_000_000
-    # This bonus is removed in favor of the history heuristic
-    # BONUS_Q_TACTIC = 3_500_000 
+    # This bonus is removed in favor of the history heuristic: BONUS_Q_TACTIC = 3_500_000 
     OPENING_TOTAL_PIECE_THRESHOLD = 23
     OPENING_BONUS_MAX_PLY = 1
     OPENING_KNIGHT_DEVELOP_BONUS = 100
@@ -94,8 +93,8 @@ class ChessBot:
     OPENING_PAWN_CENTER_WEIGHT = 10
     OPENING_CENTER_PAWN_BONUS = 28
     OPENING_CENTRAL_FILES = (COLS // 2 - 1, COLS // 2)
-    ASP_WINDOW_INIT = 100
-    ASP_MAX_RETRIES = 4
+    ASP_WINDOW_INIT = 150 # Because Jungle Chess is highly lethal, a window of 150 is still quite tight.
+    ASP_MAX_RETRIES = 3 # Don't throw good time after bad; fallback to full search sooner
     
     def __init__(self, board, color, position_counts, comm_queue, cancellation_event, bot_name=None, ply_count=0, game_mode="bot", max_moves=200):
         self.board = board
