@@ -1,4 +1,4 @@
-# AI.py (v89.8 balanced search: NMP restored with static-eval safety gate)
+# AI.py (v89.10 ordering rollback: removed v89.9 history bonus/malus after major nodecount regression)
 import time
 import random
 from collections import namedtuple
@@ -600,10 +600,6 @@ class ChessBot:
             else:
                 if move in killers:
                     score = self.BONUS_KILLER_1 if move == killers[0] else self.BONUS_KILLER_2
-                elif is_discovered_slider_unlock(board, move):
-                    # Quiet line-unlock motif for queen/rook: important ordering cue,
-                    # but not strong enough to disable LMR / flood qsearch.
-                    score = self.BONUS_QN_TACTIC
                 elif isinstance(moving_piece, (Queen, Knight)):
                     score = self.BONUS_QN_TACTIC
                 else:
