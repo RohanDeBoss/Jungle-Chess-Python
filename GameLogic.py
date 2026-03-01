@@ -1,4 +1,4 @@
-# GameLogic.py (v40.0 - Centralized SEE & High-Performance Logic)
+# GameLogic.py (v40.1 - Raycasting starting to be implemented)
 
 # -----------------------------
 # Global Constants
@@ -28,6 +28,27 @@ BISHOP_ZIGZAG_DIRS = (
 # --- Pre-computation Maps for Performance ---
 KNIGHT_ATTACKS_FROM = { (r, c):[(r+dr, c+dc) for dr, dc in DIRECTIONS['knight'] if 0 <= r+dr < ROWS and 0 <= c+dc < COLS] for r in range(ROWS) for c in range(COLS) }
 ADJACENT_SQUARES_MAP = { (r, c):[(r+dr, c+dc) for dr, dc in ADJACENT_DIRS if 0 <= r+dr < ROWS and 0 <= c+dc < COLS] for r in range(ROWS) for c in range(COLS) }
+
+# ------------------------------------------------------------
+# STEP 1: Precomputed Rays for ultra-fast threat detection
+# RAYS[square_index][direction_index] = list of (r, c) coordinates
+# ------------------------------------------------------------
+RAYS = [[[] for _ in range(8)] for _ in range(64)]
+
+def _init_rays():
+    # Order: N, S, E, W (Orthogonal 0-3), NE, NW, SE, SW (Diagonal 4-7)
+    dy_dx = [(-1, 0), (1, 0), (0, 1), (0, -1), (-1, 1), (-1, -1), (1, 1), (1, -1)]
+    for r in range(ROWS):
+        for c in range(COLS):
+            for i, (dr, dc) in enumerate(dy_dx):
+                cr, cc = r + dr, c + dc
+                while 0 <= cr < ROWS and 0 <= cc < COLS:
+                    RAYS[r * COLS + c][i].append((cr, cc))
+                    cr += dr
+                    cc += dc
+
+_init_rays()
+# ------------------------------------------------------------
 
 def _clone_piece_fast(piece):
     """
@@ -561,81 +582,116 @@ def _pawn_attacks_square(board, start, target, pawn):
     return False
 
 def is_square_attacked(board, r, c, attacking_color):
+    """
+    Optimized 'Reverse-Raycast' check using precomputed `RAYS`.
+    Looks OUTWARDS from the target square to find threats.
+    """
     grid = board.grid
-    defending_color = 'black' if attacking_color == 'white' else 'white'
-    queen_type = Queen
-    rook_type = Rook
 
-    # Fast path 1: Direct queen line attacks (normal sliding, blocked by any piece).
-    for dr, dc in DIRECTIONS['queen']:
-        cr, cc = r + dr, c + dc
-        while 0 <= cr < ROWS and 0 <= cc < COLS:
+    # 1. Check Knights (Standard Lookup - O(1))
+    for nr, nc in KNIGHT_ATTACKS_FROM.get((r, c), []):
+        piece = grid[nr][nc]
+        if piece and piece.color == attacking_color and type(piece) is Knight:
+            return True
+
+    # 2. Check Sliding Pieces (Rook/Queen/Bishop) using Precomputed Rays
+    # We look out from (r,c). If we hit a piece, we check if it attacks us.
+    start_index = r * COLS + c
+
+    for direction_idx, ray_path in enumerate(RAYS[start_index]):
+        is_orthogonal = direction_idx < 4  # 0-3 are N,S,E,W
+
+        # Track if we are looking through a "Defender" (Friendly piece)
+        passed_defender = False
+        defender_is_adjacent = False
+
+        for step_idx, (cr, cc) in enumerate(ray_path):
             piece = grid[cr][cc]
             if piece is None:
-                cr += dr
-                cc += dc
                 continue
-            if piece.color == attacking_color and type(piece) is queen_type:
+
+            p_type = type(piece)
+
+            if piece.color == attacking_color:
+                # --- FOUND AN ATTACKER ---
+
+                if is_orthogonal:
+                    if p_type is Rook:
+                        # Rooks pierce through defenders to hit the target
+                        return True
+                    if p_type is Queen:
+                        # Direct hit OR Proxy Explosion
+                        if not passed_defender:
+                            return True  # Direct line of sight
+                        elif defender_is_adjacent:
+                            return True  # Proxy: Queen captures the adjacent defender -> Explosion hits King
+                        # If passed_defender is True but NOT adjacent, Queen captures that piece
+                        # but the explosion is too far away to hurt us.
+                        return False
+                    # Bishops don't attack orthogonally
+                    break
+
+                else:
+                    # Diagonal (Bishop/Queen)
+                    if p_type is Bishop or p_type is Queen:
+                        # Note: Diagonal pieces usually don't pierce.
+                        # Rule Check: Do Queens explode on diagonals? Yes.
+                        if not passed_defender:
+                            return True  # Direct line of sight
+                        elif defender_is_adjacent and p_type is Queen:
+                            return True  # Proxy: Queen captures adjacent defender -> Explosion
+                        return False
+                    break
+            else:
+                # --- FOUND A DEFENDER (Friendly Piece) ---
+                if passed_defender:
+                    # We already hit one defender, now we hit a second one.
+                    # Line is fully blocked (even for piercing Rooks).
+                    break
+                else:
+                    passed_defender = True
+                    # If this is the very first square in the ray, the defender is adjacent.
+                    if step_idx == 0:
+                        defender_is_adjacent = True
+                    # Continue loop to check for Piercing Rook or Proxy Queen behind this defender
+
+    # 3. Check Pawns
+    # Pawns capture Forward-Diagonal or Sideways?
+    # Variant Rules: "Captures forward or sideways (but not diagonally)"
+    # We need to see if a pawn is in a position to capture (r,c).
+
+    # Forward Check: (If attacker is White, they are at r+1 looking "up" at us)
+    pawn_attack_dir = 1 if attacking_color == 'white' else -1
+    pr = r + pawn_attack_dir
+    if 0 <= pr < ROWS:
+        p = grid[pr][c]
+        if p and p.color == attacking_color and type(p) is Pawn:
+            return True
+
+    # Sideways Check:
+    for dc in [-1, 1]:
+        pc = c + dc
+        if 0 <= pc < COLS:
+            p = grid[r][pc]
+            if p and p.color == attacking_color and type(p) is Pawn:
                 return True
-            break
 
-    # Fast path 2: Rook railgun attacks (enemy pieces do not block, friendly pieces do).
-    for dr, dc in DIRECTIONS['rook']:
-        cr, cc = r + dr, c + dc
-        while 0 <= cr < ROWS and 0 <= cc < COLS:
-            piece = grid[cr][cc]
-            if piece is None or piece.color != attacking_color:
-                cr += dr
-                cc += dc
-                continue
-            if type(piece) is rook_type:
-                return True
-            break
+    # 4. Check King (Range 2)
+    # Optimization: Just check distance to enemy king.
+    enemy_king_pos = board.find_king_pos(attacking_color)
+    if enemy_king_pos:
+        dist = max(abs(r - enemy_king_pos[0]), abs(c - enemy_king_pos[1]))
+        if dist <= 2:
+            return True
 
-    # Fast path 3: Queen explosive-proxy checks.
-    # If an adjacent defender piece can be captured by an attacker queen,
-    # the explosion also attacks this square.
-    for ar, ac in ADJACENT_SQUARES_MAP.get((r, c), set()):
-        adj_piece = grid[ar][ac]
-        if adj_piece is None or adj_piece.color != defending_color:
-            continue
-
-        for dr, dc in DIRECTIONS['queen']:
-            cr, cc = ar + dr, ac + dc
-            while 0 <= cr < ROWS and 0 <= cc < COLS:
-                piece = grid[cr][cc]
-                if piece is None:
-                    cr += dr
-                    cc += dc
-                    continue
-                if piece.color == attacking_color and type(piece) is queen_type:
-                    return True
-                break
-
-    # Fast path 4: Complex-piece rules without materializing full threat sets.
+    # 5. Zig-Zag Bishop Fallback
+    # Zig-Zags are non-linear, so rays don't work easily. Use standard iteration for this rare case.
     attacking_pieces = board.white_pieces if attacking_color == 'white' else board.black_pieces
     for piece in attacking_pieces:
-        if not piece.pos:
-            continue
-        ptype = type(piece)
-        if ptype is queen_type or ptype is rook_type:
-            continue
-
-        if ptype is Bishop:
+        if type(piece) is Bishop:
             if _bishop_attacks_square(board, piece.pos, (r, c), piece.color):
                 return True
-        elif ptype is Knight:
-            if _knight_attacks_square(board, piece.pos, (r, c), piece.color):
-                return True
-        elif ptype is King:
-            if _king_attacks_square(board, piece.pos, (r, c), piece.color):
-                return True
-        elif ptype is Pawn:
-            if _pawn_attacks_square(board, piece.pos, (r, c), piece):
-                return True
-        else:
-            if (r, c) in piece.get_threats(board, piece.pos):
-                return True
+
     return False
 
 def is_in_check(board, color):
