@@ -1,4 +1,4 @@
-# GameLogic.py (v40.1 - Raycasting starting to be implemented)
+# GameLogic.py (v40.2 - Raycasting fully implemented)
 
 # -----------------------------
 # Global Constants
@@ -105,75 +105,85 @@ class King(Piece):
 
 class Queen(Piece):
     def symbol(self): return "♕" if self.color == "white" else "♛"
+
     def get_valid_moves(self, board, pos):
         moves = []
         grid = board.grid
-        for dr, dc in DIRECTIONS['queen']:
-            r, c = pos[0] + dr, pos[1] + dc
-            while 0 <= r < ROWS and 0 <= c < COLS:
+        start_index = pos[0] * COLS + pos[1]
+
+        # Check all 8 directions (0-7) using precomputed rays
+        for i in range(8):
+            for (r, c) in RAYS[start_index][i]:
                 target = grid[r][c]
                 if target is None:
                     moves.append((r, c))
                 else:
-                    if target.color != self.color: moves.append((r, c))
+                    # Capture enemy, then stop (Queens don't pierce)
+                    if target.color != self.color:
+                        moves.append((r, c))
                     break
-                r += dr; c += dc
         return moves
 
     def get_threats(self, board, pos):
         threats = set()
+        # We can reuse get_valid_moves logic efficiently here
         valid_moves = self.get_valid_moves(board, pos)
         for move in valid_moves:
             threats.add(move)
             target_piece = board.grid[move[0]][move[1]]
-            # Explosive Proxy Check logic: If capturing an enemy, the explosion radius is also a threat
+            # Explosive Proxy logic
             if target_piece is not None and target_piece.color == self.opponent_color:
-                threats.update(ADJACENT_SQUARES_MAP.get(move,[]))
+                threats.update(ADJACENT_SQUARES_MAP.get(move, []))
         return threats
 
 class Rook(Piece):
     def symbol(self): return "♖" if self.color == "white" else "♜"
+
     def get_valid_moves(self, board, pos):
-        moves =[]
+        moves = []
         grid = board.grid
-        for dr, dc in DIRECTIONS['rook']:
-            r, c = pos[0] + dr, pos[1] + dc
-            while 0 <= r < ROWS and 0 <= c < COLS:
+        start_index = pos[0] * COLS + pos[1]
+
+        # Check only Orthogonal directions (Indices 0, 1, 2, 3)
+        for i in range(4):
+            for (r, c) in RAYS[start_index][i]:
                 target = grid[r][c]
-                # Railgun logic: Stops at friendly pieces, but NOT at enemy pieces
+                # Railgun: Stops ONLY at friendly pieces.
+                # It continues through enemies and empty squares.
                 if target and target.color == self.color:
                     break
                 moves.append((r, c))
-                r += dr; c += dc
         return moves
         
     def get_threats(self, board, pos):
-        # Because the Railgun Rook pierces, its threats are exactly equal to its valid moves
         return set(self.get_valid_moves(board, pos))
 
 class Bishop(Piece):
     def symbol(self): return "♗" if self.color == "white" else "♝"
+
     def get_valid_moves(self, board, pos):
-        moves = {} # Dict keys preserve order and ensure uniqueness
+        moves = {} # Dict to ensure uniqueness between normal and zigzag paths
+        grid = board.grid
         r_start, c_start = pos
-        
-        # 1. Normal Diagonal
-        for dr, dc in DIRECTIONS['bishop']:
-            r, c = r_start + dr, c_start + dc
-            while 0 <= r < ROWS and 0 <= c < COLS:
-                target = board.grid[r][c]
+        start_index = r_start * COLS + c_start
+
+        # 1. Normal Diagonal (Indices 4, 5, 6, 7)
+        for i in range(4, 8):
+            for (r, c) in RAYS[start_index][i]:
+                target = grid[r][c]
                 if target:
-                    if target.color != self.color: moves[(r, c)] = None
+                    if target.color != self.color:
+                        moves[(r, c)] = None
                     break
-                moves[(r, c)] = None; r += dr; c += dc
+                moves[(r, c)] = None
                 
-        # 2. Zig-Zag Movement
+        # 2. Zig-Zag Movement (Keep existing logic)
         for d1, d2 in BISHOP_ZIGZAG_DIRS:
             cr, cc, cd = r_start, c_start, d1
             while True:
                 cr += cd[0]; cc += cd[1]
                 if not (0 <= cr < ROWS and 0 <= cc < COLS): break
-                target = board.grid[cr][cc]
+                target = grid[cr][cc]
                 if target:
                     if target.color != self.color: moves[(cr, cc)] = None
                     break
