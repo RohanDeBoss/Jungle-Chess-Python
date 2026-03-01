@@ -1,4 +1,4 @@
-# AI.py (v92 Move ordering fix)
+# AI.py (v93 - Trying to fix SEE move ordering for variant)
 import time
 import random
 from collections import namedtuple
@@ -154,22 +154,8 @@ class ChessBot:
         return False
 
     def _ordering_tactical_swing(self, board, move, moving_piece, target_piece):
-        # For complex variant effects, keep exact swing.
-        if isinstance(moving_piece, (Queen, Knight, Rook)):
-            return calculate_material_swing(board, move, ORDERING_VALUES)
-
-        swing = 0
-        if target_piece is not None:
-            swing += ORDERING_VALUES.get(type(target_piece), 0)
-
-        if isinstance(moving_piece, Pawn) and (move[1][0] == 0 or move[1][0] == ROWS - 1):
-            swing += ORDERING_VALUES.get(Queen, 0)
-
-        # Passive knight-zone evaporations are tactical; approximate their downside cheaply.
-        if target_piece is None and is_passive_knight_zone_evaporation(board, move):
-            swing -= ORDERING_VALUES.get(type(moving_piece), 0)
-
-        return swing
+            # Defers to the centralized, high-speed approximation in GameLogic.py
+            return fast_approximate_material_swing(board, move, moving_piece, target_piece, ORDERING_VALUES)
 
     def _is_opening_position(self, board):
         return (len(board.white_pieces) + len(board.black_pieces)) >= self.OPENING_TOTAL_PIECE_THRESHOLD

@@ -1,4 +1,4 @@
-# GameLogic.py (v39 attack-map fast path extended to bishop/knight/king/pawn complex threat rules)
+# GameLogic.py (v39.1 Added fast_approximate_material_swing)
 
 # -----------------------------
 # Global Constants
@@ -875,6 +875,56 @@ def generate_all_tactical_moves(board, color):
                 yield (start_pos, end_pos)
             elif is_passive_knight_zone_evaporation(board, move):
                 yield (start_pos, end_pos)
+
+def fast_approximate_material_swing(board, move, moving_piece, target_piece, piece_values):
+    """
+    A highly optimized, allocation-free version of get_move_outcome.
+    Used purely by the AI for move ordering (Static Exchange Evaluation).
+    """
+    swing = 0
+    if target_piece is not None:
+        swing += piece_values.get(type(target_piece), 0)
+
+    if isinstance(moving_piece, Pawn) and (move[1][0] == 0 or move[1][0] == ROWS - 1):
+        swing += piece_values.get(Queen, 0)
+
+    if isinstance(moving_piece, Queen) and target_piece is not None:
+        swing -= piece_values.get(Queen, 0)
+        for r, c in ADJACENT_SQUARES_MAP.get(move[1], []):
+            adj = board.grid[r][c]
+            if adj and adj.color != moving_piece.color:
+                swing += piece_values.get(type(adj), 0)
+        return swing
+
+    if isinstance(moving_piece, Knight):
+        for r, c in KNIGHT_ATTACKS_FROM.get(move[1], []):
+            adj = board.grid[r][c]
+            if adj and adj.color != moving_piece.color:
+                swing += piece_values.get(type(adj), 0)
+                if isinstance(adj, Knight):
+                    swing -= piece_values.get(Knight, 0)
+        return swing
+
+    if isinstance(moving_piece, Rook):
+        start, end = move
+        dr = (end[0] > start[0]) - (start[0] > end[0])
+        dc = (end[1] > start[1]) - (start[1] > end[1])
+        cr, cc = start[0] + dr, start[1] + dc
+        while (cr, cc) != end:
+            target = board.grid[cr][cc]
+            if target and target.color != moving_piece.color:
+                swing += piece_values.get(type(target), 0)
+            cr += dr; cc += dc
+        return swing
+
+    if target_piece is None and not isinstance(moving_piece, Knight):
+        for r, c in KNIGHT_ATTACKS_FROM.get(move[1], []):
+            potential_killer = board.grid[r][c]
+            if potential_killer and isinstance(potential_killer, Knight) and potential_killer.color != moving_piece.color:
+                swing -= piece_values.get(type(moving_piece), 0)
+                break
+
+    return swing
 
 def format_move(move):
     if not move: return "None"
