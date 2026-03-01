@@ -1,4 +1,4 @@
-# AI.py (v93.1 - Still rying to fix SEE move ordering for variant)
+# AI.py (v93.2 - Move order optimised)
 import time
 import random
 from collections import namedtuple
@@ -677,9 +677,9 @@ class ChessBot:
 
     def order_moves(self, board, moves, ply, hash_move, return_meta=False):
         if not moves:
-            return[] if return_meta else []
+            return [] if return_meta else []
 
-        scored_moves =[]
+        scored_moves = []
         move_meta = {}
         killers = self.killer_moves[ply] if ply < len(self.killer_moves) else [None, None]
         color_index = 0 if (self.color if ply % 2 == 0 else self.opponent_color) == 'white' else 1
@@ -689,23 +689,28 @@ class ChessBot:
             moving_piece = board.grid[move[0][0]][move[0][1]]
             target_piece = board.grid[move[1][0]][move[1][1]]
             
-            # 100% of variant logic relies on this math now
+            # 1. Calculate Swing First
             swing = self._ordering_tactical_swing(board, move, moving_piece, target_piece)
+            
+            # 2. Determine if it's "Tactical" based on the swing result + capture status
             is_capture_or_promo = target_piece is not None or (isinstance(moving_piece, Pawn) and (move[1][0] == 0 or move[1][0] == ROWS - 1))
             
-            # Only classify GOOD or EQUAL tactics as "tactical" to prevent LMR reduction.
-            # Negative swing (suicide) moves are treated as safe to reduce by LMR!
-            is_tactical_for_lmr = (swing > 0) or (swing == 0 and is_capture_or_promo)
-            move_meta[move] = (is_tactical_for_lmr, moving_piece)
+            # A move is tactical if it has a swing (positive OR negative) OR if it captures something
+            is_tactical = (swing != 0) or is_capture_or_promo
+            
+            # A move is "Safe" for LMR if it is a GOOD tactic. Bad tactics (negative swing) are safe to reduce.
+            is_good_tactic = (swing > 0) or (swing == 0 and is_capture_or_promo)
+            
+            move_meta[move] = (is_good_tactic, moving_piece)
 
             if move == hash_move:
                 score = self.BONUS_PV_MOVE
-            elif is_tactical_for_lmr:
-                score = self.BONUS_CAPTURE + swing
-            elif swing < 0:
-                score = self.BAD_TACTIC_PENALTY + swing
+            elif is_tactical:
+                if swing >= 0:
+                    score = self.BONUS_CAPTURE + swing
+                else:
+                    score = self.BAD_TACTIC_PENALTY + swing
             else:
-                # Quiet moves (swing == 0 and not a capture/promo)
                 if move in killers:
                     score = self.BONUS_KILLER_1 if move == killers[0] else self.BONUS_KILLER_2
                 else:
@@ -718,8 +723,8 @@ class ChessBot:
 
         scored_moves.sort(key=lambda item: item[0], reverse=True)
         if return_meta:
-            return[(move, move_meta[move]) for _, move in scored_moves]
-        return[move for _, move in scored_moves]
+            return [(move, move_meta[move]) for _, move in scored_moves]
+        return [move for _, move in scored_moves]
     
     def evaluate_board(self, board, turn_to_move):
         if is_insufficient_material(board):
