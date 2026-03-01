@@ -1,4 +1,4 @@
-# TablebaseGenerator.py (v1.5 base + 4-Man Support)
+# TablebaseGenerator.py (v2 - OPtimised ram)
 
 import os
 import time
@@ -6,6 +6,7 @@ import __main__
 from concurrent.futures import ProcessPoolExecutor
 import numpy as np
 from GameLogic import *
+import struct
 
 # Configuration
 TB_DIR = "tablebases"
@@ -40,6 +41,22 @@ def _load_table_file_any_dtype(filename):
 
 def _flat_idx_raw(i0, i1, i2, i3):
     return (((i0 * 64 + i1) * 64 + i2) * 2 + i3)
+
+
+def _pack_uint_list(lst):
+    n = len(lst)
+    if n == 0:
+        return struct.pack('<I', 0)
+    return struct.pack('<I', n) + struct.pack(f'<{n}I', *lst)
+
+
+def _unpack_uint_list(b):
+    if not b:
+        return ()
+    n = struct.unpack_from('<I', b, 0)[0]
+    if n == 0:
+        return ()
+    return struct.unpack_from(f'<{n}I', b, 4)
 
 def _init_transition_worker(piece_name, queen_tb_file):
     global _W_PIECE_NAME, _W_PIECE_CLASS, _W_QUEEN_TABLE
@@ -98,7 +115,7 @@ def _build_transition_worker(idx):
                 c2 = child.black_king_pos[0] * 8 + child.black_king_pos[1]
                 child_flats.append(_flat_idx_raw(c0, c1, c2, opp_turn_idx))
 
-        return _flat_idx_raw(i0, i1, i2, i3), ('w', immediate_win, tuple(promo_win_vals), tuple(child_flats))
+        return _flat_idx_raw(i0, i1, i2, i3), ('w', immediate_win, _pack_uint_list(promo_win_vals), _pack_uint_list(child_flats))
 
     legal_moves_count = 0
     has_non_losing_escape = False
@@ -127,7 +144,7 @@ def _build_transition_worker(idx):
         c2 = child.black_king_pos[0] * 8 + child.black_king_pos[1]
         child_flats.append(_flat_idx_raw(c0, c1, c2, opp_turn_idx))
 
-    return _flat_idx_raw(i0, i1, i2, i3), ('b', legal_moves_count, has_non_losing_escape, tuple(child_flats))
+    return _flat_idx_raw(i0, i1, i2, i3), ('b', legal_moves_count, has_non_losing_escape, _pack_uint_list(child_flats))
 
 class Generator:
     def __init__(self, piece_class):
@@ -204,7 +221,7 @@ class Generator:
                     c_idx = self.encode(child.white_king_pos, child.white_pieces[1].pos, child.black_king_pos, opp_turn_idx)
                     child_flats.append(self._flat_idx(c_idx))
 
-            return ('w', immediate_win, tuple(promo_win_vals), tuple(child_flats))
+            return ('w', immediate_win, _pack_uint_list(promo_win_vals), _pack_uint_list(child_flats))
 
         legal_moves_count = 0
         has_non_losing_escape = False
@@ -226,22 +243,24 @@ class Generator:
             c_idx = self.encode(child.white_king_pos, child.white_pieces[1].pos, child.black_king_pos, opp_turn_idx)
             child_flats.append(self._flat_idx(c_idx))
 
-        return ('b', legal_moves_count, has_non_losing_escape, tuple(child_flats))
+        return ('b', legal_moves_count, has_non_losing_escape, _pack_uint_list(child_flats))
 
     def _build_transition_cache(self, unsolved_indices):
         cache = {}
         total = len(unsolved_indices)
-        if total == 0: return cache
+        if total == 0:
+            return cache
 
-        print(f"[{self.piece_name}] Phase 1.5: Building transition cache ({total} states)...")
+        print(f"[{self.piece_name}] Phase 1.5: Building transition cache ({total} states)...", flush=True)
         start = time.time()
 
         can_parallel = (self.transition_workers > 1 and total >= self.transition_parallel_threshold and not (self.piece_name == "Pawn" and self.queen_table is None))
         main_file = getattr(__main__, "__file__", "")
-        if not main_file or main_file == "<stdin>": can_parallel = False
+        if not main_file or main_file == "<stdin>":
+            can_parallel = False
 
         if can_parallel:
-            print(f"[{self.piece_name}] Using {self.transition_workers} workers for transition build.")
+            print(f"[{self.piece_name}] Using {self.transition_workers} workers for transition build.", flush=True)
             try:
                 with ProcessPoolExecutor(max_workers=self.transition_workers, initializer=_init_transition_worker, initargs=(self.piece_name, self.queen_tb_file)) as ex:
                     for done, (flat, transition) in enumerate(ex.map(_build_transition_worker, unsolved_indices, chunksize=512), start=1):
@@ -250,7 +269,7 @@ class Generator:
                             elapsed = max(0.001, time.time() - start)
                             speed = done / elapsed
                             eta = (total - done) / speed
-                            print(f"  > Cache: {done}/{total} ({(done/total)*100:.1f}%) | {speed:.0f} st/s | ETA: {eta:.0f}s", end='\r')
+                            print(f"  > Cache: {done}/{total} ({(done/total)*100:.1f}%) | {speed:.0f} st/s | ETA: {eta:.0f}s", end='\r', flush=True)
                 print()
             except Exception as e:
                 print(f"[{self.piece_name}] Parallel cache build failed ({e}). Falling back to single-process.")
@@ -264,7 +283,7 @@ class Generator:
                     elapsed = max(0.001, time.time() - start)
                     speed = done / elapsed
                     eta = (total - done) / speed
-                    print(f"  > Cache: {done}/{total} ({(done/total)*100:.1f}%) | {speed:.0f} st/s | ETA: {eta:.0f}s", end='\r')
+                    print(f"  > Cache: {done}/{total} ({(done/total)*100:.1f}%) | {speed:.0f} st/s | ETA: {eta:.0f}s", end='\r', flush=True)
             print()
 
         elapsed = time.time() - start
@@ -335,31 +354,31 @@ class Generator:
                 t_idx = idx[3]
                 flat = self._flat_idx(idx)
                 transition = transition_cache.get(flat)
-                
+
                 if t_idx == 0:
                     best_win = 0
-                    _, immediate_win, promo_vals, child_flats = transition
+                    _, immediate_win, promo_packed, child_packed = transition
                     if immediate_win: best_win = 1
-                    for val in promo_vals:
+                    for val in _unpack_uint_list(promo_packed):
                         if best_win == 0 or val < best_win: best_win = val
-                    for cflat in child_flats:
+                    for cflat in _unpack_uint_list(child_packed):
                         res_val = int(prev_flat[cflat])
                         if res_val < 0:
                             val = abs(res_val) + 1
                             if best_win == 0 or val < best_win: best_win = val
-                    
+
                     if best_win > 0:
                         self.table[idx] = best_win
                         changed += 1
                     else:
                         new_unsolved.append(idx)
-                else: 
-                    _, legal_moves_count, has_non_losing_escape, child_flats = transition
+                else:
+                    _, legal_moves_count, has_non_losing_escape, child_packed = transition
                     all_moves_lead_to_win = legal_moves_count > 0 and not has_non_losing_escape
                     max_win_val = 0
 
                     if all_moves_lead_to_win:
-                        for cflat in child_flats:
+                        for cflat in _unpack_uint_list(child_packed):
                             res_val = int(prev_flat[cflat])
                             if res_val <= 0:
                                 all_moves_lead_to_win = False; break
@@ -483,7 +502,7 @@ def _build_transition_worker_4(idx):
             c3 = child.black_king_pos[0]*8+child.black_king_pos[1]
             child_flats.append(_flat_idx_raw_4(c0, c1, c2, c3, opp_turn_idx))
 
-        return _flat_idx_raw_4(*idx), ('w', immediate_win, tuple(known_win_vals), tuple(child_flats))
+        return _flat_idx_raw_4(*idx), ('w', immediate_win, _pack_uint_list(known_win_vals), _pack_uint_list(child_flats))
 
     legal_moves_count = 0
     has_non_losing_escape = False
@@ -522,7 +541,7 @@ def _build_transition_worker_4(idx):
         c3 = child.black_king_pos[0]*8+child.black_king_pos[1]
         child_flats.append(_flat_idx_raw_4(c0, c1, c2, c3, opp_turn_idx))
 
-    return _flat_idx_raw_4(*idx), ('b', legal_moves_count, has_non_losing_escape, tuple(child_flats))
+    return _flat_idx_raw_4(*idx), ('b', legal_moves_count, has_non_losing_escape, _pack_uint_list(child_flats))
 
 class Generator4:
     def __init__(self, p1_class, p2_class):
@@ -560,19 +579,31 @@ class Generator4:
         start_time = time.time()
         print(f"\n{'='*60}\n GENERATING: King + {self.p1_name} + {self.p2_name} vs King\n{'='*60}")
         
+        # --- OPTIMIZED PHASE 1 ---
         unsolved_indices = []
         print(f"[Phase 1] Initialization...")
-        for i, idx in enumerate(np.ndindex(self.table.shape)):
-            if i % 1000000 == 0 and i > 0: print(f"  > Scanned {i/1000000:.1f}M positions...", end='\r')
-            wk, p1, p2, bk, t_idx = self.decode(idx)
-            
-            if len(set([wk, p1, p2, bk])) < 4: continue
-            if self.p1_name == "Pawn" and (p1[0] == 0 or p1[0] == 7): continue
-            if self.p2_name == "Pawn" and (p2[0] == 0 or p2[0] == 7): continue
+        for i in range(self.total_positions):
+            if i % 2000000 == 0 and i > 0:
+                print(f"  > Scanned {i/1000000:.1f}M positions...", end='\r')
 
-            # We don't bother setting up a sim board here to save massive time,
-            # we just append to unsolved and let the workers handle terminal checks during cache build.
-            unsolved_indices.append(idx)
+            temp = i
+            t_idx = temp % 2; temp //= 2
+            bk_i = temp % 64; temp //= 64
+            p2_i = temp % 64; temp //= 64
+            p1_i = temp % 64
+            wk_i = temp // 64
+
+            # Overlap check
+            if wk_i == p1_i or wk_i == p2_i or wk_i == bk_i or p1_i == p2_i or p1_i == bk_i or p2_i == bk_i:
+                continue
+
+            # Illegal Pawn positions (rank 0 or 7)
+            if self.p1_name == "Pawn" and (p1_i < 8 or p1_i >= 56):
+                continue
+            if self.p2_name == "Pawn" and (p2_i < 8 or p2_i >= 56):
+                continue
+
+            unsolved_indices.append((wk_i, p1_i, p2_i, bk_i, t_idx))
         print()
 
         print(f"[Phase 1.5] Building transition cache ({len(unsolved_indices)} states)...")
@@ -599,33 +630,33 @@ class Generator4:
                 t_idx = idx[4]
                 flat = _flat_idx_raw_4(*idx)
                 transition = cache[flat]
-                
+
                 if t_idx == 0:
                     best_win = 0
-                    _, immediate_win, known_win_vals, child_flats = transition
+                    _, immediate_win, known_win_packed, child_packed = transition
 
                     if immediate_win: best_win = 1
-                    for val in known_win_vals:
+                    for val in _unpack_uint_list(known_win_packed):
                         if best_win == 0 or val < best_win: best_win = val
-                    for cflat in child_flats:
+                    for cflat in _unpack_uint_list(child_packed):
                         res_val = int(prev_flat[cflat])
                         if res_val < 0:
                             val = abs(res_val) + 1
                             if best_win == 0 or val < best_win: best_win = val
-                    
+
                     if best_win > 0:
                         self.table[idx] = best_win
                         changed += 1
                     else:
                         new_unsolved.append(idx)
 
-                else: 
-                    _, legal_moves_count, has_non_losing_escape, child_flats = transition
+                else:
+                    _, legal_moves_count, has_non_losing_escape, child_packed = transition
                     all_moves_lead_to_win = legal_moves_count > 0 and not has_non_losing_escape
                     max_win_val = 0
 
                     if all_moves_lead_to_win:
-                        for cflat in child_flats:
+                        for cflat in _unpack_uint_list(child_packed):
                             res_val = int(prev_flat[cflat])
                             if res_val <= 0:
                                 all_moves_lead_to_win = False; break

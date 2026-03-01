@@ -4,6 +4,10 @@ import os
 import numpy as np
 from GameLogic import King, Board
 
+
+def _flat_idx_raw_4(i0, i1, i2, i3, i4):
+    return (((((i0 * 64 + i1) * 64 + i2) * 64 + i3) * 2) + i4)
+
 class TablebaseManager:
     def __init__(self):
         self.tables = {}
@@ -92,45 +96,34 @@ class TablebaseManager:
                 except Exception:
                     return None
                     
-        # --- 4-Man Probe ---
+        # --- 4-Man Probe (Logic Corrected) ---
         elif white_count + black_count == 4:
+            # Tablebases only exist for 3 attackers vs 1 king
             if white_count == 3 and black_count == 1:
-                try:
-                    w_p =[p for p in board.white_pieces if not isinstance(p, King)]
-                    w_p.sort(key=lambda x: type(x).__name__) # Match alphabetical sorting
-                    
-                    p_name = f"K_{type(w_p[0]).__name__}_{type(w_p[1]).__name__}_K"
-                    if p_name not in self.tables: return None
-                    
-                    t_idx = 0 if turn == 'white' else 1
-                    idx = (board.white_king_pos[0]*8+board.white_king_pos[1], 
-                           w_p[0].pos[0]*8+w_p[0].pos[1], 
-                           w_p[1].pos[0]*8+w_p[1].pos[1], 
-                           board.black_king_pos[0]*8+board.black_king_pos[1], 
-                           t_idx)
-                    score = int(self.tables[p_name][idx])
-                    return self._to_white_perspective(score, turn)
-                except Exception:
-                    return None
-                    
+                atk_pieces = sorted([p for p in board.white_pieces if not isinstance(p, King)], key=lambda x: type(x).__name__)
+                wk, bk = board.white_king_pos, board.black_king_pos
+                table_name = f"K_{type(atk_pieces[0]).__name__}_{type(atk_pieces[1]).__name__}_K"
+                
+                if table_name not in self.tables: return None
+                
+                idx = _flat_idx_raw_4(wk[0]*8+wk[1], atk_pieces[0].pos[0]*8+atk_pieces[0].pos[1], 
+                                     atk_pieces[1].pos[0]*8+atk_pieces[1].pos[1], bk[0]*8+bk[1], 
+                                     0 if turn == 'white' else 1)
+                return self._to_white_perspective(self.tables[table_name].flat[idx], turn)
+
             elif black_count == 3 and white_count == 1:
-                try:
-                    b_p =[p for p in board.black_pieces if not isinstance(p, King)]
-                    b_p.sort(key=lambda x: type(x).__name__)
-                    
-                    p_name = f"K_{type(b_p[0]).__name__}_{type(b_p[1]).__name__}_K"
-                    if p_name not in self.tables: return None
-                    
-                    def flip(p): return (7-p[0], p[1])
-                    t_idx = 0 if turn == 'black' else 1
-                    idx = (flip(board.black_king_pos)[0]*8+flip(board.black_king_pos)[1], 
-                           flip(b_p[0].pos)[0]*8+flip(b_p[0].pos)[1], 
-                           flip(b_p[1].pos)[0]*8+flip(b_p[1].pos)[1], 
-                           flip(board.white_king_pos)[0]*8+flip(board.white_king_pos)[1], 
-                           t_idx)
-                    score = int(self.tables[p_name][idx])
-                    return self._to_white_perspective(score, turn)
-                except Exception:
-                    return None
+                atk_pieces = sorted([p for p in board.black_pieces if not isinstance(p, King)], key=lambda x: type(x).__name__)
+                bk, wk = board.black_king_pos, board.white_king_pos
+                table_name = f"K_{type(atk_pieces[0]).__name__}_{type(atk_pieces[1]).__name__}_K"
+                
+                if table_name not in self.tables: return None
+                
+                # Mirroring: y = 7-y. This maps Black Attacker to the White Attacker table.
+                def m(p): return (7-p[0])*8 + p[1]
+                idx = _flat_idx_raw_4(m(bk), m(atk_pieces[0].pos), m(atk_pieces[1].pos), m(wk), 
+                                     0 if turn == 'black' else 1)
+                
+                score = int(self.tables[table_name].flat[idx])
+                return self._to_white_perspective(score, turn)
 
         return None
