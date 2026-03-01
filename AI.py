@@ -1,5 +1,4 @@
-# AI.py (v91.1 - Full History Heuristic Integration + asp window 150 + retry 3)
-
+# AI.py (v91.2 ASP Bug FIXED)
 import time
 import random
 from collections import namedtuple
@@ -264,16 +263,18 @@ class ChessBot:
                 if self.cancellation_event.is_set():
                     raise SearchCancelledException()
 
-                if best_score < alpha_bound:
+                # --- THE FIX IS HERE ---
+                if best_score <= alpha_bound:       # Changed from < to <=
                     alpha_bound -= window
                     window *= 2
                     retries += 1
-                elif best_score > beta_bound:
+                elif best_score >= beta_bound:      # Changed from > to >=
                     beta_bound += window
                     window *= 2
                     retries += 1
                 else:
                     break
+                # -----------------------
 
                 if retries >= self.ASP_MAX_RETRIES:
                     best_score, best_move = self._search_at_depth(
