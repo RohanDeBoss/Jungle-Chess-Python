@@ -1,4 +1,4 @@
-# GameLogic.py (v39.1 Added fast_approximate_material_swing)
+# GameLogic.py (v39.1 Fixing fast_approximate_material_swing)
 
 # -----------------------------
 # Global Constants
@@ -885,27 +885,22 @@ def fast_approximate_material_swing(board, move, moving_piece, target_piece, pie
     if target_piece is not None:
         swing += piece_values.get(type(target_piece), 0)
 
-    if isinstance(moving_piece, Pawn) and (move[1][0] == 0 or move[1][0] == ROWS - 1):
-        swing += piece_values.get(Queen, 0)
+    is_promotion = isinstance(moving_piece, Pawn) and (move[1][0] == 0 or move[1][0] == ROWS - 1)
+    my_type = Queen if is_promotion else type(moving_piece)
+    
+    if is_promotion:
+        swing += piece_values.get(Queen, 0) - piece_values.get(Pawn, 0)
 
-    if isinstance(moving_piece, Queen) and target_piece is not None:
-        swing -= piece_values.get(Queen, 0)
-        for r, c in ADJACENT_SQUARES_MAP.get(move[1], []):
+    if my_type is Queen and target_piece is not None:
+        swing -= piece_values.get(Queen, 0)  # Queen dies in the explosion
+        for r, c in ADJACENT_SQUARES_MAP.get(move[1],[]):
             adj = board.grid[r][c]
             if adj and adj.color != moving_piece.color:
                 swing += piece_values.get(type(adj), 0)
         return swing
 
-    if isinstance(moving_piece, Knight):
-        for r, c in KNIGHT_ATTACKS_FROM.get(move[1], []):
-            adj = board.grid[r][c]
-            if adj and adj.color != moving_piece.color:
-                swing += piece_values.get(type(adj), 0)
-                if isinstance(adj, Knight):
-                    swing -= piece_values.get(Knight, 0)
-        return swing
-
-    if isinstance(moving_piece, Rook):
+    pierced_knights =[]
+    if my_type is Rook:
         start, end = move
         dr = (end[0] > start[0]) - (start[0] > end[0])
         dc = (end[1] > start[1]) - (start[1] > end[1])
@@ -914,15 +909,29 @@ def fast_approximate_material_swing(board, move, moving_piece, target_piece, pie
             target = board.grid[cr][cc]
             if target and target.color != moving_piece.color:
                 swing += piece_values.get(type(target), 0)
+                if type(target) is Knight:
+                    pierced_knights.append((cr, cc))
             cr += dr; cc += dc
+
+    if my_type is Knight:
+        evaporates_self = False
+        for r, c in KNIGHT_ATTACKS_FROM.get(move[1],[]):
+            adj = board.grid[r][c]
+            if adj and adj.color != moving_piece.color:
+                swing += piece_values.get(type(adj), 0)
+                if type(adj) is Knight:
+                    evaporates_self = True
+        if evaporates_self:
+            swing -= piece_values.get(Knight, 0)
         return swing
 
-    if target_piece is None and not isinstance(moving_piece, Knight):
+    if my_type is not Knight:
         for r, c in KNIGHT_ATTACKS_FROM.get(move[1], []):
             potential_killer = board.grid[r][c]
-            if potential_killer and isinstance(potential_killer, Knight) and potential_killer.color != moving_piece.color:
-                swing -= piece_values.get(type(moving_piece), 0)
-                break
+            if potential_killer and type(potential_killer) is Knight and potential_killer.color != moving_piece.color:
+                if (r, c) not in pierced_knights:
+                    swing -= piece_values.get(my_type, 0)
+                    break 
 
     return swing
 

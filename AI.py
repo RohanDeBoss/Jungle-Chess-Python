@@ -1,4 +1,4 @@
-# AI.py (v93 - Trying to fix SEE move ordering for variant)
+# AI.py (v93.1 - Still rying to fix SEE move ordering for variant)
 import time
 import random
 from collections import namedtuple
@@ -154,8 +154,8 @@ class ChessBot:
         return False
 
     def _ordering_tactical_swing(self, board, move, moving_piece, target_piece):
-            # Defers to the centralized, high-speed approximation in GameLogic.py
-            return fast_approximate_material_swing(board, move, moving_piece, target_piece, ORDERING_VALUES)
+        # Defers to the centralized, high-speed approximation in GameLogic.py
+        return fast_approximate_material_swing(board, move, moving_piece, target_piece, ORDERING_VALUES)
 
     def _is_opening_position(self, board):
         return (len(board.white_pieces) + len(board.black_pieces)) >= self.OPENING_TOTAL_PIECE_THRESHOLD
@@ -646,7 +646,14 @@ class ChessBot:
             moving_piece = board.grid[move[0][0]][move[0][1]]
             target_piece = board.grid[move[1][0]][move[1][1]]
             swing = self._ordering_tactical_swing(board, move, moving_piece, target_piece)
+            
+            # --- NEW SEE PRUNING ---
+            # If not in check, do not explore suicidal tactics in qsearch!
+            if not is_in_check_flag and swing < 0:
+                continue
+                
             scored_moves.append((swing, move))
+            
         scored_moves.sort(key=lambda item: item[0], reverse=True)
 
         legal_moves_count = 0
@@ -670,9 +677,9 @@ class ChessBot:
 
     def order_moves(self, board, moves, ply, hash_move, return_meta=False):
         if not moves:
-            return [] if return_meta else []
+            return[] if return_meta else []
 
-        scored_moves = []
+        scored_moves =[]
         move_meta = {}
         killers = self.killer_moves[ply] if ply < len(self.killer_moves) else [None, None]
         color_index = 0 if (self.color if ply % 2 == 0 else self.opponent_color) == 'white' else 1
@@ -681,20 +688,24 @@ class ChessBot:
         for move in moves:
             moving_piece = board.grid[move[0][0]][move[0][1]]
             target_piece = board.grid[move[1][0]][move[1][1]]
-            is_tactical = self._is_tactical_move(board, move, moving_piece=moving_piece, target_piece=target_piece)
-            move_meta[move] = (is_tactical, moving_piece)
+            
+            # 100% of variant logic relies on this math now
+            swing = self._ordering_tactical_swing(board, move, moving_piece, target_piece)
+            is_capture_or_promo = target_piece is not None or (isinstance(moving_piece, Pawn) and (move[1][0] == 0 or move[1][0] == ROWS - 1))
+            
+            # Only classify GOOD or EQUAL tactics as "tactical" to prevent LMR reduction.
+            # Negative swing (suicide) moves are treated as safe to reduce by LMR!
+            is_tactical_for_lmr = (swing > 0) or (swing == 0 and is_capture_or_promo)
+            move_meta[move] = (is_tactical_for_lmr, moving_piece)
 
             if move == hash_move:
                 score = self.BONUS_PV_MOVE
-            elif is_tactical:
-                swing = self._ordering_tactical_swing(board, move, moving_piece, target_piece)
-                # --- APPLY SEE (Static Exchange Evaluation) SPLIT ---
-                if swing >= 0:
-                    score = self.BONUS_CAPTURE + swing
-                else:
-                    score = self.BAD_TACTIC_PENALTY + swing
-                # ----------------------------------------------------
+            elif is_tactical_for_lmr:
+                score = self.BONUS_CAPTURE + swing
+            elif swing < 0:
+                score = self.BAD_TACTIC_PENALTY + swing
             else:
+                # Quiet moves (swing == 0 and not a capture/promo)
                 if move in killers:
                     score = self.BONUS_KILLER_1 if move == killers[0] else self.BONUS_KILLER_2
                 else:
@@ -707,9 +718,9 @@ class ChessBot:
 
         scored_moves.sort(key=lambda item: item[0], reverse=True)
         if return_meta:
-            return [(move, move_meta[move]) for _, move in scored_moves]
-        return [move for _, move in scored_moves]
-
+            return[(move, move_meta[move]) for _, move in scored_moves]
+        return[move for _, move in scored_moves]
+    
     def evaluate_board(self, board, turn_to_move):
         if is_insufficient_material(board):
             return self.DRAW_SCORE
