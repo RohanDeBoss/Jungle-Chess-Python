@@ -1,4 +1,4 @@
-# GameLogic.py (v40.2 - Raycasting fully implemented)
+# GameLogic.py (v41 - Raycasting + material-aware threat checks & ray-optimized move generation)
 
 # -----------------------------
 # Global Constants
@@ -258,7 +258,12 @@ class Board:
         self.white_king_pos = None
         self.black_king_pos = None
         self.white_pieces = []
-        self.black_pieces =[]
+        self.black_pieces = []
+        # Optimization: Track material counts to skip impossible threat checks
+        self.piece_counts = {
+            'white': {Pawn:0, Knight:0, Bishop:0, Rook:0, Queen:0, King:0}, 
+            'black': {Pawn:0, Knight:0, Bishop:0, Rook:0, Queen:0, King:0}
+        }
         if setup: self._setup_initial_board()
 
     def _setup_initial_board(self):
@@ -273,6 +278,9 @@ class Board:
         piece.pos = (r, c)
         if piece.color == 'white': self.white_pieces.append(piece)
         else: self.black_pieces.append(piece)
+        
+        self.piece_counts[piece.color][type(piece)] += 1
+        
         if isinstance(piece, King):
             if piece.color == "white": self.white_king_pos = (r, c)
             else: self.black_king_pos = (r, c)
@@ -286,6 +294,8 @@ class Board:
         else: 
             if piece in self.black_pieces: self.black_pieces.remove(piece)
             
+        self.piece_counts[piece.color][type(piece)] -= 1
+            
         if isinstance(piece, King):
             if piece.color == "white": self.white_king_pos = None
             else: self.black_king_pos = None
@@ -294,6 +304,7 @@ class Board:
         self.grid[r][c] = None
 
     def move_piece(self, start, end):
+        # move_piece does not change counts (same piece, new loc)
         piece = self.grid[start[0]][start[1]]
         if not piece: return
         piece.pos = end
@@ -312,15 +323,18 @@ class Board:
         new_board.white_pieces = [_clone_piece_fast(p) for p in self.white_pieces]
         new_board.black_pieces = [_clone_piece_fast(p) for p in self.black_pieces]
         
-        # Populate grid directly (Removed slow isinstance(King) checks from loop)
-        for p in new_board.white_pieces:
-            new_board.grid[p.pos[0]][p.pos[1]] = p
-        for p in new_board.black_pieces:
-            new_board.grid[p.pos[0]][p.pos[1]] = p
-            
-        # Directly copy King positions from the parent board (Massive Speedup)
+        # Populate grid directly
+        for p in new_board.white_pieces: new_board.grid[p.pos[0]][p.pos[1]] = p
+        for p in new_board.black_pieces: new_board.grid[p.pos[0]][p.pos[1]] = p
+        
         new_board.white_king_pos = self.white_king_pos
         new_board.black_king_pos = self.black_king_pos
+        
+        # Copy counts (Dictionary copy is fast)
+        new_board.piece_counts = {
+            'white': self.piece_counts['white'].copy(),
+            'black': self.piece_counts['black'].copy()
+        }
             
         return new_board
 
@@ -345,6 +359,8 @@ class Board:
 
         self._apply_knight_aoe(end, is_active_move=isinstance(moving_piece, Knight))
 
+    # ... (Keep _apply_queen_aoe, _apply_rook_piercing, _apply_knight_aoe as they were) ...
+    # (Just pasting them here for completeness if you copy the whole class)
     def _apply_queen_aoe(self, pos, queen_color):
         if self.grid[pos[0]][pos[1]]: self.remove_piece(pos[0], pos[1])
         for r, c in ADJACENT_SQUARES_MAP.get(pos, set()):
@@ -352,10 +368,8 @@ class Board:
             if adj_piece and adj_piece.color != queen_color: self.remove_piece(r, c)
 
     def _apply_rook_piercing(self, start, end, rook_color):
-        # Optimized vector calculation
         dr = (end[0] > start[0]) - (start[0] > end[0])
         dc = (end[1] > start[1]) - (start[1] > end[1])
-        
         cr, cc = start[0] + dr, start[1] + dc
         while (cr, cc) != end:
             target = self.grid[cr][cc]
@@ -364,48 +378,34 @@ class Board:
 
     def _apply_knight_aoe(self, pos, is_active_move):
         grid = self.grid
-        
-        # 1. Active Evaporation
         if is_active_move:
             knight_instance = grid[pos[0]][pos[1]]
             if not knight_instance: return
-            
             to_remove, enemy_knights_destroyed =[], False
             for r, c in KNIGHT_ATTACKS_FROM[pos]:
                 target = grid[r][c]
                 if target and target.color != knight_instance.color:
                     to_remove.append(target)
-                    if isinstance(target, Knight):
-                        enemy_knights_destroyed = True
-            
-            for piece in to_remove:
-                self.remove_piece(piece.pos[0], piece.pos[1])
-
-            if enemy_knights_destroyed:
-                self.remove_piece(pos[0], pos[1])
-                
-        # 2. Passive Evaporation
+                    if isinstance(target, Knight): enemy_knights_destroyed = True
+            for piece in to_remove: self.remove_piece(piece.pos[0], piece.pos[1])
+            if enemy_knights_destroyed: self.remove_piece(pos[0], pos[1])
         else:
             victim = grid[pos[0]][pos[1]]
             if not victim: return
-            
             for r, c in KNIGHT_ATTACKS_FROM[pos]:
                 potential_killer = grid[r][c]
                 if (potential_killer and isinstance(potential_killer, Knight) and potential_killer.color != victim.color):
                     self.remove_piece(pos[0], pos[1])
                     return
-
+                    
     def _get_rook_piercing_captures(self, start, end, rook_color):
         captured = []
-        # Optimized vector calculation
         dr = (end[0] > start[0]) - (start[0] > end[0])
         dc = (end[1] > start[1]) - (start[1] > end[1])
-        
         cr, cc = start[0] + dr, start[1] + dc
         while (cr, cc) != end:
             target = self.grid[cr][cc]
-            if target and target.color != rook_color:
-                captured.append(target)
+            if target and target.color != rook_color: captured.append(target)
             cr += dr; cc += dc
         return captured
 
@@ -413,8 +413,7 @@ class Board:
         captured =[]
         for r, c in ADJACENT_SQUARES_MAP.get(pos, set()):
             adj_piece = self.grid[r][c]
-            if adj_piece and adj_piece.color != queen_color:
-                captured.append(adj_piece)
+            if adj_piece and adj_piece.color != queen_color: captured.append(adj_piece)
         return captured
     
     def _get_knight_aoe_outcome(self, knight_pos, knight_color):
@@ -423,22 +422,17 @@ class Board:
             target = self.grid[r][c]
             if target and target.color != knight_color:
                 captured.append(target)
-                if isinstance(target, Knight):
-                    self_evaporates = True
+                if isinstance(target, Knight): self_evaporates = True
         return captured, self_evaporates
 
     def get_move_outcome(self, move):
         start_pos, end_pos = move
         moving_piece = self.grid[start_pos[0]][start_pos[1]]
-        if not moving_piece:
-            return set(), set(), None
-            
+        if not moving_piece: return set(), set(), None
         friendly_lost, opponent_captured, promotion_type = set(), set(), None
         target_piece = self.grid[end_pos[0]][end_pos[1]]
         is_capture = target_piece is not None
-
-        if is_capture:
-            opponent_captured.add(target_piece)
+        if is_capture: opponent_captured.add(target_piece)
 
         if isinstance(moving_piece, Rook):
             opponent_captured.update(self._get_rook_piercing_captures(start_pos, end_pos, moving_piece.color))
@@ -455,15 +449,10 @@ class Board:
                 promotion_type = Queen
                 friendly_lost.add(moving_piece)
 
-        # Passive knight evaporation: non-knights can evaporate by landing inside
-        # an enemy knight's zone, unless that knight was already captured by this move.
         if not isinstance(moving_piece, Knight):
-            if isinstance(moving_piece, Queen) and is_capture:
-                passive_victim_type = None  # Explosive queen capture already self-removes.
-            elif promotion_type is not None:
-                passive_victim_type = Queen  # Pawn promoted, so victim would be the promoted queen.
-            else:
-                passive_victim_type = type(moving_piece)
+            if isinstance(moving_piece, Queen) and is_capture: passive_victim_type = None 
+            elif promotion_type is not None: passive_victim_type = Queen 
+            else: passive_victim_type = type(moving_piece)
 
             if passive_victim_type is not None:
                 for r, c in KNIGHT_ATTACKS_FROM.get(end_pos, set()):
@@ -473,7 +462,6 @@ class Board:
                         potential_killer not in opponent_captured):
                         friendly_lost.add(passive_victim_type(moving_piece.color))
                         break
-        
         return friendly_lost, opponent_captured, promotion_type
 
 # ----------------------------------------------------
@@ -593,25 +581,40 @@ def _pawn_attacks_square(board, start, target, pawn):
 
 def is_square_attacked(board, r, c, attacking_color):
     """
-    Optimized 'Reverse-Raycast' check using precomputed `RAYS`.
-    Looks OUTWARDS from the target square to find threats.
+    Optimized 'Reverse-Raycast' check using precomputed `RAYS` + Material Counts.
+    Skips expensive variant checks if pieces don't exist.
     """
     grid = board.grid
+    defending_color = 'black' if attacking_color == 'white' else 'white'
+    
+    # 0. Fast Material Checks
+    attacker_counts = board.piece_counts[attacking_color]
+    has_knights = attacker_counts[Knight] > 0
+    has_queens = attacker_counts[Queen] > 0
+    
+    # 1. Check Knights (Skip if none exist)
+    if has_knights:
+        for nr, nc in KNIGHT_ATTACKS_FROM.get((r, c), []):
+            piece = grid[nr][nc]
+            if piece and piece.color == attacking_color and type(piece) is Knight:
+                return True
 
-    # 1. Check Knights (Standard Lookup - O(1))
-    for nr, nc in KNIGHT_ATTACKS_FROM.get((r, c), []):
-        piece = grid[nr][nc]
-        if piece and piece.color == attacking_color and type(piece) is Knight:
-            return True
+    # Optimization: Check for friendly neighbors (Required for Queen Proxy Explosion)
+    # If no friendly pieces are adjacent to the target, a Queen cannot explode on it.
+    has_friendly_neighbor = False
+    if has_queens:
+        for nr, nc in ADJACENT_SQUARES_MAP.get((r, c), []):
+            adj = grid[nr][nc]
+            if adj and adj.color == defending_color: 
+                has_friendly_neighbor = True
+                break
 
     # 2. Check Sliding Pieces (Rook/Queen/Bishop) using Precomputed Rays
-    # We look out from (r,c). If we hit a piece, we check if it attacks us.
     start_index = r * COLS + c
 
     for direction_idx, ray_path in enumerate(RAYS[start_index]):
         is_orthogonal = direction_idx < 4  # 0-3 are N,S,E,W
 
-        # Track if we are looking through a "Defender" (Friendly piece)
         passed_defender = False
         defender_is_adjacent = False
 
@@ -623,84 +626,65 @@ def is_square_attacked(board, r, c, attacking_color):
             p_type = type(piece)
 
             if piece.color == attacking_color:
-                # --- FOUND AN ATTACKER ---
-
                 if is_orthogonal:
                     if p_type is Rook:
-                        # Rooks pierce through defenders to hit the target
-                        return True
+                        return True # Rooks pierce
                     if p_type is Queen:
-                        # Direct hit OR Proxy Explosion
+                        # Direct hit
                         if not passed_defender:
-                            return True  # Direct line of sight
-                        elif defender_is_adjacent:
-                            return True  # Proxy: Queen captures the adjacent defender -> Explosion hits King
-                        # If passed_defender is True but NOT adjacent, Queen captures that piece
-                        # but the explosion is too far away to hurt us.
+                            return True
+                        # Proxy Explosion: Only possible if we have a friendly neighbor
+                        elif has_friendly_neighbor and defender_is_adjacent:
+                            return True 
                         return False
-                    # Bishops don't attack orthogonally
                     break
-
                 else:
                     # Diagonal (Bishop/Queen)
                     if p_type is Bishop or p_type is Queen:
-                        # Note: Diagonal pieces usually don't pierce.
-                        # Rule Check: Do Queens explode on diagonals? Yes.
                         if not passed_defender:
-                            return True  # Direct line of sight
-                        elif defender_is_adjacent and p_type is Queen:
-                            return True  # Proxy: Queen captures adjacent defender -> Explosion
+                            return True
+                        # Diagonal Proxy Explosion
+                        elif p_type is Queen and has_friendly_neighbor and defender_is_adjacent:
+                            return True
                         return False
                     break
             else:
-                # --- FOUND A DEFENDER (Friendly Piece) ---
+                # Found a Defender
                 if passed_defender:
-                    # We already hit one defender, now we hit a second one.
-                    # Line is fully blocked (even for piercing Rooks).
-                    break
+                    break # Two defenders block everything
                 else:
                     passed_defender = True
-                    # If this is the very first square in the ray, the defender is adjacent.
                     if step_idx == 0:
                         defender_is_adjacent = True
-                    # Continue loop to check for Piercing Rook or Proxy Queen behind this defender
+                    # Continue loop to check for Piercing/Proxy
 
     # 3. Check Pawns
-    # Pawns capture Forward-Diagonal or Sideways?
-    # Variant Rules: "Captures forward or sideways (but not diagonally)"
-    # We need to see if a pawn is in a position to capture (r,c).
-
-    # Forward Check: (If attacker is White, they are at r+1 looking "up" at us)
     pawn_attack_dir = 1 if attacking_color == 'white' else -1
     pr = r + pawn_attack_dir
     if 0 <= pr < ROWS:
         p = grid[pr][c]
-        if p and p.color == attacking_color and type(p) is Pawn:
-            return True
+        if p and p.color == attacking_color and type(p) is Pawn: return True
 
-    # Sideways Check:
     for dc in [-1, 1]:
         pc = c + dc
         if 0 <= pc < COLS:
             p = grid[r][pc]
-            if p and p.color == attacking_color and type(p) is Pawn:
-                return True
+            if p and p.color == attacking_color and type(p) is Pawn: return True
 
-    # 4. Check King (Range 2)
-    # Optimization: Just check distance to enemy king.
+    # 4. Check King
     enemy_king_pos = board.find_king_pos(attacking_color)
     if enemy_king_pos:
-        dist = max(abs(r - enemy_king_pos[0]), abs(c - enemy_king_pos[1]))
-        if dist <= 2:
+        if max(abs(r - enemy_king_pos[0]), abs(c - enemy_king_pos[1])) <= 2:
             return True
 
     # 5. Zig-Zag Bishop Fallback
-    # Zig-Zags are non-linear, so rays don't work easily. Use standard iteration for this rare case.
-    attacking_pieces = board.white_pieces if attacking_color == 'white' else board.black_pieces
-    for piece in attacking_pieces:
-        if type(piece) is Bishop:
-            if _bishop_attacks_square(board, piece.pos, (r, c), piece.color):
-                return True
+    # Only iterate if Bishops exist (Optimization)
+    if attacker_counts[Bishop] > 0:
+        attacking_pieces = board.white_pieces if attacking_color == 'white' else board.black_pieces
+        for piece in attacking_pieces:
+            if type(piece) is Bishop:
+                if _bishop_attacks_square(board, piece.pos, (r, c), piece.color):
+                    return True
 
     return False
 
@@ -1012,7 +996,7 @@ def fast_approximate_material_swing(board, move, moving_piece, target_piece, pie
                 # Critical Check: Did we just pierce/kill this knight with a Rook?
                 # If so, it cannot kill us.
                 if (r, c) not in pierced_knights:
-                    swing -= piece_values.get(my_type, 0)
+                    swing -= piece_values.get(type(moving_piece), 0)
                     break 
 
     return swing
