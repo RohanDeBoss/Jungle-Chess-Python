@@ -312,7 +312,7 @@ class ChessBot:
         try:
             self._age_history_table()
 
-            if len(self.board.white_pieces) + len(self.board.black_pieces) == 3:
+            if len(self.board.white_pieces) + len(self.board.black_pieces) <= 4: # The AI will now automatically use 4-piece TBs if the files exist!
                 tb_move, tb_eval = self._get_best_tablebase_move_with_eval()
                 if self._report_root_tb_solution(tb_move, tb_eval, emit_move=True):
                     return
