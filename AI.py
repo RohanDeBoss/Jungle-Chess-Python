@@ -1,4 +1,4 @@
-# AI.py (v91.2 ASP Bug FIXED)
+# AI.py (v92 Move ordering fix)
 import time
 import random
 from collections import namedtuple
@@ -84,6 +84,7 @@ class ChessBot:
     BONUS_CAPTURE = 8_000_000
     BONUS_KILLER_1 = 4_000_000
     BONUS_KILLER_2 = 3_000_000
+    BAD_TACTIC_PENALTY = -2_000_000
     # This bonus is removed in favor of the history heuristic: BONUS_Q_TACTIC = 3_500_000 
     OPENING_TOTAL_PIECE_THRESHOLD = 23
     OPENING_BONUS_MAX_PLY = 1
@@ -701,7 +702,12 @@ class ChessBot:
                 score = self.BONUS_PV_MOVE
             elif is_tactical:
                 swing = self._ordering_tactical_swing(board, move, moving_piece, target_piece)
-                score = self.BONUS_CAPTURE + swing
+                # --- APPLY SEE (Static Exchange Evaluation) SPLIT ---
+                if swing >= 0:
+                    score = self.BONUS_CAPTURE + swing
+                else:
+                    score = self.BAD_TACTIC_PENALTY + swing
+                # ----------------------------------------------------
             else:
                 if move in killers:
                     score = self.BONUS_KILLER_1 if move == killers[0] else self.BONUS_KILLER_2
