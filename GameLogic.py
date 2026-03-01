@@ -1,4 +1,4 @@
-# GameLogic.py (v39.1 Fixing fast_approximate_material_swing)
+# GameLogic.py (v40.0 - Centralized SEE & High-Performance Logic)
 
 # -----------------------------
 # Global Constants
@@ -882,29 +882,40 @@ def fast_approximate_material_swing(board, move, moving_piece, target_piece, pie
     Used purely by the AI for move ordering (Static Exchange Evaluation).
     """
     swing = 0
+    
+    # 1. Base Capture Value
     if target_piece is not None:
         swing += piece_values.get(type(target_piece), 0)
 
-    is_promotion = isinstance(moving_piece, Pawn) and (move[1][0] == 0 or move[1][0] == ROWS - 1)
-    my_type = Queen if is_promotion else type(moving_piece)
-    
-    if is_promotion:
-        swing += piece_values.get(Queen, 0) - piece_values.get(Pawn, 0)
+    # Cache type for performance (faster than calling type() repeatedly)
+    my_type = type(moving_piece)
 
+    # 2. Handle Pawn Promotion
+    # We must check this first because a promoting pawn changes type to Queen for calculation purposes
+    if my_type is Pawn and (move[1][0] == 0 or move[1][0] == ROWS - 1):
+        swing += piece_values.get(Queen, 0) - piece_values.get(Pawn, 0)
+        # Note: We do NOT change my_type to Queen here for the logic below.
+        # A pawn capturing on the last rank does NOT explode on that turn. 
+        # It promotes *after* the move.
+
+    # 3. Queen Explosive Capture
     if my_type is Queen and target_piece is not None:
         swing -= piece_values.get(Queen, 0)  # Queen dies in the explosion
-        for r, c in ADJACENT_SQUARES_MAP.get(move[1],[]):
+        for r, c in ADJACENT_SQUARES_MAP.get(move[1], []):
             adj = board.grid[r][c]
             if adj and adj.color != moving_piece.color:
                 swing += piece_values.get(type(adj), 0)
-        return swing
+        return swing # Queen explodes, no further passive evaporation applies
 
-    pierced_knights =[]
+    # 4. Rook Piercing
+    # We must track pierced knights so we don't fear evaporation from ghosts
+    pierced_knights = []
     if my_type is Rook:
         start, end = move
         dr = (end[0] > start[0]) - (start[0] > end[0])
         dc = (end[1] > start[1]) - (start[1] > end[1])
         cr, cc = start[0] + dr, start[1] + dc
+        
         while (cr, cc) != end:
             target = board.grid[cr][cc]
             if target and target.color != moving_piece.color:
@@ -913,9 +924,10 @@ def fast_approximate_material_swing(board, move, moving_piece, target_piece, pie
                     pierced_knights.append((cr, cc))
             cr += dr; cc += dc
 
+    # 5. Knight Active Evaporation (The Knight moves)
     if my_type is Knight:
         evaporates_self = False
-        for r, c in KNIGHT_ATTACKS_FROM.get(move[1],[]):
+        for r, c in KNIGHT_ATTACKS_FROM.get(move[1], []):
             adj = board.grid[r][c]
             if adj and adj.color != moving_piece.color:
                 swing += piece_values.get(type(adj), 0)
@@ -925,10 +937,14 @@ def fast_approximate_material_swing(board, move, moving_piece, target_piece, pie
             swing -= piece_values.get(Knight, 0)
         return swing
 
+    # 6. Passive Knight Zone Evaporation (The Piece lands)
+    # Applies to Rooks, Bishops, Kings, and Pawns landing in a death zone.
     if my_type is not Knight:
         for r, c in KNIGHT_ATTACKS_FROM.get(move[1], []):
             potential_killer = board.grid[r][c]
             if potential_killer and type(potential_killer) is Knight and potential_killer.color != moving_piece.color:
+                # Critical Check: Did we just pierce/kill this knight with a Rook?
+                # If so, it cannot kill us.
                 if (r, c) not in pierced_knights:
                     swing -= piece_values.get(my_type, 0)
                     break 

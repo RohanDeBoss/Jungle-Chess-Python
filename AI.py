@@ -1,4 +1,5 @@
-# AI.py (v93.2 - Move order optimised)
+# AI.py (v94.0 - SEE Pruning, History Aging & Aspiration Fixes)
+
 import time
 import random
 from collections import namedtuple
@@ -698,7 +699,9 @@ class ChessBot:
             # A move is tactical if it has a swing (positive OR negative) OR if it captures something
             is_tactical = (swing != 0) or is_capture_or_promo
             
-            # A move is "Safe" for LMR if it is a GOOD tactic. Bad tactics (negative swing) are safe to reduce.
+            # 3. Optimization: LMR Safety Check
+            # We want to REDUCE bad tactics (negative swing). We want to KEEP good tactics (positive/neutral).
+            # So we tell the search this is only "Tactical" (worthy of full depth) if it's Good.
             is_good_tactic = (swing > 0) or (swing == 0 and is_capture_or_promo)
             
             move_meta[move] = (is_good_tactic, moving_piece)
@@ -709,6 +712,7 @@ class ChessBot:
                 if swing >= 0:
                     score = self.BONUS_CAPTURE + swing
                 else:
+                    # Suicide/Bad Trade -> Bottom of list
                     score = self.BAD_TACTIC_PENALTY + swing
             else:
                 if move in killers:
