@@ -605,8 +605,12 @@ def is_square_attacked(board, r, c, attacking_color):
 
 def is_in_check(board, color):
     king_pos = board.find_king_pos(color)
-    if not king_pos: return True
+    if not king_pos: 
+        return True
     opponent_color = "black" if color == "white" else "white"
+    
+    # The optimized raycast function is now 100% comprehensive.
+    # No sluggish simulation loop is required.
     return is_square_attacked(board, king_pos[0], king_pos[1], opponent_color)
 
 def generate_legal_moves_generator(board, color, yield_boards=False):
