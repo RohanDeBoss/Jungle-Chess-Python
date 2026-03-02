@@ -1,4 +1,4 @@
-# JungleChessUI.py (v12.0 - structural logic reductions, cleaner state updates)
+# JungleChessUI.py (v12.1 - Final Polish, synced with No-Stalemate rules)
 
 import tkinter as tk
 from tkinter import ttk, messagebox
@@ -521,12 +521,11 @@ class EnhancedChessApp:
         key = board_hash(self.board, self.turn)
         self.position_counts[key] = self.position_counts.get(key, 0) + 1
         
+        # GameLogic now automatically returns 'checkmate' if there are no legal moves (Stalemate = Loss)
         status, winner = get_game_state(self.board, self.turn, self.position_counts, self.history_pointer, self.MAX_GAME_MOVES)
-        # Safeguard: ensure checkmate isn't missed due to edge-case generator/race
-        if status == "ongoing":
-            if is_in_check(self.board, self.turn) and not has_legal_moves(self.board, self.turn):
-                status, winner = "checkmate", ('black' if self.turn == 'white' else 'white')
-        if status != "ongoing": self.game_over, self.game_result = True, (status, winner)
+        
+        if status != "ongoing": 
+            self.game_over, self.game_result = True, (status, winner)
         
         self.update_ui_after_state_change()
         if self.game_over:
@@ -724,10 +723,25 @@ class EnhancedChessApp:
 
     def draw_piece_with_check(self, r, c):
         piece = self.board.grid[r][c]
-        if isinstance(piece, King) and is_in_check(self.board, piece.color):
-            color = "darkred" if self.game_over and self.game_result and self.game_result[0] == "checkmate" else "red"
-            x1, y1 = self.board_to_canvas(r, c)
-            self.canvas.create_rectangle(x1, y1, x1 + self.square_size, y1 + self.square_size, outline=color, width=4, tags="check_highlight")
+        if isinstance(piece, King):
+            # Check if this King has lost (Checkmate OR Trap)
+            is_lost = (self.game_over and self.game_result and 
+                       self.game_result[0] == "checkmate" and 
+                       self.game_result[1] != piece.color)
+            
+            # Check if currently in danger
+            is_checked = is_in_check(self.board, piece.color)
+
+            color = None
+            if is_lost:
+                color = "darkred" # Final blow / Trapped
+            elif is_checked:
+                color = "red"     # Warning
+
+            if color:
+                x1, y1 = self.board_to_canvas(r, c)
+                self.canvas.create_rectangle(x1, y1, x1 + self.square_size, y1 + self.square_size, outline=color, width=4, tags="check_highlight")
+
         if (r, c) != self.drag_start: self.draw_piece_at_canvas_coords(piece, r, c)
 
     def draw_piece_at_canvas_coords(self, piece, r, c):
