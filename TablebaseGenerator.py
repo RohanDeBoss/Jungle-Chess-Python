@@ -1,4 +1,7 @@
-# TablebaseGenerator.py (v5.1 - Claude's Architecture + Jungle Chess Rules)
+# TablebaseGenerator.py (v5.2 - Final Release)
+# - Corrects 3-Man Phase 1 efficiency (Claude's note)
+# - Maintains "Stalemate = Loss" logic
+# - Fully integrated with GameLogic v42+
 
 import os
 import time
@@ -96,6 +99,7 @@ def _build_transition_worker(idx):
         for m in moves:
             start, end = m
             
+            # [Opt-2] Fast Pre-Screen
             if isinstance(board.grid[start[0]][start[1]], King) and end != bk:
                 if _jung_king_threatens(end[0], end[1], bk[0], bk[1]):
                     continue
@@ -103,6 +107,7 @@ def _build_transition_worker(idx):
             child = board.clone()
             child.make_move(start, end)
             
+            # [Opt-1] Inline Check Validation (Black only has a King)
             wkp = child.white_king_pos
             bkp = child.black_king_pos
             if wkp and bkp and _jung_king_threatens(wkp[0], wkp[1], bkp[0], bkp[1]):
@@ -156,7 +161,7 @@ def _build_transition_worker(idx):
         c2 = child.black_king_pos[0] * 8 + child.black_king_pos[1]
         child_flats.append(_flat_idx_raw(c0, c1, c2, opp_turn_idx))
 
-    # Claude's Fix: Explicitly track is_cm for the retrograde loop
+    # is_cm calculation for retrograde loop
     is_cm = (legal_moves_count == 0) and is_in_check(board, 'black')
     return _flat_idx_raw(i0, i1, i2, i3), ('b', legal_moves_count, has_non_losing_escape, is_cm, _pack_uint_list(child_flats))
 
@@ -169,6 +174,11 @@ class Generator:
 
         self.total_positions = 64 * 64 * 64 * 2
         self.table = np.zeros((64, 64, 64, 2), dtype=np.int16)
+
+        self.sim_board = Board(setup=False)
+        self.wk_obj = King('white')
+        self.wp_obj = self.piece_class('white')
+        self.bk_obj = King('black')
 
         self.queen_table = None
         if self.piece_name == "Pawn":
@@ -191,6 +201,19 @@ class Generator:
     def _flat_idx(self, idx):
         return (((idx[0] * 64 + idx[1]) * 64 + idx[2]) * 2 + idx[3])
 
+    def setup_sim(self, wk, wp, bk):
+        self.sim_board.grid = [[None for _ in range(8)] for _ in range(8)]
+        self.wk_obj.pos = wk
+        self.sim_board.grid[wk[0]][wk[1]] = self.wk_obj
+        self.sim_board.white_king_pos = wk
+        self.wp_obj.pos = wp
+        self.sim_board.grid[wp[0]][wp[1]] = self.wp_obj
+        self.bk_obj.pos = bk
+        self.sim_board.grid[bk[0]][bk[1]] = self.bk_obj
+        self.sim_board.black_king_pos = bk
+        self.sim_board.white_pieces = [self.wk_obj, self.wp_obj]
+        self.sim_board.black_pieces = [self.bk_obj]
+
     def generate(self):
         if os.path.exists(self.filename):
             print(f"[SKIP] {self.filename} already exists.")
@@ -208,6 +231,21 @@ class Generator:
             wk, wp, bk, t_idx = self.decode(idx)
             if wk == wp or wk == bk or wp == bk: continue
             if self.piece_name == "Pawn" and (wp[0] == 0 or wp[0] == 7): continue
+            
+            # [Optimization restored] Handle Phase 1 checkmates locally to save worker time
+            self.setup_sim(wk, wp, bk)
+            if t_idx == 1: # Black
+                if not self.sim_board.black_king_pos:
+                    self.table[idx] = -1; continue
+                # With STALEMATE_IS_LOSS, we can mark any 0-move state as loss
+                if is_in_check(self.sim_board, 'black') and not has_legal_moves(self.sim_board, 'black'):
+                    self.table[idx] = -1; continue
+                if STALEMATE_IS_LOSS and not has_legal_moves(self.sim_board, 'black'):
+                    self.table[idx] = -1; continue
+            else: # White
+                if not self.sim_board.white_king_pos:
+                    self.table[idx] = -1; continue
+
             unsolved_indices.append(idx)
         print()
 
@@ -280,7 +318,6 @@ class Generator:
                     _, legal_moves_count, has_non_losing_escape, is_cm, child_packed = transition
                     
                     if legal_moves_count == 0:
-                        # Variant Specific logic + Claude's structural check
                         if STALEMATE_IS_LOSS or is_cm:
                             self.table[idx] = -1
                             changed += 1
@@ -312,7 +349,7 @@ class Generator:
 
         with open(self.filename, 'wb') as f:
             self.table.tofile(f)
-        print(f"\nSUCCESS: {self.piece_name} Tablebase generated in {(time.time() - start_time)/60:.1f} minutes.")
+        print(f"\nSUCCESS: Generated in {(time.time() - start_time)/60:.1f} minutes.")
 
 
 # ==============================================================================
@@ -381,6 +418,7 @@ def _build_transition_worker_4(idx):
         for m in moves:
             start, end = m
 
+            # [Opt-2] Fast Pre-Screen (King only)
             if isinstance(board.grid[start[0]][start[1]], King) and end != bk:
                 if _jung_king_threatens(end[0], end[1], bk[0], bk[1]):
                     continue
@@ -388,6 +426,7 @@ def _build_transition_worker_4(idx):
             child = board.clone()
             child.make_move(start, end)
 
+            # [Opt-1] Inline Legality Check (Black only has King)
             wkp = child.white_king_pos
             bkp = child.black_king_pos
             if wkp and bkp and _jung_king_threatens(wkp[0], wkp[1], bkp[0], bkp[1]):
@@ -399,6 +438,7 @@ def _build_transition_worker_4(idx):
 
             w_pieces = [p for p in child.white_pieces if not isinstance(p, King)]
 
+            # Double evaporation crash fix included!
             if len(w_pieces) < 2:
                 if len(w_pieces) == 1:
                     rem_name = type(w_pieces[0]).__name__
@@ -428,7 +468,7 @@ def _build_transition_worker_4(idx):
                     q_idx = (child.white_king_pos[0] * 8 + child.white_king_pos[1],
                              idx1, idx2,
                              child.black_king_pos[0] * 8 + child.black_king_pos[1], 1)
-                    val = int(_W4_PROMO_TABLE[q_idx])
+                    val = int(_W4_PROMO_TABLE.flat[_flat_idx_raw_4(*q_idx)])
                     if val < 0:
                         known_win_vals.append(abs(val) + 1)
                 continue 
@@ -564,7 +604,8 @@ class Generator4:
                 self.total_positions, self.p1_name, self.p2_name, self.same_piece
             )
         )
-        print(f"[Phase 1] Found {len(unsolved_indices):,} candidate positions in {time.time()-phase1_start:.1f}s.\n")
+        print(f"[Phase 1] Found {len(unsolved_indices):,} candidate positions in "
+              f"{time.time()-phase1_start:.1f}s.\n")
 
         flat_list =[_flat_idx_raw_4(*idx) for idx in unsolved_indices]
 
@@ -588,11 +629,39 @@ class Generator4:
                           f"{speed:,.0f} st/s | ETA: {eta/60:.1f}m", end='\r', flush=True)
         print(f"\n[Phase 1.5] Cache built in {(time.time()-cache_start)/60:.1f}m.")
 
+        # ----------------------------------------------------------------
+        # Phase 2: Pre-solve initial checkmates AND stalemates
+        # ----------------------------------------------------------------
+        print(f"\n[Phase 2] Resolving initial checkmates/stalemates...")
+        pre_solved = 0
+        surviving_indices = []
+        surviving_flats = []
+        for idx, flat in zip(unsolved_indices, flat_list):
+            if idx[4] == 1:  # black's turn
+                trans = cache[flat]
+                # Transition: ('b', lmc, hnle, is_checkmate, packed)
+                legal_moves_count = trans[1]
+                is_cm = trans[3]
+                
+                # STALEMATE = LOSS logic applied here
+                if legal_moves_count == 0:
+                    if STALEMATE_IS_LOSS or is_cm:
+                        self.table[idx] = -1
+                        pre_solved += 1
+                        continue
+                        
+            surviving_indices.append(idx)
+            surviving_flats.append(flat)
+
+        unsolved_indices = surviving_indices
+        flat_list = surviving_flats
+        print(f"[Phase 2] Pre-solved {pre_solved:,} positions.")
+
         iteration = 1
         while True:
             iter_start = time.time()
             changed = 0
-            new_unsolved =[]
+            new_unsolved = []
             new_flats =[]
             prev_flat = self.table.reshape(-1).copy()
 
@@ -628,8 +697,8 @@ class Generator4:
                 else:
                     _, legal_moves_count, has_non_losing_escape, is_cm, child_packed = transition
                     
+                    # Already handled in Phase 2, but safe to keep here
                     if legal_moves_count == 0:
-                        # Variant Specific logic + Claude's structural check
                         if STALEMATE_IS_LOSS or is_cm:
                             self.table[idx] = -1
                             changed += 1
@@ -673,7 +742,7 @@ class Generator4:
 
 
 if __name__ == "__main__":
-    print("=== Tablebase Generator (v5.1) ===")
+    print("=== Tablebase Generator (v5.2) ===")
     mode = input("1. Generate 3-Man Tables\n2. Generate 4-Man Tables\nSelect: ")
 
     if mode == '1':
@@ -684,7 +753,7 @@ if __name__ == "__main__":
                 print(f"Skipping K_{c.__name__}_K.bin (exists)")
 
     elif mode == '2':
-        pieces =[Queen, Rook, Knight, Bishop, Pawn]
+        pieces = [Queen, Rook, Knight, Bishop, Pawn]
         from itertools import combinations_with_replacement
         for p1, p2 in combinations_with_replacement(pieces, 2):
             Generator4(p1, p2).generate()
