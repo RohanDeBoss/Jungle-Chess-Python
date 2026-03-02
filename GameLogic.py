@@ -1,4 +1,4 @@
-# GameLogic.py (v42.2 - King valid moves fix)
+# GameLogic.py (v43 - Stalemate logic removed)
 
 # -----------------------------
 # Global Constants
@@ -654,10 +654,10 @@ def is_insufficient_material(board):
     return (len(board.white_pieces) + len(board.black_pieces)) <= 2
 
 def get_game_state(board, turn_to_move, position_counts, ply_count, max_moves):
+    # No stalemates in Jungle Chess! 0 legal moves is an absolute loss.
     if not has_legal_moves(board, turn_to_move):
         winner = 'black' if turn_to_move == 'white' else 'white'
-        if is_in_check(board, turn_to_move): return ("checkmate", winner)
-        else: return ("stalemate", None)
+        return ("checkmate", winner)
     
     if is_insufficient_material(board): return ("insufficient_material", None)
     
@@ -682,7 +682,8 @@ def calculate_material_swing(board, move, tapered_vals_by_type):
 
 def is_draw(board, turn_to_move, position_counts, ply_count, max_moves):
     state, _ = get_game_state(board, turn_to_move, position_counts, ply_count, max_moves)
-    return state in["stalemate", "insufficient_material", "repetition", "move_limit"]
+    # "stalemate" has been removed from the draw conditions
+    return state in["insufficient_material", "repetition", "move_limit"]
 
 def is_rook_piercing_capture(board, move):
     start, end = move
