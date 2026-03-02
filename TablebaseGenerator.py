@@ -1,4 +1,4 @@
-# TablebaseGenerator.py (v2 - OPtimised ram)
+# TablebaseGenerator.py (v2.2 add a king-only short-circuit.)
 
 import os
 import time
@@ -42,20 +42,15 @@ def _load_table_file_any_dtype(filename):
 def _flat_idx_raw(i0, i1, i2, i3):
     return (((i0 * 64 + i1) * 64 + i2) * 2 + i3)
 
-
 def _pack_uint_list(lst):
     n = len(lst)
-    if n == 0:
-        return struct.pack('<I', 0)
+    if n == 0: return struct.pack('<I', 0)
     return struct.pack('<I', n) + struct.pack(f'<{n}I', *lst)
 
-
 def _unpack_uint_list(b):
-    if not b:
-        return ()
+    if not b: return ()
     n = struct.unpack_from('<I', b, 0)[0]
-    if n == 0:
-        return ()
+    if n == 0: return ()
     return struct.unpack_from(f'<{n}I', b, 4)
 
 def _init_transition_worker(piece_name, queen_tb_file):
@@ -88,8 +83,19 @@ def _build_transition_worker(idx):
         for m in moves:
             child = board.clone()
             child.make_move(m[0], m[1])
-            if is_in_check(child, 'white'):
-                continue
+            # Fast-path: if the attacker (black) only has a king, only king-adjacency can give check
+            attacker_counts = child.piece_counts['black']
+            non_king_pieces = (attacker_counts.get(Pawn, 0) + attacker_counts.get(Knight, 0) +
+                               attacker_counts.get(Bishop, 0) + attacker_counts.get(Rook, 0) +
+                               attacker_counts.get(Queen, 0))
+            if non_king_pieces == 0:
+                enemy_king_pos = child.find_king_pos('black')
+                wk_pos = child.find_king_pos('white')
+                if enemy_king_pos and wk_pos and max(abs(wk_pos[0] - enemy_king_pos[0]), abs(wk_pos[1] - enemy_king_pos[1])) <= 2:
+                    continue
+            else:
+                if is_in_check(child, 'white'):
+                    continue
             if not child.black_king_pos:
                 immediate_win = True
                 continue
@@ -124,8 +130,19 @@ def _build_transition_worker(idx):
     for m in moves:
         child = board.clone()
         child.make_move(m[0], m[1])
-        if is_in_check(child, 'black'):
-            continue
+        # Fast-path: if the attacker (white) only has a king, only king-adjacency can give check
+        attacker_counts = child.piece_counts['white']
+        non_king_pieces = (attacker_counts.get(Pawn, 0) + attacker_counts.get(Knight, 0) +
+                           attacker_counts.get(Bishop, 0) + attacker_counts.get(Rook, 0) +
+                           attacker_counts.get(Queen, 0))
+        if non_king_pieces == 0:
+            enemy_king_pos = child.find_king_pos('white')
+            bk_pos = child.find_king_pos('black')
+            if enemy_king_pos and bk_pos and max(abs(bk_pos[0] - enemy_king_pos[0]), abs(bk_pos[1] - enemy_king_pos[1])) <= 2:
+                continue
+        else:
+            if is_in_check(child, 'black'):
+                continue
 
         legal_moves_count += 1
         if not child.white_king_pos or len(child.white_pieces) < 2:
@@ -205,7 +222,19 @@ class Generator:
             for m in moves:
                 child = self.sim_board.clone()
                 child.make_move(m[0], m[1])
-                if is_in_check(child, 'white'): continue
+                # Fast-path: if the attacker (black) only has a king, only king-adjacency can give check
+                attacker_counts = child.piece_counts['black']
+                non_king_pieces = (attacker_counts.get(Pawn, 0) + attacker_counts.get(Knight, 0) +
+                                   attacker_counts.get(Bishop, 0) + attacker_counts.get(Rook, 0) +
+                                   attacker_counts.get(Queen, 0))
+                if non_king_pieces == 0:
+                    enemy_king_pos = child.find_king_pos('black')
+                    wk_pos = child.find_king_pos('white')
+                    if enemy_king_pos and wk_pos and max(abs(wk_pos[0] - enemy_king_pos[0]), abs(wk_pos[1] - enemy_king_pos[1])) <= 2:
+                        continue
+                else:
+                    if is_in_check(child, 'white'):
+                        continue
 
                 if not child.black_king_pos:
                     immediate_win = True
@@ -214,7 +243,8 @@ class Generator:
                 if self.piece_name == "Pawn" and isinstance(child.grid[m[1][0]][m[1][1]], Queen):
                     q_idx = (child.white_king_pos[0] * 8 + child.white_king_pos[1], m[1][0] * 8 + m[1][1], child.black_king_pos[0] * 8 + child.black_king_pos[1], 1)
                     q_val = int(self.queen_table[q_idx])
-                    if q_val < 0: promo_win_vals.append(abs(q_val) + 1)
+                    if q_val < 0:
+                        promo_win_vals.append(abs(q_val) + 1)
                     continue
 
                 if len(child.white_pieces) >= 2:
@@ -230,7 +260,18 @@ class Generator:
         for m in moves:
             child = self.sim_board.clone()
             child.make_move(m[0], m[1])
-            if is_in_check(child, 'black'): continue
+            # Fast-path: if the attacker (white) only has a king, only king-adjacency can give check
+            attacker_counts = child.piece_counts['white']
+            non_king_pieces = (attacker_counts.get(Pawn, 0) + attacker_counts.get(Knight, 0) +
+                               attacker_counts.get(Bishop, 0) + attacker_counts.get(Rook, 0) +
+                               attacker_counts.get(Queen, 0))
+            if non_king_pieces == 0:
+                enemy_king_pos = child.find_king_pos('white')
+                bk_pos = child.find_king_pos('black')
+                if enemy_king_pos and bk_pos and max(abs(bk_pos[0] - enemy_king_pos[0]), abs(bk_pos[1] - enemy_king_pos[1])) <= 2:
+                    continue
+            else:
+                if is_in_check(child, 'black'): continue
 
             legal_moves_count += 1
 
@@ -452,7 +493,7 @@ def _build_transition_worker_4(idx):
 
     if turn_is_white:
         immediate_win = False
-        known_win_vals = []
+        known_win_vals =[]
         child_flats =[]
 
         for m in moves:
@@ -466,36 +507,37 @@ def _build_transition_worker_4(idx):
             w_pieces =[p for p in child.white_pieces if not isinstance(p, King)]
             
             # Did White capture a piece? (Meaning one of our pieces evaporated/exploded)
-            if len(w_pieces) == 1:
-                rem_name = type(w_pieces[0]).__name__
-                if rem_name in _W4_3MAN_TABLES:
-                    q_idx = (child.white_king_pos[0]*8+child.white_king_pos[1], 
-                             w_pieces[0].pos[0]*8+w_pieces[0].pos[1], 
-                             child.black_king_pos[0]*8+child.black_king_pos[1], 1)
-                    val = int(_W4_3MAN_TABLES[rem_name][q_idx])
-                    if val < 0: known_win_vals.append(abs(val) + 1)
+            if len(w_pieces) < 2:
+                if len(w_pieces) == 1:
+                    rem_name = type(w_pieces[0]).__name__
+                    if rem_name in _W4_3MAN_TABLES:
+                        q_idx = (child.white_king_pos[0]*8+child.white_king_pos[1], 
+                                 w_pieces[0].pos[0]*8+w_pieces[0].pos[1], 
+                                 child.black_king_pos[0]*8+child.black_king_pos[1], 1)
+                        val = int(_W4_3MAN_TABLES[rem_name][q_idx])
+                        if val < 0: known_win_vals.append(abs(val) + 1)
+                # If len == 0, it's King vs King (Draw), so we just continue and don't append a win
                 continue
                 
-            # Did White promote? 
-            t1, t2 = type(w_pieces[0]), type(w_pieces[1])
-            is_promo = (t1 == Queen or t2 == Queen) and (_W4_P1_CLASS != Queen and _W4_P2_CLASS != Queen)
-            
-            if is_promo and _W4_PROMO_TABLE is not None:
-                # Must align pieces to the alphabetically sorted standard
-                if type(w_pieces[0]).__name__ > type(w_pieces[1]).__name__:
-                    w_pieces[0], w_pieces[1] = w_pieces[1], w_pieces[0]
-                idx1 = w_pieces[0].pos[0]*8+w_pieces[0].pos[1]
-                idx2 = w_pieces[1].pos[0]*8+w_pieces[1].pos[1]
-                q_idx = (child.white_king_pos[0]*8+child.white_king_pos[1], idx1, idx2, child.black_king_pos[0]*8+child.black_king_pos[1], 1)
-                val = int(_W4_PROMO_TABLE[q_idx])
-                if val < 0: known_win_vals.append(abs(val) + 1)
-                continue
-            elif is_promo:
-                continue # Promotion table not found, treat as unknown
-
-            # Normal move
+            # ROBUST PROMOTION CHECK: Does the board still match the base piece classes?
+            # Sort them alphabetically to match the standard
             if type(w_pieces[0]).__name__ > type(w_pieces[1]).__name__:
                 w_pieces[0], w_pieces[1] = w_pieces[1], w_pieces[0]
+                
+            curr_n1, curr_n2 = type(w_pieces[0]).__name__, type(w_pieces[1]).__name__
+            orig_n1, orig_n2 = _W4_P1_CLASS.__name__, _W4_P2_CLASS.__name__
+
+            if curr_n1 != orig_n1 or curr_n2 != orig_n2:
+                # A piece promoted! Look up the result in the Dependency Table
+                if _W4_PROMO_TABLE is not None:
+                    idx1 = w_pieces[0].pos[0]*8+w_pieces[0].pos[1]
+                    idx2 = w_pieces[1].pos[0]*8+w_pieces[1].pos[1]
+                    q_idx = (child.white_king_pos[0]*8+child.white_king_pos[1], idx1, idx2, child.black_king_pos[0]*8+child.black_king_pos[1], 1)
+                    val = int(_W4_PROMO_TABLE[q_idx])
+                    if val < 0: known_win_vals.append(abs(val) + 1)
+                continue # If promo table isn't found, we treat it as unknown (safe fallback)
+
+            # Normal move, no promotion, no evaporation
             c0 = child.white_king_pos[0]*8+child.white_king_pos[1]
             c1 = w_pieces[0].pos[0]*8+w_pieces[0].pos[1]
             c2 = w_pieces[1].pos[0]*8+w_pieces[1].pos[1]
@@ -579,8 +621,7 @@ class Generator4:
         start_time = time.time()
         print(f"\n{'='*60}\n GENERATING: King + {self.p1_name} + {self.p2_name} vs King\n{'='*60}")
         
-        # --- OPTIMIZED PHASE 1 ---
-        unsolved_indices = []
+        unsolved_indices =[]
         print(f"[Phase 1] Initialization...")
         for i in range(self.total_positions):
             if i % 2000000 == 0 and i > 0:
