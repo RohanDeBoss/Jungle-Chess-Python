@@ -1,4 +1,4 @@
-# GameLogic.py (v42.1 - Raycasting + Variant-perfect Check Validation + small shortcut)
+# GameLogic.py (v42.2 - King valid moves fix)
 
 # -----------------------------
 # Global Constants
@@ -466,14 +466,14 @@ def is_square_attacked(board, r, c, attacking_color):
     """
     100% accurate check validation that natively understands 
     Knight Evaporation, Queen Proxy Explosions, and Infinite Rook Piercing.
+    Corrected King reach: No knight jumps, path-dependent 2-step.
     """
     grid = board.grid
     defending_color = 'black' if attacking_color == 'white' else 'white'
     
     attacker_counts = board.piece_counts[attacking_color]
 
-    # Quick short-circuit: if the attacker only has a king (no pawns/knights/bishops/rooks/queens)
-    # then the only possible threat is the enemy king; skip all explosion/proxy checks.
+    # Quick short-circuit: if the attacker only has a king
     non_king_pieces = (
         attacker_counts.get(Pawn, 0) + attacker_counts.get(Knight, 0) +
         attacker_counts.get(Bishop, 0) + attacker_counts.get(Rook, 0) +
@@ -482,8 +482,15 @@ def is_square_attacked(board, r, c, attacking_color):
     if non_king_pieces == 0:
         enemy_king_pos = board.find_king_pos(attacking_color)
         if enemy_king_pos:
-            if max(abs(r - enemy_king_pos[0]), abs(c - enemy_king_pos[1])) <= 2:
-                return True
+            kr, kc = enemy_king_pos
+            dr, dc = r - kr, c - kc
+            abs_dr, abs_dc = abs(dr), abs(dc)
+            m_dist = max(abs_dr, abs_dc)
+            # 1-step hit
+            if m_dist == 1: return True
+            # 2-step hit: Must be Cardinal/Diagonal AND path must be clear
+            if m_dist == 2 and (abs_dr == abs_dc or abs_dr == 0 or abs_dc == 0):
+                if grid[kr + dr//2][kc + dc//2] is None: return True
         return False
 
     # 1. Check Knights (Active Evaporation & Direct Hit)
@@ -541,38 +548,24 @@ def is_square_attacked(board, r, c, attacking_color):
             if piece.color == attacking_color:
                 if is_orthogonal:
                     if p_type is Rook:
-                        # If defender has no non-king pieces, rook loses piercing ability and
-                        # only attacks if there were no defenders between rook and target.
                         if defender_non_king == 0:
-                            if defenders_passed == 0:
-                                return True
-                            else:
-                                break
+                            if defenders_passed == 0: return True
+                            else: break
                         return True # Rooks pierce infinite defenders
                     if p_type is Queen:
-                        if defenders_passed == 0:
-                            return True
-                        # Proxy Explosion
+                        if defenders_passed == 0: return True
                         elif has_friendly_neighbor and defenders_passed == 1 and defender_is_adjacent:
                             return True 
                 else:
                     if p_type is Bishop or p_type is Queen:
-                        if defenders_passed == 0:
-                            return True
-                        # Diagonal Proxy Explosion
+                        if defenders_passed == 0: return True
                         elif p_type is Queen and has_friendly_neighbor and defenders_passed == 1 and defender_is_adjacent:
                             return True
-                break # Ray blocked by an attacker that didn't check us
+                break 
             else:
-                # Found a Defender
                 defenders_passed += 1
-                if step_idx == 0:
-                    defender_is_adjacent = True
-                
-                # Rooks can pierce infinitely. Queens/Bishops cannot.
-                # If we've passed 2 defenders, and the opponent has no Rooks, stop checking this ray.
-                if defenders_passed >= 2 and not has_rooks:
-                    break
+                if step_idx == 0: defender_is_adjacent = True
+                if defenders_passed >= 2 and not has_rooks: break
 
     # 3. Check Pawns
     pawn_attack_dir = 1 if attacking_color == 'white' else -1
@@ -587,11 +580,21 @@ def is_square_attacked(board, r, c, attacking_color):
             p = grid[r][pc]
             if p and p.color == attacking_color and type(p) is Pawn: return True
 
-    # 4. Check King
+    # 4. Check King (Corrected Math: No Knight Jumps + Path Blocking)
     enemy_king_pos = board.find_king_pos(attacking_color)
     if enemy_king_pos:
-        if max(abs(r - enemy_king_pos[0]), abs(c - enemy_king_pos[1])) <= 2:
+        kr, kc = enemy_king_pos
+        dr, dc = r - kr, c - kc
+        abs_dr, abs_dc = abs(dr), abs(dc)
+        m_dist = max(abs_dr, abs_dc)
+        
+        # 1-step hit
+        if m_dist == 1:
             return True
+        # 2-step hit: Must be Cardinal/Diagonal AND path must be clear
+        if m_dist == 2 and (abs_dr == abs_dc or abs_dr == 0 or abs_dc == 0):
+            if grid[kr + dr//2][kc + dc//2] is None:
+                return True
 
     # 5. Zig-Zag Bishop Fallback
     if attacker_counts[Bishop] > 0:
