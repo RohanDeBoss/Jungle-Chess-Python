@@ -1,4 +1,4 @@
-# AI.py (v94.1 - SEE Pruning, History Aging & Aspiration Fixes + matecondition refinements)
+# AI.py (v95.0 - Vaporization Pruning, Deep 4-Man TBs, Turn Context Fixes)
 
 import time
 import random
@@ -430,7 +430,7 @@ class ChessBot:
             alpha = -float('inf')
             beta = float('inf')
         
-        ordered_root_moves = self.order_moves(self.board, root_moves, 0, pv_move)
+        ordered_root_moves = self.order_moves(self.board, root_moves, 0, pv_move, self.color)
         
         all_moves_draw = True
         for move in ordered_root_moves:
@@ -475,7 +475,7 @@ class ChessBot:
         self.nodes_searched += 1
         if self.cancellation_event.is_set(): raise SearchCancelledException()
 
-        if len(board.white_pieces) + len(board.black_pieces) == 3:
+        if len(board.white_pieces) + len(board.black_pieces) <= 4:
             tb_score_absolute = self.tb_manager.probe(board, turn)
             if tb_score_absolute is not None:
                 self.tb_hits += 1
@@ -546,7 +546,7 @@ class ChessBot:
 
             pseudo_moves = get_all_pseudo_legal_moves(board, turn)
             hash_move = tt_entry.best_move if tt_entry else None
-            ordered_entries = self.order_moves(board, pseudo_moves, ply, hash_move, return_meta=True)
+            ordered_entries = self.order_moves(board, pseudo_moves, ply, hash_move, turn, return_meta=True)
 
             best_move_for_node = None
             legal_moves_count = 0
@@ -556,6 +556,10 @@ class ChessBot:
 
                 child_board = board.clone()
                 child_board.make_move(move[0], move[1])
+
+                # Optimization: Instant win if the move vaporized the enemy king
+                if not child_board.find_king_pos(opponent_turn):
+                    return self.MATE_SCORE - ply
 
                 if is_in_check(child_board, turn): continue
 
@@ -616,7 +620,7 @@ class ChessBot:
         self.nodes_searched += 1
         if self.cancellation_event.is_set(): raise SearchCancelledException()
 
-        if len(board.white_pieces) + len(board.black_pieces) == 3:
+        if len(board.white_pieces) + len(board.black_pieces) <= 4:
             tb_score_absolute = self.tb_manager.probe(board, turn)
             if tb_score_absolute is not None:
                 self.tb_hits += 1
@@ -658,12 +662,17 @@ class ChessBot:
         scored_moves.sort(key=lambda item: item[0], reverse=True)
 
         legal_moves_count = 0
+        opponent_turn = 'black' if turn == 'white' else 'white'
         for swing, move in scored_moves:
             if not is_in_check_flag and stand_pat + swing + self.Q_SEARCH_SAFETY_MARGIN < alpha: continue
             
             sim_board = board.clone()
             sim_board.make_move(move[0], move[1])
-            
+
+            # Optimization: Instant win if the move vaporized the enemy king
+            if not sim_board.find_king_pos(opponent_turn):
+                return self.MATE_SCORE - ply
+
             if is_in_check(sim_board, turn): continue
             
             legal_moves_count += 1
@@ -676,14 +685,14 @@ class ChessBot:
             
         return alpha
 
-    def order_moves(self, board, moves, ply, hash_move, return_meta=False):
+    def order_moves(self, board, moves, ply, hash_move, turn, return_meta=False):
         if not moves:
             return [] if return_meta else []
 
         scored_moves = []
         move_meta = {}
         killers = self.killer_moves[ply] if ply < len(self.killer_moves) else [None, None]
-        color_index = 0 if (self.color if ply % 2 == 0 else self.opponent_color) == 'white' else 1
+        color_index = 0 if turn == 'white' else 1
         opening_bonus_enabled = (ply <= self.OPENING_BONUS_MAX_PLY and self._is_opening_position(board))
         
         for move in moves:
