@@ -1,4 +1,4 @@
-# GameLogic.py (v42.0 - Raycasting + Variant-perfect Check Validation)
+# GameLogic.py (v42.1 - Raycasting + Variant-perfect Check Validation + small shortcut)
 
 # -----------------------------
 # Global Constants
@@ -471,7 +471,21 @@ def is_square_attacked(board, r, c, attacking_color):
     defending_color = 'black' if attacking_color == 'white' else 'white'
     
     attacker_counts = board.piece_counts[attacking_color]
-    
+
+    # Quick short-circuit: if the attacker only has a king (no pawns/knights/bishops/rooks/queens)
+    # then the only possible threat is the enemy king; skip all explosion/proxy checks.
+    non_king_pieces = (
+        attacker_counts.get(Pawn, 0) + attacker_counts.get(Knight, 0) +
+        attacker_counts.get(Bishop, 0) + attacker_counts.get(Rook, 0) +
+        attacker_counts.get(Queen, 0)
+    )
+    if non_king_pieces == 0:
+        enemy_king_pos = board.find_king_pos(attacking_color)
+        if enemy_king_pos:
+            if max(abs(r - enemy_king_pos[0]), abs(c - enemy_king_pos[1])) <= 2:
+                return True
+        return False
+
     # 1. Check Knights (Active Evaporation & Direct Hit)
     if attacker_counts[Knight] > 0:
         attacking_pieces = board.white_pieces if attacking_color == 'white' else board.black_pieces
@@ -502,6 +516,13 @@ def is_square_attacked(board, r, c, attacking_color):
                 break
 
     has_rooks = attacker_counts[Rook] > 0
+    # If the defender only has a king (no non-king pieces), rooks cannot pierce defenders
+    defender_counts = board.piece_counts[defending_color]
+    defender_non_king = (
+        defender_counts.get(Pawn, 0) + defender_counts.get(Knight, 0) +
+        defender_counts.get(Bishop, 0) + defender_counts.get(Rook, 0) +
+        defender_counts.get(Queen, 0)
+    )
 
     # 2. Check Sliding Pieces (Rook/Queen/Bishop) using Precomputed Rays
     start_index = r * COLS + c
@@ -520,6 +541,13 @@ def is_square_attacked(board, r, c, attacking_color):
             if piece.color == attacking_color:
                 if is_orthogonal:
                     if p_type is Rook:
+                        # If defender has no non-king pieces, rook loses piercing ability and
+                        # only attacks if there were no defenders between rook and target.
+                        if defender_non_king == 0:
+                            if defenders_passed == 0:
+                                return True
+                            else:
+                                break
                         return True # Rooks pierce infinite defenders
                     if p_type is Queen:
                         if defenders_passed == 0:
