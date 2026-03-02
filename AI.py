@@ -1,4 +1,4 @@
-# AI.py (v94.0 - SEE Pruning, History Aging & Aspiration Fixes)
+# AI.py (v94.1 - SEE Pruning, History Aging & Aspiration Fixes + matecondition refinements)
 
 import time
 import random
@@ -208,8 +208,8 @@ class ChessBot:
             # Instant win check (Evaporation/Explosion)
             if not sim.find_king_pos(self.opponent_color):
                 return move, self.MATE_SCORE - 1
-            # Also treat immediate checkmate as mate-in-1 for display purposes.
-            if is_in_check(sim, self.opponent_color) and not has_legal_moves(sim, self.opponent_color):
+            # Treat ANY state with no legal moves as immediate checkmate.
+            if not has_legal_moves(sim, self.opponent_color):
                 return move, self.MATE_SCORE - 1
                  
             score_abs = self.tb_manager.probe(sim, self.opponent_color)
@@ -597,8 +597,8 @@ class ChessBot:
                     return beta
 
             if legal_moves_count == 0:
-                if is_in_check_flag: return -self.MATE_SCORE + ply
-                return self.DRAW_SCORE
+                # No stalemates. 0 legal moves is ALWAYS a mated score!
+                return -self.MATE_SCORE + ply
 
             store_score = alpha
             if store_score > self.MATE_SCORE - 1000: store_score += ply
