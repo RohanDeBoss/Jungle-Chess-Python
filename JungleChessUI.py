@@ -522,6 +522,10 @@ class EnhancedChessApp:
         self.position_counts[key] = self.position_counts.get(key, 0) + 1
         
         status, winner = get_game_state(self.board, self.turn, self.position_counts, self.history_pointer, self.MAX_GAME_MOVES)
+        # Safeguard: ensure checkmate isn't missed due to edge-case generator/race
+        if status == "ongoing":
+            if is_in_check(self.board, self.turn) and not has_legal_moves(self.board, self.turn):
+                status, winner = "checkmate", ('black' if self.turn == 'white' else 'white')
         if status != "ongoing": self.game_over, self.game_result = True, (status, winner)
         
         self.update_ui_after_state_change()
