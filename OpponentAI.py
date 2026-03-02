@@ -1,4 +1,4 @@
-# OPAI.py (v89.2 - TB floor + root null-window)
+# OPAI.py (v89.4 - Synced with v95 Architecture, Retains SE Personality)
 
 import time
 import random
@@ -6,7 +6,7 @@ from collections import namedtuple
 from GameLogic import *
 from TablebaseManager import TablebaseManager
 
-# --- EVALUATION CONSTANTS ---
+# --- EVALUATION CONSTANTS (OPAI PERSONALITY) ---
 
 MG_PIECE_VALUES = {
     Pawn: 100, Knight: 800, Bishop: 650, Rook: 550, Queen: 850, King: 20000
@@ -36,7 +36,7 @@ def initialize_zobrist_table():
     if ZOBRIST_TABLE is not None: return
     random.seed(42)
     table = {}
-    piece_types = [Pawn, Knight, Bishop, Rook, Queen, King, None]
+    piece_types =[Pawn, Knight, Bishop, Rook, Queen, King, None]
     colors = ['white', 'black', None]
     for r in range(ROWS):
         for c in range(COLS):
@@ -62,7 +62,7 @@ def board_hash(board, turn):
     return h
 
 # --- SEARCH STRUCTURES ---
-TTEntry = namedtuple('TTEntry', ['score', 'depth', 'flag', 'best_move'])
+TTEntry = namedtuple('TTEntry',['score', 'depth', 'flag', 'best_move'])
 TT_FLAG_EXACT, TT_FLAG_LOWERBOUND, TT_FLAG_UPPERBOUND = 0, 1, 2
 
 class SearchCancelledException(Exception): pass
@@ -101,10 +101,7 @@ class OpponentAI:
         self.tb_manager = TablebaseManager()
         
         if bot_name is None:
-            if self.__class__.__name__ == "OpponentAI":
-                self.bot_name = "OP Bot"
-            else:
-                self.bot_name = "AI Bot"
+            self.bot_name = "OP Bot"
         else:
             self.bot_name = bot_name
 
@@ -124,10 +121,6 @@ class OpponentAI:
     def _format_move(self, move): return format_move(move)
 
     def _get_root_tb_eval_relative(self):
-        """
-        Return current position TB eval from the bot's perspective.
-        This is the value we should display for the current root position.
-        """
         root_abs = self.tb_manager.probe(self.board, self.color)
         if root_abs is None:
             return None
@@ -135,7 +128,6 @@ class OpponentAI:
         return root_abs if self.color == 'white' else -root_abs
 
     def _get_best_tablebase_move_with_eval(self):
-        """Finds the absolute best move when only 3 pieces remain."""
         best_move = None
         best_score = -float('inf')
         
@@ -143,206 +135,58 @@ class OpponentAI:
             sim = self.board.clone()
             sim.make_move(move[0], move[1])
             
-            # Instant win check (Evaporation/Explosion)
             if not sim.find_king_pos(self.opponent_color):
                 return move, self.MATE_SCORE - 1
-            # Also treat immediate checkmate as mate-in-1 for display purposes.
-            if is_in_check(sim, self.opponent_color) and not has_legal_moves(sim, self.opponent_color):
+            if not has_legal_moves(sim, self.opponent_color):
                 return move, self.MATE_SCORE - 1
                  
             score_abs = self.tb_manager.probe(sim, self.opponent_color)
             
             if score_abs is None:
-                # Capture resulted in King vs King
                 score = 0
             else:
                 self.tb_hits += 1
                 score = score_abs if self.color == 'white' else -score_abs
-                # Adjust for the 1-ply move we just made
                 if score > self.MATE_SCORE - 1000: score -= 1
                 elif score < -self.MATE_SCORE + 1000: score += 1
             
-            # Tie breaker: add slight randomness to draws to avoid infinite shuffling
             if score > best_score or (score == best_score and score == 0 and random.random() > 0.5):
                 best_score = score
                 best_move = move
                 
         return best_move, best_score
 
-    def _get_tb_frontier_move_with_eval(self):
-        """
-        Optional fast path for 4-piece roots:
-        if every legal move transitions directly to terminal or 3-piece TB,
-        we can solve the root exactly without full search.
-        """
-        if len(self.board.white_pieces) + len(self.board.black_pieces) != 4:
-            return None, None
+    def _run_depth_iteration(self, depth, root_moves, root_hash, pv_move):
+        iter_nodes = 0
+        iter_tb_hits = 0
+        
+        best_score_this_iter, best_move_this_iter = self._search_at_depth(depth, root_moves, root_hash, pv_move)
+        
+        iter_nodes = self.nodes_searched
+        iter_tb_hits = self.tb_hits
 
-        legal = get_all_legal_moves(self.board, self.color)
-        if not legal:
-            return None, None
+        self.nodes_searched = iter_nodes
+        self.tb_hits = iter_tb_hits
+        return best_score_this_iter, best_move_this_iter
 
-        best_move = None
-        best_score = -float('inf')
-        covered = 0
-
-        for move in legal:
-            sim = self.board.clone()
-            sim.make_move(move[0], move[1])
-
-            # Immediate terminal outcomes
-            if not sim.find_king_pos(self.opponent_color):
-                score = self.MATE_SCORE - 1
-                covered += 1
-            elif not sim.find_king_pos(self.color):
-                score = -self.MATE_SCORE + 1
-                covered += 1
-            else:
-                piece_count = len(sim.white_pieces) + len(sim.black_pieces)
-                if piece_count != 3:
-                    continue
-
-                score_abs = self.tb_manager.probe(sim, self.opponent_color)
-                if score_abs is None:
-                    score = 0
-                else:
-                    self.tb_hits += 1
-                    score = score_abs if self.color == 'white' else -score_abs
-                    # We made one ply to reach child TB.
-                    if score > self.MATE_SCORE - 1000:
-                        score -= 1
-                    elif score < -self.MATE_SCORE + 1000:
-                        score += 1
-                covered += 1
-
-            if score > best_score or (score == best_score and score == 0 and random.random() > 0.5):
-                best_score = score
-                best_move = move
-
-        # Only safe to short-circuit if every legal move is TB-covered.
-        if covered == len(legal) and best_move is not None:
-            return best_move, best_score
-        return None, None
-
-    def _get_tb_tunnel_move_with_eval(self, max_plies=6, max_pieces=6):
-        """
-        Bounded exact solver for near-tablebase positions with more than 3 pieces.
-        We only short-circuit when the explored game tree is fully resolved
-        (terminal/TB) within max_plies; otherwise returns (None, None).
-        Score returned is relative to self.color at the root.
-        """
-        total_pieces = len(self.board.white_pieces) + len(self.board.black_pieces)
-        if total_pieces < 4 or total_pieces > max_pieces:
-            return None, None
-
-        memo = {}
-
-        def solve_rel(board, turn, depth):
-            key = (board_hash(board, turn), depth)
-            if key in memo:
-                return memo[key]
-
-            piece_count = len(board.white_pieces) + len(board.black_pieces)
-            if piece_count == 3:
-                tb_abs = self.tb_manager.probe(board, turn)
-                if tb_abs is None:
-                    memo[key] = 0
-                    return 0
-                rel = tb_abs if turn == 'white' else -tb_abs
-                memo[key] = rel
-                return rel
-
-            if depth <= 0:
-                memo[key] = None
-                return None
-
-            legal = get_all_legal_moves(board, turn)
-            if not legal:
-                if is_in_check(board, turn):
-                    return -self.MATE_SCORE + 1
-                return self.DRAW_SCORE
-
-            opp = 'black' if turn == 'white' else 'white'
-            best = -float('inf')
-            for mv in legal:
-                child = board.clone()
-                child.make_move(mv[0], mv[1])
-
-                if not child.find_king_pos(opp):
-                    sc = self.MATE_SCORE - 1
-                elif not child.find_king_pos(turn):
-                    sc = -self.MATE_SCORE + 1
-                else:
-                    child_rel = solve_rel(child, opp, depth - 1)
-                    if child_rel is None:
-                        memo[key] = None
-                        return None
-                    sc = -child_rel
-
-                if sc > best:
-                    best = sc
-
-            memo[key] = best
-            return best
-
-        root_moves = get_all_legal_moves(self.board, self.color)
-        if not root_moves:
-            return None, None
-
-        best_move = None
-        best_score = -float('inf')
-        opp = self.opponent_color
-        for mv in root_moves:
-            child = self.board.clone()
-            child.make_move(mv[0], mv[1])
-
-            if not child.find_king_pos(opp):
-                sc = self.MATE_SCORE - 1
-            elif not child.find_king_pos(self.color):
-                sc = -self.MATE_SCORE + 1
-            else:
-                child_rel = solve_rel(child, opp, max_plies - 1)
-                if child_rel is None:
-                    return None, None
-                sc = -child_rel
-
-            if sc > best_score or (sc == best_score and sc == 0 and random.random() > 0.5):
-                best_score = sc
-                best_move = mv
-
-        return best_move, best_score
+    def _report_root_tb_solution(self, tb_move, tb_eval, perfect_play=False, emit_move=False):
+        if not tb_move: return False
+        root_tb_eval = self._get_root_tb_eval_relative()
+        display_eval = root_tb_eval if root_tb_eval is not None else tb_eval
+        if tb_eval > self.MATE_SCORE - 1000: display_eval = tb_eval
+        eval_for_ui = display_eval if self.color == 'white' else -display_eval
+        suffix = " (Perfect Play)" if perfect_play else ""
+        self._report_log(f"  > {self.bot_name} (TB): {self._format_move(tb_move)}, Eval={eval_for_ui/100:+.2f}, TBhits={self.tb_hits}{suffix}")
+        self._report_eval(display_eval, "TB")
+        if emit_move: self._report_move(tb_move)
+        return True
 
     def make_move(self):
         try:
-            if len(self.board.white_pieces) + len(self.board.black_pieces) == 3:
+            # OPAI now respects 4-man depth logic directly
+            if len(self.board.white_pieces) + len(self.board.black_pieces) <= 4:
                 tb_move, tb_eval = self._get_best_tablebase_move_with_eval()
-                if tb_move:
-                    # Display the root position score (not the chosen child's score).
-                    root_tb_eval = self._get_root_tb_eval_relative()
-                    display_eval = root_tb_eval if root_tb_eval is not None else tb_eval
-                    # If the chosen move is an immediate mate, show that stronger terminal score.
-                    if tb_eval > self.MATE_SCORE - 1000:
-                        display_eval = tb_eval
-                    eval_for_ui = display_eval if self.color == 'white' else -display_eval
-                    self._report_log(f"  > {self.bot_name} (TB): {self._format_move(tb_move)}, Eval={eval_for_ui/100:+.2f}, TBhits={self.tb_hits}")
-                    self._report_eval(display_eval, "TB")
-                    self._report_move(tb_move)
-                    return
-            elif len(self.board.white_pieces) + len(self.board.black_pieces) == 4:
-                frontier_move, frontier_eval = self._get_tb_frontier_move_with_eval()
-                if frontier_move:
-                    eval_for_ui = frontier_eval if self.color == 'white' else -frontier_eval
-                    self._report_log(f"  > {self.bot_name} (TB-Frontier): {self._format_move(frontier_move)}, Eval={eval_for_ui/100:+.2f}, TBhits={self.tb_hits}")
-                    self._report_eval(frontier_eval, "TB")
-                    self._report_move(frontier_move)
-                    return
-            else:
-                tunnel_move, tunnel_eval = self._get_tb_tunnel_move_with_eval(max_plies=6, max_pieces=6)
-                if tunnel_move:
-                    eval_for_ui = tunnel_eval if self.color == 'white' else -tunnel_eval
-                    self._report_log(f"  > {self.bot_name} (TB-Tunnel): {self._format_move(tunnel_move)}, Eval={eval_for_ui/100:+.2f}, TBhits={self.tb_hits}")
-                    self._report_eval(tunnel_eval, "TB")
-                    self._report_move(tunnel_move)
+                if self._report_root_tb_solution(tb_move, tb_eval, emit_move=True):
                     return
 
             root_moves = get_all_legal_moves(self.board, self.color)
@@ -351,13 +195,18 @@ class OpponentAI:
                 return
             
             best_move_overall = root_moves[0]
+            total_nodes = 0
+            root_hash = board_hash(self.board, self.color)
+            
             for current_depth in range(1, self.search_depth + 1):
                 iter_start_time = time.time()
-                root_hash = board_hash(self.board, self.color)
-                best_score_this_iter, best_move_this_iter = self._search_at_depth(current_depth, root_moves, root_hash, best_move_overall)
+                best_score_this_iter, best_move_this_iter = self._run_depth_iteration(
+                    current_depth, root_moves, root_hash, best_move_overall
+                )
                 
                 if not self.cancellation_event.is_set():
                     best_move_overall = best_move_this_iter
+                    total_nodes += self.nodes_searched
                     iter_duration = time.time() - iter_start_time
                     knps = (self.nodes_searched / iter_duration / 1000) if iter_duration > 0 else 0
                     eval_for_ui = best_score_this_iter if self.color == 'white' else -best_score_this_iter
@@ -365,7 +214,6 @@ class OpponentAI:
                     depth_label = "TB" if not self.used_heuristic_eval else current_depth
                     
                     log_msg = f"  > {self.bot_name} (D{depth_label}): {move_str}, Eval={eval_for_ui/100:+.2f}, Nodes={self.nodes_searched}, KNPS={knps:.1f}, TBhits={self.tb_hits}, Time={iter_duration:.2f}s"
-                    
                     self._report_log(log_msg)
                     self._report_eval(best_score_this_iter, depth_label)
 
@@ -382,38 +230,9 @@ class OpponentAI:
         try:
             if is_insufficient_material(self.board): return
             
-            # Instantly solve 3-piece endgames in Analysis Mode
-            if len(self.board.white_pieces) + len(self.board.black_pieces) == 3:
+            if len(self.board.white_pieces) + len(self.board.black_pieces) <= 4:
                 tb_move, tb_eval = self._get_best_tablebase_move_with_eval()
-                if tb_move:
-                    # Display the root position score (not the chosen child's score).
-                    root_tb_eval = self._get_root_tb_eval_relative()
-                    display_eval = root_tb_eval if root_tb_eval is not None else tb_eval
-                    # If the chosen move is an immediate mate, show that stronger terminal score.
-                    if tb_eval > self.MATE_SCORE - 1000:
-                        display_eval = tb_eval
-                    eval_for_ui = display_eval if self.color == 'white' else -display_eval
-                    self._report_log(f"  > {self.bot_name} (TB): {self._format_move(tb_move)}, Eval={eval_for_ui/100:+.2f}, TBhits={self.tb_hits} (Perfect Play)")
-                    self._report_eval(display_eval, "TB")
-                    # Sleep to prevent burning CPU since the position is perfectly solved
-                    while not self.cancellation_event.is_set():
-                        time.sleep(0.1)
-                    return
-            elif len(self.board.white_pieces) + len(self.board.black_pieces) == 4:
-                frontier_move, frontier_eval = self._get_tb_frontier_move_with_eval()
-                if frontier_move:
-                    eval_for_ui = frontier_eval if self.color == 'white' else -frontier_eval
-                    self._report_log(f"  > {self.bot_name} (TB-Frontier): {self._format_move(frontier_move)}, Eval={eval_for_ui/100:+.2f}, TBhits={self.tb_hits} (Perfect Play)")
-                    self._report_eval(frontier_eval, "TB")
-                    while not self.cancellation_event.is_set():
-                        time.sleep(0.1)
-                    return
-            else:
-                tunnel_move, tunnel_eval = self._get_tb_tunnel_move_with_eval(max_plies=6, max_pieces=6)
-                if tunnel_move:
-                    eval_for_ui = tunnel_eval if self.color == 'white' else -tunnel_eval
-                    self._report_log(f"  > {self.bot_name} (TB-Tunnel): {self._format_move(tunnel_move)}, Eval={eval_for_ui/100:+.2f}, TBhits={self.tb_hits} (Perfect Play)")
-                    self._report_eval(tunnel_eval, "TB")
+                if self._report_root_tb_solution(tb_move, tb_eval, perfect_play=True):
                     while not self.cancellation_event.is_set():
                         time.sleep(0.1)
                     return
@@ -423,46 +242,37 @@ class OpponentAI:
             
             best_move_overall = root_moves[0]
             root_hash = board_hash(self.board, self.color)
-            tb_alpha_floor = None
+            total_nodes = 0
             for current_depth in range(1, 100):
                 if self.cancellation_event.is_set(): raise SearchCancelledException()
                 iter_start_time = time.time()
                 best_score_this_iter, best_move_this_iter = self._search_at_depth(
-                    current_depth, root_moves, root_hash, best_move_overall, alpha_floor=tb_alpha_floor
+                    current_depth, root_moves, root_hash, best_move_overall
                 )
                 
                 if not self.cancellation_event.is_set():
                     best_move_overall = best_move_this_iter
+                    total_nodes += self.nodes_searched
                     iter_duration = time.time() - iter_start_time
                     knps = (self.nodes_searched / iter_duration / 1000) if iter_duration > 0 else 0
                     eval_for_ui = best_score_this_iter if self.color == 'white' else -best_score_this_iter
                     depth_label = "TB" if not self.used_heuristic_eval else current_depth
                     self._report_log(f"  > {self.bot_name} (D{depth_label}): {self._format_move(best_move_this_iter)}, Eval={eval_for_ui/100:+.2f}, Nodes={self.nodes_searched}, KNPS={knps:.1f}, TBhits={self.tb_hits}, Time={iter_duration:.2f}s")
                     self._report_eval(best_score_this_iter, depth_label)
-
-                    # If we already found a TB-level winning line, deeper iterations should
-                    # only try to beat it (shorter win), not re-search longer/equal lines.
-                    if best_score_this_iter > self.MATE_SCORE - 1000:
-                        tb_alpha_floor = best_score_this_iter
-                    else:
-                        tb_alpha_floor = None
                 else:
                     raise SearchCancelledException()
         except SearchCancelledException: pass
 
-    def _search_at_depth(self, depth, root_moves, root_hash, pv_move, alpha_floor=None):
+    def _search_at_depth(self, depth, root_moves, root_hash, pv_move):
         self.nodes_searched = 0
         self.used_heuristic_eval = False
         self.tb_hits = 0
-        if alpha_floor is not None:
-            best_score_this_iter = alpha_floor
-            best_move_this_iter = pv_move if pv_move in root_moves else (root_moves[0] if root_moves else None)
-        else:
-            best_score_this_iter, best_move_this_iter = -float('inf'), None
-        alpha = alpha_floor if alpha_floor is not None else -float('inf')
-        beta = float('inf')
         
-        ordered_root_moves = self.order_moves(self.board, root_moves, 0, pv_move)
+        best_score_this_iter, best_move_this_iter = -float('inf'), None
+        alpha, beta = -float('inf'), float('inf')
+        
+        # FIX: Pass turn into order_moves
+        ordered_root_moves = self.order_moves(self.board, root_moves, 0, pv_move, self.color)
         
         all_moves_draw = True
         for move in ordered_root_moves:
@@ -475,21 +285,7 @@ class OpponentAI:
             child_hash = board_hash(child_board, self.opponent_color)
             self.position_counts[child_hash] = self.position_counts.get(child_hash, 0) + 1
 
-            if alpha_floor is not None:
-                # Null-window root test: only continue if this move can beat current TB floor.
-                probe_score = -self.negamax(
-                    child_board, depth - 1, -(alpha_floor + 1), -alpha_floor,
-                    self.opponent_color, 1, search_path
-                )
-                if probe_score <= alpha_floor:
-                    self.position_counts[child_hash] -= 1
-                    continue
-                score = -self.negamax(
-                    child_board, depth - 1, -beta, -alpha,
-                    self.opponent_color, 1, search_path
-                )
-            else:
-                score = -self.negamax(child_board, depth - 1, -beta, -alpha, self.opponent_color, 1, search_path)
+            score = -self.negamax(child_board, depth - 1, -beta, -alpha, self.opponent_color, 1, search_path)
 
             self.position_counts[child_hash] -= 1
             if score != self.DRAW_SCORE: all_moves_draw = False
@@ -499,15 +295,14 @@ class OpponentAI:
                 best_move_this_iter = move
             alpha = max(alpha, best_score_this_iter)
         
-        if alpha_floor is None and all_moves_draw:
-            best_score_this_iter = self.DRAW_SCORE
+        if all_moves_draw: best_score_this_iter = self.DRAW_SCORE
         return best_score_this_iter, best_move_this_iter
 
     def negamax(self, board, depth, alpha, beta, turn, ply, search_path):
         self.nodes_searched += 1
         if self.cancellation_event.is_set(): raise SearchCancelledException()
 
-        if len(board.white_pieces) + len(board.black_pieces) == 3:
+        if len(board.white_pieces) + len(board.black_pieces) <= 4:
             tb_score_absolute = self.tb_manager.probe(board, turn)
             if tb_score_absolute is not None:
                 self.tb_hits += 1
@@ -516,18 +311,11 @@ class OpponentAI:
                 elif tb_score < -self.MATE_SCORE + 1000: return tb_score + ply
                 return tb_score
 
-        # --- OPTIMIZATION: MATE DISTANCE PRUNING ---
-        # This is the key logic that makes searching deeper depths fast 
-        # when a mate is already known.
-        
-        # 1. Cap Beta: We can't do better than mating immediately (MATE - ply)
         mate_value = self.MATE_SCORE - ply
         if beta > mate_value:
             beta = mate_value
-            if alpha >= mate_value:
-                return mate_value
+            if alpha >= mate_value: return mate_value
         
-        # 2. Raise Alpha: We can't do worse than getting mated immediately (-MATE + ply)
         mated_value = -self.MATE_SCORE + ply
         if alpha < mated_value:
             alpha = mated_value
@@ -559,86 +347,97 @@ class OpponentAI:
         opponent_turn = 'black' if turn == 'white' else 'white'
         is_in_check_flag = is_in_check(board, turn)
         if is_in_check_flag: depth += 1
-        
-        if (depth >= self.NMP_MIN_DEPTH and ply > 0 and not is_in_check_flag and
-            beta < self.MATE_SCORE - 200 and 
-            any(not isinstance(p, (Pawn, King)) for p in (board.white_pieces if turn == 'white' else board.black_pieces))):
-            
-            nmp_reduction = self.NMP_BASE_REDUCTION + (depth // self.NMP_DEPTH_DIVISOR)
-            score = -self.negamax(board, depth - 1 - nmp_reduction, -beta, -beta + 1, opponent_turn, ply + 1, search_path | {hash_val})
-            if score >= beta:
-                store_score = beta
-                if store_score > self.MATE_SCORE - 1000: store_score += ply
-                elif store_score < -self.MATE_SCORE + 1000: store_score -= ply
-                self.tt[hash_val] = TTEntry(store_score, depth, TT_FLAG_LOWERBOUND, None)
-                return beta 
 
-        pseudo_moves = get_all_pseudo_legal_moves(board, turn)
-        hash_move = tt_entry.best_move if tt_entry else None
-        ordered_moves = self.order_moves(board, pseudo_moves, ply, hash_move)
-        
-        best_move_for_node = None
-        legal_moves_count = 0
-        
-        for move in ordered_moves:
-            target_piece = board.grid[move[1][0]][move[1][1]]
-            moving_piece = board.grid[move[0][0]][move[0][1]]
-            is_tactical = target_piece is not None or \
-                          (isinstance(moving_piece, Pawn) and (move[1][0] == 0 or move[1][0] == ROWS - 1)) or \
-                          (isinstance(moving_piece, Rook) and is_rook_piercing_capture(board, move)) or \
-                          (isinstance(moving_piece, Knight) and is_quiet_knight_evaporation(board, move))
+        path_added = False
+        if hash_val not in search_path:
+            search_path.add(hash_val)
+            path_added = True
 
-            child_board = board.clone()
-            child_board.make_move(move[0], move[1])
-
-            if is_in_check(child_board, turn): continue
+        try:
+            if (self.USE_NULL_MOVE_PRUNING and depth >= self.NMP_MIN_DEPTH and ply > 0 and not is_in_check_flag and
+                beta < self.MATE_SCORE - 200 and 
+                any(not isinstance(p, (Pawn, King)) for p in (board.white_pieces if turn == 'white' else board.black_pieces))):
                 
-            legal_moves_count += 1
-            
-            reduction = 0
-            if (depth >= self.LMR_DEPTH_THRESHOLD and legal_moves_count > self.LMR_MOVE_COUNT_THRESHOLD and 
-                not is_in_check_flag and not is_tactical):
-                reduction = self.LMR_REDUCTION
+                nmp_reduction = self.NMP_BASE_REDUCTION + (depth // self.NMP_DEPTH_DIVISOR)
+                score = -self.negamax(board, depth - 1 - nmp_reduction, -beta, -beta + 1, opponent_turn, ply + 1, search_path | {hash_val})
+                if score >= beta:
+                    store_score = beta
+                    if store_score > self.MATE_SCORE - 1000: store_score += ply
+                    elif store_score < -self.MATE_SCORE + 1000: store_score -= ply
+                    self.tt[hash_val] = TTEntry(store_score, depth, TT_FLAG_LOWERBOUND, None)
+                    return beta 
 
-            score = -self.negamax(child_board, depth - 1 - reduction, -beta, -alpha, opponent_turn, ply + 1, search_path | {hash_val})
-            if reduction > 0 and score > alpha:
-                score = -self.negamax(child_board, depth - 1, -beta, -alpha, opponent_turn, ply + 1, search_path | {hash_val})
+            pseudo_moves = get_all_pseudo_legal_moves(board, turn)
+            hash_move = tt_entry.best_move if tt_entry else None
+            ordered_moves = self.order_moves(board, pseudo_moves, ply, hash_move, turn)
             
-            if score > alpha:
-                alpha, best_move_for_node = score, move
-            if alpha >= beta:
-                if not is_tactical:
-                    if ply < len(self.killer_moves) and self.killer_moves[ply][0] != move:
-                        self.killer_moves[ply][1], self.killer_moves[ply][0] = self.killer_moves[ply][0], move
-                    if moving_piece:
-                        color_index = 0 if moving_piece.color == 'white' else 1
-                        from_sq, to_sq = move[0][0]*COLS+move[0][1], move[1][0]*COLS+move[1][1]
-                        self.history_heuristic_table[color_index][from_sq][to_sq] += depth * depth
+            best_move_for_node = None
+            legal_moves_count = 0
+            
+            for move in ordered_moves:
+                target_piece = board.grid[move[1][0]][move[1][1]]
+                moving_piece = board.grid[move[0][0]][move[0][1]]
+                is_tactical = target_piece is not None or \
+                              (isinstance(moving_piece, Pawn) and (move[1][0] == 0 or move[1][0] == ROWS - 1)) or \
+                              (isinstance(moving_piece, Rook) and is_rook_piercing_capture(board, move)) or \
+                              (isinstance(moving_piece, Knight) and is_quiet_knight_evaporation(board, move))
+
+                child_board = board.clone()
+                child_board.make_move(move[0], move[1])
+
+                # FIX: Vaporization check
+                if not child_board.find_king_pos(opponent_turn):
+                    return self.MATE_SCORE - ply
+
+                if is_in_check(child_board, turn): continue
+                    
+                legal_moves_count += 1
                 
-                store_score = beta
-                if store_score > self.MATE_SCORE - 1000: store_score += ply
-                elif store_score < -self.MATE_SCORE + 1000: store_score -= ply
-                self.tt[hash_val] = TTEntry(store_score, depth, TT_FLAG_LOWERBOUND, move)
-                return beta
+                reduction = 0
+                if (depth >= self.LMR_DEPTH_THRESHOLD and legal_moves_count > self.LMR_MOVE_COUNT_THRESHOLD and 
+                    not is_in_check_flag and not is_tactical):
+                    reduction = self.LMR_REDUCTION
 
-        if legal_moves_count == 0:
-            if is_in_check_flag: return -self.MATE_SCORE + ply
-            return self.DRAW_SCORE
+                score = -self.negamax(child_board, depth - 1 - reduction, -beta, -alpha, opponent_turn, ply + 1, search_path | {hash_val})
+                if reduction > 0 and score > alpha:
+                    score = -self.negamax(child_board, depth - 1, -beta, -alpha, opponent_turn, ply + 1, search_path | {hash_val})
+                
+                if score > alpha:
+                    alpha, best_move_for_node = score, move
+                if alpha >= beta:
+                    if not is_tactical:
+                        if ply < len(self.killer_moves) and self.killer_moves[ply][0] != move:
+                            self.killer_moves[ply][1], self.killer_moves[ply][0] = self.killer_moves[ply][0], move
+                        if moving_piece:
+                            color_index = 0 if moving_piece.color == 'white' else 1
+                            from_sq, to_sq = move[0][0]*COLS+move[0][1], move[1][0]*COLS+move[1][1]
+                            self.history_heuristic_table[color_index][from_sq][to_sq] += depth * depth
+                    
+                    store_score = beta
+                    if store_score > self.MATE_SCORE - 1000: store_score += ply
+                    elif store_score < -self.MATE_SCORE + 1000: store_score -= ply
+                    self.tt[hash_val] = TTEntry(store_score, depth, TT_FLAG_LOWERBOUND, move)
+                    return beta
 
-        store_score = alpha
-        if store_score > self.MATE_SCORE - 1000: store_score += ply
-        elif store_score < -self.MATE_SCORE + 1000: store_score -= ply
+            if legal_moves_count == 0:
+                return -self.MATE_SCORE + ply
 
-        flag = TT_FLAG_EXACT if alpha > original_alpha else TT_FLAG_UPPERBOUND
-        self.tt[hash_val] = TTEntry(store_score, depth, flag, best_move_for_node)
-        return alpha
-    
+            store_score = alpha
+            if store_score > self.MATE_SCORE - 1000: store_score += ply
+            elif store_score < -self.MATE_SCORE + 1000: store_score -= ply
+
+            flag = TT_FLAG_EXACT if alpha > original_alpha else TT_FLAG_UPPERBOUND
+            self.tt[hash_val] = TTEntry(store_score, depth, flag, best_move_for_node)
+            return alpha
+        finally:
+            if path_added:
+                search_path.remove(hash_val)
 
     def qsearch(self, board, alpha, beta, turn, ply):
         self.nodes_searched += 1
         if self.cancellation_event.is_set(): raise SearchCancelledException()
 
-        if len(board.white_pieces) + len(board.black_pieces) == 3:
+        if len(board.white_pieces) + len(board.black_pieces) <= 4:
             tb_score_absolute = self.tb_manager.probe(board, turn)
             if tb_score_absolute is not None:
                 self.tb_hits += 1
@@ -659,13 +458,12 @@ class OpponentAI:
             if stand_pat >= beta: return beta
             alpha = max(alpha, stand_pat)
 
-        # OPTIMIZATION: Filter pseudo-legal moves inline
         promising_moves =[]
         pseudo_moves = get_all_pseudo_legal_moves(board, turn)
         
         for move in pseudo_moves:
             if is_in_check_flag:
-                promising_moves.append(move) # Must evaluate evasions
+                promising_moves.append(move)
             else:
                 target_piece = board.grid[move[1][0]][move[1][1]]
                 moving_piece = board.grid[move[0][0]][move[0][1]]
@@ -683,17 +481,21 @@ class OpponentAI:
         scored_moves.sort(key=lambda item: item[0], reverse=True)
 
         legal_moves_count = 0
+        opponent_turn = 'black' if turn == 'white' else 'white'
         for swing, move in scored_moves:
             if not is_in_check_flag and stand_pat + swing + self.Q_SEARCH_SAFETY_MARGIN < alpha: continue
             
             sim_board = board.clone()
             sim_board.make_move(move[0], move[1])
+
+            # FIX: Vaporization check
+            if not sim_board.find_king_pos(opponent_turn):
+                return self.MATE_SCORE - ply
             
-            # DEFERRED LEGALITY CHECK
             if is_in_check(sim_board, turn): continue
             
             legal_moves_count += 1
-            search_score = -self.qsearch(sim_board, -beta, -alpha, ('black' if turn == 'white' else 'white'), ply + 1)
+            search_score = -self.qsearch(sim_board, -beta, -alpha, opponent_turn, ply + 1)
             if search_score >= beta: return beta
             alpha = max(alpha, search_score)
             
@@ -702,11 +504,11 @@ class OpponentAI:
             
         return alpha
 
-    def order_moves(self, board, moves, ply, hash_move):
+    def order_moves(self, board, moves, ply, hash_move, turn):
         if not moves: return []
         scores = {}
         killers = self.killer_moves[ply] if ply < len(self.killer_moves) else [None, None]
-        color_index = 0 if (self.color if ply % 2 == 0 else self.opponent_color) == 'white' else 1
+        color_index = 0 if turn == 'white' else 1
         
         for move in moves:
             score = 0
@@ -735,12 +537,11 @@ class OpponentAI:
         return moves
 
     def evaluate_board(self, board, turn_to_move):
-        if is_insufficient_material(board):
-            return self.DRAW_SCORE
+        if is_insufficient_material(board): return self.DRAW_SCORE
 
         scores_mg = [0, 0]; scores_eg = [0, 0]
-        piece_counts = [0, 0]; pawn_counts = [0, 0]; last_piece_type = [None, None]
-        rook_counts = [0, 0]; bishop_counts = [0, 0]; knight_counts = [0, 0]; queen_counts = [0, 0]
+        piece_counts =[0, 0]; pawn_counts = [0, 0]; last_piece_type =[None, None]
+        rook_counts = [0, 0]; bishop_counts =[0, 0]; knight_counts = [0, 0]; queen_counts = [0, 0]
         
         king_pos =[board.white_king_pos, board.black_king_pos]
         piece_lists =[board.white_pieces, board.black_pieces]
@@ -754,7 +555,6 @@ class OpponentAI:
         DOUBLE_ROOK_PENALTY = 15
         ROOK_PAWN_SCALING = 5
 
-        # 1. Main Loop
         for color_idx in (0, 1):
             pieces = piece_lists[color_idx]
             is_white = (color_idx == 0)
@@ -791,7 +591,6 @@ class OpponentAI:
                         pst_val = PIECE_SQUARE_TABLES[ptype][r_pst][c]
                         scores_mg[color_idx] += pst_val; scores_eg[color_idx] += pst_val
 
-                # Variant Heuristics
                 if ptype is Pawn:
                     if (c > 0 and isinstance(grid[r][c-1], Pawn) and grid[r][c-1].color == my_color_name) or \
                        (c < COLS-1 and isinstance(grid[r][c+1], Pawn) and grid[r][c+1].color == my_color_name):
@@ -800,25 +599,20 @@ class OpponentAI:
                     if enemy_king and (r == enemy_king[0] or c == enemy_king[1]):
                         scores_mg[color_idx] += ROOK_ALIGNMENT_BONUS
 
-        # 2. Global Calculations
         phase = min(256, (phase_material_score * 256) // INITIAL_PHASE_MATERIAL) if INITIAL_PHASE_MATERIAL > 0 else 0
         inv_phase = 256 - phase
         
-        total_pawns_on_board = pawn_counts[0] + pawn_counts[1]
-
         if piece_counts[0] > piece_counts[1]: scores_eg[0] += PIECE_DOMINANCE_FACTOR // (piece_counts[1] + 1)
         elif piece_counts[1] > piece_counts[0]: scores_eg[1] += PIECE_DOMINANCE_FACTOR // (piece_counts[0] + 1)
 
-        # Define Penalty Tables
-        LONE_ROOK_PENALTIES   = [550, 200, 150, 80, 40]
-        LONE_BISHOP_PENALTIES = [650, 250, 170, 100, 50]
+        LONE_ROOK_PENALTIES   =[550, 200, 150, 80, 40]
+        LONE_BISHOP_PENALTIES =[650, 250, 170, 100, 50]
 
         for i in (0, 1):
             if pawn_counts[i] < 4:
                 penalty = int(-250 * (4 - pawn_counts[i])**2 / 16)
                 scores_mg[i] += penalty; scores_eg[i] += penalty
             
-            # Apply Lone Wolf "Draw Damping" LAST
             if piece_counts[i] == 1 and pawn_counts[i] <= 4:
                 penalty = 0
                 if last_piece_type[i] is Rook:
@@ -827,12 +621,11 @@ class OpponentAI:
                      penalty = LONE_BISHOP_PENALTIES[pawn_counts[i]]
                 
                 if penalty > 0:
-                    if i == 0 and scores_eg[0] > scores_eg[1]: # White winning
+                    if i == 0 and scores_eg[0] > scores_eg[1]:
                         scores_eg[0] = max(scores_eg[1], scores_eg[0] - penalty)
-                    elif i == 1 and scores_eg[1] > scores_eg[0]: # Black winning
+                    elif i == 1 and scores_eg[1] > scores_eg[0]:
                         scores_eg[1] = max(scores_eg[0], scores_eg[1] - penalty)
 
-            # Synergy
             if bishop_counts[i] >= 2: 
                 scores_mg[i] += PAIR_BONUS; scores_eg[i] += PAIR_BONUS
             if knight_counts[i] >= 2: 
@@ -840,9 +633,8 @@ class OpponentAI:
             if rook_counts[i] >= 2:
                 scores_mg[i] -= DOUBLE_ROOK_PENALTY; scores_eg[i] -= DOUBLE_ROOK_PENALTY
             
-            # Rook Scaling
             if rook_counts[i] > 0:
-                bonus = rook_counts[i] * total_pawns_on_board * ROOK_PAWN_SCALING
+                bonus = rook_counts[i] * (pawn_counts[0] + pawn_counts[1]) * ROOK_PAWN_SCALING
                 scores_mg[i] += bonus; scores_eg[i] += bonus
 
         if king_pos[0] and king_pos[1]:
@@ -855,28 +647,18 @@ class OpponentAI:
         eg_score = scores_eg[0] - scores_eg[1]
         final_score = (mg_score * phase + eg_score * inv_phase) >> 8
         
-        # ----------------------------------------------------------------
-        # KNOWLEDGE BASE: UNWINNABLE ENDGAMES
-        # ----------------------------------------------------------------
         can_force_mate = [True, True]
         for i in (0, 1):
-            # A side cannot force checkmate if they have:
-            # 0 Pawns, 0 Knights, 0 Queens, AND less than 2 sliding pieces (Rooks/Bishops)
-            if (pawn_counts[i] == 0 and 
-                knight_counts[i] == 0 and 
-                queen_counts[i] == 0 and 
-                (rook_counts[i] + bishop_counts[i]) < 2):
+            if (pawn_counts[i] == 0 and knight_counts[i] == 0 and queen_counts[i] == 0 and (rook_counts[i] + bishop_counts[i]) < 2):
                 can_force_mate[i] = False
                 
-        # If the "winning" side cannot actually force a checkmate (e.g. lone Bishop vs Pawn),
-        # scale their advantage down massively. Using 8 as divisor per request.
         if final_score > 0 and not can_force_mate[0]:
             final_score //= 8
         elif final_score < 0 and not can_force_mate[1]:
             final_score //= 8
             
         return final_score if turn_to_move == 'white' else -final_score
-    
+
 
 # --- Piece-Square Tables (PSTs) ---
 pawn_pst = [
