@@ -1,4 +1,4 @@
-# AI.py (v95.0 - Vaporization Pruning, Deep 4-Man TBs, Turn Context Fixes)
+# AI.py (v95.1 - Analysis TB: stop repeated DTB logging once solved)
 
 import time
 import random
@@ -401,6 +401,12 @@ class ChessBot:
                     depth_label = "TB" if not self.used_heuristic_eval else current_depth
                     self._report_log(f"  > {self.bot_name} (D{depth_label}): {self._format_move(best_move_this_iter)}, Eval={eval_for_ui/100:+.2f}, NodesTotal={total_nodes}, KNPS={knps:.1f}, TBhits={self.tb_hits}, Time={iter_duration:.2f}s")
                     self._report_eval(best_score_this_iter, depth_label)
+
+                    if depth_label == "TB":
+                        # Fully solved by tablebase; don't spam logs while idling.
+                        while not self.cancellation_event.is_set():
+                            time.sleep(0.1)
+                        return
 
                     # If we already found a TB-level winning line, deeper iterations should
                     # only try to beat it (shorter win), not re-search longer/equal lines.
