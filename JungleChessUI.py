@@ -426,16 +426,30 @@ class EnhancedChessApp:
              self.master.after(20, self._make_game_ai_move)
 
     def get_current_pgn(self):
-        moves = [format_move(hist[2]) for hist in self.full_history[1:] if hist[2]]
-        pgn = ""; move_num = 1
+        moves =[]
+        for i in range(1, len(self.full_history)):
+            board_before = self.full_history[i-1][0]
+            board_after = self.full_history[i][0]
+            move = self.full_history[i][2]
+            if move:
+                moves.append(format_move_san(board_before, board_after, move))
+                
+        pgn = ""
+        move_num = 1
         start_turn = self.full_history[0][1]
         
         if start_turn == 'black' and moves:
-            pgn += f"{move_num}... {moves[0]} "; moves = moves[1:]; move_num += 1
+            pgn += f"{move_num}... {moves[0]} "
+            moves = moves[1:]
+            move_num += 1
             
         for i in range(0, len(moves), 2):
-            pgn += f"{move_num}. {moves[i]} "
-            if i+1 < len(moves): pgn += f"{moves[i+1]} "
+            w = moves[i]
+            if i + 1 < len(moves):
+                b = moves[i+1]
+                pgn += f"{move_num}. {w}, {b} "
+            else:
+                pgn += f"{move_num}. {w} "
             move_num += 1
             
         if self.game_result:
@@ -443,7 +457,8 @@ class EnhancedChessApp:
             if res == 'white': pgn += "1-0"
             elif res == 'black': pgn += "0-1"
             else: pgn += "1/2-1/2"
-        else: pgn += "*"
+        else: 
+            pgn += "*"
         return pgn.strip()
 
     def copy_pgn_to_clipboard(self):
@@ -454,30 +469,60 @@ class EnhancedChessApp:
     def load_pgn_from_entry(self):
         pgn_text = self.pgn_entry.get().strip()
         if not pgn_text: return
-        raw_moves = re.findall(r'[a-h][1-8]-[a-h][1-8]', pgn_text)
+        self.reset_game()
+        import re
         
-        self.reset_game() 
-        for move_str in raw_moves:
-            c1, r1 = ord(move_str[0]) - ord('a'), 8 - int(move_str[1])
-            c2, r2 = ord(move_str[3]) - ord('a'), 8 - int(move_str[4])
-            move = ((r1, c1), (r2, c2))
+        # Clean text
+        for res in["1-0", "0-1", "1/2-1/2", "*"]:
+            pgn_text = pgn_text.replace(res, "")
             
+        pgn_text = re.sub(r'\d+\.+', '', pgn_text)
+        pgn_text = pgn_text.replace(',', ' ')
+        
+        # Smart sequential matching generator
+        while pgn_text.strip():
+            pgn_text = pgn_text.strip()
             legal_moves = get_all_legal_moves(self.board, self.turn)
-            if move not in legal_moves:
-                messagebox.showwarning("PGN Error", f"Invalid variant move found: {move_str}")
-                break
+            matched_move = None
+            matched_san = ""
             
-            self.board.make_move(move[0], move[1])
-            self.execute_move_and_check_state(self.turn, move)
-            if self.game_over: break
+            san_map = {}
+            for m in legal_moves:
+                child = self.board.clone()
+                child.make_move(m[0], m[1])
+                san = format_move_san(self.board, child, m)
+                san_map[san] = m
+                
+            # Sort keys by descending length so complex moves match before prefix slices
+            for san in sorted(san_map.keys(), key=len, reverse=True):
+                if pgn_text.startswith(san):
+                    if len(pgn_text) == len(san) or pgn_text[len(san)].isspace():
+                        matched_move = san_map[san]
+                        matched_san = san
+                        break
+                        
+            if matched_move:
+                self.board.make_move(matched_move[0], matched_move[1])
+                self.execute_move_and_check_state(self.turn, matched_move)
+                pgn_text = pgn_text[len(matched_san):]
+                if self.game_over: break
+            else:
+                messagebox.showwarning("PGN Error", f"Could not parse next move from: {pgn_text[:20]}...")
+                break
 
     def update_moves_list(self):
         for item in self.moves_tree.get_children(): self.moves_tree.delete(item)
-        moves =[hist[2] for hist in self.full_history[1:]] 
+        formatted_moves =[]
+        for i in range(1, len(self.full_history)):
+            board_before = self.full_history[i-1][0]
+            board_after = self.full_history[i][0]
+            move = self.full_history[i][2]
+            if move:
+                formatted_moves.append(format_move_san(board_before, board_after, move))
+                
         start_turn = self.full_history[0][1]
-        formatted_moves =[format_move(m) for m in moves if m]
         
-        pairs =[]
+        pairs = []
         if start_turn == 'black' and formatted_moves:
             pairs.append(["...", formatted_moves[0]])
             formatted_moves = formatted_moves[1:]
@@ -928,7 +973,11 @@ class EnhancedChessApp:
             self.current_opening_move = random.choice(moves) if moves else None
         
         if self.current_opening_move:
-            print(f"Applying opening move: {format_move(self.current_opening_move)}")
+            child = self.board.clone()
+            child.make_move(self.current_opening_move[0], self.current_opening_move[1])
+            san = format_move_san(self.board, child, self.current_opening_move)
+            print(f"Applying opening move: {san}")
+            
             self.board.make_move(self.current_opening_move[0], self.current_opening_move[1])
             self.execute_move_and_check_state(self.turn, self.current_opening_move)
 

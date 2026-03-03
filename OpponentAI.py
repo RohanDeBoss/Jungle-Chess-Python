@@ -119,7 +119,11 @@ class OpponentAI:
     def _report_log(self, message): self.comm_queue.put(('log', message))
     def _report_eval(self, score, depth): self.comm_queue.put(('eval', score if self.color == 'white' else -score, depth))
     def _report_move(self, move): self.comm_queue.put(('move', move))
-    def _format_move(self, move): return format_move(move)
+    def _format_move(self, board_before, move):
+        if not move: return "None"
+        child = board_before.clone()
+        child.make_move(move[0], move[1])
+        return format_move_san(board_before, child, move)
 
     def _get_root_tb_eval_relative(self):
         root_abs = self.tb_manager.probe(self.board, self.color)
@@ -177,7 +181,7 @@ class OpponentAI:
         if tb_eval > self.MATE_SCORE - 1000: display_eval = tb_eval
         eval_for_ui = display_eval if self.color == 'white' else -display_eval
         suffix = " (Perfect Play)" if perfect_play else ""
-        self._report_log(f"  > {self.bot_name} (TB): {self._format_move(tb_move)}, Eval={eval_for_ui/100:+.2f}, TBhits={self.tb_hits}{suffix}")
+        self._report_log(f"  > {self.bot_name} (TB): {self._format_move(self.board, tb_move)}, Eval={eval_for_ui/100:+.2f}, TBhits={self.tb_hits}{suffix}")
         self._report_eval(display_eval, "TB")
         if emit_move: self._report_move(tb_move)
         return True
@@ -211,7 +215,7 @@ class OpponentAI:
                     iter_duration = time.time() - iter_start_time
                     knps = (self.nodes_searched / iter_duration / 1000) if iter_duration > 0 else 0
                     eval_for_ui = best_score_this_iter if self.color == 'white' else -best_score_this_iter
-                    move_str = self._format_move(best_move_this_iter)
+                    move_str = self._format_move(self.board, best_move_this_iter)
                     depth_label = "TB" if not self.used_heuristic_eval else current_depth
                     
                     log_msg = f"  > {self.bot_name} (D{depth_label}): {move_str}, Eval={eval_for_ui/100:+.2f}, Nodes={self.nodes_searched}, KNPS={knps:.1f}, TBhits={self.tb_hits}, Time={iter_duration:.2f}s"
@@ -258,7 +262,7 @@ class OpponentAI:
                     knps = (self.nodes_searched / iter_duration / 1000) if iter_duration > 0 else 0
                     eval_for_ui = best_score_this_iter if self.color == 'white' else -best_score_this_iter
                     depth_label = "TB" if not self.used_heuristic_eval else current_depth
-                    self._report_log(f"  > {self.bot_name} (D{depth_label}): {self._format_move(best_move_this_iter)}, Eval={eval_for_ui/100:+.2f}, Nodes={self.nodes_searched}, KNPS={knps:.1f}, TBhits={self.tb_hits}, Time={iter_duration:.2f}s")
+                    self._report_log(f"  > {self.bot_name} (D{depth_label}): {self._format_move(self.board, best_move_this_iter)}, Eval={eval_for_ui/100:+.2f}, Nodes={self.nodes_searched}, KNPS={knps:.1f}, TBhits={self.tb_hits}, Time={iter_duration:.2f}s")
                     self._report_eval(best_score_this_iter, depth_label)
                 else:
                     raise SearchCancelledException()
