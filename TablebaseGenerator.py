@@ -1,4 +1,4 @@
-# TablebaseGenerator.py (v5.2 - Final Release)
+# TablebaseGenerator.py (v5.21 - Final Release + cpu cores)
 # - Corrects 3-Man Phase 1 efficiency (Claude's note)
 # - Maintains "Stalemate = Loss" logic
 # - Fully integrated with GameLogic v42+
@@ -18,6 +18,10 @@ os.makedirs(TB_DIR, exist_ok=True)
 # Jungle Chess Rule: 0 legal moves is a loss, not a draw.
 STALEMATE_IS_LOSS = True 
 
+ # How many CPUs to subtract from the total when choosing worker count.
+ # The generator will use max(1, os.cpu_count() - TB_THREADS_SUBTRACT).
+ # This lets you specify "total - n" threads by changing this value.
+TB_THREADS_SUBTRACT = 2
 EXPECTED_TABLE_ENTRIES = 64 * 64 * 64 * 2
 PIECE_CLASS_BY_NAME = {
     "Queen": Queen, "Rook": Rook, "Knight": Knight, "Bishop": Bishop, "Pawn": Pawn,
@@ -189,7 +193,7 @@ class Generator:
                 print(f"CRITICAL ERROR: Queen Tablebase not found! Generate Queen first.")
                 exit()
 
-        cpu_default = max(1, (os.cpu_count() or 2) - 1)
+        cpu_default = max(1, (os.cpu_count() or 2) - TB_THREADS_SUBTRACT)
         self.transition_workers = min(8, cpu_default)
 
     def decode(self, idx):
@@ -583,7 +587,7 @@ class Generator4:
                 p_names = sorted(["Queen", other])
             self.promo_tb_file = os.path.join(TB_DIR, f"K_{p_names[0]}_{p_names[1]}_K.bin")
 
-        cpu_default = max(1, (os.cpu_count() or 2) - 1)
+        cpu_default = max(1, (os.cpu_count() or 2) - TB_THREADS_SUBTRACT)
         self.transition_workers = cpu_default
 
     def generate(self):

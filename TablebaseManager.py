@@ -1,4 +1,4 @@
-# TablebaseManager.py (v3.4 - Correct Absolute Sign Logic)
+# TablebaseManager.py (v3.6 - Perfected AI Score Sign & Black Canonical Sorting)
 
 import os
 import numpy as np
@@ -43,14 +43,21 @@ class TablebaseManager:
                 pass
         return False
 
-    def _to_white_perspective(self, signed_tb_score):
-        # FIX: The tablebase sign is absolute (Pos = White Win, Neg = Black Win).
-        # We do NOT flip it based on whose turn it is.
-        if signed_tb_score == 0:
+    def _tb_score_to_ai_score(self, tb_val, attacker_color):
+        """
+        Converts a Tablebase DTM score into an absolute AI score from White's perspective.
+        In the Tablebase, a non-zero value means the attacker wins. 
+        The absolute value of tb_val is the Distance To Mate (DTM).
+        """
+        if tb_val == 0:
             return 0
-
-        abs_val = 1000000 - abs(int(signed_tb_score))
-        return abs_val if signed_tb_score > 0 else -abs_val
+        
+        # Convert DTM to AI Score (Mate Score - DTM)
+        dtm = abs(int(tb_val))
+        ai_score = 1000000 - dtm
+        
+        # Absolute Score: Positive = White Win, Negative = Black Win
+        return ai_score if attacker_color == 'white' else -ai_score
 
     def _flat_idx_raw_4(self, i0, i1, i2, i3, i4):
         return (((((i0 * 64 + i1) * 64 + i2) * 64 + i3) * 2) + i4)
@@ -71,7 +78,7 @@ class TablebaseManager:
                     t_idx = 0 if turn == 'white' else 1
                     idx = (wk[0]*8+wk[1], wp.pos[0]*8+wp.pos[1], bk[0]*8+bk[1], t_idx)
                     score = int(self.tables[p_name][idx])
-                    return self._to_white_perspective(score)
+                    return self._tb_score_to_ai_score(score, 'white')
                 except Exception:
                     return None
 
@@ -86,10 +93,7 @@ class TablebaseManager:
                     t_idx = 0 if turn == 'black' else 1
                     idx = (flip(bk)[0]*8+flip(bk)[1], flip(bp.pos)[0]*8+flip(bp.pos)[1], flip(wk)[0]*8+flip(wk)[1], t_idx)
                     score = int(self.tables[p_name][idx])
-                    # Flip the result because the table is from the perspective of the attacker (Black)
-                    # A positive score in "K_Queen_K" means the Queen side wins. Here, Queen side is Black.
-                    # So Pos = Black Win (Bad for White). Neg = White Win (Good for White).
-                    return -self._to_white_perspective(score)
+                    return self._tb_score_to_ai_score(score, 'black')
                 except Exception:
                     return None
                     
@@ -97,10 +101,11 @@ class TablebaseManager:
         elif white_count + black_count == 4:
             if white_count == 3 and black_count == 1:
                 try:
-                    w_p =[p for p in board.white_pieces if not isinstance(p, King)]
+                    w_p = [p for p in board.white_pieces if not isinstance(p, King)]
                     
                     w_p.sort(key=lambda x: type(x).__name__) 
                     if type(w_p[0]) == type(w_p[1]):
+                        # Sort by raw position for canonical index (i1 <= i2)
                         w_p.sort(key=lambda p: p.pos[0]*8 + p.pos[1])
                     
                     p_name = f"K_{type(w_p[0]).__name__}_{type(w_p[1]).__name__}_K"
@@ -117,22 +122,25 @@ class TablebaseManager:
                         t_idx
                     )
                     score = int(self.tables[p_name].flat[idx])
-                    return self._to_white_perspective(score)
+                    return self._tb_score_to_ai_score(score, 'white')
                 except Exception:
                     return None
                     
             elif black_count == 3 and white_count == 1:
                 try:
-                    b_p = [p for p in board.black_pieces if not isinstance(p, King)]
+                    b_p =[p for p in board.black_pieces if not isinstance(p, King)]
                     
                     b_p.sort(key=lambda x: type(x).__name__)
                     def flip(p): return (7-p[0], p[1])
+                    
                     if type(b_p[0]) == type(b_p[1]):
+                        # Sort by FLIPPED position for canonical index (i1 <= i2)
                         b_p.sort(key=lambda p: flip(p.pos)[0]*8 + flip(p.pos)[1])
                     
                     p_name = f"K_{type(b_p[0]).__name__}_{type(b_p[1]).__name__}_K"
                     if p_name not in self.tables: return None
                     
+                    # If turn is Black, they are White in TB (Attacker)
                     t_idx = 0 if turn == 'black' else 1
                     bk, wk = board.black_king_pos, board.white_king_pos
                     
@@ -144,7 +152,7 @@ class TablebaseManager:
                         t_idx
                     )
                     score = int(self.tables[p_name].flat[idx])
-                    return -self._to_white_perspective(score)
+                    return self._tb_score_to_ai_score(score, 'black')
                 except Exception:
                     return None
 
