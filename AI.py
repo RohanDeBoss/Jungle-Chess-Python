@@ -1,4 +1,4 @@
-# AI.py (v95.1 - Analysis TB: stop repeated DTB logging once solved)
+# AI.py (v95.3 - NMP opponent-material guard fix.)
 
 import time
 import random
@@ -125,7 +125,7 @@ class ChessBot:
         self.nodes_searched = 0
         self.used_heuristic_eval = False
         self.tb_hits = 0
-        self.killer_moves = [[None, None] for _ in range(50)]
+        self.killer_moves = [[None, None] for _ in range(max(200, self.max_moves))]
         self.history_heuristic_table = [[[0 for _ in range(ROWS*COLS)] for _ in range(ROWS*COLS)] for _ in range(2)]
 
     def _report_log(self, message): self.comm_queue.put(('log', message))
@@ -366,8 +366,8 @@ class ChessBot:
             
             if is_insufficient_material(self.board): return
             
-            # Instantly solve 3-piece endgames in Analysis Mode
-            if len(self.board.white_pieces) + len(self.board.black_pieces) == 3:
+            # Instantly solve tablebase positions in Analysis Mode
+            if len(self.board.white_pieces) + len(self.board.black_pieces) <= 4:
                 tb_move, tb_eval = self._get_best_tablebase_move_with_eval()
                 if self._report_root_tb_solution(tb_move, tb_eval, perfect_play=True):
                     # Sleep to prevent burning CPU since the position is perfectly solved
@@ -541,7 +541,8 @@ class ChessBot:
         try:
             if (self.USE_NULL_MOVE_PRUNING and depth >= self.NMP_MIN_DEPTH and ply > 0 and not is_in_check_flag and
                 beta < self.MATE_SCORE - 200 and
-                any(not isinstance(p, (Pawn, King)) for p in (board.white_pieces if turn == 'white' else board.black_pieces))):
+                any(not isinstance(p, (Pawn, King)) for p in (board.white_pieces if turn == 'white' else board.black_pieces)) and
+                any(not isinstance(p, (Pawn, King)) for p in (board.black_pieces if turn == 'white' else board.white_pieces))):
                 self.used_heuristic_eval = True
                 static_eval = self.evaluate_board(board, turn)
                 if static_eval >= beta:
@@ -562,7 +563,7 @@ class ChessBot:
             legal_moves_count = 0
 
             for move, meta in ordered_entries:
-                is_tactical, moving_piece = meta
+                is_good_tactic, moving_piece = meta
 
                 child_board = board.clone()
                 child_board.make_move(move[0], move[1])
@@ -577,7 +578,7 @@ class ChessBot:
 
                 reduction = 0
                 if (depth >= self.LMR_DEPTH_THRESHOLD and legal_moves_count > self.LMR_MOVE_COUNT_THRESHOLD and
-                    not is_in_check_flag and not is_tactical):
+                    not is_in_check_flag and not is_good_tactic):
                     reduction = self.LMR_REDUCTION
 
                 search_depth = depth - 1 - reduction
@@ -596,7 +597,7 @@ class ChessBot:
                 if score > alpha:
                     alpha, best_move_for_node = score, move
                 if alpha >= beta:
-                    if not is_tactical:
+                    if not is_good_tactic:
                         if ply < len(self.killer_moves) and self.killer_moves[ply][0] != move:
                             self.killer_moves[ply][1], self.killer_moves[ply][0] = self.killer_moves[ply][0], move
                         if moving_piece:
