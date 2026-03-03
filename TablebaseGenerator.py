@@ -1,7 +1,5 @@
-# TablebaseGenerator.py (v5.25 - 4-man correctness rollback + profiling hook)
-# - Corrects 3-Man Phase 1 efficiency (Claude's note)
-# - Maintains "Stalemate = Loss" logic
-# - Fully integrated with GameLogic v42+
+# TablebaseGenerator.py (v5.28 - 3-man draw labeling in final stats)
+
 
 import os
 import time
@@ -21,6 +19,7 @@ os.makedirs(TB_DIR, exist_ok=True)
 
 # Jungle Chess Rule: 0 legal moves is a loss, not a draw.
 STALEMATE_IS_LOSS = True 
+ENABLE_RETRO_FILTER_4MAN = False
 
  # How many CPUs to subtract from the total when choosing worker count.
  # The generator will use max(1, os.cpu_count() - TB_THREADS_SUBTRACT).
@@ -221,6 +220,11 @@ class Generator:
         self.sim_board.black_king_pos = bk
         self.sim_board.white_pieces = [self.wk_obj, self.wp_obj]
         self.sim_board.black_pieces = [self.bk_obj]
+        self.sim_board.piece_counts = {
+            'white': {Pawn:0, Knight:0, Bishop:0, Rook:0, Queen:0, King:1},
+            'black': {Pawn:0, Knight:0, Bishop:0, Rook:0, Queen:0, King:1}
+        }
+        self.sim_board.piece_counts['white'][type(self.wp_obj)] += 1
 
     def generate(self):
         if os.path.exists(self.filename):
@@ -230,6 +234,11 @@ class Generator:
         start_time = time.time()
         print(f"\n{'='*60}\n GENERATING: King + {self.piece_name} vs King\n{'='*60}")
         unsolved_indices = []
+        candidate_flats = array('I')
+        raw_candidate_states = 0
+        candidate_states = 0
+        retro_illegal_discarded = 0
+        phase1_presolved = 0
 
         print(f"[Phase 1] Initialization...")
         for count, idx in enumerate(np.ndindex(self.table.shape)):
@@ -239,23 +248,55 @@ class Generator:
             wk, wp, bk, t_idx = self.decode(idx)
             if wk == wp or wk == bk or wp == bk: continue
             if self.piece_name == "Pawn" and (wp[0] == 0 or wp[0] == 7): continue
+
+            raw_candidate_states += 1
             
             # [Optimization restored] Handle Phase 1 checkmates locally to save worker time
             self.setup_sim(wk, wp, bk)
+            # Retro-legality filter:
+            # The side that just moved (the opponent of side-to-move) cannot be in check.
+            if t_idx == 0:
+                # White to move -> Black just moved, so Black must not be in check.
+                if is_in_check(self.sim_board, 'black'):
+                    retro_illegal_discarded += 1
+                    continue
+            else:
+                # Black to move -> White just moved, so White must not be in check.
+                if is_in_check(self.sim_board, 'white'):
+                    retro_illegal_discarded += 1
+                    continue
+
+            candidate_states += 1
+            candidate_flats.append(self._flat_idx(idx))
+
             if t_idx == 1: # Black
                 if not self.sim_board.black_king_pos:
-                    self.table[idx] = -1; continue
+                    self.table[idx] = -1
+                    phase1_presolved += 1
+                    continue
                 # With STALEMATE_IS_LOSS, we can mark any 0-move state as loss
                 if is_in_check(self.sim_board, 'black') and not has_legal_moves(self.sim_board, 'black'):
-                    self.table[idx] = -1; continue
+                    self.table[idx] = -1
+                    phase1_presolved += 1
+                    continue
                 if STALEMATE_IS_LOSS and not has_legal_moves(self.sim_board, 'black'):
-                    self.table[idx] = -1; continue
+                    self.table[idx] = -1
+                    phase1_presolved += 1
+                    continue
             else: # White
                 if not self.sim_board.white_king_pos:
-                    self.table[idx] = -1; continue
+                    self.table[idx] = -1
+                    phase1_presolved += 1
+                    continue
 
             unsolved_indices.append(idx)
         print()
+        print(
+            f"[Phase 1] Raw candidates: {raw_candidate_states:,} | "
+            f"Retro-illegal discarded: {retro_illegal_discarded:,} | "
+            f"Legal candidates: {candidate_states:,} | "
+            f"Pre-solved: {phase1_presolved:,} | Remaining: {len(unsolved_indices):,}"
+        )
 
         print(f"[Phase 1.5] Building transition cache ({len(unsolved_indices)} states)...")
         cache = {}
@@ -348,15 +389,36 @@ class Generator:
                         new_unsolved.append(idx)
 
             unsolved_indices = new_unsolved
-            total_solved = (self.table != 0).sum()
-            percent = (total_solved / self.total_positions) * 100
-            print(f"[{self.piece_name}] Round {iteration} Summary: {changed:,} new solved | Total: {total_solved:,} ({percent:.1f}%) | Time: {time.time()-iter_start:.1f}s")
+            solved_candidates = candidate_states - len(unsolved_indices)
+            percent_candidates = (solved_candidates / candidate_states * 100.0) if candidate_states else 0.0
+            print(f"[{self.piece_name}] Round {iteration} Summary: {changed:,} new solved | Total: {solved_candidates:,}/{candidate_states:,} ({percent_candidates:.1f}%) | Time: {time.time()-iter_start:.1f}s")
             
             if changed == 0: break
             iteration += 1
 
         with open(self.filename, 'wb') as f:
             self.table.tofile(f)
+        table_flat = self.table.reshape(-1)
+        wins = 0
+        losses = 0
+        unresolved = 0
+        for cflat in candidate_flats:
+            val = int(table_flat[cflat])
+            if val > 0:
+                wins += 1
+            elif val < 0:
+                losses += 1
+            else:
+                unresolved += 1
+        solved = wins + losses
+        solve_rate = (solved / candidate_states * 100.0) if candidate_states else 0.0
+        draws = unresolved
+        print(
+            f"[{self.piece_name}] Final Stats: "
+            f"Candidates={candidate_states:,} | "
+            f"Decisive={solved:,} ({solve_rate:.1f}%) | "
+            f"Wins={wins:,} | Losses={losses:,} | Draws={draws:,}"
+        )
         print(f"\nSUCCESS: Generated in {(time.time() - start_time)/60:.1f} minutes.")
 
 
@@ -791,7 +853,7 @@ def profile_4man(p1_name, p2_name, sample=2000):
     print(s.getvalue())
 
 if __name__ == "__main__":
-    print("=== Tablebase Generator (v5.25) ===")
+    print("=== Tablebase Generator (v5.28) ===")
     mode = input("1. Generate 3-Man Tables\n2. Generate 4-Man Tables\n3. Profile 4-Man (sample)\nSelect: ")
 
     if mode == '1':
