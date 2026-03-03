@@ -19,7 +19,7 @@ os.makedirs(TB_DIR, exist_ok=True)
 
 # Jungle Chess Rule: 0 legal moves is a loss, not a draw.
 STALEMATE_IS_LOSS = True 
-ENABLE_RETRO_FILTER_4MAN = False
+ENABLE_RETRO_FILTER_4MAN = False # True is less performance, but smaller file size and more correctness
 
  # How many CPUs to subtract from the total when choosing worker count.
  # The generator will use max(1, os.cpu_count() - TB_THREADS_SUBTRACT).
@@ -659,6 +659,51 @@ class Generator4:
 
         cpu_default = max(1, (os.cpu_count() or 2) - TB_THREADS_SUBTRACT)
         self.transition_workers = cpu_default
+        self.sim_board = Board(setup=False)
+        self.wk_obj = King('white')
+        self.p1_obj = self.p1_class('white')
+        self.p2_obj = self.p2_class('white')
+        self.bk_obj = King('black')
+
+    def _is_retro_legal_flat(self, flat):
+        i4 = flat % 2
+        rest = flat // 2
+        i3 = rest % 64
+        rest //= 64
+        i2 = rest % 64
+        rest //= 64
+        i1 = rest % 64
+        i0 = rest // 64
+
+        wk = (i0 // 8, i0 % 8)
+        p1 = (i1 // 8, i1 % 8)
+        p2 = (i2 // 8, i2 % 8)
+        bk = (i3 // 8, i3 % 8)
+
+        board = self.sim_board
+        board.grid = [[None for _ in range(8)] for _ in range(8)]
+        self.wk_obj.pos = wk
+        self.p1_obj.pos = p1
+        self.p2_obj.pos = p2
+        self.bk_obj.pos = bk
+        board.grid[wk[0]][wk[1]] = self.wk_obj
+        board.grid[p1[0]][p1[1]] = self.p1_obj
+        board.grid[p2[0]][p2[1]] = self.p2_obj
+        board.grid[bk[0]][bk[1]] = self.bk_obj
+        board.white_king_pos = wk
+        board.black_king_pos = bk
+        board.white_pieces = [self.wk_obj, self.p1_obj, self.p2_obj]
+        board.black_pieces = [self.bk_obj]
+        board.piece_counts = {
+            'white': {Pawn:0, Knight:0, Bishop:0, Rook:0, Queen:0, King:1},
+            'black': {Pawn:0, Knight:0, Bishop:0, Rook:0, Queen:0, King:1}
+        }
+        board.piece_counts['white'][type(self.p1_obj)] += 1
+        board.piece_counts['white'][type(self.p2_obj)] += 1
+
+        # Retro-legality: the side that just moved (opponent of side-to-move) cannot be in check.
+        passive_color = 'black' if i4 == 0 else 'white'
+        return not is_in_check(board, passive_color)
 
     def generate(self):
         if os.path.exists(self.filename):
@@ -678,8 +723,32 @@ class Generator4:
                 self.total_positions, self.p1_name, self.p2_name, self.same_piece
         ):
             unsolved_flats.extend(chunk)
+        phase1_elapsed = time.time() - phase1_start
         print(f"[Phase 1] Found {len(unsolved_flats):,} candidate positions in "
-              f"{time.time()-phase1_start:.1f}s.\n")
+              f"{phase1_elapsed:.1f}s.")
+
+        if ENABLE_RETRO_FILTER_4MAN:
+            print(f"[Phase 1.1] Applying retro-legality filter (4-man)...")
+            filter_start = time.time()
+            filtered = array('I')
+            retro_illegal = 0
+            total = len(unsolved_flats)
+            for done, flat in enumerate(unsolved_flats, start=1):
+                if self._is_retro_legal_flat(flat):
+                    filtered.append(flat)
+                else:
+                    retro_illegal += 1
+                if done % 500000 == 0:
+                    pct = done / total * 100.0
+                    print(f"  > Retro filter: {pct:.1f}% ({done:,}/{total:,})", end='\r')
+            if total >= 500000:
+                print()
+            unsolved_flats = filtered
+            print(f"[Phase 1.1] Retro-illegal discarded: {retro_illegal:,} | "
+                  f"Remaining: {len(unsolved_flats):,} | "
+                  f"Time: {time.time()-filter_start:.1f}s.\n")
+        else:
+            print()
 
         print(f"[Phase 1.5] Building transition cache ({len(unsolved_flats):,} states)...")
         cache_start = time.time()
