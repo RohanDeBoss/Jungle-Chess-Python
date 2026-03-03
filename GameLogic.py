@@ -1,4 +1,4 @@
-# GameLogic.py (v43 - Stalemate logic removed)
+# GameLogic.py (v44 - Check logic fix for queen)
 
 # -----------------------------
 # Global Constants
@@ -493,9 +493,10 @@ def is_square_attacked(board, r, c, attacking_color):
                 if grid[kr + dr//2][kc + dc//2] is None: return True
         return False
 
+    attacking_pieces = board.white_pieces if attacking_color == 'white' else board.black_pieces
+
     # 1. Check Knights (Active Evaporation & Direct Hit)
     if attacker_counts[Knight] > 0:
-        attacking_pieces = board.white_pieces if attacking_color == 'white' else board.black_pieces
         for piece in attacking_pieces:
             if type(piece) is Knight and piece.pos:
                 start = piece.pos
@@ -512,18 +513,25 @@ def is_square_attacked(board, r, c, attacking_color):
                         if rr == r and cc == c:
                             return True
 
-    # Optimization for Queens
-    has_queens = attacker_counts[Queen] > 0
-    has_friendly_neighbor = False
-    if has_queens:
-        for nr, nc in ADJACENT_SQUARES_MAP.get((r, c), []):
-            adj = grid[nr][nc]
-            if adj and adj.color == defending_color: 
-                has_friendly_neighbor = True
-                break
+    # 1.5 Check Queens (Direct Hit & Proxy Explosion - Any Angle)
+    if attacker_counts[Queen] > 0:
+        for piece in attacking_pieces:
+            if type(piece) is Queen and piece.pos:
+                qr, qc = piece.pos
+                q_idx = qr * COLS + qc
+                # Shoot rays from the Queen to see what it can capture
+                for i in range(8):
+                    for (cr, cc) in RAYS[q_idx][i]:
+                        target = grid[cr][cc]
+                        if target is not None:
+                            if target.color == defending_color:
+                                # It's a capture or a direct hit on the square.
+                                # Does the explosion radius overlap the square we are checking?
+                                if abs(cr - r) <= 1 and abs(cc - c) <= 1:
+                                    return True
+                            break # Ray is blocked after encountering the first piece
 
     has_rooks = attacker_counts[Rook] > 0
-    # If the defender only has a king (no non-king pieces), rooks cannot pierce defenders
     defender_counts = board.piece_counts[defending_color]
     defender_non_king = (
         defender_counts.get(Pawn, 0) + defender_counts.get(Knight, 0) +
@@ -531,13 +539,12 @@ def is_square_attacked(board, r, c, attacking_color):
         defender_counts.get(Queen, 0)
     )
 
-    # 2. Check Sliding Pieces (Rook/Queen/Bishop) using Precomputed Rays
+    # 2. Check Sliding Pieces (Rook/Bishop) using Precomputed Rays
     start_index = r * COLS + c
 
     for direction_idx, ray_path in enumerate(RAYS[start_index]):
         is_orthogonal = direction_idx < 4
         defenders_passed = 0
-        defender_is_adjacent = False
 
         for step_idx, (cr, cc) in enumerate(ray_path):
             piece = grid[cr][cc]
@@ -552,20 +559,15 @@ def is_square_attacked(board, r, c, attacking_color):
                             if defenders_passed == 0: return True
                             else: break
                         return True # Rooks pierce infinite defenders
-                    if p_type is Queen:
-                        if defenders_passed == 0: return True
-                        elif has_friendly_neighbor and defenders_passed == 1 and defender_is_adjacent:
-                            return True 
                 else:
-                    if p_type is Bishop or p_type is Queen:
+                    if p_type is Bishop:
                         if defenders_passed == 0: return True
-                        elif p_type is Queen and has_friendly_neighbor and defenders_passed == 1 and defender_is_adjacent:
-                            return True
                 break 
             else:
                 defenders_passed += 1
-                if step_idx == 0: defender_is_adjacent = True
-                if defenders_passed >= 2 and not has_rooks: break
+                # Optimization: Since Queens are handled above and Bishops don't pierce,
+                # any defender immediately blocks the ray unless the attacker has a Rook.
+                if not has_rooks: break
 
     # 3. Check Pawns
     pawn_attack_dir = 1 if attacking_color == 'white' else -1
@@ -598,7 +600,6 @@ def is_square_attacked(board, r, c, attacking_color):
 
     # 5. Zig-Zag Bishop Fallback
     if attacker_counts[Bishop] > 0:
-        attacking_pieces = board.white_pieces if attacking_color == 'white' else board.black_pieces
         for piece in attacking_pieces:
             if type(piece) is Bishop and piece.pos:
                 if _bishop_attacks_square(board, piece.pos, (r, c), attacking_color):
