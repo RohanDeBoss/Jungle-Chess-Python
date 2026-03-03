@@ -1,4 +1,4 @@
-# GameLogic.py (v46 - Knight evaporation, SAN, sliding optimization, consolidated tactical generator)
+# GameLogic.py (v47 - faster Board.clone via __new__ allocation)
 
 # -----------------------------
 # Global Constants
@@ -293,22 +293,30 @@ class Board:
     def find_king_pos(self, color): return self.white_king_pos if color == 'white' else self.black_king_pos
 
     def clone(self):
-        new_board = Board(setup=False)
-        
-        new_board.white_pieces = [_clone_piece_fast(p) for p in self.white_pieces]
-        new_board.black_pieces = [_clone_piece_fast(p) for p in self.black_pieces]
-        
-        for p in new_board.white_pieces: new_board.grid[p.pos[0]][p.pos[1]] = p
-        for p in new_board.black_pieces: new_board.grid[p.pos[0]][p.pos[1]] = p
-        
+        # Hot path: bypass __init__ to avoid repeated setup=False construction costs.
+        new_board = Board.__new__(Board)
+        new_board.grid = [[None] * COLS for _ in range(ROWS)]
         new_board.white_king_pos = self.white_king_pos
         new_board.black_king_pos = self.black_king_pos
-        
+
+        white_pieces = [_clone_piece_fast(p) for p in self.white_pieces]
+        black_pieces = [_clone_piece_fast(p) for p in self.black_pieces]
+        new_board.white_pieces = white_pieces
+        new_board.black_pieces = black_pieces
+
+        grid = new_board.grid
+        for p in white_pieces:
+            r, c = p.pos
+            grid[r][c] = p
+        for p in black_pieces:
+            r, c = p.pos
+            grid[r][c] = p
+
+        piece_counts = self.piece_counts
         new_board.piece_counts = {
-            'white': self.piece_counts['white'].copy(),
-            'black': self.piece_counts['black'].copy()
+            'white': piece_counts['white'].copy(),
+            'black': piece_counts['black'].copy()
         }
-            
         return new_board
 
     def make_move(self, start, end):
