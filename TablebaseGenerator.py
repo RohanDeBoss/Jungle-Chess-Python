@@ -1,4 +1,4 @@
-# TablebaseGenerator.py (v5.21 - Final Release + cpu cores)
+# TablebaseGenerator.py (v5.22 - Faster 4-man pipeline: flat indices + list cache)
 # - Corrects 3-Man Phase 1 efficiency (Claude's note)
 # - Maintains "Stalemate = Loss" logic
 # - Fully integrated with GameLogic v42+
@@ -10,6 +10,7 @@ from concurrent.futures import ProcessPoolExecutor
 import numpy as np
 from GameLogic import *
 import struct
+from array import array
 
 # --- CONFIGURATION ---
 TB_DIR = "tablebases"
@@ -397,8 +398,16 @@ def _init_transition_worker_4(p1_name, p2_name, promo_tb_file):
         parts = base[2:-6].split('_')                   
         _W4_PROMO_SAME_PIECE = (len(parts) == 2 and parts[0] == parts[1])
 
-def _build_transition_worker_4(idx):
-    i0, i1, i2, i3, i4 = idx
+def _build_transition_worker_4(flat):
+    i4 = flat % 2
+    rest = flat // 2
+    i3 = rest % 64
+    rest //= 64
+    i2 = rest % 64
+    rest //= 64
+    i1 = rest % 64
+    i0 = rest // 64
+
     wk = (i0 // 8, i0 % 8)
     p1 = (i1 // 8, i1 % 8)
     p2 = (i2 // 8, i2 % 8)
@@ -485,7 +494,7 @@ def _build_transition_worker_4(idx):
                 c1, c2 = c2, c1
             child_flats.append(_flat_idx_raw_4(c0, c1, c2, c3, opp_turn_idx))
 
-        return _flat_idx_raw_4(*idx), ('w', immediate_win, _pack_uint_list(known_win_vals), _pack_uint_list(child_flats))
+        return ('w', immediate_win, _pack_uint_list(known_win_vals), _pack_uint_list(child_flats))
 
     legal_moves_count = 0
     has_non_losing_escape = False
@@ -537,7 +546,7 @@ def _build_transition_worker_4(idx):
 
     # Claude's Fix: Explicitly track is_cm for the retrograde loop
     is_cm = (legal_moves_count == 0) and is_in_check(board, 'black')
-    return _flat_idx_raw_4(*idx), ('b', legal_moves_count, has_non_losing_escape, is_cm, _pack_uint_list(child_flats))
+    return ('b', legal_moves_count, has_non_losing_escape, is_cm, _pack_uint_list(child_flats))
 
 
 def _gen_valid_4man_indices_numpy(total_positions, p1_name, p2_name, same_piece, chunk_size=8_000_000):
@@ -560,10 +569,7 @@ def _gen_valid_4man_indices_numpy(total_positions, p1_name, p2_name, same_piece,
 
         if not mask.any(): continue
 
-        rows = np.stack([wk_arr[mask], p1_arr[mask], p2_arr[mask],
-                         bk_arr[mask], t_arr[mask]], axis=1)
-        for row in rows.tolist():
-            yield tuple(int(x) for x in row)
+        yield flat[mask].tolist()
 
 
 class Generator4:
@@ -603,33 +609,31 @@ class Generator4:
 
         print(f"[Phase 1] Scanning positions (numpy-chunked)...")
         phase1_start = time.time()
-        unsolved_indices = list(
-            _gen_valid_4man_indices_numpy(
+        unsolved_flats = array('I')
+        for chunk in _gen_valid_4man_indices_numpy(
                 self.total_positions, self.p1_name, self.p2_name, self.same_piece
-            )
-        )
-        print(f"[Phase 1] Found {len(unsolved_indices):,} candidate positions in "
+        ):
+            unsolved_flats.extend(chunk)
+        print(f"[Phase 1] Found {len(unsolved_flats):,} candidate positions in "
               f"{time.time()-phase1_start:.1f}s.\n")
 
-        flat_list =[_flat_idx_raw_4(*idx) for idx in unsolved_indices]
-
-        print(f"[Phase 1.5] Building transition cache ({len(unsolved_indices):,} states)...")
+        print(f"[Phase 1.5] Building transition cache ({len(unsolved_flats):,} states)...")
         cache_start = time.time()
-        cache = {}
+        transitions = []
         with ProcessPoolExecutor(
             max_workers=self.transition_workers,
             initializer=_init_transition_worker_4,
             initargs=(self.p1_name, self.p2_name, self.promo_tb_file)
         ) as ex:
-            for done, (flat, trans) in enumerate(
-                ex.map(_build_transition_worker_4, unsolved_indices, chunksize=4096), 1
+            for done, trans in enumerate(
+                ex.map(_build_transition_worker_4, unsolved_flats, chunksize=4096), 1
             ):
-                cache[flat] = trans
+                transitions.append(trans)
                 if done % 100_000 == 0:
                     elapsed = max(0.001, time.time() - cache_start)
                     speed = done / elapsed
-                    eta = (len(unsolved_indices) - done) / speed
-                    print(f"  > Cache: {done/len(unsolved_indices)*100:.1f}% | "
+                    eta = (len(unsolved_flats) - done) / speed
+                    print(f"  > Cache: {done/len(unsolved_flats)*100:.1f}% | "
                           f"{speed:,.0f} st/s | ETA: {eta/60:.1f}m", end='\r', flush=True)
         print(f"\n[Phase 1.5] Cache built in {(time.time()-cache_start)/60:.1f}m.")
 
@@ -638,11 +642,11 @@ class Generator4:
         # ----------------------------------------------------------------
         print(f"\n[Phase 2] Resolving initial checkmates/stalemates...")
         pre_solved = 0
-        surviving_indices = []
-        surviving_flats = []
-        for idx, flat in zip(unsolved_indices, flat_list):
-            if idx[4] == 1:  # black's turn
-                trans = cache[flat]
+        surviving_flats = array('I')
+        surviving_transitions = []
+        table_flat = self.table.reshape(-1)
+        for flat, trans in zip(unsolved_flats, transitions):
+            if (flat & 1) == 1:  # black's turn
                 # Transition: ('b', lmc, hnle, is_checkmate, packed)
                 legal_moves_count = trans[1]
                 is_cm = trans[3]
@@ -650,30 +654,29 @@ class Generator4:
                 # STALEMATE = LOSS logic applied here
                 if legal_moves_count == 0:
                     if STALEMATE_IS_LOSS or is_cm:
-                        self.table[idx] = -1
+                        table_flat[flat] = -1
                         pre_solved += 1
                         continue
-                        
-            surviving_indices.append(idx)
+                         
             surviving_flats.append(flat)
+            surviving_transitions.append(trans)
 
-        unsolved_indices = surviving_indices
-        flat_list = surviving_flats
+        unsolved_flats = surviving_flats
+        transitions = surviving_transitions
         print(f"[Phase 2] Pre-solved {pre_solved:,} positions.")
 
         iteration = 1
         while True:
             iter_start = time.time()
             changed = 0
-            new_unsolved = []
-            new_flats =[]
+            new_unsolved = array('I')
+            new_transitions =[]
             prev_flat = self.table.reshape(-1).copy()
 
             print(f"\n[Iteration {iteration}] (DTM {iteration})")
 
-            for idx, flat in zip(unsolved_indices, flat_list):
-                t_idx = idx[4]
-                transition = cache[flat]
+            for flat, transition in zip(unsolved_flats, transitions):
+                t_idx = flat & 1
 
                 if t_idx == 0:
                     best_win = 0
@@ -692,11 +695,11 @@ class Generator4:
                                 best_win = val
 
                     if best_win > 0:
-                        self.table[idx] = best_win
+                        table_flat[flat] = best_win
                         changed += 1
                     else:
-                        new_unsolved.append(idx)
-                        new_flats.append(flat)
+                        new_unsolved.append(flat)
+                        new_transitions.append(transition)
 
                 else:
                     _, legal_moves_count, has_non_losing_escape, is_cm, child_packed = transition
@@ -704,7 +707,7 @@ class Generator4:
                     # Already handled in Phase 2, but safe to keep here
                     if legal_moves_count == 0:
                         if STALEMATE_IS_LOSS or is_cm:
-                            self.table[idx] = -1
+                            table_flat[flat] = -1
                             changed += 1
                         continue
 
@@ -721,18 +724,18 @@ class Generator4:
                                 max_win_val = res_val
 
                     if all_moves_lead_to_win:
-                        self.table[idx] = -(max_win_val + 1)
+                        table_flat[flat] = -(max_win_val + 1)
                         changed += 1
                     else:
-                        new_unsolved.append(idx)
-                        new_flats.append(flat)
+                        new_unsolved.append(flat)
+                        new_transitions.append(transition)
 
-            unsolved_indices = new_unsolved
-            flat_list = new_flats
+            unsolved_flats = new_unsolved
+            transitions = new_transitions
             total_solved = int((self.table != 0).sum())
             print(f"  > Summary: {changed:,} new solved | "
                   f"Total: {total_solved:,} | "
-                  f"Remaining: {len(unsolved_indices):,} | "
+                  f"Remaining: {len(unsolved_flats):,} | "
                   f"Time: {time.time()-iter_start:.1f}s")
             
             if changed == 0:
