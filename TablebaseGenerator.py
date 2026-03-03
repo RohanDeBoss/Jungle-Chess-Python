@@ -1,4 +1,4 @@
-# TablebaseGenerator.py (v5.22 - Faster 4-man pipeline: flat indices + list cache)
+# TablebaseGenerator.py (v5.25 - 4-man correctness rollback + profiling hook)
 # - Corrects 3-Man Phase 1 efficiency (Claude's note)
 # - Maintains "Stalemate = Loss" logic
 # - Fully integrated with GameLogic v42+
@@ -11,6 +11,9 @@ import numpy as np
 from GameLogic import *
 import struct
 from array import array
+import cProfile
+import pstats
+import io
 
 # --- CONFIGURATION ---
 TB_DIR = "tablebases"
@@ -484,7 +487,7 @@ def _build_transition_worker_4(flat):
                     val = int(_W4_PROMO_TABLE.flat[_flat_idx_raw_4(*q_idx)])
                     if val < 0:
                         known_win_vals.append(abs(val) + 1)
-                continue 
+                continue
 
             c0 = child.white_king_pos[0] * 8 + child.white_king_pos[1]
             c1 = w_pieces[0].pos[0] * 8 + w_pieces[0].pos[1]
@@ -503,7 +506,6 @@ def _build_transition_worker_4(flat):
     for m in moves:
         child = board.clone()
         child.make_move(m[0], m[1])
-        
         if is_in_check(child, 'black'):
             continue
 
@@ -512,7 +514,7 @@ def _build_transition_worker_4(flat):
             has_non_losing_escape = True
             continue
 
-        w_pieces =[p for p in child.white_pieces if not isinstance(p, King)]
+        w_pieces = [p for p in child.white_pieces if not isinstance(p, King)]
 
         if len(w_pieces) < 2:
             if len(w_pieces) == 1:
@@ -526,7 +528,7 @@ def _build_transition_worker_4(flat):
                         has_non_losing_escape = True
                         continue
                     else:
-                        continue 
+                        continue
             has_non_losing_escape = True
             continue
 
@@ -539,7 +541,7 @@ def _build_transition_worker_4(flat):
         c1 = w_pieces[0].pos[0] * 8 + w_pieces[0].pos[1]
         c2 = w_pieces[1].pos[0] * 8 + w_pieces[1].pos[1]
         c3 = child.black_king_pos[0] * 8 + child.black_king_pos[1]
-        
+
         if _W4_SAME_PIECE and c1 > c2:
             c1, c2 = c2, c1
         child_flats.append(_flat_idx_raw_4(c0, c1, c2, c3, opp_turn_idx))
@@ -747,10 +749,50 @@ class Generator4:
         elapsed = time.time() - start_time
         print(f"\nSUCCESS: Generated in {elapsed/60:.1f} minutes.")
 
+def _promo_tb_file_for_4man(p1_name, p2_name):
+    if p1_name == "Pawn" or p2_name == "Pawn":
+        other = p2_name if p1_name == "Pawn" else p1_name
+        if p1_name == "Pawn" and p2_name == "Pawn":
+            p_names = sorted(["Pawn", "Queen"])
+        else:
+            p_names = sorted(["Queen", other])
+        return os.path.join(TB_DIR, f"K_{p_names[0]}_{p_names[1]}_K.bin")
+    return None
+
+def _sample_valid_flats_4man(p1_name, p2_name, same_piece, sample):
+    flats = []
+    for chunk in _gen_valid_4man_indices_numpy(64 * 64 * 64 * 64 * 2, p1_name, p2_name, same_piece):
+        flats.extend(chunk)
+        if len(flats) >= sample:
+            return flats[:sample]
+    return flats
+
+def profile_4man(p1_name, p2_name, sample=2000):
+    # Profile a small sample of transition builds to locate hotspots.
+    names = sorted([p1_name, p2_name])
+    p1_name, p2_name = names[0], names[1]
+    same_piece = (p1_name == p2_name)
+    promo_tb = _promo_tb_file_for_4man(p1_name, p2_name)
+    _init_transition_worker_4(p1_name, p2_name, promo_tb)
+
+    flats = _sample_valid_flats_4man(p1_name, p2_name, same_piece, sample)
+    if not flats:
+        print("No sample flats found.")
+        return
+
+    pr = cProfile.Profile()
+    pr.enable()
+    for flat in flats:
+        _build_transition_worker_4(flat)
+    pr.disable()
+
+    s = io.StringIO()
+    pstats.Stats(pr, stream=s).sort_stats('cumtime').print_stats(25)
+    print(s.getvalue())
 
 if __name__ == "__main__":
-    print("=== Tablebase Generator (v5.2) ===")
-    mode = input("1. Generate 3-Man Tables\n2. Generate 4-Man Tables\nSelect: ")
+    print("=== Tablebase Generator (v5.25) ===")
+    mode = input("1. Generate 3-Man Tables\n2. Generate 4-Man Tables\n3. Profile 4-Man (sample)\nSelect: ")
 
     if mode == '1':
         for c in [Queen, Rook, Knight, Bishop, Pawn]:
@@ -764,3 +806,14 @@ if __name__ == "__main__":
         from itertools import combinations_with_replacement
         for p1, p2 in combinations_with_replacement(pieces, 2):
             Generator4(p1, p2).generate()
+    elif mode == '3':
+        p1 = input("Piece 1 (Queen/Rook/Knight/Bishop/Pawn): ").strip().title()
+        p2 = input("Piece 2 (Queen/Rook/Knight/Bishop/Pawn): ").strip().title()
+        try:
+            sample = int(input("Sample size (e.g. 2000): ").strip())
+        except Exception:
+            sample = 2000
+        if p1 not in PIECE_CLASS_BY_NAME or p2 not in PIECE_CLASS_BY_NAME:
+            print("Invalid piece name(s).")
+        else:
+            profile_4man(p1, p2, sample=sample)
