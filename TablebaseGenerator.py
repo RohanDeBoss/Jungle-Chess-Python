@@ -1,4 +1,4 @@
-# TablebaseGenerator.py (v5.28 - 3-man draw labeling in final stats)
+# TablebaseGenerator.py (v5.3 - cross-table generation, longest-mate tracking, 3-man draw labeling)
 
 
 import os
@@ -20,6 +20,7 @@ os.makedirs(TB_DIR, exist_ok=True)
 # Jungle Chess Rule: 0 legal moves is a loss, not a draw.
 STALEMATE_IS_LOSS = True 
 ENABLE_RETRO_FILTER_4MAN = False # True is less performance, but smaller file size and more correctness
+LONGEST_MATES_NOTE_FILE = os.path.join(TB_DIR, "longest_mates.tsv")
 
  # How many CPUs to subtract from the total when choosing worker count.
  # The generator will use max(1, os.cpu_count() - TB_THREADS_SUBTRACT).
@@ -67,6 +68,58 @@ def _unpack_uint_list(b):
     n = struct.unpack_from('<I', b, 0)[0]
     if n == 0: return ()
     return struct.unpack_from(f'<{n}I', b, 4)
+
+def _read_longest_mate_records():
+    records = {}
+    if not os.path.exists(LONGEST_MATES_NOTE_FILE):
+        return records
+    try:
+        with open(LONGEST_MATES_NOTE_FILE, "r", encoding="utf-8") as f:
+            for raw in f:
+                line = raw.strip()
+                if not line or line.startswith("#"):
+                    continue
+                parts = line.split("\t")
+                if len(parts) < 6:
+                    continue
+                key, max_dtm, decisive, remaining, elapsed_min, updated_utc = parts[:6]
+                records[key] = {
+                    "max_dtm": str(max_dtm),
+                    "decisive": str(decisive),
+                    "remaining": str(remaining),
+                    "elapsed_min": str(elapsed_min),
+                    "updated_utc": str(updated_utc),
+                }
+    except Exception:
+        pass
+    return records
+
+def _write_longest_mate_records(records):
+    with open(LONGEST_MATES_NOTE_FILE, "w", encoding="utf-8") as f:
+        f.write("# table_key\tmax_dtm\tdecisive\tremaining\telapsed_min\tupdated_utc\n")
+        for key in sorted(records.keys()):
+            rec = records[key]
+            f.write(
+                f"{key}\t{rec['max_dtm']}\t{rec['decisive']}\t{rec['remaining']}\t"
+                f"{rec['elapsed_min']}\t{rec['updated_utc']}\n"
+            )
+
+def _upsert_longest_mate_record(table_key, max_dtm, decisive, remaining, elapsed_seconds):
+    records = _read_longest_mate_records()
+    records[table_key] = {
+        "max_dtm": str(int(max_dtm)),
+        "decisive": str(int(decisive)),
+        "remaining": str(int(remaining)),
+        "elapsed_min": f"{elapsed_seconds/60.0:.1f}",
+        "updated_utc": time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime()),
+    }
+    _write_longest_mate_records(records)
+
+def _safe_record_longest_mate(table_key, max_dtm, decisive, remaining, elapsed_seconds):
+    try:
+        _upsert_longest_mate_record(table_key, max_dtm, decisive, remaining, elapsed_seconds)
+    except Exception as e:
+        print(f"[LongestMate] Warning: failed to update note file ({e})")
 
 # ==============================================================================
 # 3-MAN GENERATOR
@@ -332,6 +385,7 @@ class Generator:
             print()
         
         iteration = 1
+        max_dtm_solved = 0
         while True:
             iter_start = time.time()
             changed = 0
@@ -392,7 +446,8 @@ class Generator:
             solved_candidates = candidate_states - len(unsolved_indices)
             percent_candidates = (solved_candidates / candidate_states * 100.0) if candidate_states else 0.0
             print(f"[{self.piece_name}] Round {iteration} Summary: {changed:,} new solved | Total: {solved_candidates:,}/{candidate_states:,} ({percent_candidates:.1f}%) | Time: {time.time()-iter_start:.1f}s")
-            
+            if changed > 0:
+                max_dtm_solved = iteration
             if changed == 0: break
             iteration += 1
 
@@ -419,7 +474,16 @@ class Generator:
             f"Decisive={solved:,} ({solve_rate:.1f}%) | "
             f"Wins={wins:,} | Losses={losses:,} | Draws={draws:,}"
         )
-        print(f"\nSUCCESS: Generated in {(time.time() - start_time)/60:.1f} minutes.")
+        elapsed_seconds = time.time() - start_time
+        _safe_record_longest_mate(
+            f"K_{self.piece_name}_K",
+            max_dtm_solved,
+            solved,
+            draws,
+            elapsed_seconds
+        )
+        print(f"[{self.piece_name}] Longest decisive DTM: {max_dtm_solved}")
+        print(f"\nSUCCESS: Generated in {elapsed_seconds/60:.1f} minutes.")
 
 
 # ==============================================================================
@@ -750,6 +814,8 @@ class Generator4:
         else:
             print()
 
+        candidate_states = len(unsolved_flats)
+
         print(f"[Phase 1.5] Building transition cache ({len(unsolved_flats):,} states)...")
         cache_start = time.time()
         transitions = []
@@ -799,6 +865,7 @@ class Generator4:
         print(f"[Phase 2] Pre-solved {pre_solved:,} positions.")
 
         iteration = 1
+        max_dtm_solved = 0
         while True:
             iter_start = time.time()
             changed = 0
@@ -870,7 +937,8 @@ class Generator4:
                   f"Total: {total_solved:,} | "
                   f"Remaining: {len(unsolved_flats):,} | "
                   f"Time: {time.time()-iter_start:.1f}s")
-            
+            if changed > 0:
+                max_dtm_solved = iteration
             if changed == 0:
                 break
             iteration += 1
@@ -878,6 +946,414 @@ class Generator4:
         with open(self.filename, 'wb') as f:
             self.table.tofile(f)
         elapsed = time.time() - start_time
+        remaining = len(unsolved_flats)
+        decisive = candidate_states - remaining
+        _safe_record_longest_mate(
+            f"K_{self.p1_name}_{self.p2_name}_K",
+            max_dtm_solved,
+            decisive,
+            remaining,
+            elapsed
+        )
+        print(f"[LongestMate] K_{self.p1_name}_{self.p2_name}_K: max_dtm={max_dtm_solved}, decisive={decisive:,}, remaining={remaining:,}")
+        print(f"\nSUCCESS: Generated in {elapsed/60:.1f} minutes.")
+
+# ==============================================================================
+# 4-MAN CROSS GENERATOR (K + WPiece vs K + BPiece)
+# ==============================================================================
+
+_WV_W_NAME = None
+_WV_B_NAME = None
+_WV_W_CLASS = None
+_WV_B_CLASS = None
+_WV_3MAN_TABLES = {}
+_WV_PROMO_TABLES = {}
+_IN_TABLE_SENTINEL = "IN_TABLE"
+
+def _tb_file_4man_vs(w_name, b_name):
+    return os.path.join(TB_DIR, f"K_{w_name}_vs_{b_name}_K.bin")
+
+def _white_win_dtm_from_raw_tb_value(val, turn_idx):
+    if val == 0:
+        return None
+    if (turn_idx == 0 and val > 0) or (turn_idx == 1 and val < 0):
+        return abs(val)
+    return None
+
+def _init_transition_worker_4vs(w_name, b_name):
+    global _WV_W_NAME, _WV_B_NAME, _WV_W_CLASS, _WV_B_CLASS
+    global _WV_3MAN_TABLES, _WV_PROMO_TABLES
+    _WV_W_NAME = w_name
+    _WV_B_NAME = b_name
+    _WV_W_CLASS = PIECE_CLASS_BY_NAME[w_name]
+    _WV_B_CLASS = PIECE_CLASS_BY_NAME[b_name]
+
+    _WV_3MAN_TABLES = {}
+    names_needed = {w_name, b_name}
+    if w_name == "Pawn" or b_name == "Pawn":
+        names_needed.add("Queen")
+    for name in names_needed:
+        path = os.path.join(TB_DIR, f"K_{name}_K.bin")
+        if os.path.exists(path):
+            _WV_3MAN_TABLES[name] = np.memmap(path, dtype=np.int16, mode='r', shape=(64, 64, 64, 2))
+
+    _WV_PROMO_TABLES = {}
+    promo_targets = set()
+    if w_name == "Pawn":
+        promo_targets.add(("Queen", b_name))
+    if b_name == "Pawn":
+        promo_targets.add((w_name, "Queen"))
+    for key in promo_targets:
+        path = _tb_file_4man_vs(key[0], key[1])
+        if os.path.exists(path):
+            _WV_PROMO_TABLES[key] = np.memmap(path, dtype=np.int16, mode='r', shape=(64, 64, 64, 64, 2))
+
+def _white_win_dtm_3man_white_piece(piece_name, wk, wp, bk, turn_idx):
+    tb = _WV_3MAN_TABLES.get(piece_name)
+    if tb is None:
+        return None
+    q_idx = (wk[0] * 8 + wk[1], wp[0] * 8 + wp[1], bk[0] * 8 + bk[1], turn_idx)
+    return _white_win_dtm_from_raw_tb_value(int(tb[q_idx]), turn_idx)
+
+def _white_win_dtm_3man_black_piece(piece_name, wk, bk, bp, turn_idx):
+    tb = _WV_3MAN_TABLES.get(piece_name)
+    if tb is None:
+        return None
+    def flip(pos):
+        return (7 - pos[0], pos[1])
+    # In transformed attacker table: attacker is side with the black piece.
+    t_turn_idx = 0 if turn_idx == 1 else 1
+    atk_k = flip(bk)
+    atk_p = flip(bp)
+    def_k = flip(wk)
+    q_idx = (atk_k[0] * 8 + atk_k[1], atk_p[0] * 8 + atk_p[1], def_k[0] * 8 + def_k[1], t_turn_idx)
+    val = int(tb[q_idx])
+    if val == 0:
+        return None
+    attacker_wins = (t_turn_idx == 0 and val > 0) or (t_turn_idx == 1 and val < 0)
+    if attacker_wins:
+        return None
+    return abs(val)
+
+def _white_win_dtm_promo_vs(w_name, b_name, wk, wp, bk, bp, turn_idx):
+    tb = _WV_PROMO_TABLES.get((w_name, b_name))
+    if tb is None:
+        return None
+    q_idx = (wk[0] * 8 + wk[1], wp[0] * 8 + wp[1], bk[0] * 8 + bk[1], bp[0] * 8 + bp[1], turn_idx)
+    val = int(tb.flat[_flat_idx_raw_4(*q_idx)])
+    return _white_win_dtm_from_raw_tb_value(val, turn_idx)
+
+def _white_win_dtm_kvk(child, turn_idx):
+    if not child.white_king_pos:
+        return None
+    if not child.black_king_pos:
+        return 1
+    turn_color = 'white' if turn_idx == 0 else 'black'
+    if has_legal_moves(child, turn_color):
+        return None
+    if STALEMATE_IS_LOSS or is_in_check(child, turn_color):
+        return 1 if turn_color == 'black' else None
+    return None
+
+def _external_white_win_dtm_4vs(child, turn_idx):
+    white_non_king = [p for p in child.white_pieces if not isinstance(p, King)]
+    black_non_king = [p for p in child.black_pieces if not isinstance(p, King)]
+
+    if len(white_non_king) == 1 and len(black_non_king) == 1:
+        wn = type(white_non_king[0]).__name__
+        bn = type(black_non_king[0]).__name__
+        if wn == _WV_W_NAME and bn == _WV_B_NAME:
+            return _IN_TABLE_SENTINEL
+        return _white_win_dtm_promo_vs(
+            wn, bn, child.white_king_pos, white_non_king[0].pos, child.black_king_pos, black_non_king[0].pos, turn_idx
+        )
+
+    if len(white_non_king) == 1 and len(black_non_king) == 0:
+        return _white_win_dtm_3man_white_piece(
+            type(white_non_king[0]).__name__, child.white_king_pos, white_non_king[0].pos, child.black_king_pos, turn_idx
+        )
+
+    if len(white_non_king) == 0 and len(black_non_king) == 1:
+        return _white_win_dtm_3man_black_piece(
+            type(black_non_king[0]).__name__, child.white_king_pos, child.black_king_pos, black_non_king[0].pos, turn_idx
+        )
+
+    if len(white_non_king) == 0 and len(black_non_king) == 0:
+        return _white_win_dtm_kvk(child, turn_idx)
+
+    return None
+
+def _build_transition_worker_4vs(flat):
+    i4 = flat % 2
+    rest = flat // 2
+    i3 = rest % 64
+    rest //= 64
+    i2 = rest % 64
+    rest //= 64
+    i1 = rest % 64
+    i0 = rest // 64
+
+    wk = (i0 // 8, i0 % 8)
+    wp = (i1 // 8, i1 % 8)
+    bk = (i2 // 8, i2 % 8)
+    bp = (i3 // 8, i3 % 8)
+    turn_is_white = (i4 == 0)
+    opp_turn_idx = 1 - i4
+
+    board = Board(setup=False)
+    board.add_piece(King('white'), wk[0], wk[1])
+    board.add_piece(_WV_W_CLASS('white'), wp[0], wp[1])
+    board.add_piece(King('black'), bk[0], bk[1])
+    board.add_piece(_WV_B_CLASS('black'), bp[0], bp[1])
+    moves = get_all_pseudo_legal_moves(board, 'white' if turn_is_white else 'black')
+
+    if turn_is_white:
+        immediate_win = False
+        known_win_vals = []
+        child_flats = []
+
+        for start, end in moves:
+            child = board.clone()
+            child.make_move(start, end)
+
+            if not child.white_king_pos:
+                continue
+            if is_in_check(child, 'white'):
+                continue
+            if child.white_king_pos and child.black_king_pos:
+                if _jung_king_threatens(child.white_king_pos[0], child.white_king_pos[1],
+                                         child.black_king_pos[0], child.black_king_pos[1]):
+                    continue
+
+            if not child.black_king_pos:
+                immediate_win = True
+                continue
+
+            ext_dtm = _external_white_win_dtm_4vs(child, opp_turn_idx)
+            if ext_dtm == _IN_TABLE_SENTINEL:
+                w_piece = next((p for p in child.white_pieces if not isinstance(p, King)), None)
+                b_piece = next((p for p in child.black_pieces if not isinstance(p, King)), None)
+                if w_piece is None or b_piece is None:
+                    continue
+                c0 = child.white_king_pos[0] * 8 + child.white_king_pos[1]
+                c1 = w_piece.pos[0] * 8 + w_piece.pos[1]
+                c2 = child.black_king_pos[0] * 8 + child.black_king_pos[1]
+                c3 = b_piece.pos[0] * 8 + b_piece.pos[1]
+                child_flats.append(_flat_idx_raw_4(c0, c1, c2, c3, opp_turn_idx))
+            elif ext_dtm is not None and ext_dtm > 0:
+                known_win_vals.append(ext_dtm + 1)
+
+        return ('w', immediate_win, _pack_uint_list(known_win_vals), _pack_uint_list(child_flats))
+
+    legal_moves_count = 0
+    has_non_losing_escape = False
+    known_win_vals = []
+    child_flats = []
+
+    for start, end in moves:
+        child = board.clone()
+        child.make_move(start, end)
+
+        if not child.black_king_pos:
+            continue
+        if is_in_check(child, 'black'):
+            continue
+
+        legal_moves_count += 1
+        if not child.white_king_pos:
+            has_non_losing_escape = True
+            continue
+
+        ext_dtm = _external_white_win_dtm_4vs(child, opp_turn_idx)
+        if ext_dtm == _IN_TABLE_SENTINEL:
+            w_piece = next((p for p in child.white_pieces if not isinstance(p, King)), None)
+            b_piece = next((p for p in child.black_pieces if not isinstance(p, King)), None)
+            if w_piece is None or b_piece is None:
+                has_non_losing_escape = True
+                continue
+            c0 = child.white_king_pos[0] * 8 + child.white_king_pos[1]
+            c1 = w_piece.pos[0] * 8 + w_piece.pos[1]
+            c2 = child.black_king_pos[0] * 8 + child.black_king_pos[1]
+            c3 = b_piece.pos[0] * 8 + b_piece.pos[1]
+            child_flats.append(_flat_idx_raw_4(c0, c1, c2, c3, opp_turn_idx))
+        elif ext_dtm is not None and ext_dtm > 0:
+            known_win_vals.append(ext_dtm)
+        else:
+            has_non_losing_escape = True
+
+    is_cm = (legal_moves_count == 0) and is_in_check(board, 'black')
+    return ('b', legal_moves_count, has_non_losing_escape, is_cm, _pack_uint_list(known_win_vals), _pack_uint_list(child_flats))
+
+def _gen_valid_4man_vs_indices_numpy(total_positions, w_name, b_name, chunk_size=8_000_000):
+    for start in range(0, total_positions, chunk_size):
+        end_c = min(start + chunk_size, total_positions)
+        flat = np.arange(start, end_c, dtype=np.int64)
+
+        t_arr = flat % 2
+        rest = flat // 2
+        bp_arr = rest % 64
+        rest //= 64
+        bk_arr = rest % 64
+        rest //= 64
+        wp_arr = rest % 64
+        wk_arr = rest // 64
+
+        mask = ((wk_arr != wp_arr) & (wk_arr != bk_arr) & (wk_arr != bp_arr) &
+                (wp_arr != bk_arr) & (wp_arr != bp_arr) & (bk_arr != bp_arr))
+        if w_name == "Pawn":
+            mask &= (wp_arr >= 8) & (wp_arr < 56)
+        if b_name == "Pawn":
+            mask &= (bp_arr >= 8) & (bp_arr < 56)
+
+        if not mask.any():
+            continue
+        yield flat[mask].tolist()
+
+class Generator4Vs:
+    def __init__(self, w_piece_class, b_piece_class):
+        self.w_name = w_piece_class.__name__
+        self.b_name = b_piece_class.__name__
+        self.filename = _tb_file_4man_vs(self.w_name, self.b_name)
+        self.total_positions = 64 * 64 * 64 * 64 * 2
+        self.table = np.zeros((64, 64, 64, 64, 2), dtype=np.int16)
+        cpu_default = max(1, (os.cpu_count() or 2) - TB_THREADS_SUBTRACT)
+        self.transition_workers = cpu_default
+
+    def generate(self):
+        if os.path.exists(self.filename):
+            print(f"[SKIP] {self.filename} already exists.")
+            return
+
+        start_time = time.time()
+        print(f"\n{'='*60}\n GENERATING: King + {self.w_name} vs King + {self.b_name}\n{'='*60}")
+
+        print(f"[Phase 1] Scanning positions (numpy-chunked)...")
+        phase1_start = time.time()
+        unsolved_flats = array('I')
+        for chunk in _gen_valid_4man_vs_indices_numpy(self.total_positions, self.w_name, self.b_name):
+            unsolved_flats.extend(chunk)
+        print(f"[Phase 1] Found {len(unsolved_flats):,} candidate positions in {time.time()-phase1_start:.1f}s.\n")
+        candidate_states = len(unsolved_flats)
+
+        print(f"[Phase 1.5] Building transition cache ({len(unsolved_flats):,} states)...")
+        cache_start = time.time()
+        transitions = []
+        with ProcessPoolExecutor(
+            max_workers=self.transition_workers,
+            initializer=_init_transition_worker_4vs,
+            initargs=(self.w_name, self.b_name)
+        ) as ex:
+            for done, trans in enumerate(ex.map(_build_transition_worker_4vs, unsolved_flats, chunksize=4096), 1):
+                transitions.append(trans)
+                if done % 100_000 == 0:
+                    elapsed = max(0.001, time.time() - cache_start)
+                    speed = done / elapsed
+                    eta = (len(unsolved_flats) - done) / speed
+                    print(f"  > Cache: {done/len(unsolved_flats)*100:.1f}% | {speed:,.0f} st/s | ETA: {eta/60:.1f}m", end='\r', flush=True)
+        print(f"\n[Phase 1.5] Cache built in {(time.time()-cache_start)/60:.1f}m.")
+
+        print(f"\n[Phase 2] Resolving initial checkmates/stalemates...")
+        pre_solved = 0
+        surviving_flats = array('I')
+        surviving_transitions = []
+        table_flat = self.table.reshape(-1)
+        for flat, trans in zip(unsolved_flats, transitions):
+            if (flat & 1) == 1:
+                legal_moves_count = trans[1]
+                is_cm = trans[3]
+                if legal_moves_count == 0:
+                    if STALEMATE_IS_LOSS or is_cm:
+                        table_flat[flat] = -1
+                        pre_solved += 1
+                        continue
+            surviving_flats.append(flat)
+            surviving_transitions.append(trans)
+        unsolved_flats = surviving_flats
+        transitions = surviving_transitions
+        print(f"[Phase 2] Pre-solved {pre_solved:,} positions.")
+
+        iteration = 1
+        max_dtm_solved = 0
+        while True:
+            iter_start = time.time()
+            changed = 0
+            new_unsolved = array('I')
+            new_transitions = []
+            prev_flat = self.table.reshape(-1).copy()
+
+            print(f"\n[Iteration {iteration}] (DTM {iteration})")
+            for flat, transition in zip(unsolved_flats, transitions):
+                t_idx = flat & 1
+                if t_idx == 0:
+                    best_win = 0
+                    _, immediate_win, known_win_packed, child_packed = transition
+                    if immediate_win:
+                        best_win = 1
+                    for val in _unpack_uint_list(known_win_packed):
+                        if best_win == 0 or val < best_win:
+                            best_win = val
+                    for cflat in _unpack_uint_list(child_packed):
+                        res_val = int(prev_flat[cflat])
+                        if res_val < 0:
+                            val = abs(res_val) + 1
+                            if best_win == 0 or val < best_win:
+                                best_win = val
+                    if best_win > 0:
+                        table_flat[flat] = best_win
+                        changed += 1
+                    else:
+                        new_unsolved.append(flat)
+                        new_transitions.append(transition)
+                else:
+                    _, legal_moves_count, has_non_losing_escape, is_cm, known_win_packed, child_packed = transition
+                    if legal_moves_count == 0:
+                        if STALEMATE_IS_LOSS or is_cm:
+                            table_flat[flat] = -1
+                            changed += 1
+                        continue
+                    all_moves_lead_to_win = not has_non_losing_escape
+                    max_win_val = 0
+                    if all_moves_lead_to_win:
+                        for val in _unpack_uint_list(known_win_packed):
+                            if val > max_win_val:
+                                max_win_val = val
+                        for cflat in _unpack_uint_list(child_packed):
+                            res_val = int(prev_flat[cflat])
+                            if res_val <= 0:
+                                all_moves_lead_to_win = False
+                                break
+                            if res_val > max_win_val:
+                                max_win_val = res_val
+                    if all_moves_lead_to_win:
+                        table_flat[flat] = -(max_win_val + 1)
+                        changed += 1
+                    else:
+                        new_unsolved.append(flat)
+                        new_transitions.append(transition)
+
+            unsolved_flats = new_unsolved
+            transitions = new_transitions
+            total_solved = int((self.table != 0).sum())
+            print(f"  > Summary: {changed:,} new solved | Total: {total_solved:,} | Remaining: {len(unsolved_flats):,} | Time: {time.time()-iter_start:.1f}s")
+            if changed > 0:
+                max_dtm_solved = iteration
+            if changed == 0:
+                break
+            iteration += 1
+
+        with open(self.filename, 'wb') as f:
+            self.table.tofile(f)
+        elapsed = time.time() - start_time
+        remaining = len(unsolved_flats)
+        decisive = candidate_states - remaining
+        _safe_record_longest_mate(
+            f"K_{self.w_name}_vs_{self.b_name}_K",
+            max_dtm_solved,
+            decisive,
+            remaining,
+            elapsed
+        )
+        print(f"[LongestMate] K_{self.w_name}_vs_{self.b_name}_K: max_dtm={max_dtm_solved}, decisive={decisive:,}, remaining={remaining:,}")
         print(f"\nSUCCESS: Generated in {elapsed/60:.1f} minutes.")
 
 def _promo_tb_file_for_4man(p1_name, p2_name):
@@ -922,8 +1398,13 @@ def profile_4man(p1_name, p2_name, sample=2000):
     print(s.getvalue())
 
 if __name__ == "__main__":
-    print("=== Tablebase Generator (v5.28) ===")
-    mode = input("1. Generate 3-Man Tables\n2. Generate 4-Man Tables\n3. Profile 4-Man (sample)\nSelect: ")
+    print("=== Tablebase Generator (v5.3: cross-tables + longest-mate tracking) ===")
+    mode = input(
+        "1. Generate 3-Man Tables\n"
+        "2. Generate 4-Man Tables (K + 2 pieces vs K)\n"
+        "3. Generate 4-Man Cross Tables (K + X vs K + Y)\n"
+        "4. Profile 4-Man (sample)\nSelect: "
+    )
 
     if mode == '1':
         for c in [Queen, Rook, Knight, Bishop, Pawn]:
@@ -938,6 +1419,11 @@ if __name__ == "__main__":
         for p1, p2 in combinations_with_replacement(pieces, 2):
             Generator4(p1, p2).generate()
     elif mode == '3':
+        pieces = [Queen, Rook, Knight, Bishop, Pawn]
+        for w in pieces:
+            for b in pieces:
+                Generator4Vs(w, b).generate()
+    elif mode == '4':
         p1 = input("Piece 1 (Queen/Rook/Knight/Bishop/Pawn): ").strip().title()
         p2 = input("Piece 2 (Queen/Rook/Knight/Bishop/Pawn): ").strip().title()
         try:
