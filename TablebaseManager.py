@@ -1,4 +1,4 @@
-# TablebaseManager.py (v4.0 - Full 3-Man, 4-Man Same, & 4-Man Cross Support)
+# TablebaseManager.py (v4.1 - Memmap Optimization for Zero-Latency Loading)
 
 import os
 import numpy as np
@@ -32,21 +32,21 @@ class TablebaseManager:
         filename = os.path.join(self.tb_dir, f"{name}.bin")
         if os.path.exists(filename):
             try:
-                data16 = np.fromfile(filename, dtype=np.int16)
-                if data16.size == 64 * 64 * 64 * 2: # 3-man
-                    self.tables[name] = data16.reshape((64, 64, 64, 2))
-                    return True
-                elif data16.size == 64 * 64 * 64 * 64 * 2: # 4-man
-                    self.tables[name] = data16.reshape((64, 64, 64, 64, 2))
-                    return True
+                # Use zero-latency memory mapping instead of loading into RAM
+                file_size = os.path.getsize(filename)
                 
-                # Support legacy int8 for 3-man
-                data8 = np.fromfile(filename, dtype=np.int8)
-                if data8.size == 64 * 64 * 64 * 2:
-                    self.tables[name] = data8.astype(np.int16).reshape((64, 64, 64, 2))
+                expected_3man_bytes = 64 * 64 * 64 * 2 * 2       # ~1 MB
+                expected_4man_bytes = 64 * 64 * 64 * 64 * 2 * 2  # ~67 MB
+
+                if file_size == expected_3man_bytes:
+                    self.tables[name] = np.memmap(filename, dtype=np.int16, mode='r', shape=(64, 64, 64, 2))
                     return True
-            except Exception:
-                pass
+                elif file_size == expected_4man_bytes:
+                    self.tables[name] = np.memmap(filename, dtype=np.int16, mode='r', shape=(64, 64, 64, 64, 2))
+                    return True
+                    
+            except Exception as e:
+                print(f"[TablebaseManager] Failed to memmap {name}: {e}")
         return False
 
     def _tb_score_to_ai_score(self, tb_val, attacker_color):
