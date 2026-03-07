@@ -1,4 +1,4 @@
-# GameLogic.py (v49 - mutual knight evaporation cascade fix)
+# GameLogic.py (v50 - Code Review Cleanup, Micro-Optimizations, Corrected Pawn Attack Geometry, and Removal of Dead Piece Methods)
 
 # -----------------------------
 # Global Constants
@@ -49,9 +49,7 @@ def _init_rays():
 _init_rays()
 
 def _clone_piece_fast(piece):
-    """
-    Fast clone for search boards: bypass __init__ and copy stable fields directly.
-    """
+    """Fast clone for search boards: bypass __init__ and copy stable fields directly."""
     cls = piece.__class__
     new_piece = cls.__new__(cls)
     new_piece.color = piece.color
@@ -78,11 +76,11 @@ class Piece:
 
     def symbol(self): return "?"
     def get_valid_moves(self, board, pos): return[]
-    def get_threats(self, board, pos): return set(self.get_valid_moves(board, pos))
 
 class King(Piece):
     def symbol(self): return "♔" if self.color == "white" else "♚"
     def get_valid_moves(self, board, pos):
+        # The King can dash 2 squares through attacked squares, but NOT through occupied squares.
         moves =[]
         r_start, c_start = pos
         for dr, dc in DIRECTIONS['king']:
@@ -97,12 +95,10 @@ class King(Piece):
 
 class Queen(Piece):
     def symbol(self): return "♕" if self.color == "white" else "♛"
-
     def get_valid_moves(self, board, pos):
         moves =[]
         grid = board.grid
         start_index = pos[0] * COLS + pos[1]
-
         for i in range(8):
             for (r, c) in RAYS[start_index][i]:
                 target = grid[r][c]
@@ -114,24 +110,12 @@ class Queen(Piece):
                     break
         return moves
 
-    def get_threats(self, board, pos):
-        threats = set()
-        valid_moves = self.get_valid_moves(board, pos)
-        for move in valid_moves:
-            threats.add(move)
-            target_piece = board.grid[move[0]][move[1]]
-            if target_piece is not None and target_piece.color == self.opponent_color:
-                threats.update(ADJACENT_SQUARES_MAP.get(move,[]))
-        return threats
-
 class Rook(Piece):
     def symbol(self): return "♖" if self.color == "white" else "♜"
-
     def get_valid_moves(self, board, pos):
         moves = []
         grid = board.grid
         start_index = pos[0] * COLS + pos[1]
-
         for i in range(4):
             for (r, c) in RAYS[start_index][i]:
                 target = grid[r][c]
@@ -139,13 +123,9 @@ class Rook(Piece):
                     break
                 moves.append((r, c))
         return moves
-        
-    def get_threats(self, board, pos):
-        return set(self.get_valid_moves(board, pos))
 
 class Bishop(Piece):
     def symbol(self): return "♗" if self.color == "white" else "♝"
-
     def get_valid_moves(self, board, pos):
         moves = {} 
         grid = board.grid
@@ -181,14 +161,6 @@ class Knight(Piece):
         return[(r, c) for r, c in KNIGHT_ATTACKS_FROM[pos] 
                 if board.grid[r][c] is None]
 
-    def get_threats(self, board, pos):
-        threats = set()
-        valid_moves = self.get_valid_moves(board, pos)
-        for move in valid_moves:
-            threats.add(move)
-            threats.update(KNIGHT_ATTACKS_FROM.get(move,[]))
-        return threats
-
 class Pawn(Piece):
     def __init__(self, color):
         super().__init__(color)
@@ -208,7 +180,6 @@ class Pawn(Piece):
             target1 = grid[one_r][c]
             if target1 is None or target1.color == self.opponent_color:
                 moves.append((one_r, c))
-                
                 if r == self.starting_row and target1 is None:
                     two_r = r + (2 * direction)
                     target2 = grid[two_r][c]
@@ -223,7 +194,6 @@ class Pawn(Piece):
             target = grid[r][c+1]
             if target and target.color == self.opponent_color:
                 moves.append((r, c+1))
-                
         return moves
         
 
@@ -266,10 +236,14 @@ class Board:
         piece = self.grid[r][c]
         if not piece: return
         
-        if piece.color == 'white':
-            if piece in self.white_pieces: self.white_pieces.remove(piece)
-        else: 
-            if piece in self.black_pieces: self.black_pieces.remove(piece)
+        # Fast removal without the O(N) `in` check overhead
+        try:
+            if piece.color == 'white':
+                self.white_pieces.remove(piece)
+            else: 
+                self.black_pieces.remove(piece)
+        except ValueError:
+            pass
             
         self.piece_counts[piece.color][type(piece)] -= 1
             
@@ -312,6 +286,7 @@ class Board:
             r, c = p.pos
             grid[r][c] = p
 
+        # Note: Shallow copy is perfectly safe here as the inner values are immutable ints.
         piece_counts = self.piece_counts
         new_board.piece_counts = {
             'white': piece_counts['white'].copy(),
@@ -418,18 +393,14 @@ class Board:
                     enemy_knights.append(target)
 
         if enemy_knights:
-            seen = set()
             for enemy_knight in enemy_knights:
                 if enemy_knight.pos is None:
                     continue
                 for r, c in KNIGHT_ATTACKS_FROM.get(enemy_knight.pos, ()):
-                    if (r, c) == knight_pos:
-                        target = self_piece
-                    else:
-                        target = self.grid[r][c]
-                    if target and target.color == knight_color and target not in seen:
+                    target = self_piece if (r, c) == knight_pos else self.grid[r][c]
+                    # List inclusion check is highly performant here due to tiny array size (max 8)
+                    if target and target.color == knight_color and target not in passive_losses:
                         passive_losses.append(target)
-                        seen.add(target)
 
         return captured, passive_losses, enemy_knights
 
@@ -472,6 +443,9 @@ class Board:
                     if (potential_killer and isinstance(potential_killer, Knight) and
                         potential_killer.color != moving_piece.color and
                         potential_killer not in opponent_captured):
+                        
+                        # Note: We append a newly instantiated "Ghost Piece" here so calculate_material_swing
+                        # can properly read its type without needing special string parsing logic.
                         friendly_lost.add(passive_victim_type(moving_piece.color))
                         break
         return friendly_lost, opponent_captured, promotion_type
@@ -585,7 +559,6 @@ def is_square_attacked(board, r, c, attacking_color):
         for step_idx, (cr, cc) in enumerate(ray_path):
             piece = grid[cr][cc]
             if piece is None: continue
-
             p_type = type(piece)
 
             if piece.color == attacking_color:
@@ -602,26 +575,30 @@ def is_square_attacked(board, r, c, attacking_color):
                 # any defender immediately blocks the ray unless the attacker has a Rook.
                 if not has_rooks: break
 
-    # 3. Check Pawns
-    pawn_attack_dir = 1 if attacking_color == 'white' else -1
-    pr = r + pawn_attack_dir
+    # 3. Check Pawns (Strict Backward-Looking geometry calculation)
+    pawn_move_dir = -1 if attacking_color == 'white' else 1
+    
+    # 1-step forward dash (backward from target)
+    pr = r - pawn_move_dir
     if 0 <= pr < ROWS:
         p = grid[pr][c]
-        if p and p.color == attacking_color and type(p) is Pawn: return True
+        if p is not None and p.color == attacking_color and type(p) is Pawn: 
+            return True
+        # 2-step forward dash (only if intermediate is empty)
+        elif p is None:
+            two_pr = r - (2 * pawn_move_dir)
+            starting_row = 6 if attacking_color == 'white' else 1
+            if 0 <= two_pr < ROWS and two_pr == starting_row:
+                p2 = grid[two_pr][c]
+                if p2 is not None and p2.color == attacking_color and type(p2) is Pawn:
+                    return True
 
-        two_pr = r + (2 * pawn_attack_dir)
-        if 0 <= two_pr < ROWS:
-            p2 = grid[two_pr][c]
-            if (p2 and p2.color == attacking_color and type(p2) is Pawn and
-                p2.pos is not None and p2.pos[0] == p2.starting_row and
-                grid[pr][c] is None):
-                return True
-
+    # Sideways captures
     for dc in [-1, 1]:
         pc = c + dc
         if 0 <= pc < COLS:
             p = grid[r][pc]
-            if p and p.color == attacking_color and type(p) is Pawn: return True
+            if p is not None and p.color == attacking_color and type(p) is Pawn: return True
 
     # 4. Check King (Corrected Math: No Knight Jumps + Path Blocking)
     enemy_king_pos = board.find_king_pos(attacking_color)
@@ -666,8 +643,6 @@ def generate_legal_moves_generator(board, color, yield_boards=False):
         for end_pos in piece.get_valid_moves(board, start_pos):
             sim_board = board.clone()
             sim_board.make_move(start_pos, end_pos)
-            
-            # The move is only legal if our King exists and is not attacked
             if sim_board.find_king_pos(color) and not is_in_check(sim_board, color):
                 if yield_boards:
                     yield (start_pos, end_pos), sim_board
@@ -741,8 +716,6 @@ def is_rook_piercing_capture(board, move):
             return True
         cr += dr; cc += dc
     return False
-
-# generate_all_captures removed in v46: consolidated into generate_all_tactical_moves
 
 def is_quiet_knight_evaporation(board, move):
     start_pos, end_pos = move
@@ -914,7 +887,6 @@ def format_move_san(board_before, board_after, move):
             else:
                 disambig = sq_name(start_pos)
 
-    # Base move string
     if ptype == Pawn:
         if is_capture:
             base_str = file_of(start_pos[1]) + "x" + sq_name(end_pos)
@@ -950,7 +922,6 @@ def format_move_san(board_before, board_after, move):
                 dead_squares.append((r, c))
                 
     if dead_squares:
-        # Sort rule: Lowest number first (ascending rank), then lowest letter (ascending file)
         dead_squares.sort(key=lambda pos: (8 - pos[0], pos[1]))
         cas_str = " ".join([f"x{sq_name(pos)}" for pos in dead_squares])
         base_str += f" ({cas_str})"
