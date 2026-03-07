@@ -1,5 +1,4 @@
-# TablebaseGenerator.py (v5.3 - cross-table generation, longest-mate tracking, 3-man draw labeling)
-
+# TablebaseGenerator.py (v5.6 - extra king prescreens)
 
 import os
 import time
@@ -200,6 +199,8 @@ def _build_transition_worker(idx):
     child_flats =[]
 
     for m in moves:
+        if m[1] != wk and _jung_king_threatens(board, m[1][0], m[1][1], wk[0], wk[1], vacated=m[0]):
+            continue
         child = board.clone()
         child.make_move(m[0], m[1])
         if is_in_check(child, 'black'):
@@ -630,6 +631,8 @@ def _build_transition_worker_4(flat):
     child_flats =[]
 
     for m in moves:
+        if m[1] != wk and _jung_king_threatens(board, m[1][0], m[1][1], wk[0], wk[1], vacated=m[0]):
+            continue
         child = board.clone()
         child.make_move(m[0], m[1])
         if is_in_check(child, 'black'):
@@ -1113,6 +1116,10 @@ def _build_transition_worker_4vs(flat):
         child_flats = []
 
         for start, end in moves:
+            moving_piece = board.grid[start[0]][start[1]]
+            if isinstance(moving_piece, King) and end != bk:
+                if _jung_king_threatens(board, end[0], end[1], bk[0], bk[1], vacated=start):
+                    continue
             child = board.clone()
             child.make_move(start, end)
 
@@ -1151,6 +1158,10 @@ def _build_transition_worker_4vs(flat):
     child_flats = []
 
     for start, end in moves:
+        moving_piece = board.grid[start[0]][start[1]]
+        if isinstance(moving_piece, King) and end != wk:
+            if _jung_king_threatens(board, end[0], end[1], wk[0], wk[1], vacated=start):
+                continue
         child = board.clone()
         child.make_move(start, end)
 
@@ -1398,7 +1409,7 @@ def profile_4man(p1_name, p2_name, sample=2000):
     print(s.getvalue())
 
 if __name__ == "__main__":
-    print("=== Tablebase Generator (v5.3: cross-tables + longest-mate tracking) ===")
+    print("=== Tablebase Generator (v5.6: extra king prescreens) ===")
     mode = input(
         "1. Generate 3-Man Tables\n"
         "2. Generate 4-Man Tables (K + 2 pieces vs K)\n"

@@ -1,4 +1,4 @@
-# JungleChessUI.py (v12.1 - Final Polish, synced with No-Stalemate rules)
+# JungleChessUI.py (v12.2 - FEN load game-state sync)
 
 import tkinter as tk
 from tkinter import ttk, messagebox
@@ -415,6 +415,10 @@ class EnhancedChessApp:
         self.turn = "white" if turn_part.lower() == 'w' else "black"
         self.game_started = True
         self._reset_game_state_vars()
+
+        status, winner = get_game_state(self.board, self.turn, self.position_counts, self.history_pointer, self.MAX_GAME_MOVES)
+        if status != "ongoing":
+            self.game_over, self.game_result = True, (status, winner)
         
         self.board_orientation = self.human_color
         self._update_flip_view_button_style()
@@ -422,7 +426,7 @@ class EnhancedChessApp:
         self.update_ui_after_state_change()
         self._update_analysis_after_state_change()
         
-        if self.game_mode.get() == GameMode.HUMAN_VS_BOT.value and self.turn != self.human_color:
+        if not self.game_over and self.game_mode.get() == GameMode.HUMAN_VS_BOT.value and self.turn != self.human_color:
              self.master.after(20, self._make_game_ai_move)
 
     def get_current_pgn(self):
