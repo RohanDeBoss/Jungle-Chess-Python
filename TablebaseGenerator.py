@@ -1,8 +1,9 @@
-# TablebaseGenerator.py (v5.8 - separate regen longest-mate log)
+# TablebaseGenerator.py (v5.9 - ignore console interrupts during generation)
 
 import os
 import time
 import __main__
+import signal
 from concurrent.futures import ProcessPoolExecutor
 import numpy as np
 from GameLogic import *
@@ -18,7 +19,7 @@ os.makedirs(TB_DIR, exist_ok=True)
 
 # Jungle Chess Rule: 0 legal moves is a loss, not a draw.
 STALEMATE_IS_LOSS = True 
-ENABLE_RETRO_FILTER_4MAN = True # True is less performance, but smaller file size and more correctness
+ENABLE_RETRO_FILTER_4MAN = True # True adds a new stop that makes for smaller file size and more correctness. It costs a litle time, but actually saves so much computation its allways worth it.
 LONGEST_MATES_NOTE_FILE = os.path.join(TB_DIR, "new_longest_mates.tsv")
 LONGEST_MATE_KEY_PREFIX = "regen_"
 
@@ -31,9 +32,30 @@ PIECE_CLASS_BY_NAME = {
     "Queen": Queen, "Rook": Rook, "Knight": Knight, "Bishop": Bishop, "Pawn": Pawn,
 }
 
+_CONSOLE_INTERRUPT_SIGNALS = [signal.SIGINT]
+if hasattr(signal, "SIGBREAK"):
+    _CONSOLE_INTERRUPT_SIGNALS.append(signal.SIGBREAK)
+
 # ==============================================================================
 # SHARED HELPERS
 # ==============================================================================
+
+def _main_interrupt_handler(signum, frame):
+    print("\n[Interrupt ignored] Tablebase generation is protected from Ctrl+C. Close the terminal or kill the process explicitly if you really want to stop it.", flush=True)
+
+def _install_main_interrupt_ignores():
+    for sig in _CONSOLE_INTERRUPT_SIGNALS:
+        try:
+            signal.signal(sig, _main_interrupt_handler)
+        except Exception:
+            pass
+
+def _install_worker_interrupt_ignores():
+    for sig in _CONSOLE_INTERRUPT_SIGNALS:
+        try:
+            signal.signal(sig, signal.SIG_IGN)
+        except Exception:
+            pass
 
 def _jung_king_threatens(board, r1, c1, r2, c2, vacated=None):
     """
@@ -143,6 +165,7 @@ _W_PIECE_CLASS = None
 _W_QUEEN_TABLE = None
 
 def _init_transition_worker(piece_name, queen_tb_file):
+    _install_worker_interrupt_ignores()
     global _W_PIECE_NAME, _W_PIECE_CLASS, _W_QUEEN_TABLE
     _W_PIECE_NAME = piece_name
     _W_PIECE_CLASS = PIECE_CLASS_BY_NAME[piece_name]
@@ -520,6 +543,7 @@ def _flat_idx_raw_4(i0, i1, i2, i3, i4):
     return (((((i0 * 64 + i1) * 64 + i2) * 64 + i3) * 2) + i4)
 
 def _init_transition_worker_4(p1_name, p2_name, promo_tb_file):
+    _install_worker_interrupt_ignores()
     global _W4_P1_CLASS, _W4_P2_CLASS, _W4_P1_NAME, _W4_P2_NAME
     global _W4_3MAN_TABLES, _W4_PROMO_TABLE, _W4_SAME_PIECE, _W4_PROMO_SAME_PIECE
     _W4_P1_NAME = p1_name
@@ -998,6 +1022,7 @@ def _white_win_dtm_from_raw_tb_value(val, turn_idx):
     return None
 
 def _init_transition_worker_4vs(w_name, b_name):
+    _install_worker_interrupt_ignores()
     global _WV_W_NAME, _WV_B_NAME, _WV_W_CLASS, _WV_B_CLASS
     global _WV_3MAN_TABLES, _WV_PROMO_TABLES
     _WV_W_NAME = w_name
@@ -1423,7 +1448,8 @@ def profile_4man(p1_name, p2_name, sample=2000):
     print(s.getvalue())
 
 if __name__ == "__main__":
-    print("=== Tablebase Generator (v5.8: separate regen longest-mate log) ===")
+    _install_main_interrupt_ignores()
+    print("=== Tablebase Generator (v5.9: ignore console interrupts during generation) ===")
     mode = input(
         "1. Generate 3-Man Tables\n"
         "2. Generate 4-Man Tables (K + 2 pieces vs K)\n"
