@@ -1,4 +1,4 @@
-# AI.py (v95.4 - TB fallback + qsearch no-move loss fix)
+# AI.py (v95.5 - root repetition cleanup on cancellation)
 
 import time
 import random
@@ -453,23 +453,24 @@ class ChessBot:
             child_hash = board_hash(child_board, self.opponent_color)
             self.position_counts[child_hash] = self.position_counts.get(child_hash, 0) + 1
 
-            if alpha_floor is not None:
-                # Null-window root test: only continue if this move can beat current TB floor.
-                probe_score = -self.negamax(
-                    child_board, depth - 1, -(alpha_floor + 1), -alpha_floor,
-                    self.opponent_color, 1, search_path
-                )
-                if probe_score <= alpha_floor:
-                    self.position_counts[child_hash] -= 1
-                    continue
-                score = -self.negamax(
-                    child_board, depth - 1, -beta, -alpha,
-                    self.opponent_color, 1, search_path
-                )
-            else:
-                score = -self.negamax(child_board, depth - 1, -beta, -alpha, self.opponent_color, 1, search_path)
+            try:
+                if alpha_floor is not None:
+                    # Null-window root test: only continue if this move can beat current TB floor.
+                    probe_score = -self.negamax(
+                        child_board, depth - 1, -(alpha_floor + 1), -alpha_floor,
+                        self.opponent_color, 1, search_path
+                    )
+                    if probe_score <= alpha_floor:
+                        continue
+                    score = -self.negamax(
+                        child_board, depth - 1, -beta, -alpha,
+                        self.opponent_color, 1, search_path
+                    )
+                else:
+                    score = -self.negamax(child_board, depth - 1, -beta, -alpha, self.opponent_color, 1, search_path)
+            finally:
+                self.position_counts[child_hash] -= 1
 
-            self.position_counts[child_hash] -= 1
             if score != self.DRAW_SCORE: all_moves_draw = False
 
             if score > best_score_this_iter:

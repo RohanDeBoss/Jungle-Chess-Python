@@ -1,4 +1,4 @@
-# TablebaseGenerator.py (v5.9 - ignore console interrupts during generation)
+# TablebaseGenerator.py (v5.10 - always-loss cleanup + simpler transition tuples)
 
 import os
 import time
@@ -17,8 +17,6 @@ import io
 TB_DIR = "tablebases"
 os.makedirs(TB_DIR, exist_ok=True)
 
-# Jungle Chess Rule: 0 legal moves is a loss, not a draw.
-STALEMATE_IS_LOSS = True 
 ENABLE_RETRO_FILTER_4MAN = True # True adds a new stop that makes for smaller file size and more correctness. It costs a litle time, but actually saves so much computation its allways worth it.
 LONGEST_MATES_NOTE_FILE = os.path.join(TB_DIR, "new_longest_mates.tsv")
 LONGEST_MATE_KEY_PREFIX = "regen_"
@@ -259,9 +257,7 @@ def _build_transition_worker(idx):
         c2 = child.black_king_pos[0] * 8 + child.black_king_pos[1]
         child_flats.append(_flat_idx_raw(c0, c1, c2, opp_turn_idx))
 
-    # is_cm calculation for retrograde loop
-    is_cm = (legal_moves_count == 0) and is_in_check(board, 'black')
-    return _flat_idx_raw(i0, i1, i2, i3), ('b', legal_moves_count, has_non_losing_escape, is_cm, _pack_uint_list(child_flats))
+    return _flat_idx_raw(i0, i1, i2, i3), ('b', legal_moves_count, has_non_losing_escape, _pack_uint_list(child_flats))
 
 class Generator:
     def __init__(self, piece_class):
@@ -365,12 +361,7 @@ class Generator:
                     self.table[idx] = -1
                     phase1_presolved += 1
                     continue
-                # With STALEMATE_IS_LOSS, we can mark any 0-move state as loss
-                if is_in_check(self.sim_board, 'black') and not has_legal_moves(self.sim_board, 'black'):
-                    self.table[idx] = -1
-                    phase1_presolved += 1
-                    continue
-                if STALEMATE_IS_LOSS and not has_legal_moves(self.sim_board, 'black'):
+                if not has_legal_moves(self.sim_board, 'black'):
                     self.table[idx] = -1
                     phase1_presolved += 1
                     continue
@@ -456,12 +447,11 @@ class Generator:
                     else:
                         new_unsolved.append(idx)
                 else:
-                    _, legal_moves_count, has_non_losing_escape, is_cm, child_packed = transition
+                    _, legal_moves_count, has_non_losing_escape, child_packed = transition
                     
                     if legal_moves_count == 0:
-                        if STALEMATE_IS_LOSS or is_cm:
-                            self.table[idx] = -1
-                            changed += 1
+                        self.table[idx] = -1
+                        changed += 1
                         continue
 
                     all_moves_lead_to_win = not has_non_losing_escape
@@ -713,9 +703,7 @@ def _build_transition_worker_4(flat):
             c1, c2 = c2, c1
         child_flats.append(_flat_idx_raw_4(c0, c1, c2, c3, opp_turn_idx))
 
-    # Claude's Fix: Explicitly track is_cm for the retrograde loop
-    is_cm = (legal_moves_count == 0) and is_in_check(board, 'black')
-    return ('b', legal_moves_count, has_non_losing_escape, is_cm, _pack_uint_list(child_flats))
+    return ('b', legal_moves_count, has_non_losing_escape, _pack_uint_list(child_flats))
 
 
 def _gen_valid_4man_indices_numpy(total_positions, p1_name, p2_name, same_piece, chunk_size=8_000_000):
@@ -878,25 +866,20 @@ class Generator4:
         print(f"\n[Phase 1.5] Cache built in {(time.time()-cache_start)/60:.1f}m.")
 
         # ----------------------------------------------------------------
-        # Phase 2: Pre-solve initial checkmates AND stalemates
+        # Phase 2: Pre-solve initial no-legal-move losses
         # ----------------------------------------------------------------
-        print(f"\n[Phase 2] Resolving initial checkmates/stalemates...")
+        print(f"\n[Phase 2] Resolving initial no-legal-move losses...")
         pre_solved = 0
         surviving_flats = array('I')
         surviving_transitions = []
         table_flat = self.table.reshape(-1)
         for flat, trans in zip(unsolved_flats, transitions):
             if (flat & 1) == 1:  # black's turn
-                # Transition: ('b', lmc, hnle, is_checkmate, packed)
                 legal_moves_count = trans[1]
-                is_cm = trans[3]
-                
-                # STALEMATE = LOSS logic applied here
                 if legal_moves_count == 0:
-                    if STALEMATE_IS_LOSS or is_cm:
-                        table_flat[flat] = -1
-                        pre_solved += 1
-                        continue
+                    table_flat[flat] = -1
+                    pre_solved += 1
+                    continue
                          
             surviving_flats.append(flat)
             surviving_transitions.append(trans)
@@ -943,13 +926,11 @@ class Generator4:
                         new_transitions.append(transition)
 
                 else:
-                    _, legal_moves_count, has_non_losing_escape, is_cm, child_packed = transition
+                    _, legal_moves_count, has_non_losing_escape, child_packed = transition
                     
-                    # Already handled in Phase 2, but safe to keep here
                     if legal_moves_count == 0:
-                        if STALEMATE_IS_LOSS or is_cm:
-                            table_flat[flat] = -1
-                            changed += 1
+                        table_flat[flat] = -1
+                        changed += 1
                         continue
 
                     all_moves_lead_to_win = not has_non_losing_escape
@@ -1093,9 +1074,7 @@ def _white_win_dtm_kvk(child, turn_idx):
     turn_color = 'white' if turn_idx == 0 else 'black'
     if has_legal_moves(child, turn_color):
         return None
-    if STALEMATE_IS_LOSS or is_in_check(child, turn_color):
-        return 1 if turn_color == 'black' else None
-    return None
+    return 1 if turn_color == 'black' else None
 
 def _external_white_win_dtm_4vs(child, turn_idx):
     white_non_king = [p for p in child.white_pieces if not isinstance(p, King)]
@@ -1231,8 +1210,7 @@ def _build_transition_worker_4vs(flat):
         else:
             has_non_losing_escape = True
 
-    is_cm = (legal_moves_count == 0) and is_in_check(board, 'black')
-    return ('b', legal_moves_count, has_non_losing_escape, is_cm, _pack_uint_list(known_win_vals), _pack_uint_list(child_flats))
+    return ('b', legal_moves_count, has_non_losing_escape, _pack_uint_list(known_win_vals), _pack_uint_list(child_flats))
 
 def _gen_valid_4man_vs_indices_numpy(total_positions, w_name, b_name, chunk_size=8_000_000):
     for start in range(0, total_positions, chunk_size):
@@ -1302,7 +1280,7 @@ class Generator4Vs:
                     print(f"  > Cache: {done/len(unsolved_flats)*100:.1f}% | {speed:,.0f} st/s | ETA: {eta/60:.1f}m", end='\r', flush=True)
         print(f"\n[Phase 1.5] Cache built in {(time.time()-cache_start)/60:.1f}m.")
 
-        print(f"\n[Phase 2] Resolving initial checkmates/stalemates...")
+        print(f"\n[Phase 2] Resolving initial no-legal-move losses...")
         pre_solved = 0
         surviving_flats = array('I')
         surviving_transitions = []
@@ -1310,12 +1288,10 @@ class Generator4Vs:
         for flat, trans in zip(unsolved_flats, transitions):
             if (flat & 1) == 1:
                 legal_moves_count = trans[1]
-                is_cm = trans[3]
                 if legal_moves_count == 0:
-                    if STALEMATE_IS_LOSS or is_cm:
-                        table_flat[flat] = -1
-                        pre_solved += 1
-                        continue
+                    table_flat[flat] = -1
+                    pre_solved += 1
+                    continue
             surviving_flats.append(flat)
             surviving_transitions.append(trans)
         unsolved_flats = surviving_flats
@@ -1355,11 +1331,10 @@ class Generator4Vs:
                         new_unsolved.append(flat)
                         new_transitions.append(transition)
                 else:
-                    _, legal_moves_count, has_non_losing_escape, is_cm, known_win_packed, child_packed = transition
+                    _, legal_moves_count, has_non_losing_escape, known_win_packed, child_packed = transition
                     if legal_moves_count == 0:
-                        if STALEMATE_IS_LOSS or is_cm:
-                            table_flat[flat] = -1
-                            changed += 1
+                        table_flat[flat] = -1
+                        changed += 1
                         continue
                     all_moves_lead_to_win = not has_non_losing_escape
                     max_win_val = 0
@@ -1449,7 +1424,7 @@ def profile_4man(p1_name, p2_name, sample=2000):
 
 if __name__ == "__main__":
     _install_main_interrupt_ignores()
-    print("=== Tablebase Generator (v5.9: ignore console interrupts during generation) ===")
+    print("=== Tablebase Generator (v5.10: always-loss cleanup + simpler transition tuples) ===")
     mode = input(
         "1. Generate 3-Man Tables\n"
         "2. Generate 4-Man Tables (K + 2 pieces vs K)\n"
