@@ -1,4 +1,4 @@
-# TablebaseGenerator.py (v5.6 - extra king prescreens)
+# TablebaseGenerator.py (v5.7 - restore midpoint-aware king helper)
 
 import os
 import time
@@ -34,16 +34,29 @@ PIECE_CLASS_BY_NAME = {
 # SHARED HELPERS
 # ==============================================================================
 
-def _jung_king_threatens(r1, c1, r2, c2):
+def _jung_king_threatens(board, r1, c1, r2, c2, vacated=None):
     """
     Returns True if a Jungle King at (r1,c1) threatens square (r2,c2).
-    Correctly excludes Knight-distance offsets (max 2, min 1).
+    Adjacent kings always threaten each other. Two-square king threats only
+    exist when the midpoint is empty, except during move prescreens where the
+    moving king's start square counts as vacated.
     """
-    dr = abs(r2 - r1)
-    dc = abs(c2 - c1)
+    dr_raw = r2 - r1
+    dc_raw = c2 - c1
+    dr = abs(dr_raw)
+    dc = abs(dc_raw)
     mx = max(dr, dc)
     mn = min(dr, dc)
-    return mx == 1 or (mx == 2 and mn != 1)
+    if mx == 1:
+        return True
+    if mx != 2 or mn == 1:
+        return False
+
+    mr = r1 + ((dr_raw > 0) - (dr_raw < 0))
+    mc = c1 + ((dc_raw > 0) - (dc_raw < 0))
+    if vacated is not None and (mr, mc) == vacated:
+        return True
+    return board.grid[mr][mc] is None
 
 def _load_table_file_any_dtype(filename):
     data16 = np.fromfile(filename, dtype=np.int16)
@@ -160,7 +173,7 @@ def _build_transition_worker(idx):
             
             # [Opt-2] Fast Pre-Screen
             if isinstance(board.grid[start[0]][start[1]], King) and end != bk:
-                if _jung_king_threatens(end[0], end[1], bk[0], bk[1]):
+                if _jung_king_threatens(board, end[0], end[1], bk[0], bk[1], vacated=start):
                     continue
 
             child = board.clone()
@@ -169,7 +182,7 @@ def _build_transition_worker(idx):
             # [Opt-1] Inline Check Validation (Black only has a King)
             wkp = child.white_king_pos
             bkp = child.black_king_pos
-            if wkp and bkp and _jung_king_threatens(wkp[0], wkp[1], bkp[0], bkp[1]):
+            if wkp and bkp and _jung_king_threatens(child, wkp[0], wkp[1], bkp[0], bkp[1]):
                 continue
 
             if not bkp:
@@ -563,7 +576,7 @@ def _build_transition_worker_4(flat):
 
             # [Opt-2] Fast Pre-Screen (King only)
             if isinstance(board.grid[start[0]][start[1]], King) and end != bk:
-                if _jung_king_threatens(end[0], end[1], bk[0], bk[1]):
+                if _jung_king_threatens(board, end[0], end[1], bk[0], bk[1], vacated=start):
                     continue
 
             child = board.clone()
@@ -572,7 +585,7 @@ def _build_transition_worker_4(flat):
             # [Opt-1] Inline Legality Check (Black only has King)
             wkp = child.white_king_pos
             bkp = child.black_king_pos
-            if wkp and bkp and _jung_king_threatens(wkp[0], wkp[1], bkp[0], bkp[1]):
+            if wkp and bkp and _jung_king_threatens(child, wkp[0], wkp[1], bkp[0], bkp[1]):
                 continue
 
             if not bkp:
@@ -1128,7 +1141,7 @@ def _build_transition_worker_4vs(flat):
             if is_in_check(child, 'white'):
                 continue
             if child.white_king_pos and child.black_king_pos:
-                if _jung_king_threatens(child.white_king_pos[0], child.white_king_pos[1],
+                if _jung_king_threatens(child, child.white_king_pos[0], child.white_king_pos[1],
                                          child.black_king_pos[0], child.black_king_pos[1]):
                     continue
 
@@ -1409,7 +1422,7 @@ def profile_4man(p1_name, p2_name, sample=2000):
     print(s.getvalue())
 
 if __name__ == "__main__":
-    print("=== Tablebase Generator (v5.6: extra king prescreens) ===")
+    print("=== Tablebase Generator (v5.7: restore midpoint-aware king helper) ===")
     mode = input(
         "1. Generate 3-Man Tables\n"
         "2. Generate 4-Man Tables (K + 2 pieces vs K)\n"
