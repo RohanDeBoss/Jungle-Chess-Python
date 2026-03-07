@@ -1,7 +1,9 @@
 # table_key	max_dtm	decisive	remaining	elapsed_min	updated_utc
 regen_K_Bishop_K	9	6596	328220	1.1	2026-03-07 00:31:39
 regen_K_Knight_K	32	282780	54188	1.0	2026-03-07 00:30:31
-regen_K_Pawn_K	52	229792	69002	0.6	2026-03-07 00:32:16
+regen_K_Knight_Queen_K	10	17748724	41556	41.5	2026-03-07 03:53:49
+regen_K_Pawn_K	52	229398	69002	0.8	2026-03-07 03:56:17
 regen_K_Queen_K	20	300544	33360	0.9	2026-03-07 00:28:40
 regen_K_Queen_Queen_K	8	8755560	0	22.1	2026-03-07 00:57:42
+regen_K_Queen_Rook_K	14	17087848	1567184	55.5	2026-03-07 03:12:11
 regen_K_Rook_K	15	6496	355464	0.9	2026-03-07 00:29:34

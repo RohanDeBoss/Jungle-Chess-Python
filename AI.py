@@ -1,4 +1,4 @@
-# AI.py (v95.3 - NMP opponent-material guard fix.)
+# AI.py (v95.4 - TB fallback + qsearch no-move loss fix)
 
 import time
 import random
@@ -201,7 +201,7 @@ class ChessBot:
         return root_abs if self.color == 'white' else -root_abs
 
     def _get_best_tablebase_move_with_eval(self):
-        """Finds the absolute best move when only 3 pieces remain."""
+        """Find the best move only if every required follow-up TB probe exists."""
         best_move = None
         best_score = -float('inf')
         
@@ -216,12 +216,12 @@ class ChessBot:
             if not has_legal_moves(sim, self.opponent_color):
                 return move, self.MATE_SCORE - 1
                  
-            score_abs = self.tb_manager.probe(sim, self.opponent_color)
-            
-            if score_abs is None:
-                # Capture resulted in King vs King
+            if len(sim.white_pieces) + len(sim.black_pieces) <= 2:
                 score = 0
             else:
+                score_abs = self.tb_manager.probe(sim, self.opponent_color)
+                if score_abs is None:
+                    return None, None
                 self.tb_hits += 1
                 score = score_abs if self.color == 'white' else -score_abs
                 # Adjust for the 1-ply move we just made
@@ -639,6 +639,9 @@ class ChessBot:
                 if tb_score > self.MATE_SCORE - 1000: return tb_score - ply
                 elif tb_score < -self.MATE_SCORE + 1000: return tb_score + ply
                 return tb_score
+
+        if not has_legal_moves(board, turn):
+            return -self.MATE_SCORE + ply
 
         if is_insufficient_material(board): return self.DRAW_SCORE
         if ply >= self.MAX_Q_SEARCH_DEPTH:

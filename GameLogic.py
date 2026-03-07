@@ -1,4 +1,4 @@
-# GameLogic.py (v47 - faster Board.clone via __new__ allocation)
+# GameLogic.py (v48 - pawn 2-step attack detection fix)
 
 # -----------------------------
 # Global Constants
@@ -575,6 +575,14 @@ def is_square_attacked(board, r, c, attacking_color):
     if 0 <= pr < ROWS:
         p = grid[pr][c]
         if p and p.color == attacking_color and type(p) is Pawn: return True
+
+        two_pr = r + (2 * pawn_attack_dir)
+        if 0 <= two_pr < ROWS:
+            p2 = grid[two_pr][c]
+            if (p2 and p2.color == attacking_color and type(p2) is Pawn and
+                p2.pos is not None and p2.pos[0] == p2.starting_row and
+                grid[pr][c] is None):
+                return True
 
     for dc in [-1, 1]:
         pc = c + dc
