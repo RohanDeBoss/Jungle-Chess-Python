@@ -1,4 +1,4 @@
-# Tests.py (v2.0 - selectable Jungle rule, search, and tablebase checks)
+# Tests.py (v2.1 - Oracle asessment, selectable Jungle rule, search, and tablebase checks)
 
 import argparse
 from dataclasses import dataclass
@@ -6,12 +6,14 @@ from dataclasses import dataclass
 from GameLogic import (
     Board,
     Bishop,
+    DIRECTIONS,
     King,
     Knight,
     Pawn,
     Queen,
     Rook,
     format_move_san,
+    get_all_legal_moves,
     has_legal_moves,
     is_in_check,
     is_passive_knight_zone_evaporation,
@@ -30,6 +32,16 @@ PIECE_CLASS_BY_NAME = {
 PIECE_SORT_ORDER = {King: 0, Queen: 1, Rook: 2, Bishop: 3, Knight: 4, Pawn: 5}
 PIECE_LETTER = {King: "K", Queen: "Q", Rook: "R", Bishop: "B", Knight: "N", Pawn: "P"}
 SHOW_ASCII = False
+REF_BISHOP_ZIGZAGS = (
+    ((-1, 1), (-1, -1)),
+    ((-1, -1), (-1, 1)),
+    ((1, 1), (1, -1)),
+    ((1, -1), (1, 1)),
+    ((-1, 1), (1, 1)),
+    ((1, 1), (-1, 1)),
+    ((-1, -1), (1, -1)),
+    ((1, -1), (-1, -1)),
+)
 
 
 class SkipCase(Exception):
@@ -116,6 +128,407 @@ def manager_with_table(table_name):
     if table_name not in manager.tables:
         raise SkipCase(f"Required table '{table_name}' is not available in tablebases/.")
     return manager
+
+
+def opposite(color):
+    return "black" if color == "white" else "white"
+
+
+def in_bounds(r, c):
+    return 0 <= r < 8 and 0 <= c < 8
+
+
+def ref_from_board(board):
+    pieces = {}
+    for piece in board.white_pieces + board.black_pieces:
+        if piece.pos is not None:
+            pieces[piece.pos] = (piece.color, type(piece).__name__)
+    return {
+        "pieces": pieces,
+        "white_king": board.white_king_pos,
+        "black_king": board.black_king_pos,
+    }
+
+
+def ref_clone(state):
+    return {
+        "pieces": dict(state["pieces"]),
+        "white_king": state["white_king"],
+        "black_king": state["black_king"],
+    }
+
+
+def ref_remove_piece(state, pos):
+    piece = state["pieces"].pop(pos, None)
+    if piece is None:
+        return None
+    _color, name = piece
+    if name == "King":
+        if pos == state["white_king"]:
+            state["white_king"] = None
+        if pos == state["black_king"]:
+            state["black_king"] = None
+    return piece
+
+
+def ref_add_piece(state, color, name, pos):
+    state["pieces"][pos] = (color, name)
+    if name == "King":
+        if color == "white":
+            state["white_king"] = pos
+        else:
+            state["black_king"] = pos
+
+
+def ref_knight_targets(pos):
+    r, c = pos
+    targets = []
+    for dr, dc in DIRECTIONS["knight"]:
+        nr, nc = r + dr, c + dc
+        if in_bounds(nr, nc):
+            targets.append((nr, nc))
+    return targets
+
+
+def ref_piece_moves(state, pos):
+    color, name = state["pieces"][pos]
+    enemy = opposite(color)
+    pieces = state["pieces"]
+    r, c = pos
+    moves = []
+
+    if name == "King":
+        for dr, dc in DIRECTIONS["king"]:
+            r1, c1 = r + dr, c + dc
+            if in_bounds(r1, c1):
+                target1 = pieces.get((r1, c1))
+                if target1 is None or target1[0] == enemy:
+                    moves.append((r1, c1))
+                    if target1 is None:
+                        r2, c2 = r1 + dr, c1 + dc
+                        if in_bounds(r2, c2):
+                            target2 = pieces.get((r2, c2))
+                            if target2 is None or target2[0] == enemy:
+                                moves.append((r2, c2))
+        return moves
+
+    if name == "Queen":
+        for dr, dc in DIRECTIONS["queen"]:
+            cr, cc = r + dr, c + dc
+            while in_bounds(cr, cc):
+                target = pieces.get((cr, cc))
+                if target is None:
+                    moves.append((cr, cc))
+                else:
+                    if target[0] == enemy:
+                        moves.append((cr, cc))
+                    break
+                cr += dr
+                cc += dc
+        return moves
+
+    if name == "Rook":
+        for dr, dc in DIRECTIONS["rook"]:
+            cr, cc = r + dr, c + dc
+            while in_bounds(cr, cc):
+                target = pieces.get((cr, cc))
+                if target is not None and target[0] == color:
+                    break
+                moves.append((cr, cc))
+                cr += dr
+                cc += dc
+        return moves
+
+    if name == "Bishop":
+        seen = set()
+        for dr, dc in DIRECTIONS["bishop"]:
+            cr, cc = r + dr, c + dc
+            while in_bounds(cr, cc):
+                target = pieces.get((cr, cc))
+                if target is not None:
+                    if target[0] == enemy:
+                        seen.add((cr, cc))
+                    break
+                seen.add((cr, cc))
+                cr += dr
+                cc += dc
+        for d1, d2 in REF_BISHOP_ZIGZAGS:
+            cr, cc = r, c
+            current_dir = d1
+            while True:
+                cr += current_dir[0]
+                cc += current_dir[1]
+                if not in_bounds(cr, cc):
+                    break
+                target = pieces.get((cr, cc))
+                if target is not None:
+                    if target[0] == enemy:
+                        seen.add((cr, cc))
+                    break
+                seen.add((cr, cc))
+                current_dir = d2 if current_dir == d1 else d1
+        return list(seen)
+
+    if name == "Knight":
+        for target in ref_knight_targets(pos):
+            if target not in pieces:
+                moves.append(target)
+        return moves
+
+    if name == "Pawn":
+        direction = -1 if color == "white" else 1
+        starting_row = 6 if color == "white" else 1
+        one = (r + direction, c)
+        if in_bounds(*one):
+            target1 = pieces.get(one)
+            if target1 is None or target1[0] == enemy:
+                moves.append(one)
+                two = (r + 2 * direction, c)
+                if r == starting_row and target1 is None and in_bounds(*two):
+                    target2 = pieces.get(two)
+                    if target2 is None or target2[0] == enemy:
+                        moves.append(two)
+        for dc in (-1, 1):
+            side = (r, c + dc)
+            target = pieces.get(side)
+            if in_bounds(*side) and target is not None and target[0] == enemy:
+                moves.append(side)
+        return moves
+
+    raise AssertionError(f"Unknown piece name in reference model: {name}")
+
+
+def ref_bishop_attacks_square(state, start, target, bishop_color):
+    pieces = state["pieces"]
+    tr, tc = target
+
+    for dr, dc in DIRECTIONS["bishop"]:
+        cr, cc = start[0] + dr, start[1] + dc
+        while in_bounds(cr, cc):
+            piece = pieces.get((cr, cc))
+            if (cr, cc) == (tr, tc):
+                return piece is None or piece[0] != bishop_color
+            if piece is not None:
+                break
+            cr += dr
+            cc += dc
+
+    for d1, d2 in REF_BISHOP_ZIGZAGS:
+        cr, cc = start
+        current_dir = d1
+        while True:
+            cr += current_dir[0]
+            cc += current_dir[1]
+            if not in_bounds(cr, cc):
+                break
+            piece = pieces.get((cr, cc))
+            if (cr, cc) == (tr, tc):
+                return piece is None or piece[0] != bishop_color
+            if piece is not None:
+                break
+            current_dir = d2 if current_dir == d1 else d1
+
+    return False
+
+
+def ref_is_square_attacked(state, target, attacking_color):
+    pieces = state["pieces"]
+    defending_color = opposite(attacking_color)
+
+    for pos, (color, name) in pieces.items():
+        if color != attacking_color:
+            continue
+
+        if name == "Knight":
+            if target in ref_knight_targets(pos):
+                return True
+            for landing in ref_knight_targets(pos):
+                if landing in pieces:
+                    continue
+                if target in ref_knight_targets(landing):
+                    return True
+
+        elif name == "Queen":
+            qr, qc = pos
+            for dr, dc in DIRECTIONS["queen"]:
+                cr, cc = qr + dr, qc + dc
+                while in_bounds(cr, cc):
+                    if (cr, cc) == target:
+                        occupant = pieces.get(target)
+                        if occupant is None or occupant[0] != attacking_color:
+                            return True
+                    occupant = pieces.get((cr, cc))
+                    if occupant is not None:
+                        if occupant[0] == defending_color and abs(cr - target[0]) <= 1 and abs(cc - target[1]) <= 1:
+                            return True
+                        break
+                    cr += dr
+                    cc += dc
+
+        elif name == "Rook":
+            rr, rc = pos
+            tr, tc = target
+            if rr == tr or rc == tc:
+                dr = (tr > rr) - (rr > tr)
+                dc = (tc > rc) - (rc > tc)
+                cr, cc = rr + dr, rc + dc
+                blocked = False
+                while in_bounds(cr, cc):
+                    occupant = pieces.get((cr, cc))
+                    if occupant is not None and occupant[0] == attacking_color:
+                        blocked = True
+                        break
+                    if (cr, cc) == target:
+                        break
+                    cr += dr
+                    cc += dc
+                if not blocked and (cr, cc) == target:
+                    return True
+
+        elif name == "Bishop":
+            if ref_bishop_attacks_square(state, pos, target, attacking_color):
+                return True
+
+        elif name == "Pawn":
+            direction = -1 if attacking_color == "white" else 1
+            if (pos[0] + direction, pos[1]) == target:
+                return True
+            starting_row = 6 if attacking_color == "white" else 1
+            midpoint = (pos[0] + direction, pos[1])
+            if pos[0] == starting_row and midpoint not in pieces and (pos[0] + 2 * direction, pos[1]) == target:
+                return True
+            if target[0] == pos[0] and abs(target[1] - pos[1]) == 1:
+                occupant = pieces.get(target)
+                if occupant is not None and occupant[0] == defending_color:
+                    return True
+
+        elif name == "King":
+            dr = target[0] - pos[0]
+            dc = target[1] - pos[1]
+            abs_dr = abs(dr)
+            abs_dc = abs(dc)
+            max_dist = max(abs_dr, abs_dc)
+            if max_dist == 1:
+                return True
+            if max_dist == 2 and (abs_dr == abs_dc or abs_dr == 0 or abs_dc == 0):
+                midpoint = (pos[0] + (dr > 0) - (dr < 0), pos[1] + (dc > 0) - (dc < 0))
+                if midpoint not in pieces:
+                    return True
+
+    return False
+
+
+def ref_is_in_check(state, color):
+    king_pos = state["white_king"] if color == "white" else state["black_king"]
+    if king_pos is None:
+        return True
+    return ref_is_square_attacked(state, king_pos, opposite(color))
+
+
+def ref_apply_move(state, move):
+    child = ref_clone(state)
+    start, end = move
+    moving_color, moving_name = child["pieces"].pop(start)
+
+    if moving_name == "King":
+        if moving_color == "white":
+            child["white_king"] = end
+        else:
+            child["black_king"] = end
+
+    if moving_name == "Rook":
+        dr = (end[0] > start[0]) - (start[0] > end[0])
+        dc = (end[1] > start[1]) - (start[1] > end[1])
+        cr, cc = start[0] + dr, start[1] + dc
+        while (cr, cc) != end:
+            occupant = child["pieces"].get((cr, cc))
+            if occupant is not None and occupant[0] != moving_color:
+                ref_remove_piece(child, (cr, cc))
+            cr += dr
+            cc += dc
+
+    target_piece = child["pieces"].get(end)
+    if target_piece is not None:
+        ref_remove_piece(child, end)
+
+    ref_add_piece(child, moving_color, moving_name, end)
+
+    if moving_name == "Queen" and target_piece is not None:
+        ref_remove_piece(child, end)
+        for dr, dc in DIRECTIONS["king"]:
+            adj = (end[0] + dr, end[1] + dc)
+            occupant = child["pieces"].get(adj)
+            if occupant is not None and occupant[0] != moving_color:
+                ref_remove_piece(child, adj)
+    elif moving_name == "Pawn":
+        promotion_row = 0 if moving_color == "white" else 7
+        if end[0] == promotion_row:
+            ref_remove_piece(child, end)
+            ref_add_piece(child, moving_color, "Queen", end)
+            moving_name = "Queen"
+
+    if moving_name == "Knight":
+        active_targets = ref_knight_targets(end)
+        active_victims = {sq for sq in active_targets if sq in child["pieces"] and child["pieces"][sq][0] != moving_color}
+        enemy_knights = {sq for sq in active_victims if child["pieces"][sq][1] == "Knight"}
+        passive_victims = set()
+        for enemy_knight_pos in enemy_knights:
+            for sq in ref_knight_targets(enemy_knight_pos):
+                occupant = child["pieces"].get(sq)
+                if occupant is not None and occupant[0] == moving_color:
+                    passive_victims.add(sq)
+        for sq in active_victims | passive_victims:
+            ref_remove_piece(child, sq)
+    else:
+        occupant = child["pieces"].get(end)
+        if occupant is not None:
+            for sq in ref_knight_targets(end):
+                attacker = child["pieces"].get(sq)
+                if attacker is not None and attacker[0] != occupant[0] and attacker[1] == "Knight":
+                    ref_remove_piece(child, end)
+                    break
+
+    return child
+
+
+def ref_legal_moves(state, color):
+    moves = []
+    for pos, (piece_color, _piece_name) in sorted(state["pieces"].items()):
+        if piece_color != color:
+            continue
+        for end in ref_piece_moves(state, pos):
+            child = ref_apply_move(state, (pos, end))
+            king_pos = child["white_king"] if color == "white" else child["black_king"]
+            if king_pos is not None and not ref_is_in_check(child, color):
+                moves.append((pos, end))
+    return moves
+
+
+def move_list_str(moves):
+    if not moves:
+        return "(none)"
+    return ", ".join(f"{square_name(start)}-{square_name(end)}" for start, end in sorted(moves))
+
+
+def compare_engine_and_reference(board, color, label):
+    state = ref_from_board(board)
+    engine_check = is_in_check(board, color)
+    ref_check = ref_is_in_check(state, color)
+    engine_moves = set(get_all_legal_moves(board, color))
+    ref_moves = set(ref_legal_moves(state, color))
+    engine_has_moves = has_legal_moves(board, color)
+    ref_has_moves = bool(ref_moves)
+
+    details = position_details(board, label)
+    details.append(f"{color} in check: engine={engine_check}, reference={ref_check}")
+    details.append(f"{color} has legal moves: engine={engine_has_moves}, reference={ref_has_moves}")
+    details.append(f"Engine legal moves ({len(engine_moves)}): {move_list_str(engine_moves)}")
+    details.append(f"Reference legal moves ({len(ref_moves)}): {move_list_str(ref_moves)}")
+
+    expect(engine_check == ref_check, f"{label}: check status mismatch between engine and reference.")
+    expect(engine_has_moves == ref_has_moves, f"{label}: has-legal-moves mismatch between engine and reference.")
+    expect(engine_moves == ref_moves, f"{label}: legal move set mismatch between engine and reference.")
+    return details
 
 
 def case_mutual_knight_resolution():
@@ -348,6 +761,88 @@ def case_tb_missing_cross_returns_none():
     return details
 
 
+def case_oracle_curated_positions():
+    positions = [
+        (
+            "Queen proxy explosion check",
+            "black",
+            make_board([
+                ("white", King, (7, 7)),    # h1
+                ("white", Queen, (4, 7)),   # h4
+                ("black", King, (6, 4)),    # e2
+                ("black", Pawn, (6, 5)),    # f2
+            ]),
+        ),
+        (
+            "Rook railgun check through enemy screen",
+            "black",
+            make_board([
+                ("white", King, (7, 7)),    # h1
+                ("white", Rook, (3, 7)),    # h5
+                ("black", King, (3, 0)),    # a5
+                ("black", Pawn, (3, 4)),    # e5
+            ]),
+        ),
+        (
+            "Bishop zig-zag mobility",
+            "white",
+            make_board([
+                ("white", King, (7, 0)),    # a1
+                ("white", Bishop, (4, 3)),  # d4
+                ("black", King, (0, 7)),    # h8
+                ("black", Pawn, (2, 4)),    # e6
+                ("black", Pawn, (5, 4)),    # e3
+            ]),
+        ),
+        (
+            "King two-step through attacked midpoint",
+            "white",
+            make_board([
+                ("white", King, (7, 4)),    # e1
+                ("black", King, (0, 7)),    # h8
+                ("black", Rook, (0, 5)),    # f8 attacks f-file midpoint
+            ]),
+        ),
+    ]
+
+    details = []
+    for label, color, board in positions:
+        details.extend(compare_engine_and_reference(board, color, label))
+
+    e1_g1 = ((7, 4), (7, 6))
+    king_board = positions[3][2]
+    engine_moves = set(get_all_legal_moves(king_board, "white"))
+    expect(e1_g1 in engine_moves,
+           "Expected the white king to be allowed to move e1-g1 through an attacked midpoint if g1 is safe.")
+    details.append("Verified: the curated oracle positions all matched the independent reference model.")
+    return details
+
+
+def case_oracle_playout_consistency():
+    import random
+
+    rng = random.Random(20260307)
+    details = []
+    board = Board()
+    turn = "white"
+    checked_positions = 0
+
+    for ply in range(16):
+        details.extend(compare_engine_and_reference(board, turn, f"Oracle playout ply {ply + 1}"))
+        checked_positions += 1
+
+        legal_moves = sorted(get_all_legal_moves(board, turn))
+        if not legal_moves:
+            break
+        move = rng.choice(legal_moves)
+        details.append(f"Chosen continuation: {square_name(move[0])}-{square_name(move[1])}")
+        board.make_move(*move)
+        turn = opposite(turn)
+
+    details.append(f"Verified {checked_positions} consecutive reachable positions from the starting position.")
+    return details
+
+
 CASES = [
     TestCaseSpec(
         "mutual_knight_resolution",
@@ -372,6 +867,18 @@ CASES = [
         "search",
         "Verify that OpponentAI treats passive knight-zone evaporations as tactical moves.",
         case_opai_passive_knight_tactical,
+    ),
+    TestCaseSpec(
+        "oracle_curated_positions",
+        "oracle",
+        "Cross-check the optimized engine against an independent reference model on curated Jungle-specific quirk positions.",
+        case_oracle_curated_positions,
+    ),
+    TestCaseSpec(
+        "oracle_playout_consistency",
+        "oracle",
+        "Cross-check the optimized engine against an independent reference model across a deterministic legal playout from the starting position.",
+        case_oracle_playout_consistency,
     ),
     TestCaseSpec(
         "tb_inventory",
@@ -418,7 +925,7 @@ def select_cases(args):
             )
         return [case_map[name] for name in args.case]
 
-    groups = set(args.group or ["rules", "search", "tablebase"])
+    groups = set(args.group or ["rules", "search", "oracle", "tablebase"])
     if "all" in groups:
         return CASES[:]
     return [case for case in CASES if case.group in groups]
@@ -459,7 +966,7 @@ def main():
     parser.add_argument(
         "--group",
         action="append",
-        choices=["rules", "search", "tablebase", "all"],
+        choices=["rules", "search", "oracle", "tablebase", "all"],
         help="Run only the selected test group(s). Defaults to all groups.",
     )
     parser.add_argument(
