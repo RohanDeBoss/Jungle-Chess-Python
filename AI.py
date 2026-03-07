@@ -1,4 +1,4 @@
-# AI.py (v96.3 Counter-Move Heuristic, History-Sensitive LMR, and Refined PVS)
+# AI.py (v96.4 "forwarding" the hash optimisation)
 
 import time
 import random
@@ -442,18 +442,20 @@ class ChessBot:
 
             try:
                 if alpha_floor is not None:
+                    # PASS child_hash AND prev_move=move
                     probe_score = -self.negamax(
                         child_board, depth - 1, -(alpha_floor + 1), -alpha_floor,
-                        self.opponent_color, 1, search_path, current_hash=child_hash
+                        self.opponent_color, 1, search_path, current_hash=child_hash, prev_move=move
                     )
                     if probe_score <= alpha_floor:
                         continue
                     score = -self.negamax(
                         child_board, depth - 1, -beta, -alpha,
-                        self.opponent_color, 1, search_path, current_hash=child_hash
+                        self.opponent_color, 1, search_path, current_hash=child_hash, prev_move=move
                     )
                 else:
-                    score = -self.negamax(child_board, depth - 1, -beta, -alpha, self.opponent_color, 1, search_path, current_hash=child_hash)
+                    # PASS child_hash AND prev_move=move
+                    score = -self.negamax(child_board, depth - 1, -beta, -alpha, self.opponent_color, 1, search_path, current_hash=child_hash, prev_move=move)
             finally:
                 self.position_counts[child_hash] -= 1
 
@@ -480,6 +482,7 @@ class ChessBot:
                 tb_score = tb_score_absolute if turn == 'white' else -tb_score_absolute
                 return (tb_score - ply) if tb_score > self.MATE_SCORE - 1000 else (tb_score + ply if tb_score < -self.MATE_SCORE + 1000 else tb_score)
 
+        # HASH FORWARDING Logic
         hash_val = current_hash if current_hash is not None else board_hash(board, turn)
         
         # Repetition / Move Limit / Insufficient Material
@@ -518,15 +521,15 @@ class ChessBot:
                     static_eval = self.evaluate_board(board, turn)
                     if static_eval >= beta:
                         reduction = self.NMP_BASE_REDUCTION + (depth // self.NMP_DEPTH_DIVISOR)
-                        score = -self.negamax(board, depth - 1 - reduction, -beta, -beta + 1, opponent_turn, ply + 1, search_path)
+                        # OPTIMIZATION: Null move hash forwarding via XOR turn flip
+                        score = -self.negamax(board, depth - 1 - reduction, -beta, -beta + 1, opponent_turn, ply + 1, search_path, current_hash=hash_val ^ ZOBRIST_TURN)
                         if score >= beta:
                             return beta
 
-            # 3. Move Ordering (Now includes Counter-Moves)
+            # 3. Move Ordering (Includes Counter-Moves)
             pseudo_moves = get_all_pseudo_legal_moves(board, turn)
             hash_move = tt_entry.best_move if tt_entry else None
             
-            # Find the counter-move for this specific situation
             c_move = None
             if prev_move:
                 c_move = self.counter_moves[0 if turn == 'white' else 1][prev_move[0][0]*8+prev_move[0][1]][prev_move[1][0]*8+prev_move[1][1]]
@@ -553,7 +556,6 @@ class ChessBot:
                 if depth >= 3 and legal_moves_count > 1 and not is_in_check_flag:
                     if not is_good_tactic:
                         reduction = 1
-                        # Extra reduction for moves with negative history scores
                         f_sq, t_sq = move[0][0]*8+move[0][1], move[1][0]*8+move[1][1]
                         if self.history_heuristic_table[0 if turn == 'white' else 1][f_sq][t_sq] < 0:
                             reduction += 1
@@ -562,7 +564,7 @@ class ChessBot:
                 child_hash = board_hash(child_board, opponent_turn)
                 search_depth = max(0, depth - 1 - reduction)
 
-                # 5. PVS Logic
+                # 5. PVS Logic (Correctly forwards child_hash and prev_move=move)
                 if legal_moves_count == 1:
                     score = -self.negamax(child_board, search_depth, -beta, -alpha, opponent_turn, ply + 1, search_path, current_hash=child_hash, prev_move=move)
                 else:
@@ -579,7 +581,7 @@ class ChessBot:
                         if ply < len(self.killer_moves) and self.killer_moves[ply][0] != move:
                             self.killer_moves[ply][1], self.killer_moves[ply][0] = self.killer_moves[ply][0], move
                         
-                        # Update Counter-Moves
+                        # Update Counter-Moves for the opponent's next turn
                         if prev_move:
                             self.counter_moves[0 if turn == 'white' else 1][prev_move[0][0]*8+prev_move[0][1]][prev_move[1][0]*8+prev_move[1][1]] = move
 

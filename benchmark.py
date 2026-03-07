@@ -14,7 +14,7 @@ JSON_DIR = "benchmark_reports"
 
 # --- CONFIGURATION ---
 TARGET_DEPTH = 6  # How deep to search each position
-NUM_RUNS = 2      # How many times to run the entire suite
+NUM_RUNS = 1      # How many times to run the entire suite
 
 # Force the Tablebase to return None so we test Python's raw calculation speed
 TablebaseManager.TablebaseManager.probe = lambda self, board, turn: None
