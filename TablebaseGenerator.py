@@ -1,4 +1,4 @@
-# TablebaseGenerator.py (v5.7 - restore midpoint-aware king helper)
+# TablebaseGenerator.py (v5.8 - separate regen longest-mate log)
 
 import os
 import time
@@ -18,8 +18,9 @@ os.makedirs(TB_DIR, exist_ok=True)
 
 # Jungle Chess Rule: 0 legal moves is a loss, not a draw.
 STALEMATE_IS_LOSS = True 
-ENABLE_RETRO_FILTER_4MAN = False # True is less performance, but smaller file size and more correctness
-LONGEST_MATES_NOTE_FILE = os.path.join(TB_DIR, "longest_mates.tsv")
+ENABLE_RETRO_FILTER_4MAN = True # True is less performance, but smaller file size and more correctness
+LONGEST_MATES_NOTE_FILE = os.path.join(TB_DIR, "new_longest_mates.tsv")
+LONGEST_MATE_KEY_PREFIX = "regen_"
 
  # How many CPUs to subtract from the total when choosing worker count.
  # The generator will use max(1, os.cpu_count() - TB_THREADS_SUBTRACT).
@@ -118,7 +119,7 @@ def _write_longest_mate_records(records):
 
 def _upsert_longest_mate_record(table_key, max_dtm, decisive, remaining, elapsed_seconds):
     records = _read_longest_mate_records()
-    records[table_key] = {
+    records[f"{LONGEST_MATE_KEY_PREFIX}{table_key}"] = {
         "max_dtm": str(int(max_dtm)),
         "decisive": str(int(decisive)),
         "remaining": str(int(remaining)),
@@ -1422,7 +1423,7 @@ def profile_4man(p1_name, p2_name, sample=2000):
     print(s.getvalue())
 
 if __name__ == "__main__":
-    print("=== Tablebase Generator (v5.7: restore midpoint-aware king helper) ===")
+    print("=== Tablebase Generator (v5.8: separate regen longest-mate log) ===")
     mode = input(
         "1. Generate 3-Man Tables\n"
         "2. Generate 4-Man Tables (K + 2 pieces vs K)\n"
