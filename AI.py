@@ -1,4 +1,4 @@
-# AI.py (v96.1 - Array Zobrist, Hash Forwarding & Pruning Optimizations + LMR scaling with depth (more aggressive))
+# AI.py (v96.2 - Optimization: History Malus & Gravity)
 
 import time
 import random
@@ -125,7 +125,8 @@ class ChessBot:
         self.used_heuristic_eval = False
         self.tb_hits = 0
         self.killer_moves = [[None, None] for _ in range(max(200, self.max_moves))]
-        self.history_heuristic_table = [[[0 for _ in range(ROWS*COLS)] for _ in range(ROWS*COLS)] for _ in range(2)]
+        # History table: [color][from_sq][to_sq]
+        self.history_heuristic_table = [[[0 for _ in range(64)] for _ in range(64)] for _ in range(2)]
 
     def _report_log(self, message): self.comm_queue.put(('log', message))
     def _report_eval(self, score, depth): self.comm_queue.put(('eval', score if self.color == 'white' else -score, depth))
@@ -470,7 +471,7 @@ class ChessBot:
         self.nodes_searched += 1
         if self.cancellation_event.is_set(): raise SearchCancelledException()
 
-        # 1. Tablebase Probe
+        # 1. Tablebase / Mate / TT Lookups (Existing Logic)
         if len(board.white_pieces) + len(board.black_pieces) <= 4:
             tb_score_absolute = self.tb_manager.probe(board, turn)
             if tb_score_absolute is not None:
@@ -480,7 +481,6 @@ class ChessBot:
                 elif tb_score < -self.MATE_SCORE + 1000: return tb_score + ply
                 return tb_score
 
-        # 2. Mate Distance Pruning
         mate_value = self.MATE_SCORE - ply
         if beta > mate_value:
             beta = mate_value
@@ -491,10 +491,7 @@ class ChessBot:
             alpha = mated_value
             if beta <= mated_value: return mated_value
 
-        # 3. Zobrist Hash Forwarding (v96 Optimization)
         hash_val = current_hash if current_hash is not None else board_hash(board, turn)
-        
-        # 4. Repetition & Draw Detection
         if ply > 0:
             if hash_val in search_path: return self.DRAW_SCORE
             if self.position_counts.get(hash_val, 0) >= 3: return self.DRAW_SCORE
@@ -502,14 +499,12 @@ class ChessBot:
         if is_insufficient_material(board): return self.DRAW_SCORE
         if self.ply_count + ply >= self.max_moves: return self.DRAW_SCORE
 
-        # 5. Transposition Table Lookup
         original_alpha = alpha
         tt_entry = self.tt.get(hash_val)
         if ply > 0 and tt_entry and tt_entry.depth >= depth:
             tt_score = tt_entry.score
             if tt_score > self.MATE_SCORE - 1000: tt_score -= ply
             elif tt_score < -self.MATE_SCORE + 1000: tt_score += ply
-
             if tt_entry.flag == TT_FLAG_EXACT: return tt_score
             elif tt_entry.flag == TT_FLAG_LOWERBOUND: alpha = max(alpha, tt_score)
             elif tt_entry.flag == TT_FLAG_UPPERBOUND: beta = min(beta, tt_score)
@@ -527,15 +522,13 @@ class ChessBot:
             path_added = True
 
         try:
-            # 6. Null Move Pruning (v96 Optimized O(1) Check)
+            # 2. Null Move Pruning (Existing Logic)
             if (self.USE_NULL_MOVE_PRUNING and depth >= self.NMP_MIN_DEPTH and ply > 0 and not is_in_check_flag and
                 beta < self.MATE_SCORE - 200):
-                
                 white_majors = board.piece_counts['white'][Knight] + board.piece_counts['white'][Bishop] + \
                                board.piece_counts['white'][Rook] + board.piece_counts['white'][Queen]
                 black_majors = board.piece_counts['black'][Knight] + board.piece_counts['black'][Bishop] + \
                                board.piece_counts['black'][Rook] + board.piece_counts['black'][Queen]
-                
                 if white_majors > 0 and black_majors > 0:
                     self.used_heuristic_eval = True
                     static_eval = self.evaluate_board(board, turn)
@@ -549,13 +542,16 @@ class ChessBot:
                             self.tt[hash_val] = TTEntry(store_score, depth, TT_FLAG_LOWERBOUND, None)
                             return beta
 
-            # 7. Move Generation & Ordering
+            # 3. Move Ordering
             pseudo_moves = get_all_pseudo_legal_moves(board, turn)
             hash_move = tt_entry.best_move if tt_entry else None
             ordered_entries = self.order_moves(board, pseudo_moves, ply, hash_move, turn, return_meta=True)
 
             best_move_for_node = None
             legal_moves_count = 0
+            
+            # Tracking for History Malus
+            quiet_moves_tried = []
 
             for move, meta in ordered_entries:
                 is_good_tactic, moving_piece = meta
@@ -567,21 +563,16 @@ class ChessBot:
                 if is_in_check(child_board, turn): continue
 
                 legal_moves_count += 1
-                
-                # Precalculate hash for next level
-                child_hash = board_hash(child_board, opponent_turn)
+                if not is_good_tactic: quiet_moves_tried.append(move)
 
-                # --- THE BIG GUN: LATE MOVE REDUCTIONS (LMR) ---
+                child_hash = board_hash(child_board, opponent_turn)
                 reduction = 0
                 if depth >= 3 and legal_moves_count > 1 and not is_in_check_flag and not is_good_tactic:
-                    if legal_moves_count > 12:
-                        reduction = 2
-                    else:
-                        reduction = 1
+                    reduction = 1 + (depth // 8)
 
                 search_depth = depth - 1 - reduction
 
-                # 8. PVS Search Logic
+                # 4. PVS Search Logic
                 if legal_moves_count == 1:
                     score = -self.negamax(child_board, search_depth, -beta, -alpha, opponent_turn, ply + 1, search_path, current_hash=child_hash)
                     if reduction > 0 and score > alpha:
@@ -593,15 +584,28 @@ class ChessBot:
 
                 if score > alpha:
                     alpha, best_move_for_node = score, move
+                
+                # --- BETA CUTOFF ---
                 if alpha >= beta:
-                    # Killer move & History update
                     if not is_good_tactic:
+                        # KILLERS
                         if ply < len(self.killer_moves) and self.killer_moves[ply][0] != move:
                             self.killer_moves[ply][1], self.killer_moves[ply][0] = self.killer_moves[ply][0], move
+                        
+                        # HISTORY BONUS/MALUS
                         if moving_piece:
-                            color_idx = 0 if moving_piece.color == 'white' else 1
-                            from_sq, to_sq = move[0][0]*8+move[0][1], move[1][0]*8+move[1][1]
-                            self.history_heuristic_table[color_idx][from_sq][to_sq] += depth * depth
+                            c_idx = 0 if turn == 'white' else 1
+                            bonus = depth * depth
+                            
+                            # Give bonus to the move that caused the cutoff
+                            f_idx, t_idx = move[0][0]*8+move[0][1], move[1][0]*8+move[1][1]
+                            self.history_heuristic_table[c_idx][f_idx][t_idx] = min(2_000_000, self.history_heuristic_table[c_idx][f_idx][t_idx] + bonus)
+                            
+                            # NEW: Penalize every other quiet move we tried that FAILED to cutoff
+                            for f_move in quiet_moves_tried:
+                                if f_move != move:
+                                    ff, ft = f_move[0][0]*8+f_move[0][1], f_move[1][0]*8+f_move[1][1]
+                                    self.history_heuristic_table[c_idx][ff][ft] = max(-2_000_000, self.history_heuristic_table[c_idx][ff][ft] - bonus)
 
                     store_score = beta
                     if store_score > self.MATE_SCORE - 1000: store_score += ply
@@ -610,11 +614,9 @@ class ChessBot:
                     return beta
 
             if legal_moves_count == 0: return -self.MATE_SCORE + ply
-
             store_score = alpha
             if store_score > self.MATE_SCORE - 1000: store_score += ply
             elif store_score < -self.MATE_SCORE + 1000: store_score -= ply
-
             flag = TT_FLAG_EXACT if alpha > original_alpha else TT_FLAG_UPPERBOUND
             self.tt[hash_val] = TTEntry(store_score, depth, flag, best_move_for_node)
             return alpha
@@ -692,14 +694,12 @@ class ChessBot:
         return alpha
 
     def order_moves(self, board, moves, ply, hash_move, turn, return_meta=False):
-        if not moves:
-            return [] if return_meta else []
-
+        if not moves: return [] if return_meta else []
         scored_moves = []
         move_meta = {}
         killers = self.killer_moves[ply] if ply < len(self.killer_moves) else [None, None]
-        color_index = 0 if turn == 'white' else 1
-        opening_bonus_enabled = (ply <= self.OPENING_BONUS_MAX_PLY and self._is_opening_position(board))
+        c_idx = 0 if turn == 'white' else 1
+        is_opening = (ply <= self.OPENING_BONUS_MAX_PLY and self._is_opening_position(board))
         
         for move in moves:
             moving_piece = board.grid[move[0][0]][move[0][1]]
@@ -715,24 +715,20 @@ class ChessBot:
             if move == hash_move:
                 score = self.BONUS_PV_MOVE
             elif is_tactical:
-                if swing >= 0:
-                    score = self.BONUS_CAPTURE + swing
-                else:
-                    score = self.BAD_TACTIC_PENALTY + swing
+                score = self.BONUS_CAPTURE + swing if swing >= 0 else self.BAD_TACTIC_PENALTY + swing
             else:
                 if move in killers:
                     score = self.BONUS_KILLER_1 if move == killers[0] else self.BONUS_KILLER_2
                 else:
-                    from_idx, to_idx = move[0][0]*COLS+move[0][1], move[1][0]*COLS+move[1][1]
-                    score = self.history_heuristic_table[color_index][from_idx][to_idx]
+                    # History score can now be positive OR negative!
+                    score = self.history_heuristic_table[c_idx][move[0][0]*8+move[0][1]][move[1][0]*8+move[1][1]]
 
-            if opening_bonus_enabled:
+            if is_opening:
                 score += self._opening_development_bonus(move, moving_piece)
             scored_moves.append((score, move))
 
         scored_moves.sort(key=lambda item: item[0], reverse=True)
-        if return_meta:
-            return [(move, move_meta[move]) for _, move in scored_moves]
+        if return_meta: return [(move, move_meta[move]) for _, move in scored_moves]
         return [move for _, move in scored_moves]
     
     def evaluate_board(self, board, turn_to_move):
