@@ -1,4 +1,4 @@
-# OPAI.py (v89.4 - Synced with v95 Architecture, Retains SE Personality)
+# OPAI.py (v89.5 - Jungle trap and knight tactic sync)
 
 import time
 import random
@@ -124,6 +124,30 @@ class OpponentAI:
         child = board_before.clone()
         child.make_move(move[0], move[1])
         return format_move_san(board_before, child, move)
+
+    def _is_tactical_move(self, board, move, moving_piece=None, target_piece=None):
+        if moving_piece is None:
+            moving_piece = board.grid[move[0][0]][move[0][1]]
+        if moving_piece is None:
+            return False
+
+        if target_piece is None:
+            target_piece = board.grid[move[1][0]][move[1][1]]
+        if target_piece is not None:
+            return True
+
+        if isinstance(moving_piece, Pawn) and (move[1][0] == 0 or move[1][0] == ROWS - 1):
+            return True
+        if isinstance(moving_piece, Rook) and is_rook_piercing_capture(board, move):
+            return True
+        if isinstance(moving_piece, Knight) and is_quiet_knight_evaporation(board, move):
+            return True
+        if is_passive_knight_zone_evaporation(board, move):
+            return True
+        return False
+
+    def _ordering_tactical_swing(self, board, move):
+        return calculate_material_swing(board, move, ORDERING_VALUES)
 
     def _get_root_tb_eval_relative(self):
         root_abs = self.tb_manager.probe(self.board, self.color)
@@ -382,10 +406,7 @@ class OpponentAI:
             for move in ordered_moves:
                 target_piece = board.grid[move[1][0]][move[1][1]]
                 moving_piece = board.grid[move[0][0]][move[0][1]]
-                is_tactical = target_piece is not None or \
-                              (isinstance(moving_piece, Pawn) and (move[1][0] == 0 or move[1][0] == ROWS - 1)) or \
-                              (isinstance(moving_piece, Rook) and is_rook_piercing_capture(board, move)) or \
-                              (isinstance(moving_piece, Knight) and is_quiet_knight_evaporation(board, move))
+                is_tactical = self._is_tactical_move(board, move, moving_piece, target_piece)
 
                 child_board = board.clone()
                 child_board.make_move(move[0], move[1])
@@ -451,6 +472,7 @@ class OpponentAI:
                 elif tb_score < -self.MATE_SCORE + 1000: return tb_score + ply
                 return tb_score
 
+        if not has_legal_moves(board, turn): return -self.MATE_SCORE + ply
         if is_insufficient_material(board): return self.DRAW_SCORE
         if ply >= self.MAX_Q_SEARCH_DEPTH:
             self.used_heuristic_eval = True
@@ -472,16 +494,13 @@ class OpponentAI:
             else:
                 target_piece = board.grid[move[1][0]][move[1][1]]
                 moving_piece = board.grid[move[0][0]][move[0][1]]
-                is_tactical = target_piece is not None or \
-                              (isinstance(moving_piece, Pawn) and (move[1][0] == 0 or move[1][0] == ROWS - 1)) or \
-                              (isinstance(moving_piece, Rook) and is_rook_piercing_capture(board, move)) or \
-                              (isinstance(moving_piece, Knight) and is_quiet_knight_evaporation(board, move))
+                is_tactical = self._is_tactical_move(board, move, moving_piece, target_piece)
                 if is_tactical:
                     promising_moves.append(move)
         
         scored_moves =[]
         for move in promising_moves:
-            swing = calculate_material_swing(board, move, ORDERING_VALUES)
+            swing = self._ordering_tactical_swing(board, move)
             scored_moves.append((swing, move))
         scored_moves.sort(key=lambda item: item[0], reverse=True)
 
@@ -523,13 +542,10 @@ class OpponentAI:
                 moving_piece = board.grid[move[0][0]][move[0][1]]
                 target_piece = board.grid[move[1][0]][move[1][1]]
                 
-                is_promotion = isinstance(moving_piece, Pawn) and (move[1][0] == 0 or move[1][0] == ROWS - 1)
-                is_tactical = target_piece is not None or is_promotion or \
-                              (isinstance(moving_piece, Rook) and is_rook_piercing_capture(board, move)) or \
-                              (isinstance(moving_piece, Knight) and is_quiet_knight_evaporation(board, move))
+                is_tactical = self._is_tactical_move(board, move, moving_piece, target_piece)
 
                 if is_tactical:
-                    swing = calculate_material_swing(board, move, ORDERING_VALUES)
+                    swing = self._ordering_tactical_swing(board, move)
                     score = self.BONUS_CAPTURE + swing
                 else:
                     if move in killers: score = self.BONUS_KILLER_1 if move == killers[0] else self.BONUS_KILLER_2

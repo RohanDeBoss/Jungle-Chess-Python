@@ -1,4 +1,4 @@
-# GameLogic.py (v48 - pawn 2-step attack detection fix)
+# GameLogic.py (v49 - mutual knight evaporation cascade fix)
 
 # -----------------------------
 # Global Constants
@@ -360,14 +360,22 @@ class Board:
         if is_active_move:
             knight_instance = grid[pos[0]][pos[1]]
             if not knight_instance: return
-            to_remove, enemy_knights_destroyed =[], False
-            for r, c in KNIGHT_ATTACKS_FROM[pos]:
-                target = grid[r][c]
-                if target and target.color != knight_instance.color:
-                    to_remove.append(target)
-                    if isinstance(target, Knight): enemy_knights_destroyed = True
-            for piece in to_remove: self.remove_piece(piece.pos[0], piece.pos[1])
-            if enemy_knights_destroyed: self.remove_piece(pos[0], pos[1])
+            captured, passive_losses, enemy_knights = self._collect_knight_evaporation(
+                pos, knight_instance.color, knight_instance
+            )
+            delayed_knights = set(enemy_knights)
+            removed = set()
+            for piece in captured + passive_losses:
+                if (piece is None or piece is knight_instance or piece in delayed_knights or
+                    piece in removed or piece.pos is None):
+                    continue
+                self.remove_piece(piece.pos[0], piece.pos[1])
+                removed.add(piece)
+            for enemy_knight in enemy_knights:
+                if enemy_knight.pos is not None:
+                    self.remove_piece(enemy_knight.pos[0], enemy_knight.pos[1])
+            if knight_instance in passive_losses and knight_instance.pos is not None:
+                self.remove_piece(pos[0], pos[1])
         else:
             victim = grid[pos[0]][pos[1]]
             if not victim: return
@@ -395,14 +403,39 @@ class Board:
             if adj_piece and adj_piece.color != queen_color: captured.append(adj_piece)
         return captured
     
-    def _get_knight_aoe_outcome(self, knight_pos, knight_color):
-        captured, self_evaporates =[], False
-        for r, c in KNIGHT_ATTACKS_FROM.get(knight_pos, set()):
+    def _collect_knight_evaporation(self, knight_pos, knight_color, self_piece=None):
+        captured = []
+        passive_losses = []
+        enemy_knights = []
+        if self_piece is None:
+            self_piece = self.grid[knight_pos[0]][knight_pos[1]]
+
+        for r, c in KNIGHT_ATTACKS_FROM.get(knight_pos, ()):
             target = self.grid[r][c]
             if target and target.color != knight_color:
                 captured.append(target)
-                if isinstance(target, Knight): self_evaporates = True
-        return captured, self_evaporates
+                if type(target) is Knight:
+                    enemy_knights.append(target)
+
+        if enemy_knights:
+            seen = set()
+            for enemy_knight in enemy_knights:
+                if enemy_knight.pos is None:
+                    continue
+                for r, c in KNIGHT_ATTACKS_FROM.get(enemy_knight.pos, ()):
+                    if (r, c) == knight_pos:
+                        target = self_piece
+                    else:
+                        target = self.grid[r][c]
+                    if target and target.color == knight_color and target not in seen:
+                        passive_losses.append(target)
+                        seen.add(target)
+
+        return captured, passive_losses, enemy_knights
+
+    def _get_knight_aoe_outcome(self, knight_pos, knight_color, self_piece=None):
+        captured, passive_losses, _ = self._collect_knight_evaporation(knight_pos, knight_color, self_piece)
+        return captured, passive_losses
 
     def get_move_outcome(self, move):
         start_pos, end_pos = move
@@ -419,9 +452,9 @@ class Board:
             friendly_lost.add(moving_piece)
             opponent_captured.update(self._get_queen_aoe_captures(end_pos, moving_piece.color))
         elif isinstance(moving_piece, Knight):
-            captures, self_evaporates = self._get_knight_aoe_outcome(end_pos, moving_piece.color)
+            captures, passive_losses = self._get_knight_aoe_outcome(end_pos, moving_piece.color, moving_piece)
             opponent_captured.update(captures)
-            if self_evaporates: friendly_lost.add(moving_piece)
+            friendly_lost.update(passive_losses)
         elif isinstance(moving_piece, Pawn):
             promotion_rank = 0 if moving_piece.color == "white" else (ROWS - 1)
             if end_pos[0] == promotion_rank:
@@ -821,13 +854,11 @@ def fast_approximate_material_swing(board, move, moving_piece, target_piece, pie
             cr += dr; cc += dc
 
     if my_type is Knight:
-        evaporates_self = False
-        for r, c in KNIGHT_ATTACKS_FROM.get(move[1], []):
-            adj = board.grid[r][c]
-            if adj and adj.color != moving_piece.color:
-                swing += piece_values.get(type(adj), 0)
-                if type(adj) is Knight: evaporates_self = True
-        if evaporates_self: swing -= piece_values.get(Knight, 0)
+        captures, passive_losses = board._get_knight_aoe_outcome(move[1], moving_piece.color, moving_piece)
+        for piece in captures:
+            swing += piece_values.get(type(piece), 0)
+        for piece in passive_losses:
+            swing -= piece_values.get(type(piece), 0)
         return swing
 
     if my_type is not Knight:
