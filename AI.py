@@ -1,4 +1,4 @@
-# AI.py (v96.4 "forwarding" the hash optimisation)
+# AI.py (v97 - Probecut Implementation at depth 6+)
 
 import time
 import random
@@ -80,6 +80,10 @@ class ChessBot:
     NMP_DEPTH_DIVISOR = 6
     USE_NULL_MOVE_PRUNING = True
     Q_SEARCH_SAFETY_MARGIN = 600
+    USE_PROBCUT = True
+    PROBCUT_MIN_DEPTH = 6
+    PROBCUT_REDUCTION = 2
+    PROBCUT_MARGIN = 200
 
     BONUS_PV_MOVE = 10_000_000
     BONUS_CAPTURE = 8_000_000
@@ -482,10 +486,8 @@ class ChessBot:
                 tb_score = tb_score_absolute if turn == 'white' else -tb_score_absolute
                 return (tb_score - ply) if tb_score > self.MATE_SCORE - 1000 else (tb_score + ply if tb_score < -self.MATE_SCORE + 1000 else tb_score)
 
-        # HASH FORWARDING Logic
         hash_val = current_hash if current_hash is not None else board_hash(board, turn)
         
-        # Repetition / Move Limit / Insufficient Material
         if ply > 0:
             if hash_val in search_path or self.position_counts.get(hash_val, 0) >= 3: return self.DRAW_SCORE
         if is_insufficient_material(board) or self.ply_count + ply >= self.max_moves: return self.DRAW_SCORE
@@ -512,21 +514,33 @@ class ChessBot:
             search_path.add(hash_val); path_added = True
 
         try:
-            # 2. Null Move Pruning
+            # --- PROBCUT (Probability Cut) ---
+            if (self.USE_PROBCUT and depth >= self.PROBCUT_MIN_DEPTH and not is_in_check_flag and
+                abs(beta) < self.MATE_SCORE - 1000):
+                
+                # Do a shallow search with a wider beta to see if we can fail high early
+                shallow_beta = beta + self.PROBCUT_MARGIN
+                prob_score = self.negamax(board, depth - self.PROBCUT_REDUCTION, shallow_beta - 1, shallow_beta, turn, ply, search_path, current_hash, prev_move)
+                
+                if prob_score >= shallow_beta:
+                    # The shallow search proved this node is too good. Cut the deep search.
+                    # We store 'beta' as the score, as it's a safe lower bound.
+                    self.tt[hash_val] = TTEntry(beta, depth, TT_FLAG_LOWERBOUND, None)
+                    return beta
+            
+            # --- NULL MOVE PRUNING ---
             if (self.USE_NULL_MOVE_PRUNING and depth >= self.NMP_MIN_DEPTH and ply > 0 and not is_in_check_flag and beta < self.MATE_SCORE - 200):
-                # O(1) major piece check
                 if (board.piece_counts['white'][Knight] + board.piece_counts['white'][Bishop] + board.piece_counts['white'][Rook] + board.piece_counts['white'][Queen] > 0) and \
                    (board.piece_counts['black'][Knight] + board.piece_counts['black'][Bishop] + board.piece_counts['black'][Rook] + board.piece_counts['black'][Queen] > 0):
                     self.used_heuristic_eval = True
                     static_eval = self.evaluate_board(board, turn)
                     if static_eval >= beta:
                         reduction = self.NMP_BASE_REDUCTION + (depth // self.NMP_DEPTH_DIVISOR)
-                        # OPTIMIZATION: Null move hash forwarding via XOR turn flip
                         score = -self.negamax(board, depth - 1 - reduction, -beta, -beta + 1, opponent_turn, ply + 1, search_path, current_hash=hash_val ^ ZOBRIST_TURN)
                         if score >= beta:
                             return beta
 
-            # 3. Move Ordering (Includes Counter-Moves)
+            # --- MAIN SEARCH ---
             pseudo_moves = get_all_pseudo_legal_moves(board, turn)
             hash_move = tt_entry.best_move if tt_entry else None
             
@@ -551,7 +565,6 @@ class ChessBot:
                 legal_moves_count += 1
                 if not is_good_tactic: quiet_moves_tried.append(move)
 
-                # 4. Aggressive History-Based LMR
                 reduction = 0
                 if depth >= 3 and legal_moves_count > 1 and not is_in_check_flag:
                     if not is_good_tactic:
@@ -564,12 +577,11 @@ class ChessBot:
                 child_hash = board_hash(child_board, opponent_turn)
                 search_depth = max(0, depth - 1 - reduction)
 
-                # 5. PVS Logic (Correctly forwards child_hash and prev_move=move)
                 if legal_moves_count == 1:
                     score = -self.negamax(child_board, search_depth, -beta, -alpha, opponent_turn, ply + 1, search_path, current_hash=child_hash, prev_move=move)
                 else:
                     score = -self.negamax(child_board, search_depth, -(alpha + 1), -alpha, opponent_turn, ply + 1, search_path, current_hash=child_hash, prev_move=move)
-                    if score > alpha and score < beta: # Re-search
+                    if score > alpha and score < beta:
                         score = -self.negamax(child_board, depth - 1, -beta, -alpha, opponent_turn, ply + 1, search_path, current_hash=child_hash, prev_move=move)
 
                 if score > alpha:
@@ -577,15 +589,10 @@ class ChessBot:
                 
                 if alpha >= beta:
                     if not is_good_tactic:
-                        # Update Killers
                         if ply < len(self.killer_moves) and self.killer_moves[ply][0] != move:
                             self.killer_moves[ply][1], self.killer_moves[ply][0] = self.killer_moves[ply][0], move
-                        
-                        # Update Counter-Moves for the opponent's next turn
                         if prev_move:
                             self.counter_moves[0 if turn == 'white' else 1][prev_move[0][0]*8+prev_move[0][1]][prev_move[1][0]*8+prev_move[1][1]] = move
-
-                        # Update History (Bonus/Malus)
                         if moving_piece:
                             c_idx = 0 if turn == 'white' else 1
                             bonus = depth * depth
@@ -596,18 +603,13 @@ class ChessBot:
                                     ff, ft = f_move[0][0]*8+f_move[0][1], f_move[1][0]*8+f_move[1][1]
                                     self.history_heuristic_table[c_idx][ff][ft] = max(-2_000_000, self.history_heuristic_table[c_idx][ff][ft] - bonus)
 
-                    store_score = beta
-                    if store_score > self.MATE_SCORE - 1000: store_score += ply
-                    elif store_score < -self.MATE_SCORE + 1000: store_score -= ply
-                    self.tt[hash_val] = TTEntry(store_score, depth, TT_FLAG_LOWERBOUND, move)
+                    self.tt[hash_val] = TTEntry(beta, depth, TT_FLAG_LOWERBOUND, move)
                     return beta
 
             if legal_moves_count == 0: return -self.MATE_SCORE + ply
             
-            store_score = alpha
-            if store_score > self.MATE_SCORE - 1000: store_score += ply
-            elif store_score < -self.MATE_SCORE + 1000: store_score -= ply
-            self.tt[hash_val] = TTEntry(store_score, depth, (TT_FLAG_EXACT if alpha > original_alpha else TT_FLAG_UPPERBOUND), best_move_for_node)
+            flag = TT_FLAG_EXACT if alpha > original_alpha else TT_FLAG_UPPERBOUND
+            self.tt[hash_val] = TTEntry(alpha, depth, flag, best_move_for_node)
             return alpha
         finally:
             if path_added: search_path.remove(hash_val)
