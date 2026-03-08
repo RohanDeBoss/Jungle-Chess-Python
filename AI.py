@@ -1,4 +1,4 @@
-# AI.py (v97.1 - Fix relative mate moves stored in TT correctly)
+# AI.py (v98.1 - Proper evaluation heuristics for knight threats and qsearch optimisations + fixed class constants)
 
 import time
 import random
@@ -100,6 +100,15 @@ class ChessBot:
     ASP_WINDOW_INIT = 150 
     ASP_MAX_RETRIES = 3 
     
+    # Evaluation constants (class-level to avoid reallocation in hot eval loop)
+    EVAL_PAWN_PHALANX_BONUS = 5
+    EVAL_ROOK_ALIGNMENT_BONUS = 15
+    EVAL_PIECE_DOMINANCE_FACTOR = 40
+    EVAL_PAIR_BONUS = 20
+    EVAL_DOUBLE_ROOK_PENALTY = 15
+    EVAL_ROOK_PAWN_SCALING = 5
+    KNIGHT_ACTIVITY_BONUS = 12
+
     def __init__(self, board, color, position_counts, comm_queue, cancellation_event, bot_name=None, ply_count=0, game_mode="bot", max_moves=200):
         self.board = board
         self.color = color
@@ -141,27 +150,6 @@ class ChessBot:
         child = board_before.clone()
         child.make_move(move[0], move[1])
         return format_move_san(board_before, child, move)
-
-    def _is_tactical_move(self, board, move, moving_piece=None, target_piece=None):
-        if moving_piece is None:
-            moving_piece = board.grid[move[0][0]][move[0][1]]
-        if moving_piece is None:
-            return False
-
-        if target_piece is None:
-            target_piece = board.grid[move[1][0]][move[1][1]]
-        if target_piece is not None:
-            return True
-
-        if isinstance(moving_piece, Pawn) and (move[1][0] == 0 or move[1][0] == ROWS - 1):
-            return True
-        if isinstance(moving_piece, Rook) and is_rook_piercing_capture(board, move):
-            return True
-        if isinstance(moving_piece, Knight) and is_quiet_knight_evaporation(board, move):
-            return True
-        if is_passive_knight_zone_evaporation(board, move):
-            return True
-        return False
 
     def _ordering_tactical_swing(self, board, move, moving_piece, target_piece):
         return fast_approximate_material_swing(board, move, moving_piece, target_piece, ORDERING_VALUES)
@@ -641,18 +629,18 @@ class ChessBot:
                 elif tb_score < -self.MATE_SCORE + 1000: return tb_score + ply
                 return tb_score
 
-        if not has_legal_moves(board, turn):
-            return -self.MATE_SCORE + ply
-
+        # NOTE: has_legal_moves removed from here — it was the most expensive call in qsearch.
+        # Check positions are handled at the bottom. Non-check positions with no tactical moves
+        # correctly fall through to return stand_pat via alpha.
         if is_insufficient_material(board): return self.DRAW_SCORE
         if ply >= self.MAX_Q_SEARCH_DEPTH:
             self.used_heuristic_eval = True
             return self.evaluate_board(board, turn)
-        
+
         self.used_heuristic_eval = True
         stand_pat = self.evaluate_board(board, turn)
         is_in_check_flag = is_in_check(board, turn)
-        
+
         if not is_in_check_flag:
             if stand_pat >= beta: return beta
             alpha = max(alpha, stand_pat)
@@ -661,41 +649,42 @@ class ChessBot:
             promising_moves = list(get_all_pseudo_legal_moves(board, turn))
         else:
             promising_moves = list(generate_all_tactical_moves(board, turn))
-        
-        scored_moves =[]
+
+        scored_moves = []
         for move in promising_moves:
             moving_piece = board.grid[move[0][0]][move[0][1]]
             target_piece = board.grid[move[1][0]][move[1][1]]
             swing = self._ordering_tactical_swing(board, move, moving_piece, target_piece)
-            
             if not is_in_check_flag and swing < 0:
                 continue
-                
             scored_moves.append((swing, move))
-            
+
         scored_moves.sort(key=lambda item: item[0], reverse=True)
 
         legal_moves_count = 0
         opponent_turn = 'black' if turn == 'white' else 'white'
         for swing, move in scored_moves:
-            if not is_in_check_flag and stand_pat + swing + self.Q_SEARCH_SAFETY_MARGIN < alpha: continue
-            
+            if not is_in_check_flag and stand_pat + swing + self.Q_SEARCH_SAFETY_MARGIN < alpha:
+                continue
+
             sim_board = board.clone()
             sim_board.make_move(move[0], move[1])
 
             if not sim_board.find_king_pos(opponent_turn):
                 return self.MATE_SCORE - ply
+            if is_in_check(sim_board, turn):
+                continue
 
-            if is_in_check(sim_board, turn): continue
-            
             legal_moves_count += 1
-            search_score = -self.qsearch(sim_board, -beta, -alpha, ('black' if turn == 'white' else 'white'), ply + 1)
+            search_score = -self.qsearch(sim_board, -beta, -alpha, opponent_turn, ply + 1)
             if search_score >= beta: return beta
             alpha = max(alpha, search_score)
-            
-        if is_in_check_flag and legal_moves_count == 0: 
+
+        # Only a check position with zero legal escapes is a forced mate.
+        # A non-check position with no tactical moves simply returns stand_pat via alpha.
+        if is_in_check_flag and legal_moves_count == 0:
             return -self.MATE_SCORE + ply
-            
+
         return alpha
 
     def order_moves(self, board, moves, ply, hash_move, turn, return_meta=False, counter_move=None):
@@ -705,25 +694,26 @@ class ChessBot:
         killers = self.killer_moves[ply] if ply < len(self.killer_moves) else [None, None]
         c_idx = 0 if turn == 'white' else 1
         is_opening = (ply <= self.OPENING_BONUS_MAX_PLY and self._is_opening_position(board))
-        
+
         for move in moves:
             moving_piece = board.grid[move[0][0]][move[0][1]]
             target_piece = board.grid[move[1][0]][move[1][1]]
-            
+
             swing = self._ordering_tactical_swing(board, move, moving_piece, target_piece)
             is_capture_or_promo = target_piece is not None or (isinstance(moving_piece, Pawn) and (move[1][0] == 0 or move[1][0] == ROWS - 1))
-            is_tactical = (swing != 0) or is_capture_or_promo
+            # is_tactical removed — was computed but never used
             is_good_tactic = (swing > 0) or (swing == 0 and is_capture_or_promo)
-            
+
             move_meta[move] = (is_good_tactic, moving_piece)
 
-            if move == hash_move: score = self.BONUS_PV_MOVE
-            elif is_tactical:
+            if move == hash_move:
+                score = self.BONUS_PV_MOVE
+            elif (swing != 0) or is_capture_or_promo:
                 score = self.BONUS_CAPTURE + swing if swing >= 0 else self.BAD_TACTIC_PENALTY + swing
             elif move in killers:
                 score = 4_000_000 if move == killers[0] else 3_000_000
             elif move == counter_move:
-                score = 2_000_000 # Priority between Killers and History
+                score = 2_000_000
             else:
                 score = self.history_heuristic_table[c_idx][move[0][0]*8+move[0][1]][move[1][0]*8+move[1][1]]
 
@@ -732,7 +722,7 @@ class ChessBot:
 
         scored_moves.sort(key=lambda item: item[0], reverse=True)
         return [(move, move_meta[move]) for _, move in scored_moves] if return_meta else [move for _, move in scored_moves]
-    
+
     def evaluate_board(self, board, turn_to_move):
         if is_insufficient_material(board):
             return self.DRAW_SCORE
@@ -740,18 +730,20 @@ class ChessBot:
         scores_mg = [0, 0]; scores_eg = [0, 0]
         piece_counts = [0, 0]; pawn_counts = [0, 0]; last_piece_type = [None, None]
         rook_counts = [0, 0]; bishop_counts = [0, 0]; knight_counts = [0, 0]; queen_counts = [0, 0]
-        
-        king_pos =[board.white_king_pos, board.black_king_pos]
-        piece_lists =[board.white_pieces, board.black_pieces]
+
+        king_pos = [board.white_king_pos, board.black_king_pos]
+        piece_lists = [board.white_pieces, board.black_pieces]
         grid = board.grid
         phase_material_score = 0
-        
-        PAWN_PHALANX_BONUS = 5
-        ROOK_ALIGNMENT_BONUS = 15
-        PIECE_DOMINANCE_FACTOR = 40
-        PAIR_BONUS = 20
-        DOUBLE_ROOK_PENALTY = 15
-        ROOK_PAWN_SCALING = 5
+
+        # Constants pulled from class level to avoid reallocation
+        PAWN_PHALANX_BONUS    = self.EVAL_PAWN_PHALANX_BONUS
+        ROOK_ALIGNMENT_BONUS  = self.EVAL_ROOK_ALIGNMENT_BONUS
+        PIECE_DOMINANCE_FACTOR= self.EVAL_PIECE_DOMINANCE_FACTOR
+        PAIR_BONUS            = self.EVAL_PAIR_BONUS
+        DOUBLE_ROOK_PENALTY   = self.EVAL_DOUBLE_ROOK_PENALTY
+        ROOK_PAWN_SCALING     = self.EVAL_ROOK_PAWN_SCALING
+        KNIGHT_ACTIVITY_BONUS = self.KNIGHT_ACTIVITY_BONUS
 
         # 1. Main Loop
         for color_idx in (0, 1):
@@ -762,32 +754,28 @@ class ChessBot:
 
             for piece in pieces:
                 ptype = type(piece); r, c = piece.pos
-                
-                if ptype is Pawn: 
+
+                if ptype is Pawn:
                     pawn_counts[color_idx] += 1
                 elif ptype is not King:
                     piece_counts[color_idx] += 1
                     last_piece_type[color_idx] = ptype
                     phase_material_score += MG_PIECE_VALUES.get(ptype, 0)
-                    
-                    if ptype is Rook: rook_counts[color_idx] += 1
+                    if ptype is Rook:   rook_counts[color_idx] += 1
                     elif ptype is Bishop: bishop_counts[color_idx] += 1
                     elif ptype is Knight: knight_counts[color_idx] += 1
-                    elif ptype is Queen: queen_counts[color_idx] += 1
+                    elif ptype is Queen:  queen_counts[color_idx] += 1
 
                 val_mg = MG_PIECE_VALUES[ptype]
-                val_eg = EG_PIECE_VALUES[ptype] 
-                
+                val_eg = EG_PIECE_VALUES[ptype]
                 r_pst = r if is_white else 7 - r
-                
+
                 if ptype is King:
                     scores_mg[color_idx] += PIECE_SQUARE_TABLES['king_midgame'][r_pst][c]
                     scores_eg[color_idx] += PIECE_SQUARE_TABLES['king_endgame'][r_pst][c]
                 else:
                     scores_mg[color_idx] += val_mg
                     scores_eg[color_idx] += val_eg
-                    
-                    # Optimization: Branch removed. Assume all major pieces have PSTs.
                     pst_val = PIECE_SQUARE_TABLES[ptype][r_pst][c]
                     scores_mg[color_idx] += pst_val
                     scores_eg[color_idx] += pst_val
@@ -795,22 +783,35 @@ class ChessBot:
                 # Variant Heuristics
                 if ptype is Pawn:
                     if (c > 0 and isinstance(grid[r][c-1], Pawn) and grid[r][c-1].color == my_color_name) or \
-                       (c < COLS-1 and isinstance(grid[r][c+1], Pawn) and grid[r][c+1].color == my_color_name):
+                    (c < COLS-1 and isinstance(grid[r][c+1], Pawn) and grid[r][c+1].color == my_color_name):
                         scores_mg[color_idx] += PAWN_PHALANX_BONUS
+
                 elif ptype is Rook:
                     if enemy_king and (r == enemy_king[0] or c == enemy_king[1]):
                         scores_mg[color_idx] += ROOK_ALIGNMENT_BONUS
 
+                elif ptype is Knight:
+                    # Jungle Chess specific: reward knights for having loaded jump positions.
+                    # For each empty square the knight can jump to, count enemy non-king pieces
+                    # in that landing square's attack zone — those are live evaporation threats.
+                    for jr, jc in KNIGHT_ATTACKS_FROM[(r, c)]:
+                        if grid[jr][jc] is not None:
+                            continue  # Can't land here
+                        for ar, ac in KNIGHT_ATTACKS_FROM[(jr, jc)]:
+                            threatened = grid[ar][ac]
+                            if threatened and threatened.color != my_color_name and type(threatened) is not King:
+                                scores_mg[color_idx] += KNIGHT_ACTIVITY_BONUS
+                                scores_eg[color_idx] += KNIGHT_ACTIVITY_BONUS
+
         # 2. Global Calculations
         phase = min(256, (phase_material_score * 256) // INITIAL_PHASE_MATERIAL) if INITIAL_PHASE_MATERIAL > 0 else 0
         inv_phase = 256 - phase
-        
+
         total_pawns_on_board = pawn_counts[0] + pawn_counts[1]
 
         if piece_counts[0] > piece_counts[1]: scores_eg[0] += PIECE_DOMINANCE_FACTOR // (piece_counts[1] + 1)
         elif piece_counts[1] > piece_counts[0]: scores_eg[1] += PIECE_DOMINANCE_FACTOR // (piece_counts[0] + 1)
 
-        # Define Penalty Tables
         LONE_ROOK_PENALTIES   = [550, 200, 150, 80, 40]
         LONE_BISHOP_PENALTIES = [650, 250, 170, 100, 50]
 
@@ -818,27 +819,21 @@ class ChessBot:
             if pawn_counts[i] < 4:
                 penalty = int(-250 * (4 - pawn_counts[i])**2 / 16)
                 scores_mg[i] += penalty; scores_eg[i] += penalty
-            
+
             if piece_counts[i] == 1 and pawn_counts[i] <= 4:
                 penalty = 0
-                if last_piece_type[i] is Rook:
-                     penalty = LONE_ROOK_PENALTIES[pawn_counts[i]]
-                elif last_piece_type[i] is Bishop:
-                     penalty = LONE_BISHOP_PENALTIES[pawn_counts[i]]
-                
+                if last_piece_type[i] is Rook:   penalty = LONE_ROOK_PENALTIES[pawn_counts[i]]
+                elif last_piece_type[i] is Bishop: penalty = LONE_BISHOP_PENALTIES[pawn_counts[i]]
                 if penalty > 0:
-                    if i == 0 and scores_eg[0] > scores_eg[1]: # White winning
+                    if i == 0 and scores_eg[0] > scores_eg[1]:
                         scores_eg[0] = max(scores_eg[1], scores_eg[0] - penalty)
-                    elif i == 1 and scores_eg[1] > scores_eg[0]: # Black winning
+                    elif i == 1 and scores_eg[1] > scores_eg[0]:
                         scores_eg[1] = max(scores_eg[0], scores_eg[1] - penalty)
 
-            if bishop_counts[i] >= 2: 
-                scores_mg[i] += PAIR_BONUS; scores_eg[i] += PAIR_BONUS
-            if knight_counts[i] >= 2: 
-                scores_mg[i] += PAIR_BONUS; scores_eg[i] += PAIR_BONUS
-            if rook_counts[i] >= 2:
-                scores_mg[i] -= DOUBLE_ROOK_PENALTY; scores_eg[i] -= DOUBLE_ROOK_PENALTY
-            
+            if bishop_counts[i] >= 2: scores_mg[i] += PAIR_BONUS; scores_eg[i] += PAIR_BONUS
+            if knight_counts[i] >= 2: scores_mg[i] += PAIR_BONUS; scores_eg[i] += PAIR_BONUS
+            if rook_counts[i] >= 2:   scores_mg[i] -= DOUBLE_ROOK_PENALTY; scores_eg[i] -= DOUBLE_ROOK_PENALTY
+
             if rook_counts[i] > 0:
                 bonus = rook_counts[i] * total_pawns_on_board * ROOK_PAWN_SCALING
                 scores_mg[i] += bonus; scores_eg[i] += bonus
@@ -852,20 +847,16 @@ class ChessBot:
         mg_score = scores_mg[0] - scores_mg[1]
         eg_score = scores_eg[0] - scores_eg[1]
         final_score = (mg_score * phase + eg_score * inv_phase) >> 8
-        
+
         can_force_mate = [True, True]
         for i in (0, 1):
-            if (pawn_counts[i] == 0 and 
-                knight_counts[i] == 0 and 
-                queen_counts[i] == 0 and 
-                (rook_counts[i] + bishop_counts[i]) < 2):
+            if (pawn_counts[i] == 0 and knight_counts[i] == 0 and queen_counts[i] == 0 and
+                    (rook_counts[i] + bishop_counts[i]) < 2):
                 can_force_mate[i] = False
-                
-        if final_score > 0 and not can_force_mate[0]:
-            final_score //= 8
-        elif final_score < 0 and not can_force_mate[1]:
-            final_score //= 8
-            
+
+        if final_score > 0 and not can_force_mate[0]: final_score //= 8
+        elif final_score < 0 and not can_force_mate[1]: final_score //= 8
+
         return final_score if turn_to_move == 'white' else -final_score
     
 
