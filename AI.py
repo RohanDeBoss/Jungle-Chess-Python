@@ -1,4 +1,4 @@
-# AI.py (v98.1 - Proper evaluation heuristics for knight threats and qsearch optimisations + fixed class constants)
+# AI.py (v98.2 - rewards the knight for pieces currently in its passive evaporation zone, performant now)
 
 import time
 import random
@@ -791,17 +791,11 @@ class ChessBot:
                         scores_mg[color_idx] += ROOK_ALIGNMENT_BONUS
 
                 elif ptype is Knight:
-                    # Jungle Chess specific: reward knights for having loaded jump positions.
-                    # For each empty square the knight can jump to, count enemy non-king pieces
-                    # in that landing square's attack zone — those are live evaporation threats.
-                    for jr, jc in KNIGHT_ATTACKS_FROM[(r, c)]:
-                        if grid[jr][jc] is not None:
-                            continue  # Can't land here
-                        for ar, ac in KNIGHT_ATTACKS_FROM[(jr, jc)]:
-                            threatened = grid[ar][ac]
-                            if threatened and threatened.color != my_color_name and type(threatened) is not King:
-                                scores_mg[color_idx] += KNIGHT_ACTIVITY_BONUS
-                                scores_eg[color_idx] += KNIGHT_ACTIVITY_BONUS
+                    for ar, ac in KNIGHT_ATTACKS_FROM[(r, c)]:
+                        threatened = grid[ar][ac]
+                        if threatened and threatened.color != my_color_name and type(threatened) is not King:
+                            scores_mg[color_idx] += KNIGHT_ACTIVITY_BONUS
+                            scores_eg[color_idx] += KNIGHT_ACTIVITY_BONUS
 
         # 2. Global Calculations
         phase = min(256, (phase_material_score * 256) // INITIAL_PHASE_MATERIAL) if INITIAL_PHASE_MATERIAL > 0 else 0
