@@ -1,4 +1,4 @@
-# AI.py (v98.21 - rewards the knight for pieces currently in its passive evaporation zone, performant now + bugfix for self.used_heuristic_eval)
+# AI.py (v98.3 Dynamic qsearch 10: 950 -> 250)
 
 import time
 import random
@@ -71,7 +71,12 @@ class ChessBot:
     MATE_SCORE = 1000000
     DRAW_SCORE = 0
     
-    MAX_Q_SEARCH_DEPTH = 8
+    # --- Q-SEARCH SETTINGS ---
+    MAX_Q_SEARCH_DEPTH = 10       # Balance of speed vs accuracy for that depth
+    Q_MARGIN_MAX = 950            # Start margin (for sacrifices) (Ply 0-4)
+    Q_MARGIN_MIN = 250            # End margin (for speed) (Ply 10)
+    
+    # --- HEURISTICS ---
     LMR_DEPTH_THRESHOLD = 3
     LMR_MOVE_COUNT_THRESHOLD = 4
     LMR_REDUCTION = 1
@@ -79,7 +84,6 @@ class ChessBot:
     NMP_BASE_REDUCTION = 2
     NMP_DEPTH_DIVISOR = 6
     USE_NULL_MOVE_PRUNING = True
-    Q_SEARCH_SAFETY_MARGIN = 600
     USE_PROBCUT = True
     PROBCUT_MIN_DEPTH = 6
     PROBCUT_REDUCTION = 2
@@ -629,6 +633,7 @@ class ChessBot:
         self.nodes_searched += 1
         if self.cancellation_event.is_set(): raise SearchCancelledException()
 
+        # 1. Tablebase / Material / Depth Termination
         if len(board.white_pieces) + len(board.black_pieces) <= 4:
             tb_score_absolute = self.tb_manager.probe(board, turn)
             if tb_score_absolute is not None:
@@ -642,10 +647,13 @@ class ChessBot:
         # Check positions are handled at the bottom. Non-check positions with no tactical moves
         # correctly fall through to return stand_pat via alpha.
         if is_insufficient_material(board): return self.DRAW_SCORE
+        
+        # Termination at your requested Depth 10
         if ply >= self.MAX_Q_SEARCH_DEPTH:
             self.used_heuristic_eval = True
             return self.evaluate_board(board, turn)
 
+        # 2. Stand Pat Evaluation
         self.used_heuristic_eval = True
         stand_pat = self.evaluate_board(board, turn)
         is_in_check_flag = is_in_check(board, turn)
@@ -654,43 +662,65 @@ class ChessBot:
             if stand_pat >= beta: return beta
             alpha = max(alpha, stand_pat)
 
+        # Update this block
+        if ply <= 4:
+            current_margin = self.Q_MARGIN_MAX
+        else:
+            # 700 point total drop over 6 steps = ~117 per ply
+            current_margin = max(self.Q_MARGIN_MIN, self.Q_MARGIN_MAX - (ply - 4) * 117)
+
+        # 4. Move Generation
         if is_in_check_flag:
             promising_moves = list(get_all_pseudo_legal_moves(board, turn))
         else:
             promising_moves = list(generate_all_tactical_moves(board, turn))
 
+        # 5. Move Scoring and Pruning
         scored_moves = []
         for move in promising_moves:
             moving_piece = board.grid[move[0][0]][move[0][1]]
             target_piece = board.grid[move[1][0]][move[1][1]]
             swing = self._ordering_tactical_swing(board, move, moving_piece, target_piece)
+            
+            # Skip moves with negative tactical value if not in check
             if not is_in_check_flag and swing < 0:
                 continue
-            scored_moves.append((swing, move))
-
-        scored_moves.sort(key=lambda item: item[0], reverse=True)
-
-        legal_moves_count = 0
-        opponent_turn = 'black' if turn == 'white' else 'white'
-        for swing, move in scored_moves:
-            if not is_in_check_flag and stand_pat + swing + self.Q_SEARCH_SAFETY_MARGIN < alpha:
+            
+            # Apply Dynamic Futility Pruning
+            if not is_in_check_flag and (stand_pat + swing + current_margin < alpha):
                 continue
 
+            scored_moves.append((swing, move))
+
+        # 6. Sort moves for efficiency
+        scored_moves.sort(key=lambda item: item[0], reverse=True)
+
+        # 7. Recursive Search Loop
+        legal_moves_count = 0
+        opponent_turn = 'black' if turn == 'white' else 'white'
+        
+        for swing, move in scored_moves:
             sim_board = board.clone()
             sim_board.make_move(move[0], move[1])
 
+            # Immediate win detection
             if not sim_board.find_king_pos(opponent_turn):
                 return self.MATE_SCORE - ply
+            
+            # Filter out moves that leave own king in check
             if is_in_check(sim_board, turn):
                 continue
 
             legal_moves_count += 1
+            
+            # Recursive call
             search_score = -self.qsearch(sim_board, -beta, -alpha, opponent_turn, ply + 1)
-            if search_score >= beta: return beta
+            
+            if search_score >= beta: 
+                return beta
             alpha = max(alpha, search_score)
 
-        # Only a check position with zero legal escapes is a forced mate.
-        # A non-check position with no tactical moves simply returns stand_pat via alpha.
+        # 8. Checkmate Detection
         if is_in_check_flag and legal_moves_count == 0:
             return -self.MATE_SCORE + ply
 
