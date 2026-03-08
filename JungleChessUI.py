@@ -1,4 +1,4 @@
-# JungleChessUI.py (v12.2 - FEN load game-state sync)
+# JungleChessUI.py (v12.21 - Save games in AI vs OP series to file)
 
 import tkinter as tk
 from tkinter import ttk, messagebox
@@ -68,6 +68,8 @@ class EnhancedChessApp:
         self.analysis_mode_var = tk.BooleanVar(value=True)
         self.ai_series_running = False
         self.ai_series_stats = {'game_count': 0, 'my_ai_wins': 0, 'op_ai_wins': 0, 'draws': 0}
+        self.depth_stats = {}
+        self.auto_save_stats_var = tk.BooleanVar(value=True)
         
         self.white_playing_bot_type = "main"
         self.human_color = "white"
@@ -181,6 +183,7 @@ class EnhancedChessApp:
         self.flip_view_btn.pack(fill=tk.X, pady=3)
         
         ttk.Button(self.controls_frame, text="AI vs OP Series", command=self.start_ai_series, style='Control.TButton').pack(fill=tk.X, pady=3)
+        ttk.Checkbutton(self.controls_frame, text="Auto-save Depth Stats", variable=self.auto_save_stats_var, style='Custom.TCheckbutton').pack(anchor=tk.W, pady=(0, 5))
         
         ttk.Label(self.controls_frame, text="Bot Depth:", style='SmallHeader.TLabel').pack(anchor=tk.W, pady=(10,0))
         self.bot_depth_slider = tk.Scale(self.controls_frame, from_=1, to=self.slidermaxvalue, orient=tk.HORIZONTAL, bg=self.COLORS['bg_dark'], fg=self.COLORS['text_light'], highlightthickness=0, relief='flat')
@@ -828,11 +831,56 @@ class EnhancedChessApp:
         try:
             while not self.comm_queue.empty():
                 message = self.comm_queue.get_nowait()
-                if message[0] == 'log': print(message[1])
-                elif message[0] == 'eval': self.last_eval_score, self.last_eval_depth = message[1], message[2]; self.draw_eval_bar(self.last_eval_score, self.last_eval_depth)
-                elif message[0] == 'move': self._execute_ai_move(message[1])
+                if message[0] == 'log':
+                    print(message[1])
+                    if self.auto_save_stats_var.get() and self.game_mode.get() == GameMode.AI_VS_AI.value:
+                        match = re.search(r'> (.*?) \(D(\d+|TB)\).*?Time=([0-9.]+)s', message[1])
+                        if match:
+                            bot_name = match.group(1).strip()
+                            depth = match.group(2)
+                            time_val = float(match.group(3))
+                            
+                            if bot_name not in self.depth_stats: self.depth_stats[bot_name] = {}
+                            if depth not in self.depth_stats[bot_name]: self.depth_stats[bot_name][depth] = []
+                            self.depth_stats[bot_name][depth].append(time_val)
+                            
+                            if 'Global' not in self.depth_stats: self.depth_stats['Global'] = {}
+                            if depth not in self.depth_stats['Global']: self.depth_stats['Global'][depth] = []
+                            self.depth_stats['Global'][depth].append(time_val)
+                elif message[0] == 'eval': 
+                    self.last_eval_score, self.last_eval_depth = message[1], message[2]
+                    self.draw_eval_bar(self.last_eval_score, self.last_eval_depth)
+                elif message[0] == 'move': 
+                    self._execute_ai_move(message[1])
         except Exception: pass
         finally: self.master.after(100, self.process_comm_queue)
+
+    def save_depth_stats_to_file(self):
+        if not self.depth_stats or not self.depth_stats.get('Global'):
+            return
+            
+        filename = "AI_Series_Depth_Averages.txt"
+        try:
+            with open(filename, "w") as f:
+                f.write("=== AI vs OP Series Depth Stats ===\n")
+                f.write(f"Games Completed: {self.ai_series_stats['game_count']}\n")
+                f.write(f"Score: {self.MAIN_AI_NAME} {self.ai_series_stats['my_ai_wins']} - {self.ai_series_stats['op_ai_wins']} {self.OPPONENT_AI_NAME} (Draws: {self.ai_series_stats['draws']})\n\n")
+                
+                def sort_key(k): return int(k) if k.isdigit() else 999
+                
+                for category in ['Global', self.MAIN_AI_NAME, self.OPPONENT_AI_NAME]:
+                    if category not in self.depth_stats or not self.depth_stats[category]:
+                        continue
+                        
+                    f.write(f"--- {category} Averages ---\n")
+                    for depth in sorted(self.depth_stats[category].keys(), key=sort_key):
+                        times = self.depth_stats[category][depth]
+                        avg_time = sum(times) / len(times)
+                        max_time = max(times)
+                        f.write(f"  Depth {depth:<3} | Avg: {avg_time:.3f}s | Max: {max_time:.3f}s | Samples: {len(times)}\n")
+                    f.write("\n")
+        except Exception as e:
+            print(f"Failed to save stats to file: {e}")
 
     def _start_ai_process(self, bot_class, bot_name, search_depth):
         if self.ai_process and self.ai_process.is_alive(): return
@@ -956,6 +1004,9 @@ class EnhancedChessApp:
         else: self.ai_series_stats['draws'] += 1
         
         self.update_scoreboard()
+        if self.auto_save_stats_var.get():
+            self.save_depth_stats_to_file()
+            
         if self.ai_series_running and self.ai_series_stats['game_count'] < 100:
             self.master.after(1000, self.reset_game)
         else:
@@ -966,6 +1017,7 @@ class EnhancedChessApp:
         self._stop_ai_process()
         self.game_mode.set(GameMode.AI_VS_AI.value)
         self.ai_series_stats = {'game_count': 0, 'my_ai_wins': 0, 'op_ai_wins': 0, 'draws': 0}
+        self.depth_stats = {}
         self.ai_series_running = True
         self.current_opening_move = None
         self.reset_game()

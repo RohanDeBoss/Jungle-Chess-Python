@@ -1,4 +1,4 @@
-# AI.py (v98.3 Dynamic qsearch 10: 950 -> 250)
+# AI.py (v98.4 Piece Value changes)
 
 import time
 import random
@@ -9,15 +9,15 @@ from TablebaseManager import TablebaseManager
 # --- EVALUATION CONSTANTS ---
 
 MG_PIECE_VALUES = {
-    Pawn: 100, Knight: 950, Bishop: 650, Rook: 550, Queen: 850, King: 20000
+    Pawn: 100, Knight: 900, Bishop: 650, Rook: 550, Queen: 850, King: 20000
 }
 
 # The Tablebase-Proven Meta
 EG_PIECE_VALUES = {
     Pawn: 130,    # Dangerous, easily promotes or kills sideways
-    Knight: 850,  # Just as good as a queen in endgames, but less pieces to fork.
-    Bishop: 500,  # Lower value in endgames as it can't change colour or checkmate by itself
-    Rook: 600,    # Kept high, good at eating pawns.
+    Knight: 800,  # Almost as good as a queen in endgames, less pieces to fork.
+    Bishop: 550,  # Slightly lower value in endgames as it can't change colour or checkmate by itself
+    Rook: 600,    # A bit higher as its more active and good at eating pawns.
     Queen: 850,
     King: 20000
 }
