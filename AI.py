@@ -1,4 +1,4 @@
-# AI.py (v98.2 - rewards the knight for pieces currently in its passive evaporation zone, performant now)
+# AI.py (v98.21 - rewards the knight for pieces currently in its passive evaporation zone, performant now + bugfix for self.used_heuristic_eval)
 
 import time
 import random
@@ -225,6 +225,7 @@ class ChessBot:
     def _run_depth_iteration(self, depth, root_moves, root_hash, pv_move, prev_iter_score=None, alpha_floor=None):
         iter_nodes = 0
         iter_tb_hits = 0
+        any_heuristic_eval = False
         use_aspiration = (alpha_floor is None and prev_iter_score is not None and depth >= 2)
 
         if use_aspiration:
@@ -239,6 +240,9 @@ class ChessBot:
                 )
                 iter_nodes += self.nodes_searched
                 iter_tb_hits += self.tb_hits
+                if self.used_heuristic_eval:
+                    any_heuristic_eval = True
+
                 if self.cancellation_event.is_set():
                     raise SearchCancelledException()
 
@@ -259,6 +263,8 @@ class ChessBot:
                     )
                     iter_nodes += self.nodes_searched
                     iter_tb_hits += self.tb_hits
+                    if self.used_heuristic_eval:
+                        any_heuristic_eval = True
                     break
         else:
             best_score, best_move = self._search_at_depth(
@@ -266,9 +272,12 @@ class ChessBot:
             )
             iter_nodes = self.nodes_searched
             iter_tb_hits = self.tb_hits
+            if self.used_heuristic_eval:
+                any_heuristic_eval = True
 
         self.nodes_searched = iter_nodes
         self.tb_hits = iter_tb_hits
+        self.used_heuristic_eval = any_heuristic_eval
         return best_score, best_move
 
     def _report_root_tb_solution(self, tb_move, tb_eval, perfect_play=False, emit_move=False):
