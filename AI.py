@@ -1,4 +1,4 @@
-# AI.py (v98.6 - Now reports PV lines for UI)
+# AI.py (v98.7 - updated negamax to use the safe _store_tt method, and PV extractors return lists)
 
 import time
 import random
@@ -145,6 +145,12 @@ class ChessBot:
         self.history_heuristic_table = [[[0 for _ in range(64)] for _ in range(64)] for _ in range(2)]
         # NEW: Counter-Move Heuristic Table [color][prev_from_sq][prev_to_sq]
         self.counter_moves = [[[None for _ in range(64)] for _ in range(64)] for _ in range(2)]
+    
+    def _store_tt(self, hash_val, score, depth, flag, move):
+        existing = self.tt.get(hash_val)
+        # Only overwrite if the new search went deeper, or if it's an exact PV match
+        if not existing or depth >= existing.depth or flag == TT_FLAG_EXACT:
+            self.tt[hash_val] = TTEntry(score, depth, flag, move)
 
     def _report_log(self, message): self.comm_queue.put(('log', message))
     def _report_eval(self, score, depth): self.comm_queue.put(('eval', score if self.color == 'white' else -score, depth))
@@ -291,7 +297,7 @@ class ChessBot:
                     self.history_heuristic_table[color_idx][from_sq][to_sq] //= 2
 
     def _get_pv_data(self, max_depth, root_move):
-        if not root_move: return "", []
+        if not root_move: return [], []
         
         pv_san = []
         pv_raw = []
@@ -330,8 +336,8 @@ class ChessBot:
             move = tt_entry.best_move
             if not isinstance(move, tuple): break
 
-        return " ".join(pv_san), pv_raw
-
+        return pv_san, pv_raw
+    
     def _report_root_tb_solution(self, tb_move, tb_eval, perfect_play=False, emit_move=False):
         if not tb_move: return False
         root_tb_eval = self._get_root_tb_eval_relative()
@@ -347,7 +353,7 @@ class ChessBot:
         move_num = (self.ply_count // 2) + 1
         prefix = f"{move_num}. " if self.color == 'white' else f"{move_num}... "
         pv_str = prefix + self._format_move(self.board, tb_move)
-        self.comm_queue.put(('pv', display_eval, "TB", pv_str, [tb_move]))
+        self.comm_queue.put(('pv', display_eval, "TB", [pv_str], [tb_move]))
         # --------------------
 
         if emit_move: self._report_move(tb_move)
@@ -527,14 +533,12 @@ class ChessBot:
             if tb_score_absolute is not None:
                 self.tb_hits += 1
                 tb_score = tb_score_absolute if turn == 'white' else -tb_score_absolute
-                # Adjust for ply
                 if tb_score > self.MATE_SCORE - 1000: return tb_score - ply
                 elif tb_score < -self.MATE_SCORE + 1000: return tb_score + ply
                 return tb_score
 
         hash_val = current_hash if current_hash is not None else board_hash(board, turn)
         
-        # Draw detection
         if ply > 0:
             if hash_val in search_path or self.position_counts.get(hash_val, 0) >= 3: return self.DRAW_SCORE
         if is_insufficient_material(board) or self.ply_count + ply >= self.max_moves: return self.DRAW_SCORE
@@ -544,11 +548,9 @@ class ChessBot:
         tt_entry = self.tt.get(hash_val)
         if ply > 0 and tt_entry and tt_entry.depth >= depth:
             tt_score = tt_entry.score
-            # Adjust score from "distance to root" back to "distance to current node"
             if tt_score > self.MATE_SCORE - 1000: tt_score -= ply
             elif tt_score < -self.MATE_SCORE + 1000: tt_score += ply
 
-            # FIX 1: Mark that we used heuristic data so the engine knows this isn't a raw TB hit
             self.used_heuristic_eval = True
 
             if tt_entry.flag == TT_FLAG_EXACT: return tt_score
@@ -568,7 +570,6 @@ class ChessBot:
 
         try:
             # --- 3. PROBCUT (Probability Cut) ---
-            # FIX 2: Ensure ProbCut doesn't trigger on ANY mate score by using abs(beta)
             if (self.USE_PROBCUT and depth >= self.PROBCUT_MIN_DEPTH and not is_in_check_flag and
                 abs(beta) < self.MATE_SCORE - 1000):
                 
@@ -576,16 +577,13 @@ class ChessBot:
                 prob_score = self.negamax(board, depth - self.PROBCUT_REDUCTION, shallow_beta - 1, shallow_beta, turn, ply, search_path, current_hash, prev_move)
                 
                 if prob_score >= shallow_beta:
-                    # Adjust mate scores for TT storage
                     score_to_store = beta
                     if beta > self.MATE_SCORE - 1000: score_to_store = beta + ply
                     elif beta < -self.MATE_SCORE + 1000: score_to_store = beta - ply
-                    self.tt[hash_val] = TTEntry(score_to_store, depth, TT_FLAG_LOWERBOUND, None)
+                    self._store_tt(hash_val, score_to_store, depth, TT_FLAG_LOWERBOUND, None)
                     return beta
             
             # --- 4. NULL MOVE PRUNING ---
-            # FIX 3: Changed `beta < MATE_SCORE - 200` to `abs(beta) < MATE_SCORE - 1000`. 
-            # This prevents NMP from hallucinating a defense when it is actually getting mated!
             if (self.USE_NULL_MOVE_PRUNING and depth >= self.NMP_MIN_DEPTH and ply > 0 and not is_in_check_flag and abs(beta) < self.MATE_SCORE - 1000):
                 if (board.piece_counts['white'][Knight] + board.piece_counts['white'][Bishop] + board.piece_counts['white'][Rook] + board.piece_counts['white'][Queen] > 0) and \
                    (board.piece_counts['black'][Knight] + board.piece_counts['black'][Bishop] + board.piece_counts['black'][Rook] + board.piece_counts['black'][Queen] > 0):
@@ -619,7 +617,6 @@ class ChessBot:
                 legal_moves_count += 1
                 if not is_good_tactic: quiet_moves_tried.append(move)
 
-                # LMR calculation
                 reduction = 0
                 if depth >= 3 and legal_moves_count > 1 and not is_in_check_flag and not is_good_tactic:
                     reduction = 1
@@ -631,7 +628,6 @@ class ChessBot:
                 child_hash = board_hash(child_board, opponent_turn)
                 search_depth = max(0, depth - 1 - reduction)
 
-                # PVS Search
                 if legal_moves_count == 1:
                     score = -self.negamax(child_board, search_depth, -beta, -alpha, opponent_turn, ply + 1, search_path, current_hash=child_hash, prev_move=move)
                 else:
@@ -658,21 +654,19 @@ class ChessBot:
                                     ff, ft = f_move[0][0]*8+f_move[0][1], f_move[1][0]*8+f_move[1][1]
                                     self.history_heuristic_table[c_idx][ff][ft] = max(-2_000_000, self.history_heuristic_table[c_idx][ff][ft] - bonus)
 
-                    # Store relative mate score
                     score_to_store = beta
                     if beta > self.MATE_SCORE - 1000: score_to_store = beta + ply
                     elif beta < -self.MATE_SCORE + 1000: score_to_store = beta - ply
-                    self.tt[hash_val] = TTEntry(score_to_store, depth, TT_FLAG_LOWERBOUND, move)
+                    self._store_tt(hash_val, score_to_store, depth, TT_FLAG_LOWERBOUND, move)
                     return beta
 
             if legal_moves_count == 0: return -self.MATE_SCORE + ply
             
-            # Store relative mate score
             score_to_store = alpha
             if alpha > self.MATE_SCORE - 1000: score_to_store = alpha + ply
             elif alpha < -self.MATE_SCORE + 1000: score_to_store = alpha - ply
             flag = TT_FLAG_EXACT if alpha > original_alpha else TT_FLAG_UPPERBOUND
-            self.tt[hash_val] = TTEntry(score_to_store, depth, flag, best_move_for_node)
+            self._store_tt(hash_val, score_to_store, depth, flag, best_move_for_node)
             return alpha
         finally:
             if path_added: search_path.remove(hash_val)

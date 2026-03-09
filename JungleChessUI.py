@@ -1,4 +1,4 @@
-# JungleChessUI.py (v12.5 - Engine PV lines & Animated Hover Board)
+# JungleChessUI.py (v12.6 - Static Individual Move Hover tooltips)
 
 import tkinter as tk
 from tkinter import ttk, messagebox
@@ -72,7 +72,7 @@ class EnhancedChessApp:
         self.auto_save_stats_var = tk.BooleanVar(value=True)
         self.show_pv_var = tk.BooleanVar(value=True)
         self.current_pv_raw = []
-        self.pv_tooltip_active = False
+        self.current_pv_san = []
         
         self.white_playing_bot_type = "main"
         self.human_color = "white"
@@ -111,10 +111,6 @@ class EnhancedChessApp:
         self.pv_text = tk.Text(self.left_panel, height=6, bg=self.COLORS['bg_medium'], fg=self.COLORS['text_light'], font=('Helvetica', 10), wrap=tk.WORD, borderwidth=1, relief="solid")
         self.pv_text.pack(side=tk.BOTTOM, fill=tk.X, padx=5, pady=10)
         self.pv_text.config(state=tk.DISABLED)
-        
-        # PV Hover tooltips
-        self.pv_text.bind("<Enter>", self.show_pv_tooltip)
-        self.pv_text.bind("<Leave>", self.hide_pv_tooltip)
 
         self._build_control_widgets(self.left_panel)
         
@@ -878,10 +874,10 @@ class EnhancedChessApp:
                 
                 elif message[0] == 'pv':
                     if hasattr(self, 'show_pv_var') and self.show_pv_var.get():
-                        score, depth, pv_str = message[1], message[2], message[3]
-                        pv_raw = message[4] if len(message) > 4 else []
+                        score, depth, pv_san_list, pv_raw = message[1], message[2], message[3], message[4]
                         
                         self.current_pv_raw = pv_raw
+                        self.current_pv_san = pv_san_list
                         
                         if score > 990000:
                             score_disp = f"+M{(1000000 - score + 1) // 2}"
@@ -890,11 +886,19 @@ class EnhancedChessApp:
                         else:
                             score_disp = f"{score/100:+.2f}"
 
-                        display_text = f"[{score_disp}] (D{depth}):\n{pv_str}"
-                        
                         self.pv_text.config(state=tk.NORMAL)
                         self.pv_text.delete(1.0, tk.END)
-                        self.pv_text.insert(tk.END, display_text)
+                        self.pv_text.insert(tk.END, f"[{score_disp}] (D{depth}):\n")
+                        
+                        # Loop through and insert each move with its own hover tag!
+                        for i, (san, raw_move) in enumerate(zip(pv_san_list, pv_raw)):
+                            tag = f"pv_move_{i}"
+                            self.pv_text.insert(tk.END, san + " ", tag)
+                            
+                            # Bind hover events to this specific text segment
+                            self.pv_text.tag_bind(tag, "<Enter>", lambda e, idx=i, t=tag: self.on_pv_hover_enter(e, idx, t))
+                            self.pv_text.tag_bind(tag, "<Leave>", lambda e, t=tag: self.on_pv_hover_leave(e, t))
+                            
                         self.pv_text.config(state=tk.DISABLED)
                         
                 elif message[0] == 'move': 
@@ -1112,61 +1116,44 @@ class EnhancedChessApp:
             self.scoreboard_label.config(text="")
 
     # ==========================================
-    # --- ANIMATED PV MINI-BOARD HOVER LOGIC ---
+    # --- STATIC PV MINI-BOARD HOVER LOGIC ---
     # ==========================================
-    def show_pv_tooltip(self, event):
-        if not getattr(self, 'current_pv_raw', None): return
-        if getattr(self, 'pv_tooltip', None): return
+    def on_pv_hover_enter(self, event, move_idx, tag):
+        # Highlight the text
+        self.pv_text.tag_config(tag, background=self.COLORS['accent'], foreground=self.COLORS['text_light'])
         
-        self.pv_tooltip_active = True
+        if getattr(self, 'pv_tooltip', None):
+            self.pv_tooltip.destroy()
 
-        # Position popup above and slightly right of the cursor
+        # Position popup above cursor
         x = event.x_root + 15
-        y = event.y_root - (ROWS * 35) - 20
+        y = event.y_root - (ROWS * 25) - 20 # 25 is the new smaller size
 
         self.pv_tooltip = tk.Toplevel(self.master)
         self.pv_tooltip.wm_overrideredirect(True)
         self.pv_tooltip.wm_geometry(f"+{x}+{y}")
         
-        self.tt_sq_size = 35
+        self.tt_sq_size = 25 # Smaller, cleaner board
         self.tt_canvas = tk.Canvas(self.pv_tooltip, width=COLS*self.tt_sq_size, height=ROWS*self.tt_sq_size, bg=self.COLORS['bg_medium'], highlightthickness=2, highlightbackground=self.COLORS['accent'])
         self.tt_canvas.pack()
         
-        self.tt_sim_board = self.board.clone()
-        self.tt_moves_to_play = list(self.current_pv_raw)
-        self.tt_move_idx = 0
-        self.tt_last_move = None
-        
-        self._draw_tt_board()
-        self.master.after(800, self._animate_tt_board)
-        
-    def _animate_tt_board(self):
-        if not getattr(self, 'pv_tooltip_active', False): return
-        if not self.tt_moves_to_play: return
-        
-        if self.tt_move_idx < len(self.tt_moves_to_play):
-            m = self.tt_moves_to_play[self.tt_move_idx]
-            self.tt_sim_board.make_move(m[0], m[1])
-            self.tt_last_move = m
-            self.tt_move_idx += 1
-            self._draw_tt_board()
+        # Simulate the board up to the hovered move
+        tt_sim_board = self.board.clone()
+        for i in range(move_idx + 1):
+            m = self.current_pv_raw[i]
+            tt_sim_board.make_move(m[0], m[1])
             
-            # Animate faster (500ms) to show the line quickly
-            self.master.after(500, self._animate_tt_board)
-        else:
-            # Reached end of line. Pause for 2 seconds, then restart animation
-            self.master.after(2000, self._reset_tt_animation)
-            
-    def _reset_tt_animation(self):
-        if not getattr(self, 'pv_tooltip_active', False): return
-        self.tt_sim_board = self.board.clone()
-        self.tt_move_idx = 0
-        self.tt_last_move = None
-        self._draw_tt_board()
-        self.master.after(500, self._animate_tt_board)
+        last_m = self.current_pv_raw[move_idx]
+        self._draw_tt_board_static(tt_sim_board, last_m)
 
-    def _draw_tt_board(self):
-        if not getattr(self, 'pv_tooltip_active', False): return
+    def on_pv_hover_leave(self, event, tag):
+        # Remove text highlight
+        self.pv_text.tag_config(tag, background="", foreground="")
+        if getattr(self, 'pv_tooltip', None):
+            self.pv_tooltip.destroy()
+            self.pv_tooltip = None
+
+    def _draw_tt_board_static(self, sim_board, last_move):
         self.tt_canvas.delete("all")
         sq = self.tt_sq_size
         C1, C2 = "#D2B48C", "#8B5A2B"
@@ -1175,32 +1162,22 @@ class EnhancedChessApp:
             for c in range(COLS):
                 color = C1 if (r+c)%2 == 0 else C2
                 
-                # Respect player's current view orientation
                 dr = (ROWS-1-r) if self.board_orientation == "black" else r
                 dc = (COLS-1-c) if self.board_orientation == "black" else c
                 
                 x1, y1 = dc*sq, dr*sq
                 self.tt_canvas.create_rectangle(x1, y1, x1+sq, y1+sq, fill=color, outline="")
                 
-                # Highlight last move squares
-                if self.tt_last_move and (r, c) in self.tt_last_move:
+                if last_move and (r, c) in last_move:
                     self.tt_canvas.create_rectangle(x1, y1, x1+sq, y1+sq, fill="#F0E68C", stipple="gray50", outline="")
                 
-                piece = self.tt_sim_board.grid[r][c]
+                piece = sim_board.grid[r][c]
                 if piece:
                     font = ("Arial Unicode MS", int(sq*0.7))
                     sym = piece.symbol()
-                    # Shadow
                     self.tt_canvas.create_text(x1+sq//2+1, y1+sq//2+2, text=sym, font=font, fill="#888888")
-                    # Main piece
                     fc = "#000" if piece.color=="black" else "#FFF"
                     self.tt_canvas.create_text(x1+sq//2, y1+sq//2+1, text=sym, font=font, fill=fc)
-
-    def hide_pv_tooltip(self, event):
-        self.pv_tooltip_active = False
-        if getattr(self, 'pv_tooltip', None):
-            self.pv_tooltip.destroy()
-            self.pv_tooltip = None
 
 if __name__ == "__main__":
     mp.freeze_support()
