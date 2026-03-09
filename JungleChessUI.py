@@ -1,4 +1,4 @@
-# JungleChessUI.py (v12.9 - Single sidebar constant, safe refactors)
+# JungleChessUI.py (v13 - v12.7 layout + v12.9 features)
 
 import tkinter as tk
 from tkinter import ttk, messagebox
@@ -43,20 +43,16 @@ class EnhancedChessApp:
     MAIN_AI_NAME     = "AI Bot"
     OPPONENT_AI_NAME = "OP Bot"
     ANALYSIS_AI_NAME = "Analysis"
-
-    # --- Change this one value to resize both sidebars everywhere ---
-    BASE_SIDEBAR_WIDTH = 285
-
-    slidermaxvalue = 12
-    MAX_GAME_MOVES = 200
+    slidermaxvalue   = 12
+    MAX_GAME_MOVES   = 200
 
     def __init__(self, master):
         self.master = master
         self.master.title("Jungle Chess")
         random.seed()
 
-        self.comm_queue          = mp.Queue()
-        self.ai_process          = None
+        self.comm_queue            = mp.Queue()
+        self.ai_process            = None
         self.ai_cancellation_event = mp.Event()
 
         self.board = Board()
@@ -75,7 +71,8 @@ class EnhancedChessApp:
         self.position_counts = {}
 
         self.current_opening_sequence = []
-        self.square_size = 75
+        self.square_size       = 75
+        self.base_sidebar_width = 280
 
         self.game_mode           = tk.StringVar(value=GameMode.HUMAN_VS_BOT.value)
         self.analysis_mode_var   = tk.BooleanVar(value=True)
@@ -96,10 +93,10 @@ class EnhancedChessApp:
         self.last_move_timestamp    = None
         self.game_started           = False
 
-        self.last_eval_score  = 0.0
-        self.last_eval_depth  = None
-        self.last_eval_bar_w  = 0
-        self.last_eval_bar_h  = 0
+        self.last_eval_score = 0.0
+        self.last_eval_depth = None
+        self.last_eval_bar_w = 0
+        self.last_eval_bar_h = 0
 
         self.COLORS = self.setup_styles()
         self.master.configure(bg=self.COLORS['bg_dark'])
@@ -130,8 +127,7 @@ class EnhancedChessApp:
         self.main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
 
         # --- LEFT PANEL ---
-        sw = self.BASE_SIDEBAR_WIDTH
-        self.left_panel = ttk.Frame(self.main_frame, style='Left.TFrame', width=sw)
+        self.left_panel = ttk.Frame(self.main_frame, style='Left.TFrame')
         self.left_panel.pack(side=tk.LEFT, fill=tk.Y, padx=(0, 10))
         self.left_panel.pack_propagate(False)
 
@@ -156,41 +152,23 @@ class EnhancedChessApp:
         self.board_column = ttk.Frame(self.center_panel, style='Right.TFrame')
         self.board_column.pack(expand=True, fill=tk.BOTH)
 
-        bpx = COLS * self.square_size
-
-        self.eval_frame = ttk.Frame(self.board_column, style='Right.TFrame', width=bpx, height=58)
+        self.eval_frame = ttk.Frame(
+            self.board_column, style='Right.TFrame',
+            width=COLS * self.square_size, height=58)
         self.eval_frame.pack(side=tk.TOP, anchor=tk.CENTER, pady=(6, 5))
         self.eval_frame.pack_propagate(False)
 
-        self.eval_score_label = ttk.Label(self.eval_frame, text="Even",
-                                          style='Status.TLabel', anchor="center")
+        self.eval_score_label = ttk.Label(
+            self.eval_frame, text="Even", style='Status.TLabel', anchor="center")
         self.eval_score_label.pack(side=tk.TOP, pady=(0, 4))
 
         self.eval_bar_canvas = tk.Canvas(
-            self.eval_frame, width=bpx, height=20,
+            self.eval_frame, width=COLS * self.square_size, height=20,
             bg=self.COLORS['bg_light'], highlightthickness=1,
             highlightbackground=self.COLORS['text_dark'])
         self.eval_bar_canvas.pack(side=tk.TOP, anchor=tk.CENTER)
         self.eval_bar_canvas.bind("<Configure>", self.redraw_eval_bar_on_resize)
 
-        # Navigation bar
-        self.navigation_frame = ttk.Frame(self.board_column, style='Right.TFrame', width=bpx, height=50)
-        self.navigation_frame.pack(side=tk.BOTTOM, anchor=tk.CENTER, pady=(5, 10))
-        self.navigation_frame.pack_propagate(False)
-
-        self.start_button = ttk.Button(self.navigation_frame, text="«", command=self.go_to_start,  style='Nav.TButton', state=tk.DISABLED)
-        self.undo_button  = ttk.Button(self.navigation_frame, text="‹", command=self.undo_move,    style='Nav.TButton', state=tk.DISABLED)
-        self.redo_button  = ttk.Button(self.navigation_frame, text="›", command=self.redo_move,    style='Nav.TButton', state=tk.DISABLED)
-        self.end_button   = ttk.Button(self.navigation_frame, text="»", command=self.go_to_end,    style='Nav.TButton', state=tk.DISABLED)
-
-        for i in range(4):
-            self.navigation_frame.columnconfigure(i, weight=1)
-        self.start_button.grid(row=0, column=0, sticky='ew', padx=2)
-        self.undo_button .grid(row=0, column=1, sticky='ew', padx=2)
-        self.redo_button .grid(row=0, column=2, sticky='ew', padx=2)
-        self.end_button  .grid(row=0, column=3, sticky='ew', padx=2)
-
-        # Board
         self.board_row_frame = ttk.Frame(self.board_column, style='Right.TFrame')
         self.board_row_frame.pack(expand=True, fill=tk.BOTH)
 
@@ -217,8 +195,24 @@ class EnhancedChessApp:
             background=self.COLORS['bg_medium'], foreground=self.COLORS['text_light'],
             anchor="center", justify=tk.CENTER)
 
+        # Navigation bar (v12.7 placement — under center_panel, not board_column)
+        self.navigation_frame = ttk.Frame(self.center_panel, style='Right.TFrame')
+        self.navigation_frame.pack(fill=tk.X, pady=(5, 10))
+
+        self.start_button = ttk.Button(self.navigation_frame, text="«", command=self.go_to_start,  style='Nav.TButton', state=tk.DISABLED)
+        self.undo_button  = ttk.Button(self.navigation_frame, text="‹", command=self.undo_move,    style='Nav.TButton', state=tk.DISABLED)
+        self.redo_button  = ttk.Button(self.navigation_frame, text="›", command=self.redo_move,    style='Nav.TButton', state=tk.DISABLED)
+        self.end_button   = ttk.Button(self.navigation_frame, text="»", command=self.go_to_end,    style='Nav.TButton', state=tk.DISABLED)
+
+        self.navigation_frame.columnconfigure(0, weight=1)
+        self.navigation_frame.columnconfigure(5, weight=1)
+        self.start_button.grid(row=0, column=1, padx=5)
+        self.undo_button .grid(row=0, column=2, padx=5)
+        self.redo_button .grid(row=0, column=3, padx=5)
+        self.end_button  .grid(row=0, column=4, padx=5)
+
         # --- RIGHT PANEL ---
-        self.right_panel = ttk.Frame(self.main_frame, style='Left.TFrame', width=sw + 20)
+        self.right_panel = ttk.Frame(self.main_frame, style='Left.TFrame')
         self.right_panel.pack(side=tk.RIGHT, fill=tk.Y, padx=(10, 0))
         self.right_panel.pack_propagate(False)
         self._build_right_sidebar_widgets(self.right_panel)
@@ -227,30 +221,29 @@ class EnhancedChessApp:
         self.center_panel.bind("<Configure>", self.handle_board_resize)
 
     def _build_control_widgets(self, parent_frame):
-        gm_frame = ttk.Frame(parent_frame, style='Left.TFrame')
-        gm_frame.pack(fill=tk.X, pady=(0, 5))
-        ttk.Label(gm_frame, text="GAME MODE", style='Header.TLabel').pack(anchor=tk.W)
+        self.game_mode_frame = ttk.Frame(parent_frame, style='Left.TFrame')
+        self.game_mode_frame.pack(fill=tk.X, pady=(0, 5))
+        ttk.Label(self.game_mode_frame, text="GAME MODE", style='Header.TLabel').pack(anchor=tk.W)
         for mode in GameMode:
             ttk.Radiobutton(
-                gm_frame,
+                self.game_mode_frame,
                 text=mode.name.replace("_", " ").title(),
                 variable=self.game_mode, value=mode.value,
                 command=self.on_mode_changed, style='Custom.TRadiobutton'
             ).pack(anchor=tk.W, pady=(2, 0))
 
-        ctrl = ttk.Frame(parent_frame, style='Left.TFrame')
-        ctrl.pack(fill=tk.X, pady=10)
-        self.controls_frame = ctrl
+        self.controls_frame = ttk.Frame(parent_frame, style='Left.TFrame')
+        self.controls_frame.pack(fill=tk.X, pady=10)
 
-        ttk.Button(ctrl, text="NEW GAME",   command=self.reset_game,        style='Control.TButton').pack(fill=tk.X, pady=3)
-        ttk.Button(ctrl, text="SWAP SIDES", command=self.swap_sides,        style='Control.TButton').pack(fill=tk.X, pady=3)
-        self.flip_view_btn = ttk.Button(ctrl, text="FLIP VIEW", command=self.toggle_board_view, style='Control.TButton')
+        ttk.Button(self.controls_frame, text="NEW GAME",       command=self.reset_game,        style='Control.TButton').pack(fill=tk.X, pady=3)
+        ttk.Button(self.controls_frame, text="SWAP SIDES",     command=self.swap_sides,        style='Control.TButton').pack(fill=tk.X, pady=3)
+        self.flip_view_btn = ttk.Button(self.controls_frame, text="FLIP VIEW", command=self.toggle_board_view, style='Control.TButton')
         self.flip_view_btn.pack(fill=tk.X, pady=3)
-        ttk.Button(ctrl, text="AI vs OP Series", command=self.start_ai_series, style='Control.TButton').pack(fill=tk.X, pady=3)
+        ttk.Button(self.controls_frame, text="AI vs OP Series", command=self.start_ai_series,  style='Control.TButton').pack(fill=tk.X, pady=3)
 
-        ttk.Label(ctrl, text="Bot Depth:", style='SmallHeader.TLabel').pack(anchor=tk.W, pady=(10, 0))
+        ttk.Label(self.controls_frame, text="Bot Depth:", style='SmallHeader.TLabel').pack(anchor=tk.W, pady=(10, 0))
         self.bot_depth_slider = tk.Scale(
-            ctrl, from_=1, to=self.slidermaxvalue, orient=tk.HORIZONTAL,
+            self.controls_frame, from_=1, to=self.slidermaxvalue, orient=tk.HORIZONTAL,
             bg=self.COLORS['bg_dark'], fg=self.COLORS['text_light'],
             highlightthickness=0, relief='flat')
         self.bot_depth_slider.set(ChessBot.search_depth)
@@ -258,42 +251,47 @@ class EnhancedChessApp:
 
         self.instant_move = tk.BooleanVar(value=False)
         checkboxes = [
-            ("Instant Moves",                self.instant_move,          None),
-            ("Analysis Mode (H-vs-H)",       self.analysis_mode_var,     self._update_analysis_after_state_change),
-            ("Auto-save Depth Stats",        self.auto_save_stats_var,   None),
-            ("Show Engine Lines (PV)",       self.show_pv_var,           self._render_pv),
-            ("Long Notation (Casualties)",   self.long_notation_var,     self._on_notation_toggle),
+            ("Instant Moves",               self.instant_move,          None),
+            ("Analysis Mode (H-vs-H)",      self.analysis_mode_var,     self._update_analysis_after_state_change),
+            ("Auto-save Depth Stats",       self.auto_save_stats_var,   None),
+            ("Show Engine Lines (PV)",      self.show_pv_var,           self._render_pv),
+            ("Long Notation (Casualties)",  self.long_notation_var,     self._on_notation_toggle),
         ]
         for text, var, cmd in checkboxes:
             kw = {'command': cmd} if cmd else {}
-            ttk.Checkbutton(ctrl, text=text, variable=var, style='Custom.TCheckbutton', **kw).pack(anchor=tk.W, pady=(2, 2))
+            ttk.Checkbutton(
+                self.controls_frame, text=text, variable=var,
+                style='Custom.TCheckbutton', **kw
+            ).pack(anchor=tk.W, pady=(2, 2))
 
     def _build_right_sidebar_widgets(self, parent_frame):
-        info = ttk.Frame(parent_frame, style='Left.TFrame')
-        info.pack(fill=tk.X, pady=(0, 5))
-        self.game_info_label = ttk.Label(info, text="Match Info", style='Header.TLabel')
+        self.info_frame = ttk.Frame(parent_frame, style='Left.TFrame')
+        self.info_frame.pack(fill=tk.X, pady=(0, 5))
+        self.game_info_label = ttk.Label(self.info_frame, text="Match Info", style='Header.TLabel')
         self.game_info_label.pack(anchor=tk.W)
-        self.turn_label = ttk.Label(info, text="WHITE'S TURN", style='Status.TLabel')
+        self.turn_label = ttk.Label(self.info_frame, text="WHITE'S TURN", style='Status.TLabel')
         self.turn_label.pack(fill=tk.X, pady=(5, 10))
 
         ttk.Label(parent_frame, text="Move History", style='SmallHeader.TLabel').pack(anchor=tk.W)
 
-        tree_frame = tk.Frame(parent_frame, bg=self.COLORS['bg_medium'])
-        tree_frame.pack(fill=tk.BOTH, expand=True, pady=(2, 10))
+        self.tree_frame = tk.Frame(parent_frame, bg=self.COLORS['bg_medium'])
+        self.tree_frame.pack(fill=tk.BOTH, expand=True, pady=(2, 10))
 
-        header = tk.Frame(tree_frame, bg=self.COLORS['bg_light'])
-        header.pack(fill=tk.X)
-        header_str = " #  " + "White".center(18) + "Black".center(18)
-        tk.Label(header, text=header_str,
-                 bg=self.COLORS['bg_light'], fg=self.COLORS['text_light'],
-                 font=('Courier', 11, 'bold'), anchor=tk.W, justify=tk.LEFT).pack(side=tk.LEFT, fill=tk.X)
+        self.history_header = tk.Frame(self.tree_frame, bg=self.COLORS['bg_light'])
+        self.history_header.pack(fill=tk.X)
+        header_str = " #  " + "White".center(14) + "Black".center(14)
+        tk.Label(
+            self.history_header, text=header_str,
+            bg=self.COLORS['bg_light'], fg=self.COLORS['text_light'],
+            font=('Courier', 11, 'bold'), anchor=tk.W, justify=tk.LEFT
+        ).pack(side=tk.LEFT, fill=tk.X)
 
         self.moves_text = tk.Text(
-            tree_frame, font=('Courier', 11),
+            self.tree_frame, font=('Courier', 11),
             bg=self.COLORS['bg_medium'], fg=self.COLORS['text_light'],
             borderwidth=0, highlightthickness=0, state=tk.DISABLED,
             cursor="arrow", wrap=tk.NONE)
-        scrollbar = ttk.Scrollbar(tree_frame, orient=tk.VERTICAL, command=self.moves_text.yview)
+        scrollbar = ttk.Scrollbar(self.tree_frame, orient=tk.VERTICAL, command=self.moves_text.yview)
         self.moves_text.configure(yscrollcommand=scrollbar.set)
         self.moves_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
@@ -315,7 +313,7 @@ class EnhancedChessApp:
         btn_frame = ttk.Frame(frame, style='Left.TFrame')
         btn_frame.pack(fill=tk.X)
         prefix = label_text.split()[0]
-        ttk.Button(btn_frame, text=f"Load {prefix}", command=load_cmd, style='Control.TButton').pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 2))
+        ttk.Button(btn_frame, text=f"Load {prefix}", command=load_cmd, style='Control.TButton').pack(side=tk.LEFT,  fill=tk.X, expand=True, padx=(0, 2))
         ttk.Button(btn_frame, text=f"Copy {prefix}", command=copy_cmd, style='Control.TButton').pack(side=tk.RIGHT, fill=tk.X, expand=True, padx=(2, 0))
         return entry
 
@@ -337,17 +335,17 @@ class EnhancedChessApp:
         style.configure('Right.TFrame',   background=C['bg_medium'])
         style.configure('Canvas.TFrame',  background=C['bg_medium'])
 
-        style.configure('Header.TLabel',      background=C['bg_dark'],   foreground=C['text_light'], font=('Helvetica', 14, 'bold'), padding=(0, 5))
-        style.configure('SmallHeader.TLabel', background=C['bg_dark'],   foreground=C['text_light'], font=('Helvetica', 12, 'bold'), padding=(0, 1))
-        style.configure('Status.TLabel',      background=C['bg_light'],  foreground=C['text_light'], font=('Helvetica', 14, 'bold'), padding=(6, 4), relief='solid', borderwidth=1)
+        style.configure('Header.TLabel',      background=C['bg_dark'],  foreground=C['text_light'], font=('Helvetica', 14, 'bold'), padding=(0, 5))
+        style.configure('SmallHeader.TLabel', background=C['bg_dark'],  foreground=C['text_light'], font=('Helvetica', 12, 'bold'), padding=(0, 1))
+        style.configure('Status.TLabel',      background=C['bg_light'], foreground=C['text_light'], font=('Helvetica', 14, 'bold'), padding=(6, 4), relief='solid', borderwidth=1)
 
-        style.configure('Control.TButton', background=C['accent'],    foreground=C['text_light'], font=('Helvetica', 11, 'bold'), padding=(8, 6), borderwidth=0)
+        style.configure('Control.TButton', background=C['accent'],   foreground=C['text_light'], font=('Helvetica', 11, 'bold'), padding=(8, 6), borderwidth=0)
         style.map('Control.TButton',       background=[('active', C['accent']), ('pressed', '#d13550')])
 
-        style.configure('Flipped.TButton', background=C['warning'],   foreground=C['text_light'], font=('Helvetica', 11, 'bold'), padding=(8, 6), borderwidth=0)
+        style.configure('Flipped.TButton', background=C['warning'],  foreground=C['text_light'], font=('Helvetica', 11, 'bold'), padding=(8, 6), borderwidth=0)
         style.map('Flipped.TButton',       background=[('active', C['warning']), ('pressed', '#E07B00')])
 
-        style.configure('Nav.TButton',     background=C['bg_light'],  foreground=C['text_light'], font=('Helvetica', 16, 'bold'), padding=(10, 5), borderwidth=0)
+        style.configure('Nav.TButton',     background=C['bg_light'], foreground=C['text_light'], font=('Helvetica', 16, 'bold'), padding=(10, 5), borderwidth=0)
         style.map('Nav.TButton',           background=[('active', C['bg_light']), ('pressed', C['bg_medium'])],
                                            foreground=[('disabled', C['text_dark'])])
 
@@ -362,37 +360,33 @@ class EnhancedChessApp:
 
     # ------------------------------------------------------------------ resize
     def handle_main_resize(self, event):
-        sw = max(self.BASE_SIDEBAR_WIDTH, int(event.width * 0.22))
-        if sw == self.left_panel.winfo_width():
+        new_sidebar_width = max(240, int(event.width * 0.20))
+        if new_sidebar_width == self.left_panel.winfo_width():
             return
-        self.left_panel.config(width=sw)
-        self.right_panel.config(width=sw + 20)
+        self.left_panel.config(width=new_sidebar_width)
+        self.right_panel.config(width=new_sidebar_width + 20)
 
     def handle_board_resize(self, event):
-        eval_h = self.eval_frame.winfo_height() or self.eval_frame.winfo_reqheight()
-        nav_h  = self.navigation_frame.winfo_height() or self.navigation_frame.winfo_reqheight()
-        reserved = eval_h + nav_h + 35
+        eval_h = self.eval_frame.winfo_height() if self.eval_frame.winfo_height() > 1 else self.eval_frame.winfo_reqheight()
+        nav_h  = self.navigation_frame.winfo_height() if self.navigation_frame.winfo_height() > 1 else self.navigation_frame.winfo_reqheight()
+        reserved_height = eval_h + nav_h + 35
 
-        view_w = event.width - 40
-        view_h = event.height - reserved
-        if view_w <= 1 or view_h <= 1:
+        view_width  = event.width - 40
+        view_height = event.height - reserved_height
+        if view_width <= 1 or view_height <= 1:
             return
 
-        new_sq = min(view_w // COLS, view_h // ROWS)
-        bpx    = COLS * self.square_size
+        new_square_size  = min(view_width // COLS, view_height // ROWS)
+        board_pixel_width = COLS * self.square_size
+        self.eval_frame.config(width=board_pixel_width)
+        self.eval_bar_canvas.config(width=board_pixel_width)
 
-        # Always keep bars in sync with current board width
-        self.eval_frame.config(width=bpx)
-        self.eval_bar_canvas.config(width=bpx)
-        self.navigation_frame.config(width=bpx)
-
-        if new_sq != self.square_size and new_sq > 0:
-            self.square_size = new_sq
-            bpx = COLS * self.square_size
-            self.canvas.config(width=bpx, height=ROWS * self.square_size)
-            self.eval_frame.config(width=bpx)
-            self.eval_bar_canvas.config(width=bpx)
-            self.navigation_frame.config(width=bpx)
+        if new_square_size != self.square_size and new_square_size > 0:
+            self.square_size  = new_square_size
+            board_pixel_width = COLS * self.square_size
+            self.canvas.config(width=board_pixel_width, height=ROWS * self.square_size)
+            self.eval_frame.config(width=board_pixel_width)
+            self.eval_bar_canvas.config(width=board_pixel_width)
             self.board_image_white = self.create_board_image("white")
             self.board_image_black = self.create_board_image("black")
             self.draw_board()
@@ -446,6 +440,7 @@ class EnhancedChessApp:
             self._update_flip_view_button_style()
             self.update_ui_after_state_change()
             if not self.game_over and self.turn != self.human_color:
+                print(f"Swapped sides. AI ({self.turn}) taking over...")
                 delay = 4 if self.instant_move.get() else 20
                 self.master.after(delay, self._make_game_ai_move)
 
@@ -460,6 +455,7 @@ class EnhancedChessApp:
         self.draw_eval_bar(0)
         self.current_pv_raw  = []
         self.last_pv_message = None
+
         if hasattr(self, 'pv_text'):
             self.pv_text.config(state=tk.NORMAL)
             self.pv_text.delete(1.0, tk.END)
@@ -638,8 +634,8 @@ class EnhancedChessApp:
 
         for i, pair in enumerate(pairs):
             num_str = f"{i + 1}.".ljust(4)
-            w_str   = self._format_san_display(pair[0]).center(18)
-            b_str   = self._format_san_display(pair[1]).center(18)
+            w_str   = self._format_san_display(pair[0]).center(14)
+            b_str   = self._format_san_display(pair[1]).center(14)
 
             self.moves_text.insert(tk.END, num_str, "num")
 
@@ -649,7 +645,10 @@ class EnhancedChessApp:
             b_tag = f"ply_{b_ptr}"
 
             self.moves_text.insert(tk.END, w_str, w_tag)
-            self.moves_text.insert(tk.END, b_str, b_tag if pair[1] else "")
+            if pair[1]:
+                self.moves_text.insert(tk.END, b_str, b_tag)
+            else:
+                self.moves_text.insert(tk.END, b_str)
             self.moves_text.insert(tk.END, "\n")
 
             if pair[0] != "...":
@@ -735,7 +734,7 @@ class EnhancedChessApp:
         if self.game_mode.get() == GameMode.HUMAN_VS_BOT.value and self.turn != self.human_color:
             return
 
-        self.selected = (r, c)
+        self.selected  = (r, c)
         self.dragging  = True
         self.drag_start = (r, c)
         self.valid_moves = get_all_legal_moves(self.board, self.turn)
@@ -832,14 +831,14 @@ class EnhancedChessApp:
             if self.turn != self.human_color:
                 bot_class, bot_name = ChessBot, self.MAIN_AI_NAME
         elif mode == GameMode.AI_VS_AI.value:
-            main_color           = "white" if self.white_playing_bot_type == "main" else "black"
-            bot_class, bot_name  = (ChessBot, self.MAIN_AI_NAME) if self.turn == main_color else (OpponentAI, self.OPPONENT_AI_NAME)
+            main_color          = "white" if self.white_playing_bot_type == "main" else "black"
+            bot_class, bot_name = (ChessBot, self.MAIN_AI_NAME) if self.turn == main_color else (OpponentAI, self.OPPONENT_AI_NAME)
         if bot_class:
             self._start_ai_process(bot_class, bot_name, self.bot_depth_slider.get())
 
     def update_ui_after_state_change(self):
-        self.selected = None
-        self.valid_moves = []
+        self.selected                  = None
+        self.valid_moves               = []
         self.valid_moves_for_highlight = []
         self.update_turn_label()
         self.update_game_info_label()
@@ -903,10 +902,10 @@ class EnhancedChessApp:
         return img
 
     def draw_board(self):
-        img = self.board_image_white if self.board_orientation == "white" else self.board_image_black
-        if not img:
+        current_image = self.board_image_white if self.board_orientation == "white" else self.board_image_black
+        if not current_image:
             return
-        self.canvas.itemconfig(self.board_image_id, image=img)
+        self.canvas.itemconfig(self.board_image_id, image=current_image)
         self.canvas.delete("highlight", "piece", "check_highlight", "border_highlight")
 
         mode = self.game_mode.get()
@@ -918,9 +917,9 @@ class EnhancedChessApp:
                                          outline=self.COLORS['warning'], width=4, tags="border_highlight")
 
         for r_move, c_move in getattr(self, 'valid_moves_for_highlight', []):
-            x1, y1 = self.board_to_canvas(r_move, c_move)
-            r_dot = self.square_size // 5
-            cx, cy = x1 + self.square_size // 2, y1 + self.square_size // 2
+            x1, y1   = self.board_to_canvas(r_move, c_move)
+            r_dot    = self.square_size // 5
+            cx, cy   = x1 + self.square_size // 2, y1 + self.square_size // 2
             self.canvas.create_oval(cx - r_dot, cy - r_dot, cx + r_dot, cy + r_dot,
                                     fill="#1E90FF", outline="", tags="highlight")
 
@@ -928,19 +927,18 @@ class EnhancedChessApp:
             for c in range(COLS):
                 if self.board.grid[r][c]:
                     self.draw_piece_with_check(r, c)
-
         self._position_side_labels()
 
     def _position_side_labels(self):
         if not hasattr(self, "canvas"):
             return
-        desired_w = max(96, int(self.square_size * 1.9))
+        desired_label_width = max(96, int(self.square_size * 1.9))
         self.board_row_frame.update_idletasks()
         canvas_x   = self.canvas.winfo_x()
         canvas_y   = self.canvas.winfo_y()
         board_h    = ROWS * self.square_size
         available  = max(1, canvas_x - 10)
-        label_w    = min(desired_w, available)
+        label_w    = min(desired_label_width, available)
 
         if label_w < 20:
             self.top_bot_label.place_forget()
@@ -952,7 +950,7 @@ class EnhancedChessApp:
 
         strip_right = max(3, canvas_x - 8)
         left_x      = 2 + max(0, (strip_right - 2 - label_w) // 2)
-        self.top_bot_label   .place(in_=self.board_row_frame, x=left_x, y=canvas_y + 4,        width=label_w, anchor="nw")
+        self.top_bot_label   .place(in_=self.board_row_frame, x=left_x, y=canvas_y + 4,          width=label_w, anchor="nw")
         self.bottom_bot_label.place(in_=self.board_row_frame, x=left_x, y=canvas_y + board_h - 4, width=label_w, anchor="sw")
 
     def draw_piece_with_check(self, r, c):
@@ -971,7 +969,7 @@ class EnhancedChessApp:
             self.draw_piece_at_canvas_coords(piece, r, c)
 
     def draw_piece_at_canvas_coords(self, piece, r, c):
-        x, y = self.board_to_canvas(r, c)
+        x, y      = self.board_to_canvas(r, c)
         cx, cy    = x + self.square_size // 2, y + self.square_size // 2 + 2
         font_size = int(self.square_size * 0.67)
         font      = ("Arial Unicode MS", font_size)
@@ -1035,6 +1033,7 @@ class EnhancedChessApp:
             self.master.after(100, self.process_comm_queue)
 
     def _render_pv(self):
+        """Render (or hide) the PV line. Called on new PV data and on toggle."""
         if not getattr(self, 'show_pv_var', None) or not self.show_pv_var.get():
             self.pv_text.pack_forget()
             return
@@ -1131,8 +1130,8 @@ class EnhancedChessApp:
             white_label = self.MAIN_AI_NAME     if self.white_playing_bot_type == "main" else self.OPPONENT_AI_NAME
             black_label = self.OPPONENT_AI_NAME if self.white_playing_bot_type == "main" else self.MAIN_AI_NAME
         elif mode == GameMode.HUMAN_VS_BOT.value:
-            white_label = "Human"          if self.human_color == "white" else self.MAIN_AI_NAME
-            black_label = "Human"          if self.human_color == "black" else self.MAIN_AI_NAME
+            white_label = "Human"       if self.human_color == "white" else self.MAIN_AI_NAME
+            black_label = "Human"       if self.human_color == "black" else self.MAIN_AI_NAME
         else:
             white_label, black_label = "White", "Black"
 
@@ -1149,8 +1148,8 @@ class EnhancedChessApp:
 
     def set_interactivity(self, is_interactive):
         if is_interactive:
-            self.canvas.bind("<Button-1>",       self.on_drag_start)
-            self.canvas.bind("<B1-Motion>",      self.on_drag_motion)
+            self.canvas.bind("<Button-1>",        self.on_drag_start)
+            self.canvas.bind("<B1-Motion>",       self.on_drag_motion)
             self.canvas.bind("<ButtonRelease-1>", self.on_drag_end)
         else:
             self.canvas.unbind("<Button-1>")
@@ -1178,10 +1177,10 @@ class EnhancedChessApp:
             r = y // self.square_size
         return (r, c) if 0 <= r < ROWS and 0 <= c < COLS else (-1, -1)
 
-    def undo_move(self):  self._navigate_history(self.history_pointer - 1)
-    def redo_move(self):  self._navigate_history(self.history_pointer + 1)
+    def undo_move(self):   self._navigate_history(self.history_pointer - 1)
+    def redo_move(self):   self._navigate_history(self.history_pointer + 1)
     def go_to_start(self): self._navigate_history(0)
-    def go_to_end(self):  self._navigate_history(len(self.full_history) - 1)
+    def go_to_end(self):   self._navigate_history(len(self.full_history) - 1)
 
     def update_navigation_buttons(self):
         if self.game_mode.get() == GameMode.AI_VS_AI.value:
@@ -1221,10 +1220,10 @@ class EnhancedChessApp:
     def start_ai_series(self):
         self._stop_ai_process()
         self.game_mode.set(GameMode.AI_VS_AI.value)
-        self.ai_series_stats           = {'game_count': 0, 'my_ai_wins': 0, 'op_ai_wins': 0, 'draws': 0}
-        self.depth_stats               = {}
-        self.ai_series_running         = True
-        self.current_opening_sequence  = []
+        self.ai_series_stats          = {'game_count': 0, 'my_ai_wins': 0, 'op_ai_wins': 0, 'draws': 0}
+        self.depth_stats              = {}
+        self.ai_series_running        = True
+        self.current_opening_sequence = []
         self.reset_game()
 
     def apply_series_opening_move(self):
@@ -1315,7 +1314,7 @@ class EnhancedChessApp:
 
     def _draw_tt_board_static(self, sim_board, last_move):
         self.tt_canvas.delete("all")
-        sq   = self.tt_sq_size
+        sq     = self.tt_sq_size
         C1, C2 = "#D2B48C", "#8B5A2B"
         for r in range(ROWS):
             for c in range(COLS):
