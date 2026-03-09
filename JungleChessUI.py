@@ -1,4 +1,4 @@
-# JungleChessUI.py (v12.21 - Save games in AI vs OP series to file)
+# JungleChessUI.py (v12.3 - New 3 move random opening generation)
 
 import tkinter as tk
 from tkinter import ttk, messagebox
@@ -60,7 +60,7 @@ class EnhancedChessApp:
         self.history_pointer = -1
         self.position_counts = {}
 
-        self.current_opening_move = None
+        self.current_opening_sequence = []
         self.square_size = 75
         self.base_sidebar_width = 280
 
@@ -1019,23 +1019,38 @@ class EnhancedChessApp:
         self.ai_series_stats = {'game_count': 0, 'my_ai_wins': 0, 'op_ai_wins': 0, 'draws': 0}
         self.depth_stats = {}
         self.ai_series_running = True
-        self.current_opening_move = None
+        self.current_opening_sequence = [] # Changed from single move to sequence
         self.reset_game()
         
     def apply_series_opening_move(self):
         if self.ai_series_stats['game_count'] % 2 == 0:
-            print("\n--- Generating new opening for game pair ---")
-            moves = get_all_legal_moves(self.board, "white")
-            self.current_opening_move = random.choice(moves) if moves else None
-        
-        if self.current_opening_move:
-            child = self.board.clone()
-            child.make_move(self.current_opening_move[0], self.current_opening_move[1])
-            san = format_move_san(self.board, child, self.current_opening_move)
-            print(f"Applying opening move: {san}")
+            print("\n--- Generating new 3-ply opening sequence for game pair ---")
+            self.current_opening_sequence = []
             
-            self.board.make_move(self.current_opening_move[0], self.current_opening_move[1])
-            self.execute_move_and_check_state(self.turn, self.current_opening_move)
+            # Simulate a board to generate valid sequential moves
+            temp_board = self.board.clone()
+            temp_turn = "white"
+            
+            for _ in range(3):
+                moves = get_all_legal_moves(temp_board, temp_turn)
+                if not moves: break
+                move = random.choice(moves)
+                self.current_opening_sequence.append(move)
+                
+                # Apply move to temp board to get next valid moves
+                temp_board.make_move(move[0], move[1])
+                temp_turn = "black" if temp_turn == "white" else "white"
+        
+        if self.current_opening_sequence:
+            # Apply the sequence of moves to the real board
+            for move in self.current_opening_sequence:
+                child = self.board.clone()
+                child.make_move(move[0], move[1])
+                san = format_move_san(self.board, child, move)
+                print(f"Applying opening move: {san}")
+                
+                self.board.make_move(move[0], move[1])
+                self.execute_move_and_check_state(self.turn, move)
 
     def update_scoreboard(self):
         if self.game_mode.get() == GameMode.AI_VS_AI.value and self.ai_series_running:
