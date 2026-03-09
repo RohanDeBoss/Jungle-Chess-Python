@@ -1,4 +1,4 @@
-# TablebaseGenerator.py (v5.10 - always-loss cleanup + simpler transition tuples)
+# TablebaseGenerator.py (v6.0 - unified retro filter, clean stage numbering, loop optimisations)
 
 import os
 import time
@@ -17,13 +17,11 @@ import io
 TB_DIR = "tablebases"
 os.makedirs(TB_DIR, exist_ok=True)
 
-ENABLE_RETRO_FILTER_4MAN = True # True adds a new stop that makes for smaller file size and more correctness. It costs a litle time, but actually saves so much computation its allways worth it.
 LONGEST_MATES_NOTE_FILE = os.path.join(TB_DIR, "new_longest_mates.tsv")
 LONGEST_MATE_KEY_PREFIX = "regen_"
 
- # How many CPUs to subtract from the total when choosing worker count.
- # The generator will use max(1, os.cpu_count() - TB_THREADS_SUBTRACT).
- # This lets you specify "total - n" threads by changing this value.
+# How many CPUs to subtract from the total when choosing worker count.
+# The generator will use max(1, os.cpu_count() - TB_THREADS_SUBTRACT).
 TB_THREADS_SUBTRACT = 2
 EXPECTED_TABLE_ENTRIES = 64 * 64 * 64 * 2
 PIECE_CLASS_BY_NAME = {
@@ -39,7 +37,8 @@ if hasattr(signal, "SIGBREAK"):
 # ==============================================================================
 
 def _main_interrupt_handler(signum, frame):
-    print("\n[Interrupt ignored] Tablebase generation is protected from Ctrl+C. Close the terminal or kill the process explicitly if you really want to stop it.", flush=True)
+    print("\n[Interrupt ignored] Tablebase generation is protected from Ctrl+C. "
+          "Close the terminal or kill the process explicitly if you really want to stop it.", flush=True)
 
 def _install_main_interrupt_ignores():
     for sig in _CONSOLE_INTERRUPT_SIGNALS:
@@ -72,7 +71,6 @@ def _jung_king_threatens(board, r1, c1, r2, c2, vacated=None):
         return True
     if mx != 2 or mn == 1:
         return False
-
     mr = r1 + ((dr_raw > 0) - (dr_raw < 0))
     mc = c1 + ((dc_raw > 0) - (dc_raw < 0))
     if vacated is not None and (mr, mc) == vacated:
@@ -93,13 +91,16 @@ def _flat_idx_raw(i0, i1, i2, i3):
 
 def _pack_uint_list(lst):
     n = len(lst)
-    if n == 0: return struct.pack('<I', 0)
+    if n == 0:
+        return struct.pack('<I', 0)
     return struct.pack('<I', n) + struct.pack(f'<{n}I', *lst)
 
 def _unpack_uint_list(b):
-    if not b: return ()
+    if not b:
+        return ()
     n = struct.unpack_from('<I', b, 0)[0]
-    if n == 0: return ()
+    if n == 0:
+        return ()
     return struct.unpack_from(f'<{n}I', b, 4)
 
 def _read_longest_mate_records():
@@ -143,7 +144,7 @@ def _upsert_longest_mate_record(table_key, max_dtm, decisive, remaining, elapsed
         "max_dtm": str(int(max_dtm)),
         "decisive": str(int(decisive)),
         "remaining": str(int(remaining)),
-        "elapsed_min": f"{elapsed_seconds/60.0:.1f}",
+        "elapsed_min": f"{elapsed_seconds / 60.0:.1f}",
         "updated_utc": time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime()),
     }
     _write_longest_mate_records(records)
@@ -153,6 +154,7 @@ def _safe_record_longest_mate(table_key, max_dtm, decisive, remaining, elapsed_s
         _upsert_longest_mate_record(table_key, max_dtm, decisive, remaining, elapsed_seconds)
     except Exception as e:
         print(f"[LongestMate] Warning: failed to update note file ({e})")
+
 
 # ==============================================================================
 # 3-MAN GENERATOR
@@ -187,21 +189,18 @@ def _build_transition_worker(idx):
 
     if turn_is_white:
         immediate_win = False
-        promo_win_vals =[]
-        child_flats =[]
+        promo_win_vals = []
+        child_flats = []
 
         for m in moves:
             start, end = m
-            
-            # [Opt-2] Fast Pre-Screen
             if isinstance(board.grid[start[0]][start[1]], King) and end != bk:
                 if _jung_king_threatens(board, end[0], end[1], bk[0], bk[1], vacated=start):
                     continue
 
             child = board.clone()
             child.make_move(start, end)
-            
-            # [Opt-1] Inline Check Validation (Black only has a King)
+
             wkp = child.white_king_pos
             bkp = child.black_king_pos
             if wkp and bkp and _jung_king_threatens(child, wkp[0], wkp[1], bkp[0], bkp[1]):
@@ -216,12 +215,14 @@ def _build_transition_worker(idx):
                          m[1][0] * 8 + m[1][1],
                          child.black_king_pos[0] * 8 + child.black_king_pos[1], 1)
                 q_val = int(_W_QUEEN_TABLE[q_idx])
-                if q_val < 0: promo_win_vals.append(abs(q_val) + 1)
+                if q_val < 0:
+                    promo_win_vals.append(abs(q_val) + 1)
                 continue
 
             if len(child.white_pieces) >= 2:
                 p = next((x for x in child.white_pieces if not isinstance(x, King)), None)
-                if p is None: continue
+                if p is None:
+                    continue
                 c0 = child.white_king_pos[0] * 8 + child.white_king_pos[1]
                 c1 = p.pos[0] * 8 + p.pos[1]
                 c2 = child.black_king_pos[0] * 8 + child.black_king_pos[1]
@@ -231,7 +232,7 @@ def _build_transition_worker(idx):
 
     legal_moves_count = 0
     has_non_losing_escape = False
-    child_flats =[]
+    child_flats = []
 
     for m in moves:
         if m[1] != wk and _jung_king_threatens(board, m[1][0], m[1][1], wk[0], wk[1], vacated=m[0]):
@@ -243,21 +244,25 @@ def _build_transition_worker(idx):
 
         legal_moves_count += 1
         if not child.white_king_pos or len(child.white_pieces) < 2:
-            has_non_losing_escape = True; continue
-            
+            has_non_losing_escape = True
+            continue
+
         if _W_PIECE_NAME == "Pawn" and isinstance(child.grid[child.white_pieces[1].pos[0]][child.white_pieces[1].pos[1]], Queen):
-            has_non_losing_escape = True; continue
+            has_non_losing_escape = True
+            continue
 
         p = next((x for x in child.white_pieces if not isinstance(x, King)), None)
         if p is None:
-            has_non_losing_escape = True; continue
-            
+            has_non_losing_escape = True
+            continue
+
         c0 = child.white_king_pos[0] * 8 + child.white_king_pos[1]
         c1 = p.pos[0] * 8 + p.pos[1]
         c2 = child.black_king_pos[0] * 8 + child.black_king_pos[1]
         child_flats.append(_flat_idx_raw(c0, c1, c2, opp_turn_idx))
 
     return _flat_idx_raw(i0, i1, i2, i3), ('b', legal_moves_count, has_non_losing_escape, _pack_uint_list(child_flats))
+
 
 class Generator:
     def __init__(self, piece_class):
@@ -269,6 +274,7 @@ class Generator:
         self.total_positions = 64 * 64 * 64 * 2
         self.table = np.zeros((64, 64, 64, 2), dtype=np.int16)
 
+        # Reusable sim objects for the retro-legality filter (avoids per-position allocation)
         self.sim_board = Board(setup=False)
         self.wk_obj = King('white')
         self.wp_obj = self.piece_class('white')
@@ -295,23 +301,24 @@ class Generator:
     def _flat_idx(self, idx):
         return (((idx[0] * 64 + idx[1]) * 64 + idx[2]) * 2 + idx[3])
 
-    def setup_sim(self, wk, wp, bk):
-        self.sim_board.grid = [[None for _ in range(8)] for _ in range(8)]
+    def _setup_sim(self, wk, wp, bk):
+        board = self.sim_board
+        board.grid = [[None] * 8 for _ in range(8)]
         self.wk_obj.pos = wk
-        self.sim_board.grid[wk[0]][wk[1]] = self.wk_obj
-        self.sim_board.white_king_pos = wk
         self.wp_obj.pos = wp
-        self.sim_board.grid[wp[0]][wp[1]] = self.wp_obj
         self.bk_obj.pos = bk
-        self.sim_board.grid[bk[0]][bk[1]] = self.bk_obj
-        self.sim_board.black_king_pos = bk
-        self.sim_board.white_pieces = [self.wk_obj, self.wp_obj]
-        self.sim_board.black_pieces = [self.bk_obj]
-        self.sim_board.piece_counts = {
-            'white': {Pawn:0, Knight:0, Bishop:0, Rook:0, Queen:0, King:1},
-            'black': {Pawn:0, Knight:0, Bishop:0, Rook:0, Queen:0, King:1}
+        board.grid[wk[0]][wk[1]] = self.wk_obj
+        board.grid[wp[0]][wp[1]] = self.wp_obj
+        board.grid[bk[0]][bk[1]] = self.bk_obj
+        board.white_king_pos = wk
+        board.black_king_pos = bk
+        board.white_pieces = [self.wk_obj, self.wp_obj]
+        board.black_pieces = [self.bk_obj]
+        board.piece_counts = {
+            'white': {Pawn: 0, Knight: 0, Bishop: 0, Rook: 0, Queen: 0, King: 1},
+            'black': {Pawn: 0, Knight: 0, Bishop: 0, Rook: 0, Queen: 0, King: 1},
         }
-        self.sim_board.piece_counts['white'][type(self.wp_obj)] += 1
+        board.piece_counts['white'][type(self.wp_obj)] += 1
 
     def generate(self):
         if os.path.exists(self.filename):
@@ -320,151 +327,176 @@ class Generator:
 
         start_time = time.time()
         print(f"\n{'='*60}\n GENERATING: King + {self.piece_name} vs King\n{'='*60}")
-        unsolved_indices = []
-        candidate_flats = array('I')
+
+        # ------------------------------------------------------------------
+        # Stage 1: Enumerate all structurally valid positions
+        # ------------------------------------------------------------------
+        print(f"[Stage 1] Enumerating candidate positions...")
+        raw_candidates = []
         raw_candidate_states = 0
-        candidate_states = 0
-        retro_illegal_discarded = 0
-        phase1_presolved = 0
-
-        print(f"[Phase 1] Initialization...")
-        for count, idx in enumerate(np.ndindex(self.table.shape)):
-            if count % 200000 == 0 and count > 0: 
-                print(f"  > Scanned {count}/{self.total_positions} positions...", end='\r')
-
+        for idx in np.ndindex(self.table.shape):
             wk, wp, bk, t_idx = self.decode(idx)
-            if wk == wp or wk == bk or wp == bk: continue
-            if self.piece_name == "Pawn" and (wp[0] == 0 or wp[0] == 7): continue
-
+            if wk == wp or wk == bk or wp == bk:
+                continue
+            if self.piece_name == "Pawn" and (wp[0] == 0 or wp[0] == 7):
+                continue
             raw_candidate_states += 1
-            
-            # [Optimization restored] Handle Phase 1 checkmates locally to save worker time
-            self.setup_sim(wk, wp, bk)
-            # Retro-legality filter:
-            # The side that just moved (the opponent of side-to-move) cannot be in check.
-            if t_idx == 0:
-                # White to move -> Black just moved, so Black must not be in check.
-                if is_in_check(self.sim_board, 'black'):
-                    retro_illegal_discarded += 1
-                    continue
-            else:
-                # Black to move -> White just moved, so White must not be in check.
-                if is_in_check(self.sim_board, 'white'):
-                    retro_illegal_discarded += 1
-                    continue
+            raw_candidates.append(idx)
+        print(f"[Stage 1] Found {raw_candidate_states:,} structurally valid positions.")
 
-            candidate_states += 1
-            candidate_flats.append(self._flat_idx(idx))
+        # ------------------------------------------------------------------
+        # Stage 2: Retro-legality filter (the side that just moved cannot be
+        #          in check — eliminates impossible positions before any work)
+        # ------------------------------------------------------------------
+        print(f"[Stage 2] Applying retro-legality filter...")
+        stage2_start = time.time()
+        candidate_indices = []
+        retro_illegal_discarded = 0
+        for idx in raw_candidates:
+            wk, wp, bk, t_idx = self.decode(idx)
+            self._setup_sim(wk, wp, bk)
+            passive_color = 'black' if t_idx == 0 else 'white'
+            if is_in_check(self.sim_board, passive_color):
+                retro_illegal_discarded += 1
+                continue
+            candidate_indices.append(idx)
+        candidate_states = len(candidate_indices)
+        print(f"[Stage 2] Retro-illegal discarded: {retro_illegal_discarded:,} | "
+              f"Remaining: {candidate_states:,} | Time: {time.time()-stage2_start:.1f}s")
 
-            if t_idx == 1: # Black
-                if not self.sim_board.black_king_pos:
+        # ------------------------------------------------------------------
+        # Stage 3: Pre-solve trivial terminal positions (checkmates / no
+        #          legal moves) without spawning worker processes
+        # ------------------------------------------------------------------
+        print(f"[Stage 3] Pre-solving terminal positions...")
+        stage3_start = time.time()
+        unsolved_indices = []
+        phase1_presolved = 0
+        candidate_flats = array('I')
+        for idx in candidate_indices:
+            wk, wp, bk, t_idx = self.decode(idx)
+            self._setup_sim(wk, wp, bk)
+            flat = self._flat_idx(idx)
+            candidate_flats.append(flat)
+
+            if t_idx == 1:  # Black to move
+                if not self.sim_board.black_king_pos or not has_legal_moves(self.sim_board, 'black'):
                     self.table[idx] = -1
                     phase1_presolved += 1
                     continue
-                if not has_legal_moves(self.sim_board, 'black'):
-                    self.table[idx] = -1
-                    phase1_presolved += 1
-                    continue
-            else: # White
+            else:  # White to move
                 if not self.sim_board.white_king_pos:
                     self.table[idx] = -1
                     phase1_presolved += 1
                     continue
 
             unsolved_indices.append(idx)
-        print()
-        print(
-            f"[Phase 1] Raw candidates: {raw_candidate_states:,} | "
-            f"Retro-illegal discarded: {retro_illegal_discarded:,} | "
-            f"Legal candidates: {candidate_states:,} | "
-            f"Pre-solved: {phase1_presolved:,} | Remaining: {len(unsolved_indices):,}"
-        )
+        print(f"[Stage 3] Pre-solved: {phase1_presolved:,} | "
+              f"Remaining: {len(unsolved_indices):,} | Time: {time.time()-stage3_start:.1f}s")
 
-        print(f"[Phase 1.5] Building transition cache ({len(unsolved_indices)} states)...")
+        # ------------------------------------------------------------------
+        # Stage 4: Build transition cache (parallel where possible)
+        # ------------------------------------------------------------------
+        print(f"[Stage 4] Building transition cache ({len(unsolved_indices):,} states)...")
+        stage4_start = time.time()
         cache = {}
-        
-        can_parallel = True
-        main_file = getattr(__main__, "__file__", "")
-        if not main_file or main_file == "<stdin>": can_parallel = False
 
+        can_parallel = bool(getattr(__main__, "__file__", ""))
         if can_parallel:
             try:
-                with ProcessPoolExecutor(max_workers=self.transition_workers,
-                                         initializer=_init_transition_worker,
-                                         initargs=(self.piece_name, self.queen_tb_file)) as ex:
+                with ProcessPoolExecutor(
+                    max_workers=self.transition_workers,
+                    initializer=_init_transition_worker,
+                    initargs=(self.piece_name, self.queen_tb_file)
+                ) as ex:
                     for done, (flat, transition) in enumerate(
-                            ex.map(_build_transition_worker, unsolved_indices, chunksize=1024), start=1):
+                        ex.map(_build_transition_worker, unsolved_indices, chunksize=1024), start=1
+                    ):
                         cache[flat] = transition
                         if done % 50000 == 0:
-                            speed = done / max(0.001, time.time() - start_time)
-                            print(f"  > Cache: {done/len(unsolved_indices)*100:.1f}% | {speed:.0f} st/s | ETA: {(len(unsolved_indices)-done)/speed/60:.1f}m", end='\r')
+                            speed = done / max(0.001, time.time() - stage4_start)
+                            print(f"  > {done / len(unsolved_indices) * 100:.1f}% | "
+                                  f"{speed:.0f} st/s | ETA: {(len(unsolved_indices) - done) / speed / 60:.1f}m", end='\r')
                 print()
             except Exception as e:
-                print(f"[{self.piece_name}] Parallel build failed ({e}). Falling back to single-process.")
+                print(f"\n[{self.piece_name}] Parallel build failed ({e}). Falling back to single-process.")
                 cache.clear()
                 can_parallel = False
 
         if not can_parallel:
             _init_transition_worker(self.piece_name, self.queen_tb_file)
             for done, idx in enumerate(unsolved_indices, start=1):
-                cache[self._flat_idx(idx)] = _build_transition_worker(idx)
+                flat, transition = _build_transition_worker(idx)
+                cache[flat] = transition
                 if done % 50000 == 0:
-                    speed = done / max(0.001, time.time() - start_time)
-                    print(f"  > Cache: {done/len(unsolved_indices)*100:.1f}% | {speed:.0f} st/s", end='\r')
+                    speed = done / max(0.001, time.time() - stage4_start)
+                    print(f"  > {done / len(unsolved_indices) * 100:.1f}% | {speed:.0f} st/s", end='\r')
             print()
-        
+        print(f"[Stage 4] Cache built in {time.time() - stage4_start:.1f}s.")
+
+        # ------------------------------------------------------------------
+        # Retrograde iterations
+        # ------------------------------------------------------------------
         iteration = 1
         max_dtm_solved = 0
+        prev_flat = self.table.reshape(-1)
+
         while True:
             iter_start = time.time()
             changed = 0
-            new_unsolved =[]
-            prev_table = self.table.copy()
-            prev_flat = prev_table.reshape(-1)
-
-            print(f"\n[{self.piece_name}] Iteration {iteration} (DTM {iteration})")
+            new_unsolved = []
+            # Take a snapshot of solved values for this wave
+            snapshot = prev_flat.copy()
 
             for idx in unsolved_indices:
                 t_idx = idx[3]
                 flat = self._flat_idx(idx)
                 transition = cache[flat]
 
-                if t_idx == 0:
+                if t_idx == 0:  # White to move: find the quickest win
                     best_win = 0
                     _, immediate_win, promo_packed, child_packed = transition
-                    if immediate_win: best_win = 1
+                    if immediate_win:
+                        best_win = 1
                     for val in _unpack_uint_list(promo_packed):
-                        if best_win == 0 or val < best_win: best_win = val
+                        if best_win == 0 or val < best_win:
+                            best_win = val
                     for cflat in _unpack_uint_list(child_packed):
-                        res_val = int(prev_flat[cflat])
+                        res_val = int(snapshot[cflat])
                         if res_val < 0:
                             val = abs(res_val) + 1
-                            if best_win == 0 or val < best_win: best_win = val
+                            if best_win == 0 or val < best_win:
+                                best_win = val
 
                     if best_win > 0:
                         self.table[idx] = best_win
                         changed += 1
                     else:
                         new_unsolved.append(idx)
-                else:
+
+                else:  # Black to move: loss only if every legal reply leads to a white win
                     _, legal_moves_count, has_non_losing_escape, child_packed = transition
-                    
+
                     if legal_moves_count == 0:
                         self.table[idx] = -1
                         changed += 1
                         continue
 
-                    all_moves_lead_to_win = not has_non_losing_escape
+                    if has_non_losing_escape:
+                        new_unsolved.append(idx)
+                        continue
+
                     max_win_val = 0
+                    all_resolved = True
+                    for cflat in _unpack_uint_list(child_packed):
+                        res_val = int(snapshot[cflat])
+                        if res_val <= 0:
+                            all_resolved = False
+                            break
+                        if res_val > max_win_val:
+                            max_win_val = res_val
 
-                    if all_moves_lead_to_win:
-                        for cflat in _unpack_uint_list(child_packed):
-                            res_val = int(prev_flat[cflat])
-                            if res_val <= 0:
-                                all_moves_lead_to_win = False; break
-                            if res_val > max_win_val: max_win_val = res_val
-
-                    if all_moves_lead_to_win:
+                    if all_resolved:
                         self.table[idx] = -(max_win_val + 1)
                         changed += 1
                     else:
@@ -472,19 +504,21 @@ class Generator:
 
             unsolved_indices = new_unsolved
             solved_candidates = candidate_states - len(unsolved_indices)
-            percent_candidates = (solved_candidates / candidate_states * 100.0) if candidate_states else 0.0
-            print(f"[{self.piece_name}] Round {iteration} Summary: {changed:,} new solved | Total: {solved_candidates:,}/{candidate_states:,} ({percent_candidates:.1f}%) | Time: {time.time()-iter_start:.1f}s")
+            pct = (solved_candidates / candidate_states * 100.0) if candidate_states else 0.0
+            print(f"[Iteration {iteration}] {changed:,} new | "
+                  f"Total: {solved_candidates:,}/{candidate_states:,} ({pct:.1f}%) | "
+                  f"Time: {time.time() - iter_start:.1f}s")
             if changed > 0:
                 max_dtm_solved = iteration
-            if changed == 0: break
+            if changed == 0:
+                break
             iteration += 1
 
         with open(self.filename, 'wb') as f:
             self.table.tofile(f)
+
         table_flat = self.table.reshape(-1)
-        wins = 0
-        losses = 0
-        unresolved = 0
+        wins = losses = unresolved = 0
         for cflat in candidate_flats:
             val = int(table_flat[cflat])
             if val > 0:
@@ -495,27 +529,17 @@ class Generator:
                 unresolved += 1
         solved = wins + losses
         solve_rate = (solved / candidate_states * 100.0) if candidate_states else 0.0
-        draws = unresolved
-        print(
-            f"[{self.piece_name}] Final Stats: "
-            f"Candidates={candidate_states:,} | "
-            f"Decisive={solved:,} ({solve_rate:.1f}%) | "
-            f"Wins={wins:,} | Losses={losses:,} | Draws={draws:,}"
-        )
-        elapsed_seconds = time.time() - start_time
-        _safe_record_longest_mate(
-            f"K_{self.piece_name}_K",
-            max_dtm_solved,
-            solved,
-            draws,
-            elapsed_seconds
-        )
+        elapsed = time.time() - start_time
+        print(f"[{self.piece_name}] Candidates={candidate_states:,} | "
+              f"Decisive={solved:,} ({solve_rate:.1f}%) | "
+              f"Wins={wins:,} | Losses={losses:,} | Draws={unresolved:,}")
         print(f"[{self.piece_name}] Longest decisive DTM: {max_dtm_solved}")
-        print(f"\nSUCCESS: Generated in {elapsed_seconds/60:.1f} minutes.")
+        _safe_record_longest_mate(f"K_{self.piece_name}_K", max_dtm_solved, solved, unresolved, elapsed)
+        print(f"\nSUCCESS: Generated in {elapsed / 60:.1f} minutes.")
 
 
 # ==============================================================================
-# OPTIMIZED 4-MAN GENERATOR
+# 4-MAN GENERATOR  (K + 2 White Pieces vs K)
 # ==============================================================================
 
 _PIECE_CANONICAL_ORDER = {Bishop: 0, Knight: 1, Pawn: 2, Queen: 3, Rook: 4}
@@ -526,8 +550,8 @@ _W4_P1_NAME = None
 _W4_P2_NAME = None
 _W4_3MAN_TABLES = {}
 _W4_PROMO_TABLE = None
-_W4_SAME_PIECE = False          
-_W4_PROMO_SAME_PIECE = False    
+_W4_SAME_PIECE = False
+_W4_PROMO_SAME_PIECE = False
 
 def _flat_idx_raw_4(i0, i1, i2, i3, i4):
     return (((((i0 * 64 + i1) * 64 + i2) * 64 + i3) * 2) + i4)
@@ -540,7 +564,7 @@ def _init_transition_worker_4(p1_name, p2_name, promo_tb_file):
     _W4_P2_NAME = p2_name
     _W4_P1_CLASS = PIECE_CLASS_BY_NAME[p1_name]
     _W4_P2_CLASS = PIECE_CLASS_BY_NAME[p2_name]
-    _W4_SAME_PIECE = (p1_name == p2_name)               
+    _W4_SAME_PIECE = (p1_name == p2_name)
     _W4_3MAN_TABLES = {}
     _W4_PROMO_TABLE = None
     _W4_PROMO_SAME_PIECE = False
@@ -552,17 +576,15 @@ def _init_transition_worker_4(p1_name, p2_name, promo_tb_file):
 
     if promo_tb_file and os.path.exists(promo_tb_file):
         _W4_PROMO_TABLE = np.memmap(promo_tb_file, dtype=np.int16, mode='r', shape=(64, 64, 64, 64, 2))
-        base = os.path.basename(promo_tb_file)          
-        parts = base[2:-6].split('_')                   
+        base = os.path.basename(promo_tb_file)
+        parts = base[2:-6].split('_')
         _W4_PROMO_SAME_PIECE = (len(parts) == 2 and parts[0] == parts[1])
 
 def _build_transition_worker_4(flat):
     i4 = flat % 2
     rest = flat // 2
-    i3 = rest % 64
-    rest //= 64
-    i2 = rest % 64
-    rest //= 64
+    i3 = rest % 64; rest //= 64
+    i2 = rest % 64; rest //= 64
     i1 = rest % 64
     i0 = rest // 64
 
@@ -584,12 +606,10 @@ def _build_transition_worker_4(flat):
     if turn_is_white:
         immediate_win = False
         known_win_vals = []
-        child_flats =[]
+        child_flats = []
 
         for m in moves:
             start, end = m
-
-            # [Opt-2] Fast Pre-Screen (King only)
             if isinstance(board.grid[start[0]][start[1]], King) and end != bk:
                 if _jung_king_threatens(board, end[0], end[1], bk[0], bk[1], vacated=start):
                     continue
@@ -597,7 +617,6 @@ def _build_transition_worker_4(flat):
             child = board.clone()
             child.make_move(start, end)
 
-            # [Opt-1] Inline Legality Check (Black only has King)
             wkp = child.white_king_pos
             bkp = child.black_king_pos
             if wkp and bkp and _jung_king_threatens(child, wkp[0], wkp[1], bkp[0], bkp[1]):
@@ -609,7 +628,6 @@ def _build_transition_worker_4(flat):
 
             w_pieces = [p for p in child.white_pieces if not isinstance(p, King)]
 
-            # Double evaporation crash fix included!
             if len(w_pieces) < 2:
                 if len(w_pieces) == 1:
                     rem_name = type(w_pieces[0]).__name__
@@ -656,7 +674,7 @@ def _build_transition_worker_4(flat):
 
     legal_moves_count = 0
     has_non_losing_escape = False
-    child_flats =[]
+    child_flats = []
 
     for m in moves:
         if m[1] != wk and _jung_king_threatens(board, m[1][0], m[1][1], wk[0], wk[1], vacated=m[0]):
@@ -698,7 +716,6 @@ def _build_transition_worker_4(flat):
         c1 = w_pieces[0].pos[0] * 8 + w_pieces[0].pos[1]
         c2 = w_pieces[1].pos[0] * 8 + w_pieces[1].pos[1]
         c3 = child.black_king_pos[0] * 8 + child.black_king_pos[1]
-
         if _W4_SAME_PIECE and c1 > c2:
             c1, c2 = c2, c1
         child_flats.append(_flat_idx_raw_4(c0, c1, c2, c3, opp_turn_idx))
@@ -711,9 +728,9 @@ def _gen_valid_4man_indices_numpy(total_positions, p1_name, p2_name, same_piece,
         end_c = min(start + chunk_size, total_positions)
         flat = np.arange(start, end_c, dtype=np.int64)
 
-        t_arr  = flat % 2;       rest = flat // 2
-        bk_arr = rest % 64;      rest //= 64
-        p2_arr = rest % 64;      rest //= 64
+        t_arr  = flat % 2;      rest = flat // 2
+        bk_arr = rest % 64;     rest //= 64
+        p2_arr = rest % 64;     rest //= 64
         p1_arr = rest % 64
         wk_arr = rest // 64
 
@@ -722,10 +739,10 @@ def _gen_valid_4man_indices_numpy(total_positions, p1_name, p2_name, same_piece,
 
         if p1_name == "Pawn": mask &= (p1_arr >= 8) & (p1_arr < 56)
         if p2_name == "Pawn": mask &= (p2_arr >= 8) & (p2_arr < 56)
-        if same_piece: mask &= (p1_arr <= p2_arr)
+        if same_piece:        mask &= (p1_arr <= p2_arr)
 
-        if not mask.any(): continue
-
+        if not mask.any():
+            continue
         yield flat[mask].tolist()
 
 
@@ -752,29 +769,17 @@ class Generator4:
 
         cpu_default = max(1, (os.cpu_count() or 2) - TB_THREADS_SUBTRACT)
         self.transition_workers = cpu_default
+
+        # Reusable sim objects for the retro-legality filter
         self.sim_board = Board(setup=False)
         self.wk_obj = King('white')
         self.p1_obj = self.p1_class('white')
         self.p2_obj = self.p2_class('white')
         self.bk_obj = King('black')
 
-    def _is_retro_legal_flat(self, flat):
-        i4 = flat % 2
-        rest = flat // 2
-        i3 = rest % 64
-        rest //= 64
-        i2 = rest % 64
-        rest //= 64
-        i1 = rest % 64
-        i0 = rest // 64
-
-        wk = (i0 // 8, i0 % 8)
-        p1 = (i1 // 8, i1 % 8)
-        p2 = (i2 // 8, i2 % 8)
-        bk = (i3 // 8, i3 % 8)
-
+    def _setup_sim(self, wk, p1, p2, bk):
         board = self.sim_board
-        board.grid = [[None for _ in range(8)] for _ in range(8)]
+        board.grid = [[None] * 8 for _ in range(8)]
         self.wk_obj.pos = wk
         self.p1_obj.pos = p1
         self.p2_obj.pos = p2
@@ -788,15 +793,23 @@ class Generator4:
         board.white_pieces = [self.wk_obj, self.p1_obj, self.p2_obj]
         board.black_pieces = [self.bk_obj]
         board.piece_counts = {
-            'white': {Pawn:0, Knight:0, Bishop:0, Rook:0, Queen:0, King:1},
-            'black': {Pawn:0, Knight:0, Bishop:0, Rook:0, Queen:0, King:1}
+            'white': {Pawn: 0, Knight: 0, Bishop: 0, Rook: 0, Queen: 0, King: 1},
+            'black': {Pawn: 0, Knight: 0, Bishop: 0, Rook: 0, Queen: 0, King: 1},
         }
         board.piece_counts['white'][type(self.p1_obj)] += 1
         board.piece_counts['white'][type(self.p2_obj)] += 1
 
-        # Retro-legality: the side that just moved (opponent of side-to-move) cannot be in check.
-        passive_color = 'black' if i4 == 0 else 'white'
-        return not is_in_check(board, passive_color)
+    def _decode_flat(self, flat):
+        i4 = flat % 2;        rest = flat // 2
+        i3 = rest % 64;       rest //= 64
+        i2 = rest % 64;       rest //= 64
+        i1 = rest % 64
+        i0 = rest // 64
+        wk = (i0 // 8, i0 % 8)
+        p1 = (i1 // 8, i1 % 8)
+        p2 = (i2 // 8, i2 % 8)
+        bk = (i3 // 8, i3 % 8)
+        return wk, p1, p2, bk, i4
 
     def generate(self):
         if os.path.exists(self.filename):
@@ -806,47 +819,49 @@ class Generator4:
         start_time = time.time()
         print(f"\n{'='*60}\n GENERATING: King + {self.p1_name} + {self.p2_name} vs King")
         if self.same_piece:
-            print(f" [Symmetry] Same-piece table -- using canonical half (p1<=p2).")
+            print(f" [Symmetry] Same-piece table — using canonical half (p1 <= p2).")
         print(f"{'='*60}")
 
-        print(f"[Phase 1] Scanning positions (numpy-chunked)...")
-        phase1_start = time.time()
-        unsolved_flats = array('I')
+        # ------------------------------------------------------------------
+        # Stage 1: Enumerate structurally valid positions (numpy-chunked)
+        # ------------------------------------------------------------------
+        print(f"[Stage 1] Enumerating candidate positions...")
+        stage1_start = time.time()
+        all_flats = array('I')
         for chunk in _gen_valid_4man_indices_numpy(
-                self.total_positions, self.p1_name, self.p2_name, self.same_piece
-        ):
-            unsolved_flats.extend(chunk)
-        phase1_elapsed = time.time() - phase1_start
-        print(f"[Phase 1] Found {len(unsolved_flats):,} candidate positions in "
-              f"{phase1_elapsed:.1f}s.")
+                self.total_positions, self.p1_name, self.p2_name, self.same_piece):
+            all_flats.extend(chunk)
+        print(f"[Stage 1] Found {len(all_flats):,} candidates in {time.time()-stage1_start:.1f}s.")
 
-        if ENABLE_RETRO_FILTER_4MAN:
-            print(f"[Phase 1.1] Applying retro-legality filter (4-man)...")
-            filter_start = time.time()
-            filtered = array('I')
-            retro_illegal = 0
-            total = len(unsolved_flats)
-            for done, flat in enumerate(unsolved_flats, start=1):
-                if self._is_retro_legal_flat(flat):
-                    filtered.append(flat)
-                else:
-                    retro_illegal += 1
-                if done % 500000 == 0:
-                    pct = done / total * 100.0
-                    print(f"  > Retro filter: {pct:.1f}% ({done:,}/{total:,})", end='\r')
-            if total >= 500000:
-                print()
-            unsolved_flats = filtered
-            print(f"[Phase 1.1] Retro-illegal discarded: {retro_illegal:,} | "
-                  f"Remaining: {len(unsolved_flats):,} | "
-                  f"Time: {time.time()-filter_start:.1f}s.\n")
-        else:
+        # ------------------------------------------------------------------
+        # Stage 2: Retro-legality filter
+        # ------------------------------------------------------------------
+        print(f"[Stage 2] Applying retro-legality filter...")
+        stage2_start = time.time()
+        unsolved_flats = array('I')
+        retro_illegal = 0
+        total = len(all_flats)
+        for done, flat in enumerate(all_flats, start=1):
+            wk, p1, p2, bk, t_idx = self._decode_flat(flat)
+            self._setup_sim(wk, p1, p2, bk)
+            passive_color = 'black' if t_idx == 0 else 'white'
+            if is_in_check(self.sim_board, passive_color):
+                retro_illegal += 1
+            else:
+                unsolved_flats.append(flat)
+            if done % 500000 == 0:
+                print(f"  > {done / total * 100:.1f}% ({done:,}/{total:,})", end='\r')
+        if total >= 500000:
             print()
-
         candidate_states = len(unsolved_flats)
+        print(f"[Stage 2] Retro-illegal discarded: {retro_illegal:,} | "
+              f"Remaining: {candidate_states:,} | Time: {time.time()-stage2_start:.1f}s")
 
-        print(f"[Phase 1.5] Building transition cache ({len(unsolved_flats):,} states)...")
-        cache_start = time.time()
+        # ------------------------------------------------------------------
+        # Stage 3: Build transition cache (parallel)
+        # ------------------------------------------------------------------
+        print(f"[Stage 3] Building transition cache ({candidate_states:,} states)...")
+        stage3_start = time.time()
         transitions = []
         with ProcessPoolExecutor(
             max_workers=self.transition_workers,
@@ -858,66 +873,61 @@ class Generator4:
             ):
                 transitions.append(trans)
                 if done % 100_000 == 0:
-                    elapsed = max(0.001, time.time() - cache_start)
+                    elapsed = max(0.001, time.time() - stage3_start)
                     speed = done / elapsed
-                    eta = (len(unsolved_flats) - done) / speed
-                    print(f"  > Cache: {done/len(unsolved_flats)*100:.1f}% | "
-                          f"{speed:,.0f} st/s | ETA: {eta/60:.1f}m", end='\r', flush=True)
-        print(f"\n[Phase 1.5] Cache built in {(time.time()-cache_start)/60:.1f}m.")
+                    eta = (candidate_states - done) / speed
+                    print(f"  > {done / candidate_states * 100:.1f}% | "
+                          f"{speed:,.0f} st/s | ETA: {eta / 60:.1f}m", end='\r', flush=True)
+        print(f"\n[Stage 3] Cache built in {(time.time()-stage3_start)/60:.1f}m.")
 
-        # ----------------------------------------------------------------
-        # Phase 2: Pre-solve initial no-legal-move losses
-        # ----------------------------------------------------------------
-        print(f"\n[Phase 2] Resolving initial no-legal-move losses...")
-        pre_solved = 0
+        # ------------------------------------------------------------------
+        # Stage 4: Pre-solve trivial no-legal-move losses
+        # ------------------------------------------------------------------
+        print(f"[Stage 4] Pre-solving terminal positions...")
+        table_flat = self.table.reshape(-1)
         surviving_flats = array('I')
         surviving_transitions = []
-        table_flat = self.table.reshape(-1)
+        pre_solved = 0
         for flat, trans in zip(unsolved_flats, transitions):
-            if (flat & 1) == 1:  # black's turn
-                legal_moves_count = trans[1]
-                if legal_moves_count == 0:
-                    table_flat[flat] = -1
-                    pre_solved += 1
-                    continue
-                         
-            surviving_flats.append(flat)
-            surviving_transitions.append(trans)
-
+            if (flat & 1) == 1 and trans[1] == 0:  # Black to move, no legal moves
+                table_flat[flat] = -1
+                pre_solved += 1
+            else:
+                surviving_flats.append(flat)
+                surviving_transitions.append(trans)
         unsolved_flats = surviving_flats
         transitions = surviving_transitions
-        print(f"[Phase 2] Pre-solved {pre_solved:,} positions.")
+        print(f"[Stage 4] Pre-solved {pre_solved:,} positions. Remaining: {len(unsolved_flats):,}")
 
+        # ------------------------------------------------------------------
+        # Retrograde iterations
+        # ------------------------------------------------------------------
         iteration = 1
         max_dtm_solved = 0
         while True:
             iter_start = time.time()
             changed = 0
             new_unsolved = array('I')
-            new_transitions =[]
-            prev_flat = self.table.reshape(-1).copy()
-
-            print(f"\n[Iteration {iteration}] (DTM {iteration})")
+            new_transitions = []
+            snapshot = table_flat.copy()
 
             for flat, transition in zip(unsolved_flats, transitions):
                 t_idx = flat & 1
 
-                if t_idx == 0:
+                if t_idx == 0:  # White to move
                     best_win = 0
                     _, immediate_win, known_win_packed, child_packed = transition
-
                     if immediate_win:
                         best_win = 1
                     for val in _unpack_uint_list(known_win_packed):
                         if best_win == 0 or val < best_win:
                             best_win = val
                     for cflat in _unpack_uint_list(child_packed):
-                        res_val = int(prev_flat[cflat])
+                        res_val = int(snapshot[cflat])
                         if res_val < 0:
                             val = abs(res_val) + 1
                             if best_win == 0 or val < best_win:
                                 best_win = val
-
                     if best_win > 0:
                         table_flat[flat] = best_win
                         changed += 1
@@ -925,27 +935,28 @@ class Generator4:
                         new_unsolved.append(flat)
                         new_transitions.append(transition)
 
-                else:
+                else:  # Black to move
                     _, legal_moves_count, has_non_losing_escape, child_packed = transition
-                    
                     if legal_moves_count == 0:
                         table_flat[flat] = -1
                         changed += 1
                         continue
+                    if has_non_losing_escape:
+                        new_unsolved.append(flat)
+                        new_transitions.append(transition)
+                        continue
 
-                    all_moves_lead_to_win = not has_non_losing_escape
                     max_win_val = 0
+                    all_resolved = True
+                    for cflat in _unpack_uint_list(child_packed):
+                        res_val = int(snapshot[cflat])
+                        if res_val <= 0:
+                            all_resolved = False
+                            break
+                        if res_val > max_win_val:
+                            max_win_val = res_val
 
-                    if all_moves_lead_to_win:
-                        for cflat in _unpack_uint_list(child_packed):
-                            res_val = int(prev_flat[cflat])
-                            if res_val <= 0:
-                                all_moves_lead_to_win = False
-                                break
-                            if res_val > max_win_val:
-                                max_win_val = res_val
-
-                    if all_moves_lead_to_win:
+                    if all_resolved:
                         table_flat[flat] = -(max_win_val + 1)
                         changed += 1
                     else:
@@ -955,9 +966,8 @@ class Generator4:
             unsolved_flats = new_unsolved
             transitions = new_transitions
             total_solved = int((self.table != 0).sum())
-            print(f"  > Summary: {changed:,} new solved | "
-                  f"Total: {total_solved:,} | "
-                  f"Remaining: {len(unsolved_flats):,} | "
+            print(f"[Iteration {iteration}] {changed:,} new | "
+                  f"Total: {total_solved:,} | Remaining: {len(unsolved_flats):,} | "
                   f"Time: {time.time()-iter_start:.1f}s")
             if changed > 0:
                 max_dtm_solved = iteration
@@ -971,17 +981,14 @@ class Generator4:
         remaining = len(unsolved_flats)
         decisive = candidate_states - remaining
         _safe_record_longest_mate(
-            f"K_{self.p1_name}_{self.p2_name}_K",
-            max_dtm_solved,
-            decisive,
-            remaining,
-            elapsed
-        )
-        print(f"[LongestMate] K_{self.p1_name}_{self.p2_name}_K: max_dtm={max_dtm_solved}, decisive={decisive:,}, remaining={remaining:,}")
-        print(f"\nSUCCESS: Generated in {elapsed/60:.1f} minutes.")
+            f"K_{self.p1_name}_{self.p2_name}_K", max_dtm_solved, decisive, remaining, elapsed)
+        print(f"[LongestMate] K_{self.p1_name}_{self.p2_name}_K: "
+              f"max_dtm={max_dtm_solved}, decisive={decisive:,}, remaining={remaining:,}")
+        print(f"\nSUCCESS: Generated in {elapsed / 60:.1f} minutes.")
+
 
 # ==============================================================================
-# 4-MAN CROSS GENERATOR (K + WPiece vs K + BPiece)
+# 4-MAN CROSS GENERATOR  (K + WPiece vs K + BPiece)
 # ==============================================================================
 
 _WV_W_NAME = None
@@ -1044,7 +1051,6 @@ def _white_win_dtm_3man_black_piece(piece_name, wk, bk, bp, turn_idx):
         return None
     def flip(pos):
         return (7 - pos[0], pos[1])
-    # In transformed attacker table: attacker is side with the black piece.
     t_turn_idx = 0 if turn_idx == 1 else 1
     atk_k = flip(bk)
     atk_p = flip(bp)
@@ -1086,31 +1092,27 @@ def _external_white_win_dtm_4vs(child, turn_idx):
         if wn == _WV_W_NAME and bn == _WV_B_NAME:
             return _IN_TABLE_SENTINEL
         return _white_win_dtm_promo_vs(
-            wn, bn, child.white_king_pos, white_non_king[0].pos, child.black_king_pos, black_non_king[0].pos, turn_idx
+            wn, bn, child.white_king_pos, white_non_king[0].pos,
+            child.black_king_pos, black_non_king[0].pos, turn_idx
         )
-
     if len(white_non_king) == 1 and len(black_non_king) == 0:
         return _white_win_dtm_3man_white_piece(
-            type(white_non_king[0]).__name__, child.white_king_pos, white_non_king[0].pos, child.black_king_pos, turn_idx
+            type(white_non_king[0]).__name__,
+            child.white_king_pos, white_non_king[0].pos, child.black_king_pos, turn_idx
         )
-
     if len(white_non_king) == 0 and len(black_non_king) == 1:
         return _white_win_dtm_3man_black_piece(
-            type(black_non_king[0]).__name__, child.white_king_pos, child.black_king_pos, black_non_king[0].pos, turn_idx
+            type(black_non_king[0]).__name__,
+            child.white_king_pos, child.black_king_pos, black_non_king[0].pos, turn_idx
         )
-
     if len(white_non_king) == 0 and len(black_non_king) == 0:
         return _white_win_dtm_kvk(child, turn_idx)
-
     return None
 
 def _build_transition_worker_4vs(flat):
-    i4 = flat % 2
-    rest = flat // 2
-    i3 = rest % 64
-    rest //= 64
-    i2 = rest % 64
-    rest //= 64
+    i4 = flat % 2;        rest = flat // 2
+    i3 = rest % 64;       rest //= 64
+    i2 = rest % 64;       rest //= 64
     i1 = rest % 64
     i0 = rest // 64
 
@@ -1141,15 +1143,12 @@ def _build_transition_worker_4vs(flat):
             child = board.clone()
             child.make_move(start, end)
 
-            if not child.white_king_pos:
-                continue
-            if is_in_check(child, 'white'):
+            if not child.white_king_pos or is_in_check(child, 'white'):
                 continue
             if child.white_king_pos and child.black_king_pos:
                 if _jung_king_threatens(child, child.white_king_pos[0], child.white_king_pos[1],
-                                         child.black_king_pos[0], child.black_king_pos[1]):
+                                        child.black_king_pos[0], child.black_king_pos[1]):
                     continue
-
             if not child.black_king_pos:
                 immediate_win = True
                 continue
@@ -1183,9 +1182,7 @@ def _build_transition_worker_4vs(flat):
         child = board.clone()
         child.make_move(start, end)
 
-        if not child.black_king_pos:
-            continue
-        if is_in_check(child, 'black'):
+        if not child.black_king_pos or is_in_check(child, 'black'):
             continue
 
         legal_moves_count += 1
@@ -1210,19 +1207,18 @@ def _build_transition_worker_4vs(flat):
         else:
             has_non_losing_escape = True
 
-    return ('b', legal_moves_count, has_non_losing_escape, _pack_uint_list(known_win_vals), _pack_uint_list(child_flats))
+    return ('b', legal_moves_count, has_non_losing_escape,
+            _pack_uint_list(known_win_vals), _pack_uint_list(child_flats))
+
 
 def _gen_valid_4man_vs_indices_numpy(total_positions, w_name, b_name, chunk_size=8_000_000):
     for start in range(0, total_positions, chunk_size):
         end_c = min(start + chunk_size, total_positions)
         flat = np.arange(start, end_c, dtype=np.int64)
 
-        t_arr = flat % 2
         rest = flat // 2
-        bp_arr = rest % 64
-        rest //= 64
-        bk_arr = rest % 64
-        rest //= 64
+        bp_arr = rest % 64;   rest //= 64
+        bk_arr = rest % 64;   rest //= 64
         wp_arr = rest % 64
         wk_arr = rest // 64
 
@@ -1237,15 +1233,60 @@ def _gen_valid_4man_vs_indices_numpy(total_positions, w_name, b_name, chunk_size
             continue
         yield flat[mask].tolist()
 
+
 class Generator4Vs:
     def __init__(self, w_piece_class, b_piece_class):
         self.w_name = w_piece_class.__name__
         self.b_name = b_piece_class.__name__
+        self.w_piece_class = w_piece_class
+        self.b_piece_class = b_piece_class
         self.filename = _tb_file_4man_vs(self.w_name, self.b_name)
         self.total_positions = 64 * 64 * 64 * 64 * 2
         self.table = np.zeros((64, 64, 64, 64, 2), dtype=np.int16)
+
         cpu_default = max(1, (os.cpu_count() or 2) - TB_THREADS_SUBTRACT)
         self.transition_workers = cpu_default
+
+        # Reusable sim objects for the retro-legality filter
+        self.sim_board = Board(setup=False)
+        self.wk_obj = King('white')
+        self.wp_obj = w_piece_class('white')
+        self.bk_obj = King('black')
+        self.bp_obj = b_piece_class('black')
+
+    def _setup_sim(self, wk, wp, bk, bp):
+        board = self.sim_board
+        board.grid = [[None] * 8 for _ in range(8)]
+        self.wk_obj.pos = wk
+        self.wp_obj.pos = wp
+        self.bk_obj.pos = bk
+        self.bp_obj.pos = bp
+        board.grid[wk[0]][wk[1]] = self.wk_obj
+        board.grid[wp[0]][wp[1]] = self.wp_obj
+        board.grid[bk[0]][bk[1]] = self.bk_obj
+        board.grid[bp[0]][bp[1]] = self.bp_obj
+        board.white_king_pos = wk
+        board.black_king_pos = bk
+        board.white_pieces = [self.wk_obj, self.wp_obj]
+        board.black_pieces = [self.bk_obj, self.bp_obj]
+        board.piece_counts = {
+            'white': {Pawn: 0, Knight: 0, Bishop: 0, Rook: 0, Queen: 0, King: 1},
+            'black': {Pawn: 0, Knight: 0, Bishop: 0, Rook: 0, Queen: 0, King: 1},
+        }
+        board.piece_counts['white'][type(self.wp_obj)] += 1
+        board.piece_counts['black'][type(self.bp_obj)] += 1
+
+    def _decode_flat(self, flat):
+        i4 = flat % 2;        rest = flat // 2
+        i3 = rest % 64;       rest //= 64
+        i2 = rest % 64;       rest //= 64
+        i1 = rest % 64
+        i0 = rest // 64
+        wk = (i0 // 8, i0 % 8)
+        wp = (i1 // 8, i1 % 8)
+        bk = (i2 // 8, i2 % 8)
+        bp = (i3 // 8, i3 % 8)
+        return wk, wp, bk, bp, i4
 
     def generate(self):
         if os.path.exists(self.filename):
@@ -1255,49 +1296,85 @@ class Generator4Vs:
         start_time = time.time()
         print(f"\n{'='*60}\n GENERATING: King + {self.w_name} vs King + {self.b_name}\n{'='*60}")
 
-        print(f"[Phase 1] Scanning positions (numpy-chunked)...")
-        phase1_start = time.time()
-        unsolved_flats = array('I')
+        # ------------------------------------------------------------------
+        # Stage 1: Enumerate structurally valid positions (numpy-chunked)
+        # ------------------------------------------------------------------
+        print(f"[Stage 1] Enumerating candidate positions...")
+        stage1_start = time.time()
+        all_flats = array('I')
         for chunk in _gen_valid_4man_vs_indices_numpy(self.total_positions, self.w_name, self.b_name):
-            unsolved_flats.extend(chunk)
-        print(f"[Phase 1] Found {len(unsolved_flats):,} candidate positions in {time.time()-phase1_start:.1f}s.\n")
-        candidate_states = len(unsolved_flats)
+            all_flats.extend(chunk)
+        print(f"[Stage 1] Found {len(all_flats):,} candidates in {time.time()-stage1_start:.1f}s.")
 
-        print(f"[Phase 1.5] Building transition cache ({len(unsolved_flats):,} states)...")
-        cache_start = time.time()
+        # ------------------------------------------------------------------
+        # Stage 2: Retro-legality filter
+        # ------------------------------------------------------------------
+        print(f"[Stage 2] Applying retro-legality filter...")
+        stage2_start = time.time()
+        unsolved_flats = array('I')
+        retro_illegal = 0
+        total = len(all_flats)
+        for done, flat in enumerate(all_flats, start=1):
+            wk, wp, bk, bp, t_idx = self._decode_flat(flat)
+            self._setup_sim(wk, wp, bk, bp)
+            passive_color = 'black' if t_idx == 0 else 'white'
+            if is_in_check(self.sim_board, passive_color):
+                retro_illegal += 1
+            else:
+                unsolved_flats.append(flat)
+            if done % 500000 == 0:
+                print(f"  > {done / total * 100:.1f}% ({done:,}/{total:,})", end='\r')
+        if total >= 500000:
+            print()
+        candidate_states = len(unsolved_flats)
+        print(f"[Stage 2] Retro-illegal discarded: {retro_illegal:,} | "
+              f"Remaining: {candidate_states:,} | Time: {time.time()-stage2_start:.1f}s")
+
+        # ------------------------------------------------------------------
+        # Stage 3: Build transition cache (parallel)
+        # ------------------------------------------------------------------
+        print(f"[Stage 3] Building transition cache ({candidate_states:,} states)...")
+        stage3_start = time.time()
         transitions = []
         with ProcessPoolExecutor(
             max_workers=self.transition_workers,
             initializer=_init_transition_worker_4vs,
             initargs=(self.w_name, self.b_name)
         ) as ex:
-            for done, trans in enumerate(ex.map(_build_transition_worker_4vs, unsolved_flats, chunksize=4096), 1):
+            for done, trans in enumerate(
+                ex.map(_build_transition_worker_4vs, unsolved_flats, chunksize=4096), 1
+            ):
                 transitions.append(trans)
                 if done % 100_000 == 0:
-                    elapsed = max(0.001, time.time() - cache_start)
+                    elapsed = max(0.001, time.time() - stage3_start)
                     speed = done / elapsed
-                    eta = (len(unsolved_flats) - done) / speed
-                    print(f"  > Cache: {done/len(unsolved_flats)*100:.1f}% | {speed:,.0f} st/s | ETA: {eta/60:.1f}m", end='\r', flush=True)
-        print(f"\n[Phase 1.5] Cache built in {(time.time()-cache_start)/60:.1f}m.")
+                    eta = (candidate_states - done) / speed
+                    print(f"  > {done / candidate_states * 100:.1f}% | "
+                          f"{speed:,.0f} st/s | ETA: {eta / 60:.1f}m", end='\r', flush=True)
+        print(f"\n[Stage 3] Cache built in {(time.time()-stage3_start)/60:.1f}m.")
 
-        print(f"\n[Phase 2] Resolving initial no-legal-move losses...")
-        pre_solved = 0
+        # ------------------------------------------------------------------
+        # Stage 4: Pre-solve trivial no-legal-move losses
+        # ------------------------------------------------------------------
+        print(f"[Stage 4] Pre-solving terminal positions...")
+        table_flat = self.table.reshape(-1)
         surviving_flats = array('I')
         surviving_transitions = []
-        table_flat = self.table.reshape(-1)
+        pre_solved = 0
         for flat, trans in zip(unsolved_flats, transitions):
-            if (flat & 1) == 1:
-                legal_moves_count = trans[1]
-                if legal_moves_count == 0:
-                    table_flat[flat] = -1
-                    pre_solved += 1
-                    continue
-            surviving_flats.append(flat)
-            surviving_transitions.append(trans)
+            if (flat & 1) == 1 and trans[1] == 0:  # Black to move, no legal moves
+                table_flat[flat] = -1
+                pre_solved += 1
+            else:
+                surviving_flats.append(flat)
+                surviving_transitions.append(trans)
         unsolved_flats = surviving_flats
         transitions = surviving_transitions
-        print(f"[Phase 2] Pre-solved {pre_solved:,} positions.")
+        print(f"[Stage 4] Pre-solved {pre_solved:,} positions. Remaining: {len(unsolved_flats):,}")
 
+        # ------------------------------------------------------------------
+        # Retrograde iterations
+        # ------------------------------------------------------------------
         iteration = 1
         max_dtm_solved = 0
         while True:
@@ -1305,12 +1382,12 @@ class Generator4Vs:
             changed = 0
             new_unsolved = array('I')
             new_transitions = []
-            prev_flat = self.table.reshape(-1).copy()
+            snapshot = table_flat.copy()
 
-            print(f"\n[Iteration {iteration}] (DTM {iteration})")
             for flat, transition in zip(unsolved_flats, transitions):
                 t_idx = flat & 1
-                if t_idx == 0:
+
+                if t_idx == 0:  # White to move
                     best_win = 0
                     _, immediate_win, known_win_packed, child_packed = transition
                     if immediate_win:
@@ -1319,7 +1396,7 @@ class Generator4Vs:
                         if best_win == 0 or val < best_win:
                             best_win = val
                     for cflat in _unpack_uint_list(child_packed):
-                        res_val = int(prev_flat[cflat])
+                        res_val = int(snapshot[cflat])
                         if res_val < 0:
                             val = abs(res_val) + 1
                             if best_win == 0 or val < best_win:
@@ -1330,26 +1407,34 @@ class Generator4Vs:
                     else:
                         new_unsolved.append(flat)
                         new_transitions.append(transition)
-                else:
+
+                else:  # Black to move
                     _, legal_moves_count, has_non_losing_escape, known_win_packed, child_packed = transition
                     if legal_moves_count == 0:
                         table_flat[flat] = -1
                         changed += 1
                         continue
-                    all_moves_lead_to_win = not has_non_losing_escape
+                    if has_non_losing_escape:
+                        new_unsolved.append(flat)
+                        new_transitions.append(transition)
+                        continue
+
                     max_win_val = 0
-                    if all_moves_lead_to_win:
-                        for val in _unpack_uint_list(known_win_packed):
-                            if val > max_win_val:
-                                max_win_val = val
-                        for cflat in _unpack_uint_list(child_packed):
-                            res_val = int(prev_flat[cflat])
-                            if res_val <= 0:
-                                all_moves_lead_to_win = False
-                                break
-                            if res_val > max_win_val:
-                                max_win_val = res_val
-                    if all_moves_lead_to_win:
+                    all_resolved = True
+                    # First check known external wins
+                    for val in _unpack_uint_list(known_win_packed):
+                        if val > max_win_val:
+                            max_win_val = val
+                    # Then check in-table children
+                    for cflat in _unpack_uint_list(child_packed):
+                        res_val = int(snapshot[cflat])
+                        if res_val <= 0:
+                            all_resolved = False
+                            break
+                        if res_val > max_win_val:
+                            max_win_val = res_val
+
+                    if all_resolved:
                         table_flat[flat] = -(max_win_val + 1)
                         changed += 1
                     else:
@@ -1359,7 +1444,9 @@ class Generator4Vs:
             unsolved_flats = new_unsolved
             transitions = new_transitions
             total_solved = int((self.table != 0).sum())
-            print(f"  > Summary: {changed:,} new solved | Total: {total_solved:,} | Remaining: {len(unsolved_flats):,} | Time: {time.time()-iter_start:.1f}s")
+            print(f"[Iteration {iteration}] {changed:,} new | "
+                  f"Total: {total_solved:,} | Remaining: {len(unsolved_flats):,} | "
+                  f"Time: {time.time()-iter_start:.1f}s")
             if changed > 0:
                 max_dtm_solved = iteration
             if changed == 0:
@@ -1372,14 +1459,15 @@ class Generator4Vs:
         remaining = len(unsolved_flats)
         decisive = candidate_states - remaining
         _safe_record_longest_mate(
-            f"K_{self.w_name}_vs_{self.b_name}_K",
-            max_dtm_solved,
-            decisive,
-            remaining,
-            elapsed
-        )
-        print(f"[LongestMate] K_{self.w_name}_vs_{self.b_name}_K: max_dtm={max_dtm_solved}, decisive={decisive:,}, remaining={remaining:,}")
-        print(f"\nSUCCESS: Generated in {elapsed/60:.1f} minutes.")
+            f"K_{self.w_name}_vs_{self.b_name}_K", max_dtm_solved, decisive, remaining, elapsed)
+        print(f"[LongestMate] K_{self.w_name}_vs_{self.b_name}_K: "
+              f"max_dtm={max_dtm_solved}, decisive={decisive:,}, remaining={remaining:,}")
+        print(f"\nSUCCESS: Generated in {elapsed / 60:.1f} minutes.")
+
+
+# ==============================================================================
+# PROFILING UTILITY
+# ==============================================================================
 
 def _promo_tb_file_for_4man(p1_name, p2_name):
     if p1_name == "Pawn" or p2_name == "Pawn":
@@ -1400,7 +1488,6 @@ def _sample_valid_flats_4man(p1_name, p2_name, same_piece, sample):
     return flats
 
 def profile_4man(p1_name, p2_name, sample=2000):
-    # Profile a small sample of transition builds to locate hotspots.
     names = sorted([p1_name, p2_name])
     p1_name, p2_name = names[0], names[1]
     same_piece = (p1_name == p2_name)
@@ -1422,9 +1509,14 @@ def profile_4man(p1_name, p2_name, sample=2000):
     pstats.Stats(pr, stream=s).sort_stats('cumtime').print_stats(25)
     print(s.getvalue())
 
+
+# ==============================================================================
+# ENTRY POINT
+# ==============================================================================
+
 if __name__ == "__main__":
     _install_main_interrupt_ignores()
-    print("=== Tablebase Generator (v5.10: always-loss cleanup + simpler transition tuples) ===")
+    print("=== Tablebase Generator (v6.0: unified retro filter, clean stages, loop optimisations) ===")
     mode = input(
         "1. Generate 3-Man Tables\n"
         "2. Generate 4-Man Tables (K + 2 pieces vs K)\n"
@@ -1434,21 +1526,20 @@ if __name__ == "__main__":
 
     if mode == '1':
         for c in [Queen, Rook, Knight, Bishop, Pawn]:
-            if not os.path.exists(os.path.join(TB_DIR, f"K_{c.__name__}_K.bin")):
-                Generator(c).generate()
-            else:
-                print(f"Skipping K_{c.__name__}_K.bin (exists)")
+            Generator(c).generate()
 
     elif mode == '2':
-        pieces = [Queen, Rook, Knight, Bishop, Pawn]
         from itertools import combinations_with_replacement
+        pieces = [Queen, Rook, Knight, Bishop, Pawn]
         for p1, p2 in combinations_with_replacement(pieces, 2):
             Generator4(p1, p2).generate()
+
     elif mode == '3':
         pieces = [Queen, Rook, Knight, Bishop, Pawn]
         for w in pieces:
             for b in pieces:
                 Generator4Vs(w, b).generate()
+
     elif mode == '4':
         p1 = input("Piece 1 (Queen/Rook/Knight/Bishop/Pawn): ").strip().title()
         p2 = input("Piece 2 (Queen/Rook/Knight/Bishop/Pawn): ").strip().title()
