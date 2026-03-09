@@ -1,4 +1,4 @@
-# AI.py (v98.7 - updated negamax to use the safe _store_tt method, and PV extractors return lists)
+# AI.py (v98.8 - fixed TT best-move preservation during ProbCut and gated ponder TB floor on heuristic flag)
 
 import time
 import random
@@ -150,7 +150,9 @@ class ChessBot:
         existing = self.tt.get(hash_val)
         # Only overwrite if the new search went deeper, or if it's an exact PV match
         if not existing or depth >= existing.depth or flag == TT_FLAG_EXACT:
-            self.tt[hash_val] = TTEntry(score, depth, flag, move)
+            # FIX: If the new move is None (e.g. from ProbCut), keep the old best_move!
+            best_move = move if move is not None else (existing.best_move if existing else None)
+            self.tt[hash_val] = TTEntry(score, depth, flag, best_move)
 
     def _report_log(self, message): self.comm_queue.put(('log', message))
     def _report_eval(self, score, depth): self.comm_queue.put(('eval', score if self.color == 'white' else -score, depth))
@@ -456,8 +458,11 @@ class ChessBot:
                         while not self.cancellation_event.is_set(): time.sleep(0.1)
                         return
 
-                    if best_score_this_iter > self.MATE_SCORE - 1000: tb_alpha_floor = best_score_this_iter
-                    else: tb_alpha_floor = None
+                    # FIX: Only set the floor if we actually hit a raw Tablebase win, NOT a heuristic/search mate.
+                    if best_score_this_iter > self.MATE_SCORE - 1000 and not self.used_heuristic_eval: 
+                        tb_alpha_floor = best_score_this_iter
+                    else: 
+                        tb_alpha_floor = None
                 else:
                     raise SearchCancelledException()
         except SearchCancelledException: pass

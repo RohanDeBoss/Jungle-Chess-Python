@@ -1,4 +1,4 @@
-# GameLogic.py (v50 - Code Review Cleanup, Micro-Optimizations, Corrected Pawn Attack Geometry, and Removal of Dead Piece Methods)
+# GameLogic.py (v50.1 - promotion bug fix)
 
 # -----------------------------
 # Global Constants
@@ -839,7 +839,9 @@ def fast_approximate_material_swing(board, move, moving_piece, target_piece, pie
             potential_killer = board.grid[r][c]
             if potential_killer and type(potential_killer) is Knight and potential_killer.color != moving_piece.color:
                 if (r, c) not in pierced_knights:
-                    swing -= piece_values.get(type(moving_piece), 0)
+                    # FIX: If we promoted, the piece dying to evaporation is a Queen, not a Pawn!
+                    evaporation_target_type = Queen if (my_type is Pawn and (move[1][0] == 0 or move[1][0] == ROWS - 1)) else my_type
+                    swing -= piece_values.get(evaporation_target_type, 0)
                     break 
 
     return swing
