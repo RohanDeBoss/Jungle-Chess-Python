@@ -1,4 +1,4 @@
-# AI.py (v98.4 Piece Value changes)
+# AI.py (v98.5 - Null Move Pruning (NMP) Mate-Blindness fix)
 
 import time
 import random
@@ -506,6 +506,9 @@ class ChessBot:
             if tt_score > self.MATE_SCORE - 1000: tt_score -= ply
             elif tt_score < -self.MATE_SCORE + 1000: tt_score += ply
 
+            # FIX 1: Mark that we used heuristic data so the engine knows this isn't a raw TB hit
+            self.used_heuristic_eval = True
+
             if tt_entry.flag == TT_FLAG_EXACT: return tt_score
             elif tt_entry.flag == TT_FLAG_LOWERBOUND: alpha = max(alpha, tt_score)
             elif tt_entry.flag == TT_FLAG_UPPERBOUND: beta = min(beta, tt_score)
@@ -523,6 +526,7 @@ class ChessBot:
 
         try:
             # --- 3. PROBCUT (Probability Cut) ---
+            # FIX 2: Ensure ProbCut doesn't trigger on ANY mate score by using abs(beta)
             if (self.USE_PROBCUT and depth >= self.PROBCUT_MIN_DEPTH and not is_in_check_flag and
                 abs(beta) < self.MATE_SCORE - 1000):
                 
@@ -538,7 +542,9 @@ class ChessBot:
                     return beta
             
             # --- 4. NULL MOVE PRUNING ---
-            if (self.USE_NULL_MOVE_PRUNING and depth >= self.NMP_MIN_DEPTH and ply > 0 and not is_in_check_flag and beta < self.MATE_SCORE - 200):
+            # FIX 3: Changed `beta < MATE_SCORE - 200` to `abs(beta) < MATE_SCORE - 1000`. 
+            # This prevents NMP from hallucinating a defense when it is actually getting mated!
+            if (self.USE_NULL_MOVE_PRUNING and depth >= self.NMP_MIN_DEPTH and ply > 0 and not is_in_check_flag and abs(beta) < self.MATE_SCORE - 1000):
                 if (board.piece_counts['white'][Knight] + board.piece_counts['white'][Bishop] + board.piece_counts['white'][Rook] + board.piece_counts['white'][Queen] > 0) and \
                    (board.piece_counts['black'][Knight] + board.piece_counts['black'][Bishop] + board.piece_counts['black'][Rook] + board.piece_counts['black'][Queen] > 0):
                     self.used_heuristic_eval = True
@@ -643,9 +649,6 @@ class ChessBot:
                 elif tb_score < -self.MATE_SCORE + 1000: return tb_score + ply
                 return tb_score
 
-        # NOTE: has_legal_moves removed from here — it was the most expensive call in qsearch.
-        # Check positions are handled at the bottom. Non-check positions with no tactical moves
-        # correctly fall through to return stand_pat via alpha.
         if is_insufficient_material(board): return self.DRAW_SCORE
         
         # Termination at your requested Depth 10
@@ -662,7 +665,7 @@ class ChessBot:
             if stand_pat >= beta: return beta
             alpha = max(alpha, stand_pat)
 
-        # Update this block
+        # 3. Dynamic Margin Logic restored
         if ply <= 4:
             current_margin = self.Q_MARGIN_MAX
         else:
@@ -686,7 +689,7 @@ class ChessBot:
             if not is_in_check_flag and swing < 0:
                 continue
             
-            # Apply Dynamic Futility Pruning
+            # Use dynamic current_margin instead of the old constant
             if not is_in_check_flag and (stand_pat + swing + current_margin < alpha):
                 continue
 
