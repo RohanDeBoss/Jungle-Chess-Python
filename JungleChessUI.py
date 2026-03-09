@@ -1,4 +1,4 @@
-# JungleChessUI.py (v12.3 - New 3 move random opening generation)
+# JungleChessUI.py (v12.5 - Engine PV lines & Animated Hover Board)
 
 import tkinter as tk
 from tkinter import ttk, messagebox
@@ -70,6 +70,9 @@ class EnhancedChessApp:
         self.ai_series_stats = {'game_count': 0, 'my_ai_wins': 0, 'op_ai_wins': 0, 'draws': 0}
         self.depth_stats = {}
         self.auto_save_stats_var = tk.BooleanVar(value=True)
+        self.show_pv_var = tk.BooleanVar(value=True)
+        self.current_pv_raw = []
+        self.pv_tooltip_active = False
         
         self.white_playing_bot_type = "main"
         self.human_color = "white"
@@ -104,6 +107,15 @@ class EnhancedChessApp:
         
         self.title_label = ttk.Label(self.left_panel, text="JUNGLE CHESS", style='Header.TLabel', font=('Helvetica', 22, 'bold'))
         self.title_label.pack(pady=(0,15))
+        
+        self.pv_text = tk.Text(self.left_panel, height=6, bg=self.COLORS['bg_medium'], fg=self.COLORS['text_light'], font=('Helvetica', 10), wrap=tk.WORD, borderwidth=1, relief="solid")
+        self.pv_text.pack(side=tk.BOTTOM, fill=tk.X, padx=5, pady=10)
+        self.pv_text.config(state=tk.DISABLED)
+        
+        # PV Hover tooltips
+        self.pv_text.bind("<Enter>", self.show_pv_tooltip)
+        self.pv_text.bind("<Leave>", self.hide_pv_tooltip)
+
         self._build_control_widgets(self.left_panel)
         
         # --- CENTER PANEL ---
@@ -191,6 +203,13 @@ class EnhancedChessApp:
         self.instant_move = tk.BooleanVar(value=False); ttk.Checkbutton(self.controls_frame, text="Instant Moves", variable=self.instant_move, style='Custom.TCheckbutton').pack(anchor=tk.W, pady=(2,2))
         self.analysis_checkbox = ttk.Checkbutton(self.controls_frame, text="Analysis Mode (H-vs-H)", variable=self.analysis_mode_var, style='Custom.TCheckbutton', command=self._update_analysis_after_state_change)
         self.analysis_checkbox.pack(anchor=tk.W, pady=(2,2))
+        ttk.Checkbutton(self.controls_frame, text="Show Engine Lines (PV)", variable=self.show_pv_var, style='Custom.TCheckbutton', command=self._toggle_pv_display).pack(anchor=tk.W, pady=(2,2))
+
+    def _toggle_pv_display(self):
+        if self.show_pv_var.get():
+            self.pv_text.pack(side=tk.BOTTOM, fill=tk.X, padx=5, pady=10)
+        else:
+            self.pv_text.pack_forget()
 
     def _build_right_sidebar_widgets(self, parent_frame):
         self.info_frame = ttk.Frame(parent_frame, style='Left.TFrame')
@@ -372,6 +391,12 @@ class EnhancedChessApp:
         self.last_eval_score = 0.0
         self.last_eval_depth = None
         self.draw_eval_bar(0)
+        self.current_pv_raw = []
+        
+        if hasattr(self, 'pv_text'):
+            self.pv_text.config(state=tk.NORMAL)
+            self.pv_text.delete(1.0, tk.END)
+            self.pv_text.config(state=tk.DISABLED)
 
     # --- PGN & FEN LOGIC ---
     def get_current_fen(self):
@@ -850,6 +875,28 @@ class EnhancedChessApp:
                 elif message[0] == 'eval': 
                     self.last_eval_score, self.last_eval_depth = message[1], message[2]
                     self.draw_eval_bar(self.last_eval_score, self.last_eval_depth)
+                
+                elif message[0] == 'pv':
+                    if hasattr(self, 'show_pv_var') and self.show_pv_var.get():
+                        score, depth, pv_str = message[1], message[2], message[3]
+                        pv_raw = message[4] if len(message) > 4 else []
+                        
+                        self.current_pv_raw = pv_raw
+                        
+                        if score > 990000:
+                            score_disp = f"+M{(1000000 - score + 1) // 2}"
+                        elif score < -990000:
+                            score_disp = f"-M{(score + 1000000 + 1) // 2}"
+                        else:
+                            score_disp = f"{score/100:+.2f}"
+
+                        display_text = f"[{score_disp}] (D{depth}):\n{pv_str}"
+                        
+                        self.pv_text.config(state=tk.NORMAL)
+                        self.pv_text.delete(1.0, tk.END)
+                        self.pv_text.insert(tk.END, display_text)
+                        self.pv_text.config(state=tk.DISABLED)
+                        
                 elif message[0] == 'move': 
                     self._execute_ai_move(message[1])
         except Exception: pass
@@ -1019,19 +1066,19 @@ class EnhancedChessApp:
         self.ai_series_stats = {'game_count': 0, 'my_ai_wins': 0, 'op_ai_wins': 0, 'draws': 0}
         self.depth_stats = {}
         self.ai_series_running = True
-        self.current_opening_sequence = [] # Changed from single move to sequence
+        self.current_opening_sequence = []
         self.reset_game()
         
     def apply_series_opening_move(self):
         if self.ai_series_stats['game_count'] % 2 == 0:
-            print("\n--- Generating new 3-ply opening sequence for game pair ---")
+            print("\n--- Generating new 2-ply opening sequence for game pair ---")
             self.current_opening_sequence = []
             
             # Simulate a board to generate valid sequential moves
             temp_board = self.board.clone()
             temp_turn = "white"
             
-            for _ in range(3):
+            for _ in range(2):
                 moves = get_all_legal_moves(temp_board, temp_turn)
                 if not moves: break
                 move = random.choice(moves)
@@ -1063,6 +1110,97 @@ class EnhancedChessApp:
             self.scoreboard_label.config(text=score_text)
         else:
             self.scoreboard_label.config(text="")
+
+    # ==========================================
+    # --- ANIMATED PV MINI-BOARD HOVER LOGIC ---
+    # ==========================================
+    def show_pv_tooltip(self, event):
+        if not getattr(self, 'current_pv_raw', None): return
+        if getattr(self, 'pv_tooltip', None): return
+        
+        self.pv_tooltip_active = True
+
+        # Position popup above and slightly right of the cursor
+        x = event.x_root + 15
+        y = event.y_root - (ROWS * 35) - 20
+
+        self.pv_tooltip = tk.Toplevel(self.master)
+        self.pv_tooltip.wm_overrideredirect(True)
+        self.pv_tooltip.wm_geometry(f"+{x}+{y}")
+        
+        self.tt_sq_size = 35
+        self.tt_canvas = tk.Canvas(self.pv_tooltip, width=COLS*self.tt_sq_size, height=ROWS*self.tt_sq_size, bg=self.COLORS['bg_medium'], highlightthickness=2, highlightbackground=self.COLORS['accent'])
+        self.tt_canvas.pack()
+        
+        self.tt_sim_board = self.board.clone()
+        self.tt_moves_to_play = list(self.current_pv_raw)
+        self.tt_move_idx = 0
+        self.tt_last_move = None
+        
+        self._draw_tt_board()
+        self.master.after(800, self._animate_tt_board)
+        
+    def _animate_tt_board(self):
+        if not getattr(self, 'pv_tooltip_active', False): return
+        if not self.tt_moves_to_play: return
+        
+        if self.tt_move_idx < len(self.tt_moves_to_play):
+            m = self.tt_moves_to_play[self.tt_move_idx]
+            self.tt_sim_board.make_move(m[0], m[1])
+            self.tt_last_move = m
+            self.tt_move_idx += 1
+            self._draw_tt_board()
+            
+            # Animate faster (500ms) to show the line quickly
+            self.master.after(500, self._animate_tt_board)
+        else:
+            # Reached end of line. Pause for 2 seconds, then restart animation
+            self.master.after(2000, self._reset_tt_animation)
+            
+    def _reset_tt_animation(self):
+        if not getattr(self, 'pv_tooltip_active', False): return
+        self.tt_sim_board = self.board.clone()
+        self.tt_move_idx = 0
+        self.tt_last_move = None
+        self._draw_tt_board()
+        self.master.after(500, self._animate_tt_board)
+
+    def _draw_tt_board(self):
+        if not getattr(self, 'pv_tooltip_active', False): return
+        self.tt_canvas.delete("all")
+        sq = self.tt_sq_size
+        C1, C2 = "#D2B48C", "#8B5A2B"
+        
+        for r in range(ROWS):
+            for c in range(COLS):
+                color = C1 if (r+c)%2 == 0 else C2
+                
+                # Respect player's current view orientation
+                dr = (ROWS-1-r) if self.board_orientation == "black" else r
+                dc = (COLS-1-c) if self.board_orientation == "black" else c
+                
+                x1, y1 = dc*sq, dr*sq
+                self.tt_canvas.create_rectangle(x1, y1, x1+sq, y1+sq, fill=color, outline="")
+                
+                # Highlight last move squares
+                if self.tt_last_move and (r, c) in self.tt_last_move:
+                    self.tt_canvas.create_rectangle(x1, y1, x1+sq, y1+sq, fill="#F0E68C", stipple="gray50", outline="")
+                
+                piece = self.tt_sim_board.grid[r][c]
+                if piece:
+                    font = ("Arial Unicode MS", int(sq*0.7))
+                    sym = piece.symbol()
+                    # Shadow
+                    self.tt_canvas.create_text(x1+sq//2+1, y1+sq//2+2, text=sym, font=font, fill="#888888")
+                    # Main piece
+                    fc = "#000" if piece.color=="black" else "#FFF"
+                    self.tt_canvas.create_text(x1+sq//2, y1+sq//2+1, text=sym, font=font, fill=fc)
+
+    def hide_pv_tooltip(self, event):
+        self.pv_tooltip_active = False
+        if getattr(self, 'pv_tooltip', None):
+            self.pv_tooltip.destroy()
+            self.pv_tooltip = None
 
 if __name__ == "__main__":
     mp.freeze_support()

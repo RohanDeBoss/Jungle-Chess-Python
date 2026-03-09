@@ -1,4 +1,4 @@
-# AI.py (v98.5 - Null Move Pruning (NMP) Mate-Blindness fix)
+# AI.py (v98.6 - Now reports PV lines for UI)
 
 import time
 import random
@@ -284,39 +284,81 @@ class ChessBot:
         self.used_heuristic_eval = any_heuristic_eval
         return best_score, best_move
 
-    def _report_root_tb_solution(self, tb_move, tb_eval, perfect_play=False, emit_move=False):
-        if not tb_move:
-            return False
-
-        root_tb_eval = self._get_root_tb_eval_relative()
-        display_eval = root_tb_eval if root_tb_eval is not None else tb_eval
-        if tb_eval > self.MATE_SCORE - 1000:
-            display_eval = tb_eval
-
-        eval_for_ui = display_eval if self.color == 'white' else -display_eval
-        suffix = " (Perfect Play)" if perfect_play else ""
-        self._report_log(
-            f"  > {self.bot_name} (TB): {self._format_move(self.board, tb_move)}, Eval={eval_for_ui/100:+.2f}, TBhits={self.tb_hits}{suffix}"
-        )
-        self._report_eval(display_eval, "TB")
-        if emit_move:
-            self._report_move(tb_move)
-        return True
-
     def _age_history_table(self):
         for color_idx in range(2):
             for from_sq in range(ROWS*COLS):
                 for to_sq in range(ROWS*COLS):
                     self.history_heuristic_table[color_idx][from_sq][to_sq] //= 2
 
+    def _get_pv_data(self, max_depth, root_move):
+        if not root_move: return "", []
+        
+        pv_san = []
+        pv_raw = []
+        current_board = self.board.clone()
+        current_turn = self.color
+        current_ply = self.ply_count
+
+        seen_hashes = set()
+        move = root_move
+
+        for i in range(max_depth):
+            if not move: break
+            
+            san = self._format_move(current_board, move)
+            move_num = (current_ply // 2) + 1
+            if current_turn == 'white':
+                pv_san.append(f"{move_num}. {san}")
+            else:
+                if i == 0:
+                    pv_san.append(f"{move_num}... {san}")
+                else:
+                    pv_san.append(f"{san}")
+            
+            pv_raw.append(move)
+            
+            current_board.make_move(move[0], move[1])
+            current_turn = 'black' if current_turn == 'white' else 'white'
+            current_ply += 1
+            
+            h = board_hash(current_board, current_turn)
+            if h in seen_hashes: break
+            seen_hashes.add(h)
+            
+            tt_entry = self.tt.get(h)
+            if not tt_entry or not tt_entry.best_move: break
+            move = tt_entry.best_move
+            if not isinstance(move, tuple): break
+
+        return " ".join(pv_san), pv_raw
+
+    def _report_root_tb_solution(self, tb_move, tb_eval, perfect_play=False, emit_move=False):
+        if not tb_move: return False
+        root_tb_eval = self._get_root_tb_eval_relative()
+        display_eval = root_tb_eval if root_tb_eval is not None else tb_eval
+        if tb_eval > self.MATE_SCORE - 1000: display_eval = tb_eval
+
+        eval_for_ui = display_eval if self.color == 'white' else -display_eval
+        suffix = " (Perfect Play)" if perfect_play else ""
+        self._report_log(f"  > {self.bot_name} (TB): {self._format_move(self.board, tb_move)}, Eval={eval_for_ui/100:+.2f}, TBhits={self.tb_hits}{suffix}")
+        self._report_eval(display_eval, "TB")
+        
+        # --- PV BROADCAST ---
+        move_num = (self.ply_count // 2) + 1
+        prefix = f"{move_num}. " if self.color == 'white' else f"{move_num}... "
+        pv_str = prefix + self._format_move(self.board, tb_move)
+        self.comm_queue.put(('pv', display_eval, "TB", pv_str, [tb_move]))
+        # --------------------
+
+        if emit_move: self._report_move(tb_move)
+        return True
+
     def make_move(self):
         try:
             self._age_history_table()
-
             if len(self.board.white_pieces) + len(self.board.black_pieces) <= 4: 
                 tb_move, tb_eval = self._get_best_tablebase_move_with_eval()
-                if self._report_root_tb_solution(tb_move, tb_eval, emit_move=True):
-                    return
+                if self._report_root_tb_solution(tb_move, tb_eval, emit_move=True): return
 
             root_moves = get_all_legal_moves(self.board, self.color)
             if not root_moves:
@@ -343,13 +385,16 @@ class ChessBot:
                     move_str = self._format_move(self.board, best_move_this_iter)
                     depth_label = "TB" if not self.used_heuristic_eval else current_depth
                     
-                    log_msg = f"  > {self.bot_name} (D{depth_label}): {move_str}, Eval={eval_for_ui/100:+.2f}, NodesTotal={total_nodes}, KNPS={knps:.1f}, TBhits={self.tb_hits}, Time={iter_duration:.2f}s"
-                    
-                    self._report_log(log_msg)
+                    self._report_log(f"  > {self.bot_name} (D{depth_label}): {move_str}, Eval={eval_for_ui/100:+.2f}, NodesTotal={total_nodes}, KNPS={knps:.1f}, TBhits={self.tb_hits}, Time={iter_duration:.2f}s")
                     self._report_eval(best_score_this_iter, depth_label)
 
-                    if best_score_this_iter > self.MATE_SCORE - 2000:
-                        break
+                    # --- PV BROADCAST ---
+                    ui_eval = best_score_this_iter if self.color == 'white' else -best_score_this_iter
+                    pv_str, pv_raw = self._get_pv_data(current_depth, best_move_this_iter)
+                    self.comm_queue.put(('pv', ui_eval, depth_label, pv_str, pv_raw))
+                    # --------------------
+
+                    if best_score_this_iter > self.MATE_SCORE - 2000: break
                 else:
                     raise SearchCancelledException()
             
@@ -360,14 +405,11 @@ class ChessBot:
     def ponder_indefinitely(self):
         try:
             self._age_history_table()
-            
             if is_insufficient_material(self.board): return
-            
             if len(self.board.white_pieces) + len(self.board.black_pieces) <= 4:
                 tb_move, tb_eval = self._get_best_tablebase_move_with_eval()
                 if self._report_root_tb_solution(tb_move, tb_eval, perfect_play=True):
-                    while not self.cancellation_event.is_set():
-                        time.sleep(0.1)
+                    while not self.cancellation_event.is_set(): time.sleep(0.1)
                     return
 
             root_moves = get_all_legal_moves(self.board, self.color)
@@ -382,12 +424,8 @@ class ChessBot:
                 if self.cancellation_event.is_set(): raise SearchCancelledException()
                 iter_start_time = time.time()
                 best_score_this_iter, best_move_this_iter = self._run_depth_iteration(
-                    current_depth,
-                    root_moves,
-                    root_hash,
-                    best_move_overall,
-                    prev_iter_score=prev_iter_score,
-                    alpha_floor=tb_alpha_floor
+                    current_depth, root_moves, root_hash, best_move_overall,
+                    prev_iter_score=prev_iter_score, alpha_floor=tb_alpha_floor
                 )
                 
                 if not self.cancellation_event.is_set():
@@ -398,18 +436,22 @@ class ChessBot:
                     knps = (self.nodes_searched / iter_duration / 1000) if iter_duration > 0 else 0
                     eval_for_ui = best_score_this_iter if self.color == 'white' else -best_score_this_iter
                     depth_label = "TB" if not self.used_heuristic_eval else current_depth
+                    
                     self._report_log(f"  > {self.bot_name} (D{depth_label}): {self._format_move(self.board, best_move_this_iter)}, Eval={eval_for_ui/100:+.2f}, NodesTotal={total_nodes}, KNPS={knps:.1f}, TBhits={self.tb_hits}, Time={iter_duration:.2f}s")
                     self._report_eval(best_score_this_iter, depth_label)
 
+                    # --- PV BROADCAST ---
+                    ui_eval = best_score_this_iter if self.color == 'white' else -best_score_this_iter
+                    pv_str, pv_raw = self._get_pv_data(current_depth, best_move_this_iter)
+                    self.comm_queue.put(('pv', ui_eval, depth_label, pv_str, pv_raw))
+                    # --------------------
+
                     if depth_label == "TB":
-                        while not self.cancellation_event.is_set():
-                            time.sleep(0.1)
+                        while not self.cancellation_event.is_set(): time.sleep(0.1)
                         return
 
-                    if best_score_this_iter > self.MATE_SCORE - 1000:
-                        tb_alpha_floor = best_score_this_iter
-                    else:
-                        tb_alpha_floor = None
+                    if best_score_this_iter > self.MATE_SCORE - 1000: tb_alpha_floor = best_score_this_iter
+                    else: tb_alpha_floor = None
                 else:
                     raise SearchCancelledException()
         except SearchCancelledException: pass
