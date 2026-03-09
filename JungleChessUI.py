@@ -1,4 +1,4 @@
-# JungleChessUI.py (v12.6 - Static Individual Move Hover tooltips)
+# JungleChessUI.py (v12.7 - Individual Move History Highlighting)
 
 import tkinter as tk
 from tkinter import ttk, messagebox
@@ -216,23 +216,28 @@ class EnhancedChessApp:
         self.turn_label.pack(fill=tk.X, pady=(5,10))
 
         ttk.Label(parent_frame, text="Move History", style='SmallHeader.TLabel').pack(anchor=tk.W)
-        self.tree_frame = ttk.Frame(parent_frame)
+        
+        # --- NEW INDIVIDUAL CELL MOVE HISTORY SETUP ---
+        self.tree_frame = tk.Frame(parent_frame, bg=self.COLORS['bg_medium'])
         self.tree_frame.pack(fill=tk.BOTH, expand=True, pady=(2, 10))
+
+        self.history_header = tk.Frame(self.tree_frame, bg=self.COLORS['bg_light'])
+        self.history_header.pack(fill=tk.X)
         
-        self.moves_tree = ttk.Treeview(self.tree_frame, columns=('White', 'Black'), show='headings', selectmode='browse')
-        self.moves_tree.heading('White', text='White'); self.moves_tree.heading('Black', text='Black')
-        self.moves_tree.column('White', width=100, anchor=tk.CENTER); self.moves_tree.column('Black', width=100, anchor=tk.CENTER)
+        header_str = " #  " + "White".center(14) + "Black".center(14)
+        tk.Label(self.history_header, text=header_str, bg=self.COLORS['bg_light'], fg=self.COLORS['text_light'], font=('Courier', 11, 'bold'), anchor=tk.W, justify=tk.LEFT).pack(side=tk.LEFT, fill=tk.X)
+
+        self.moves_text = tk.Text(self.tree_frame, font=('Courier', 11), bg=self.COLORS['bg_medium'], fg=self.COLORS['text_light'], borderwidth=0, highlightthickness=0, state=tk.DISABLED, cursor="arrow", wrap=tk.NONE)
+        scrollbar = ttk.Scrollbar(self.tree_frame, orient=tk.VERTICAL, command=self.moves_text.yview)
+        self.moves_text.configure(yscrollcommand=scrollbar.set)
         
-        scrollbar = ttk.Scrollbar(self.tree_frame, orient=tk.VERTICAL, command=self.moves_tree.yview)
-        self.moves_tree.configure(yscrollcommand=scrollbar.set)
-        self.moves_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self.moves_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        self.moves_tree.bind('<ButtonRelease-1>', self.on_move_selected)
+        # ---------------------------------------------
 
         self.scoreboard_label = ttk.Label(parent_frame, text="", font=("Helvetica", 11), justify=tk.LEFT, background=self.COLORS['bg_dark'], foreground=self.COLORS['text_light'])
         self.scoreboard_label.pack(fill=tk.X, pady=(0, 10))
 
-        # Replaced redundant logic with helper method
         self.fen_entry = self._create_import_export_widget(parent_frame, "FEN String:", self.load_fen_from_entry, self.copy_fen_to_clipboard)
         self.pgn_entry = self._create_import_export_widget(parent_frame, "PGN Record:", self.load_pgn_from_entry, self.copy_pgn_to_clipboard)
 
@@ -276,10 +281,6 @@ class EnhancedChessApp:
         style.map('Custom.TRadiobutton', background=[('active', C['bg_dark'])], indicatorcolor=[('selected', C['accent'])])
         style.configure('Custom.TCheckbutton', background=C['bg_dark'], foreground=C['text_light'], font=('Helvetica', 11))
         style.map('Custom.TCheckbutton', background=[('active', C['bg_dark'])], indicatorcolor=[('selected', C['accent'])])
-
-        style.configure('Treeview', font=('Courier', 11), rowheight=25, background=C['bg_medium'], foreground=C['text_light'], fieldbackground=C['bg_medium'], borderwidth=0)
-        style.configure('Treeview.Heading', font=('Helvetica', 11, 'bold'), background=C['bg_light'], foreground=C['text_light'], borderwidth=0)
-        style.map('Treeview', background=[('selected', C['accent'])], foreground=[('selected', C['text_light'])])
         
         style.configure('TEntry', fieldbackground='#FFFFFF', foreground='#000000', insertcolor='#000000')
         return C
@@ -538,9 +539,12 @@ class EnhancedChessApp:
                 messagebox.showwarning("PGN Error", f"Could not parse next move from: {pgn_text[:20]}...")
                 break
 
+    # --- NEW INDIVIDUAL CELL MOVE HISTORY LOGIC ---
     def update_moves_list(self):
-        for item in self.moves_tree.get_children(): self.moves_tree.delete(item)
-        formatted_moves =[]
+        self.moves_text.config(state=tk.NORMAL)
+        self.moves_text.delete(1.0, tk.END)
+        
+        formatted_moves = []
         for i in range(1, len(self.full_history)):
             board_before = self.full_history[i-1][0]
             board_after = self.full_history[i][0]
@@ -561,24 +565,57 @@ class EnhancedChessApp:
             pairs.append([w, b])
             
         for i, pair in enumerate(pairs):
-            self.moves_tree.insert('', 'end', iid=str(i), text=str(i+1), values=(pair[0], pair[1]))
-            
-        if self.history_pointer > 0:
-            moves_count = self.history_pointer - 1 
-            row = (moves_count + 1) // 2 if start_turn == 'black' else moves_count // 2
-            if str(row) in self.moves_tree.get_children():
-                self.moves_tree.selection_set(str(row))
-                self.moves_tree.see(str(row))
-        else: self.moves_tree.selection_set()
+            num_str = f"{i+1}.".ljust(4)
+            w_str = f"{pair[0]}".center(14)
+            b_str = f"{pair[1]}".center(14)
 
-    def on_move_selected(self, event):
-        selected_items = self.moves_tree.selection()
-        if not selected_items: return
-        index = int(selected_items[0])
-        start_turn = self.full_history[0][1]
-        pointer_target = (index * 2) + 1 if start_turn == 'black' else (index * 2) + 2
-        pointer_target = min(pointer_target, len(self.full_history) - 1)
-        self._navigate_history(pointer_target)
+            self.moves_text.insert(tk.END, num_str, "num")
+            
+            # Figure out pointers
+            w_ptr = (i * 2) + 1 if start_turn == 'white' else (i * 2)
+            b_ptr = (i * 2) + 2 if start_turn == 'white' else (i * 2) + 1
+            
+            w_tag = f"ply_{w_ptr}"
+            b_tag = f"ply_{b_ptr}"
+            
+            self.moves_text.insert(tk.END, w_str, w_tag)
+            
+            if pair[1]:
+                self.moves_text.insert(tk.END, b_str, b_tag)
+            else:
+                self.moves_text.insert(tk.END, b_str)
+                
+            self.moves_text.insert(tk.END, "\n")
+            
+            # Setup base colors and bindings
+            if pair[0] != "...":
+                self.moves_text.tag_bind(w_tag, "<Button-1>", lambda e, p=w_ptr: self._navigate_history(p))
+                self.moves_text.tag_bind(w_tag, "<Enter>", lambda e, t=w_tag: self.moves_text.config(cursor="hand2"))
+                self.moves_text.tag_bind(w_tag, "<Leave>", lambda e, t=w_tag: self.moves_text.config(cursor="arrow"))
+                
+            if pair[1]:
+                self.moves_text.tag_bind(b_tag, "<Button-1>", lambda e, p=b_ptr: self._navigate_history(p))
+                self.moves_text.tag_bind(b_tag, "<Enter>", lambda e, t=b_tag: self.moves_text.config(cursor="hand2"))
+                self.moves_text.tag_bind(b_tag, "<Leave>", lambda e, t=b_tag: self.moves_text.config(cursor="arrow"))
+
+        # Style numbers
+        self.moves_text.tag_configure("num", foreground=self.COLORS['text_dark'])
+
+        # Reset all move tags
+        for tag in self.moves_text.tag_names():
+            if tag.startswith("ply_"):
+                self.moves_text.tag_configure(tag, background=self.COLORS['bg_medium'], foreground=self.COLORS['text_light'])
+
+        # Highlight current ply uniquely
+        if self.history_pointer > 0:
+            active_tag = f"ply_{self.history_pointer}"
+            self.moves_text.tag_configure(active_tag, background=self.COLORS['accent'], foreground=self.COLORS['text_light'])
+            try:
+                self.moves_text.see(f"{active_tag}.first")
+            except tk.TclError:
+                pass
+
+        self.moves_text.config(state=tk.DISABLED)
 
     # --- CORE GAMEPLAY ---
     def execute_move_and_check_state(self, player_who_moved, move):
@@ -890,12 +927,9 @@ class EnhancedChessApp:
                         self.pv_text.delete(1.0, tk.END)
                         self.pv_text.insert(tk.END, f"[{score_disp}] (D{depth}):\n")
                         
-                        # Loop through and insert each move with its own hover tag!
                         for i, (san, raw_move) in enumerate(zip(pv_san_list, pv_raw)):
                             tag = f"pv_move_{i}"
                             self.pv_text.insert(tk.END, san + " ", tag)
-                            
-                            # Bind hover events to this specific text segment
                             self.pv_text.tag_bind(tag, "<Enter>", lambda e, idx=i, t=tag: self.on_pv_hover_enter(e, idx, t))
                             self.pv_text.tag_bind(tag, "<Leave>", lambda e, t=tag: self.on_pv_hover_leave(e, t))
                             
@@ -958,8 +992,6 @@ class EnhancedChessApp:
     def _update_analysis_after_state_change(self):
         self._stop_ai_process()
         if self.analysis_mode_var.get() and self.game_mode.get() == GameMode.HUMAN_VS_HUMAN.value and not self.game_over:
-            # Add a readable boundary so consecutive analysis blocks are easier to scan.
-            # history_pointer is the current ply index from the initial position (ply 0).
             fullmove = (self.history_pointer + 1) // 2 + 1
             print(f"\n--- Analysis: Move {fullmove}, Ply {self.history_pointer}, {self.turn.capitalize()} to move ---")
             self.master.after(50, lambda: self._start_ai_process(ChessBot, self.ANALYSIS_AI_NAME, 99))
@@ -1119,25 +1151,22 @@ class EnhancedChessApp:
     # --- STATIC PV MINI-BOARD HOVER LOGIC ---
     # ==========================================
     def on_pv_hover_enter(self, event, move_idx, tag):
-        # Highlight the text
         self.pv_text.tag_config(tag, background=self.COLORS['accent'], foreground=self.COLORS['text_light'])
         
         if getattr(self, 'pv_tooltip', None):
             self.pv_tooltip.destroy()
 
-        # Position popup above cursor
         x = event.x_root + 15
-        y = event.y_root - (ROWS * 25) - 20 # 25 is the new smaller size
+        y = event.y_root - (ROWS * 25) - 20 
 
         self.pv_tooltip = tk.Toplevel(self.master)
         self.pv_tooltip.wm_overrideredirect(True)
         self.pv_tooltip.wm_geometry(f"+{x}+{y}")
         
-        self.tt_sq_size = 25 # Smaller, cleaner board
+        self.tt_sq_size = 25 
         self.tt_canvas = tk.Canvas(self.pv_tooltip, width=COLS*self.tt_sq_size, height=ROWS*self.tt_sq_size, bg=self.COLORS['bg_medium'], highlightthickness=2, highlightbackground=self.COLORS['accent'])
         self.tt_canvas.pack()
         
-        # Simulate the board up to the hovered move
         tt_sim_board = self.board.clone()
         for i in range(move_idx + 1):
             m = self.current_pv_raw[i]
@@ -1147,7 +1176,6 @@ class EnhancedChessApp:
         self._draw_tt_board_static(tt_sim_board, last_m)
 
     def on_pv_hover_leave(self, event, tag):
-        # Remove text highlight
         self.pv_text.tag_config(tag, background="", foreground="")
         if getattr(self, 'pv_tooltip', None):
             self.pv_tooltip.destroy()
