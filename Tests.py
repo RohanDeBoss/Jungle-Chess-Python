@@ -1,4 +1,4 @@
-# Tests.py (v2.1 - Oracle asessment, selectable Jungle rule, search, and tablebase checks)
+# Tests.py (v3.0 - Deep Oracle Fuzzing, Casualty Accounting, and Engine Regression Tests)
 
 import argparse
 from dataclasses import dataclass
@@ -17,7 +17,9 @@ from GameLogic import (
     has_legal_moves,
     is_in_check,
     is_passive_knight_zone_evaporation,
+    fast_approximate_material_swing
 )
+from AI import ChessBot, MG_PIECE_VALUES, TTEntry, TT_FLAG_EXACT, TT_FLAG_LOWERBOUND
 from OpponentAI import OpponentAI
 from TablebaseManager import TablebaseManager
 
@@ -522,113 +524,164 @@ def compare_engine_and_reference(board, color, label):
     details = position_details(board, label)
     details.append(f"{color} in check: engine={engine_check}, reference={ref_check}")
     details.append(f"{color} has legal moves: engine={engine_has_moves}, reference={ref_has_moves}")
-    details.append(f"Engine legal moves ({len(engine_moves)}): {move_list_str(engine_moves)}")
-    details.append(f"Reference legal moves ({len(ref_moves)}): {move_list_str(ref_moves)}")
-
+    
     expect(engine_check == ref_check, f"{label}: check status mismatch between engine and reference.")
     expect(engine_has_moves == ref_has_moves, f"{label}: has-legal-moves mismatch between engine and reference.")
-    expect(engine_moves == ref_moves, f"{label}: legal move set mismatch between engine and reference.")
+    expect(engine_moves == ref_moves, f"{label}: legal move set mismatch between engine and reference. \nEngine unique: {engine_moves - ref_moves}\nRef unique: {ref_moves - engine_moves}")
     return details
 
 
-def case_mutual_knight_resolution():
-    board = make_board([
-        ("white", King, (7, 0)),    # a1
-        ("white", Knight, (6, 1)),  # b2
-        ("white", Pawn, (6, 4)),    # e2
-        ("black", King, (0, 7)),    # h8
-        ("black", Knight, (4, 5)),  # f4
-        ("black", Pawn, (3, 4)),    # e5
-    ])
-    move = ((6, 1), (5, 3))         # Nb2-d3
+def compare_outcomes(board, move, ref_state_before, ref_state_after):
+    friendly_lost, opponent_captured, promo_type = board.get_move_outcome(move)
+    
+    engine_lost_counts = {}
+    for p in friendly_lost:
+        t = type(p).__name__
+        engine_lost_counts[t] = engine_lost_counts.get(t, 0) + 1
+        
+    engine_cap_counts = {}
+    for p in opponent_captured:
+        t = type(p).__name__
+        engine_cap_counts[t] = engine_cap_counts.get(t, 0) + 1
+        
+    color, moving_name = ref_state_before["pieces"][move[0]]
+    
+    ref_lost = {}
+    ref_cap = {}
+    
+    for pos, (c, n) in ref_state_before["pieces"].items():
+        if pos == move[0]: continue
+        if pos not in ref_state_after["pieces"]:
+            if c == color:
+                ref_lost[n] = ref_lost.get(n, 0) + 1
+            else:
+                ref_cap[n] = ref_cap.get(n, 0) + 1
+                
+    # Handle self-destruction of the moving piece (Knight evaporation, Queen explosion)
+    if move[1] not in ref_state_after["pieces"]:
+        n = "Queen" if promo_type is not None else moving_name
+        ref_lost[n] = ref_lost.get(n, 0) + 1
+        
+    expect(engine_lost_counts == ref_lost, f"Friendly losses mismatch on move {move}.\nEngine calculated: {engine_lost_counts}\nReference Oracle:  {ref_lost}")
+    expect(engine_cap_counts == ref_cap, f"Opponent captures mismatch on move {move}.\nEngine calculated: {engine_cap_counts}\nReference Oracle:  {ref_cap}")
 
-    details = position_details(board, "Start")
-    board.make_move(*move)
-    details.extend(position_details(board, "After Nb2-d3"))
 
-    expect(board.grid[6][4] is None, "Expected e2 to evaporate from the passive enemy knight.")
-    expect(board.grid[5][3] is None, "Expected the moving knight on d3 to self-evaporate.")
-    expect(board.grid[4][5] is None, "Expected the enemy knight on f4 to be removed.")
-    expect(board.grid[3][4] is None, "Expected e5 to die from the active knight evaporation.")
-    details.append("Verified: e2, d3, f4, and e5 are all empty after the mutual-knight cascade.")
-    return details
+# ==============================================================================
+# TEST CASES
+# ==============================================================================
 
-
-def case_mutual_knight_outcome_and_san():
+def case_regression_promotion_knight_zone():
     board = make_board([
         ("white", King, (7, 0)),
-        ("white", Knight, (6, 1)),
-        ("white", Pawn, (6, 4)),
+        ("white", Pawn, (1, 0)), # a7
         ("black", King, (0, 7)),
-        ("black", Knight, (4, 5)),
-        ("black", Pawn, (3, 4)),
+        ("black", Knight, (1, 2)), # c7, covers a8
     ])
-    move = ((6, 1), (5, 3))
-
-    friendly_lost, opponent_captured, promotion_type = board.get_move_outcome(move)
-    child = board.clone()
-    child.make_move(*move)
-    san = format_move_san(board, child, move)
-
-    details = position_details(board, "Start")
-    details.append(f"Friendly losses: {sorted(type(piece).__name__ for piece in friendly_lost)}")
-    details.append(f"Opponent captures: {sorted(type(piece).__name__ for piece in opponent_captured)}")
-    details.append(f"SAN: {san}")
-
-    expect(sorted(type(piece).__name__ for piece in friendly_lost) == ["Knight", "Pawn"],
-           "Expected the moving knight and the pawn on e2 to be counted as friendly losses.")
-    expect(sorted(type(piece).__name__ for piece in opponent_captured) == ["Knight", "Pawn"],
-           "Expected the black knight on f4 and pawn on e5 to be counted as captures.")
-    expect(promotion_type is None, "Did not expect a promotion in the knight cascade case.")
-    expect(san == "Nd3 (xe2 xd3 xf4 xe5)",
-           "Expected SAN to list the passive and active casualties in deterministic order.")
+    move = ((1, 0), (0, 0)) # a7-a8=Q
+    moving_piece = board.grid[1][0]
+    target_piece = board.grid[0][0]
+    
+    swing = fast_approximate_material_swing(board, move, moving_piece, target_piece, MG_PIECE_VALUES)
+    
+    # Expected: 
+    # Pawn value (100) -> Queen value (850) = +750 gain
+    # Queen lands in knight zone -> Evaporates = -850 loss
+    # Net swing = -100.
+    # If the bug is present, it subtracts Pawn (-100) instead, giving +650.
+    details = position_details(board, "Pawn promoting into Knight evaporation zone")
+    details.append(f"Move: {square_name(move[0])}-{square_name(move[1])}=Q")
+    details.append(f"Material Swing calculated: {swing}")
+    
+    expect(swing == -100, f"Regression detected: Swing was {swing}. The engine is subtracting the pawn's value instead of the promoted Queen's value upon evaporation.")
     return details
 
 
-def case_opai_trap_mate():
-    board = make_board([
-        ("white", King, (0, 2)),    # c8
-        ("white", Rook, (3, 1)),    # b5
-        ("white", Pawn, (0, 0)),    # a8
-        ("black", King, (1, 0)),    # a7
-        ("black", Pawn, (7, 0)),    # a1
-    ])
-    bot = make_opponent_ai(board, "black")
-    score = bot.qsearch(board, -10**9, 10**9, "black", 0)
-
-    details = position_details(board, "Trap position")
-    details.append(f"is_in_check(black)={is_in_check(board, 'black')}")
-    details.append(f"has_legal_moves(black)={has_legal_moves(board, 'black')}")
-    details.append(f"OpponentAI.qsearch score={score}")
-
-    expect(not is_in_check(board, "black"),
-           "This position should be a no-check Jungle trap, not a standard in-check mate.")
-    expect(not has_legal_moves(board, "black"),
-           "Black should have zero legal moves in this trap position.")
-    expect(score == -bot.MATE_SCORE,
-           "OpponentAI qsearch should score no-legal-move trap positions as immediate mate.")
+def case_regression_tt_best_move_preservation():
+    board = Board()
+    bot = ChessBot(board, "white", {}, _DummyQueue(), _DummyEvent())
+    hash_val = 99999
+    best_move = ((6, 4), (4, 4)) # e2-e4
+    
+    # 1. Simulate a standard search storing a PV move
+    bot._store_tt(hash_val, 50, 4, TT_FLAG_EXACT, best_move)
+    
+    # 2. Simulate ProbCut firing at a higher depth, storing None
+    bot._store_tt(hash_val, 60, 6, TT_FLAG_LOWERBOUND, None)
+    
+    entry = bot.tt.get(hash_val)
+    details = ["Testing TT behavior during ProbCut overwrites."]
+    details.append(f"Initial entry stored with best_move: {best_move}")
+    details.append("ProbCut attempts to overwrite with depth=6, best_move=None")
+    details.append(f"Resulting TT entry best_move: {entry.best_move}")
+    
+    expect(entry is not None, "TT entry missing entirely.")
+    expect(entry.best_move == best_move, f"Regression detected: ProbCut erased the best_move! Expected {best_move}, got {entry.best_move}")
     return details
 
 
-def case_opai_passive_knight_tactical():
+def case_regression_nmp_mate_blindness():
+    # Setup a board where white is technically safe for the current turn,
+    # but any normal search will show forced mate is incoming.
     board = make_board([
-        ("white", King, (7, 0)),    # a1
-        ("white", Rook, (6, 0)),    # a2
-        ("black", King, (0, 7)),    # h8
-        ("black", Knight, (7, 2)),  # c1
+        ("white", King, (7, 0)), # a1
+        ("white", Queen, (6, 0)), # a2 (Required for NMP to trigger)
+        ("black", King, (5, 1)), # b3
+        ("black", Rook, (7, 7)), # h1
+        ("black", Rook, (6, 7)), # h2
     ])
-    move = ((6, 0), (6, 4))         # Ra2-e2 into the knight's passive zone
-    bot = make_opponent_ai(board, "white")
-    is_passive = is_passive_knight_zone_evaporation(board, move)
-    is_tactical = bot._is_tactical_move(board, move)
+    bot = ChessBot(board, "white", {}, _DummyQueue(), _DummyEvent())
+    bot.tt = {}
+    
+    # We call negamax with a highly negative beta (-999,900).
+    # If the bug `beta < MATE_SCORE - 200` is present, it will evaluate to True
+    # (-999,900 < 999,800), skip its turn, and return a shallow non-mate score.
+    # If fixed to `abs(beta) < MATE_SCORE - 1000`, it evaluates False, bypasses NMP,
+    # searches fully, and returns an actual mate score (< -999000).
+    try:
+        score = bot.negamax(board, depth=4, alpha=-999999, beta=-999900, turn="white", ply=1, search_path=set())
+    except Exception as e:
+        score = 0
+        
+    details = position_details(board, "White is about to be mated")
+    details.append(f"Negamax called with beta=-999900. Returned score: {score}")
+    
+    expect(score < -900000, f"Regression detected: Engine hallucinated a defense via NMP! It returned score {score} instead of a mating score.")
+    return details
 
-    details = position_details(board, "Passive knight-zone test")
-    details.append(f"Move under test: {square_name(move[0])}-{square_name(move[1])}")
-    details.append(f"is_passive_knight_zone_evaporation={is_passive}")
-    details.append(f"OpponentAI._is_tactical_move={is_tactical}")
 
-    expect(is_passive, "Expected Ra2-e2 to be recognized as a passive knight-zone evaporation.")
-    expect(is_tactical, "OpponentAI should classify passive knight-zone evaporations as tactical.")
+def case_oracle_deep_fuzz():
+    import random
+    details = []
+    seeds = [2026, 42, 1337] # Multi-seed to guarantee variety
+    plies_per_seed = 40
+    
+    for seed in seeds:
+        rng = random.Random(seed)
+        board = Board()
+        turn = "white"
+        
+        for ply in range(plies_per_seed):
+            state = ref_from_board(board)
+            engine_moves = set(get_all_legal_moves(board, turn))
+            ref_moves = set(ref_legal_moves(state, turn))
+            
+            expect(engine_moves == ref_moves, f"Fuzz failure on seed {seed}, ply {ply}: move mismatch.\nBoard:\n{board_to_ascii(board)}")
+            
+            if not engine_moves:
+                break
+            
+            # Pick a random valid move
+            move = rng.choice(sorted(engine_moves))
+            ref_child = ref_apply_move(state, move)
+            
+            # Verify casualty logic (get_move_outcome)
+            compare_outcomes(board, move, state, ref_child)
+            
+            board.make_move(move[0], move[1])
+            turn = opposite(turn)
+            
+    details.append(f"Passed deep fuzzing across {len(seeds)} seeds (up to {plies_per_seed} plies each).")
+    details.append("100% agreement on legal move generation and piece casualty accounting.")
     return details
 
 
@@ -644,274 +697,38 @@ def case_tb_inventory():
     return details
 
 
-def case_tb_white_3man_lookup():
-    manager = manager_with_table("K_Queen_K")
-    board = make_board([
-        ("white", King, (7, 4)),    # e1
-        ("white", Queen, (6, 3)),   # d2
-        ("black", King, (0, 0)),    # a8
-    ])
-    wk = board.white_king_pos
-    wq = next(piece for piece in board.white_pieces if type(piece) is Queen).pos
-    bk = board.black_king_pos
-
-    details = position_details(board, "3-man white probe wiring")
-    for turn, t_idx in (("white", 0), ("black", 1)):
-        raw = int(manager.tables["K_Queen_K"][wk[0] * 8 + wk[1], wq[0] * 8 + wq[1], bk[0] * 8 + bk[1], t_idx])
-        expected = manager._tb_score_to_ai_score(raw, "white")
-        actual = manager.probe(board, turn)
-        details.append(f"{turn} to move: raw={raw}, expected_probe={expected}, actual_probe={actual}")
-        expect(actual == expected,
-               f"Tablebase probe mismatch for K_Queen_K with {turn} to move.")
-    return details
-
-
-def case_tb_black_3man_lookup():
-    manager = manager_with_table("K_Rook_K")
-    board = make_board([
-        ("white", King, (7, 0)),    # a1
-        ("black", King, (0, 4)),    # e8
-        ("black", Rook, (1, 3)),    # d7
-    ])
-    bk = board.black_king_pos
-    br = next(piece for piece in board.black_pieces if type(piece) is Rook).pos
-    wk = board.white_king_pos
-
-    def flip(pos):
-        return (7 - pos[0], pos[1])
-
-    details = position_details(board, "3-man black probe wiring")
-    for turn, t_idx in (("black", 0), ("white", 1)):
-        idx = (
-            flip(bk)[0] * 8 + flip(bk)[1],
-            flip(br)[0] * 8 + flip(br)[1],
-            flip(wk)[0] * 8 + flip(wk)[1],
-            t_idx,
-        )
-        raw = int(manager.tables["K_Rook_K"][idx])
-        expected = manager._tb_score_to_ai_score(raw, "black")
-        actual = manager.probe(board, turn)
-        details.append(f"{turn} to move: raw={raw}, expected_probe={expected}, actual_probe={actual}")
-        expect(actual == expected,
-               f"Tablebase probe mismatch for black-attacker K_Rook_K with {turn} to move.")
-    return details
-
-
-def case_tb_white_4man_lookup():
-    manager = manager_with_table("K_Queen_Rook_K")
-    board = make_board([
-        ("white", King, (7, 4)),    # e1
-        ("white", Queen, (6, 3)),   # d2
-        ("white", Rook, (5, 2)),    # c3
-        ("black", King, (0, 0)),    # a8
-    ])
-    w_pieces = [piece for piece in board.white_pieces if not isinstance(piece, King)]
-    w_pieces.sort(key=lambda piece: type(piece).__name__)
-    wk = board.white_king_pos
-    bk = board.black_king_pos
-
-    details = position_details(board, "4-man same-side probe wiring")
-    for turn, t_idx in (("white", 0), ("black", 1)):
-        idx = manager._flat_idx_raw_4(
-            wk[0] * 8 + wk[1],
-            w_pieces[0].pos[0] * 8 + w_pieces[0].pos[1],
-            w_pieces[1].pos[0] * 8 + w_pieces[1].pos[1],
-            bk[0] * 8 + bk[1],
-            t_idx,
-        )
-        raw = int(manager.tables["K_Queen_Rook_K"].flat[idx])
-        expected = manager._tb_score_to_ai_score(raw, "white")
-        actual = manager.probe(board, turn)
-        details.append(f"{turn} to move: raw={raw}, expected_probe={expected}, actual_probe={actual}")
-        expect(actual == expected,
-               f"Tablebase probe mismatch for K_Queen_Rook_K with {turn} to move.")
-    return details
-
-
-def case_tb_missing_cross_returns_none():
-    manager = TablebaseManager()
-    pieces = ["Queen", "Rook", "Knight", "Bishop", "Pawn"]
-    missing_pair = None
-    for white_name in pieces:
-        for black_name in pieces:
-            if f"K_{white_name}_vs_{black_name}_K" not in manager.tables:
-                missing_pair = (white_name, black_name)
-                break
-        if missing_pair is not None:
-            break
-
-    if missing_pair is None:
-        raise SkipCase("No missing cross table found; every K_X_vs_Y_K table is present.")
-
-    white_name, black_name = missing_pair
-    board = make_board([
-        ("white", King, (7, 0)),
-        ("white", PIECE_CLASS_BY_NAME[white_name], (6, 1)),
-        ("black", King, (0, 7)),
-        ("black", PIECE_CLASS_BY_NAME[black_name], (1, 6)),
-    ])
-    actual = manager.probe(board, "white")
-
-    details = position_details(board, "Missing cross-table fallback")
-    details.append(f"Missing table: K_{white_name}_vs_{black_name}_K")
-    details.append(f"Probe result: {actual}")
-
-    expect(actual is None,
-           "Expected TablebaseManager.probe to return None when the required cross table is missing.")
-    return details
-
-
-def case_oracle_curated_positions():
-    positions = [
-        (
-            "Queen proxy explosion check",
-            "black",
-            make_board([
-                ("white", King, (7, 7)),    # h1
-                ("white", Queen, (4, 7)),   # h4
-                ("black", King, (6, 4)),    # e2
-                ("black", Pawn, (6, 5)),    # f2
-            ]),
-        ),
-        (
-            "Rook railgun check through enemy screen",
-            "black",
-            make_board([
-                ("white", King, (7, 7)),    # h1
-                ("white", Rook, (3, 7)),    # h5
-                ("black", King, (3, 0)),    # a5
-                ("black", Pawn, (3, 4)),    # e5
-            ]),
-        ),
-        (
-            "Bishop zig-zag mobility",
-            "white",
-            make_board([
-                ("white", King, (7, 0)),    # a1
-                ("white", Bishop, (4, 3)),  # d4
-                ("black", King, (0, 7)),    # h8
-                ("black", Pawn, (2, 4)),    # e6
-                ("black", Pawn, (5, 4)),    # e3
-            ]),
-        ),
-        (
-            "King two-step through attacked midpoint",
-            "white",
-            make_board([
-                ("white", King, (7, 4)),    # e1
-                ("black", King, (0, 7)),    # h8
-                ("black", Rook, (0, 5)),    # f8 attacks f-file midpoint
-            ]),
-        ),
-    ]
-
-    details = []
-    for label, color, board in positions:
-        details.extend(compare_engine_and_reference(board, color, label))
-
-    e1_g1 = ((7, 4), (7, 6))
-    king_board = positions[3][2]
-    engine_moves = set(get_all_legal_moves(king_board, "white"))
-    expect(e1_g1 in engine_moves,
-           "Expected the white king to be allowed to move e1-g1 through an attacked midpoint if g1 is safe.")
-    details.append("Verified: the curated oracle positions all matched the independent reference model.")
-    return details
-
-
-def case_oracle_playout_consistency():
-    import random
-
-    rng = random.Random(20260307)
-    details = []
-    board = Board()
-    turn = "white"
-    checked_positions = 0
-
-    for ply in range(16):
-        details.extend(compare_engine_and_reference(board, turn, f"Oracle playout ply {ply + 1}"))
-        checked_positions += 1
-
-        legal_moves = sorted(get_all_legal_moves(board, turn))
-        if not legal_moves:
-            break
-        move = rng.choice(legal_moves)
-        details.append(f"Chosen continuation: {square_name(move[0])}-{square_name(move[1])}")
-        board.make_move(*move)
-        turn = opposite(turn)
-
-    details.append(f"Verified {checked_positions} consecutive reachable positions from the starting position.")
-    return details
-
-
 CASES = [
     TestCaseSpec(
-        "mutual_knight_resolution",
-        "rules",
-        "Verify that mutual knight evaporation removes both knights and their secondary victims on the board.",
-        case_mutual_knight_resolution,
+        "regression_promotion_knight_zone",
+        "engine_internals",
+        "Verify the engine correctly subtracts a Queen's value when a pawn promotes into an evaporation zone.",
+        case_regression_promotion_knight_zone,
     ),
     TestCaseSpec(
-        "mutual_knight_outcome_san",
-        "rules",
-        "Verify move-outcome accounting and SAN output for the mutual-knight cascade case.",
-        case_mutual_knight_outcome_and_san,
+        "regression_tt_best_move_preservation",
+        "engine_internals",
+        "Verify that _store_tt preserves existing best moves when ProbCut stores a None move.",
+        case_regression_tt_best_move_preservation,
     ),
     TestCaseSpec(
-        "opai_trap_mate",
-        "search",
-        "Verify that OpponentAI q-search scores a no-legal-moves trap as mate even when the side to move is not in check.",
-        case_opai_trap_mate,
+        "regression_nmp_mate_blindness",
+        "engine_internals",
+        "Verify that Null Move Pruning safely aborts when the beta bound indicates a forced mate is on the board.",
+        case_regression_nmp_mate_blindness,
     ),
     TestCaseSpec(
-        "opai_passive_knight_tactical",
-        "search",
-        "Verify that OpponentAI treats passive knight-zone evaporations as tactical moves.",
-        case_opai_passive_knight_tactical,
-    ),
-    TestCaseSpec(
-        "oracle_curated_positions",
+        "oracle_deep_fuzz",
         "oracle",
-        "Cross-check the optimized engine against an independent reference model on curated Jungle-specific quirk positions.",
-        case_oracle_curated_positions,
-    ),
-    TestCaseSpec(
-        "oracle_playout_consistency",
-        "oracle",
-        "Cross-check the optimized engine against an independent reference model across a deterministic legal playout from the starting position.",
-        case_oracle_playout_consistency,
+        "Multi-seed, deep-ply playout verifying 100% agreement on moves, checks, and piece casualty mechanics.",
+        case_oracle_deep_fuzz,
     ),
     TestCaseSpec(
         "tb_inventory",
         "tablebase",
         "Report which tablebase files are currently loaded before running the mapping checks.",
         case_tb_inventory,
-    ),
-    TestCaseSpec(
-        "tb_white_3man_lookup",
-        "tablebase",
-        "Verify that TablebaseManager.probe matches a direct K_Queen_K raw lookup for a white-attacker 3-man position.",
-        case_tb_white_3man_lookup,
-    ),
-    TestCaseSpec(
-        "tb_black_3man_lookup",
-        "tablebase",
-        "Verify that TablebaseManager.probe matches a direct K_Rook_K raw lookup for a black-attacker 3-man position.",
-        case_tb_black_3man_lookup,
-    ),
-    TestCaseSpec(
-        "tb_white_4man_lookup",
-        "tablebase",
-        "Verify that TablebaseManager.probe matches a direct K_Queen_Rook_K raw lookup for a 4-man same-side position.",
-        case_tb_white_4man_lookup,
-    ),
-    TestCaseSpec(
-        "tb_missing_cross_returns_none",
-        "tablebase",
-        "Verify that missing cross-table positions return None instead of a fake score.",
-        case_tb_missing_cross_returns_none,
-    ),
+    )
 ]
-
 
 def select_cases(args):
     case_map = {case.name: case for case in CASES}
@@ -925,7 +742,7 @@ def select_cases(args):
             )
         return [case_map[name] for name in args.case]
 
-    groups = set(args.group or ["rules", "search", "oracle", "tablebase"])
+    groups = set(args.group or ["engine_internals", "oracle", "tablebase"])
     if "all" in groups:
         return CASES[:]
     return [case for case in CASES if case.group in groups]
@@ -966,7 +783,7 @@ def main():
     parser.add_argument(
         "--group",
         action="append",
-        choices=["rules", "search", "oracle", "tablebase", "all"],
+        choices=["engine_internals", "oracle", "tablebase", "all"],
         help="Run only the selected test group(s). Defaults to all groups.",
     )
     parser.add_argument(

@@ -1,4 +1,4 @@
-# AI.py (v98.8 - fixed TT best-move preservation during ProbCut and gated ponder TB floor on heuristic flag)
+# AI.py (v99 - Tuned material values @d2 1k)
 
 import time
 import random
@@ -9,16 +9,16 @@ from TablebaseManager import TablebaseManager
 # --- EVALUATION CONSTANTS ---
 
 MG_PIECE_VALUES = {
-    Pawn: 100, Knight: 900, Bishop: 650, Rook: 550, Queen: 850, King: 20000
+    Pawn: 100, Knight: 910, Bishop: 400, Rook: 320, Queen: 970, King: 20000
 }
 
 # The Tablebase-Proven Meta
 EG_PIECE_VALUES = {
-    Pawn: 130,    # Dangerous, easily promotes or kills sideways
-    Knight: 800,  # Almost as good as a queen in endgames, less pieces to fork.
+    Pawn: 80,    # Dangerous, easily promotes or kills sideways
+    Knight: 855,  # Almost as good as a queen in endgames, less pieces to fork.
     Bishop: 550,  # Slightly lower value in endgames as it can't change colour or checkmate by itself
-    Rook: 600,    # A bit higher as its more active and good at eating pawns.
-    Queen: 850,
+    Rook: 860,    # A bit higher as its more active and good at eating pawns.
+    Queen: 1070,
     King: 20000
 }
 

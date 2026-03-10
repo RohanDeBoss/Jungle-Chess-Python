@@ -1,0 +1,22 @@
+{
+  "K": 0.7750691711875274,
+  "final_mse": 0.07630961724699124,
+  "generation_depth": 2,
+  "mg": {
+    "Pawn": 100,
+    "Knight": 910,
+    "Bishop": 400,
+    "Rook": 320,
+    "Queen": 970
+  },
+  "eg": {
+    "Pawn": 80,
+    "Knight": 855,
+    "Bishop": 550,
+    "Rook": 860,
+    "Queen": 1070
+  },
+  "games_used": 1000,
+  "positions_used": 42379,
+  "timestamp": "2026-03-11 03:22:21"
+}
