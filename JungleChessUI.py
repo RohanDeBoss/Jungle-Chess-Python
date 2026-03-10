@@ -1,4 +1,4 @@
-# JungleChessUI.py (v13 - v12.7 layout + v12.9 features)
+# JungleChessUI.py (v13.2 - Bottom-Clamped FEN/PGN & Instant Scoreboard)
 
 import tkinter as tk
 from tkinter import ttk, messagebox
@@ -195,7 +195,7 @@ class EnhancedChessApp:
             background=self.COLORS['bg_medium'], foreground=self.COLORS['text_light'],
             anchor="center", justify=tk.CENTER)
 
-        # Navigation bar (v12.7 placement — under center_panel, not board_column)
+        # Navigation bar 
         self.navigation_frame = ttk.Frame(self.center_panel, style='Right.TFrame')
         self.navigation_frame.pack(fill=tk.X, pady=(5, 10))
 
@@ -265,17 +265,19 @@ class EnhancedChessApp:
             ).pack(anchor=tk.W, pady=(2, 2))
 
     def _build_right_sidebar_widgets(self, parent_frame):
+        # 1. Info Frame
         self.info_frame = ttk.Frame(parent_frame, style='Left.TFrame')
         self.info_frame.pack(fill=tk.X, pady=(0, 5))
         self.game_info_label = ttk.Label(self.info_frame, text="Match Info", style='Header.TLabel')
         self.game_info_label.pack(anchor=tk.W)
         self.turn_label = ttk.Label(self.info_frame, text="WHITE'S TURN", style='Status.TLabel')
-        self.turn_label.pack(fill=tk.X, pady=(5, 10))
+        self.turn_label.pack(fill=tk.X, pady=(5, 5))
 
+        # 2. Move History
         ttk.Label(parent_frame, text="Move History", style='SmallHeader.TLabel').pack(anchor=tk.W)
 
         self.tree_frame = tk.Frame(parent_frame, bg=self.COLORS['bg_medium'])
-        self.tree_frame.pack(fill=tk.BOTH, expand=True, pady=(2, 10))
+        self.tree_frame.pack(fill=tk.X, expand=False, pady=(2, 10))
 
         self.history_header = tk.Frame(self.tree_frame, bg=self.COLORS['bg_light'])
         self.history_header.pack(fill=tk.X)
@@ -290,26 +292,31 @@ class EnhancedChessApp:
             self.tree_frame, font=('Courier', 11),
             bg=self.COLORS['bg_medium'], fg=self.COLORS['text_light'],
             borderwidth=0, highlightthickness=0, state=tk.DISABLED,
-            cursor="arrow", wrap=tk.NONE)
+            cursor="arrow", wrap=tk.NONE, height=16) # Fixed height
         scrollbar = ttk.Scrollbar(self.tree_frame, orient=tk.VERTICAL, command=self.moves_text.yview)
         self.moves_text.configure(yscrollcommand=scrollbar.set)
-        self.moves_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self.moves_text.pack(side=tk.LEFT, fill=tk.X, expand=True)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
 
+        # 3. Scoreboard (Top-aligned, just below history)
         self.scoreboard_label = ttk.Label(
             parent_frame, text="", font=("Helvetica", 11), justify=tk.LEFT,
             background=self.COLORS['bg_dark'], foreground=self.COLORS['text_light'])
-        self.scoreboard_label.pack(fill=tk.X, pady=(0, 10))
+        self.scoreboard_label.pack(fill=tk.X, pady=(5, 5))
 
-        self.fen_entry = self._create_import_export_widget(parent_frame, "FEN String:", self.load_fen_from_entry, self.copy_fen_to_clipboard)
-        self.pgn_entry = self._create_import_export_widget(parent_frame, "PGN Record:", self.load_pgn_from_entry, self.copy_pgn_to_clipboard)
+        # 4. Bottom Tools (Clamped permanently to bottom)
+        self.bottom_tools_frame = ttk.Frame(parent_frame, style='Left.TFrame')
+        self.bottom_tools_frame.pack(side=tk.BOTTOM, fill=tk.X, pady=(0, 10))
+
+        self.fen_entry = self._create_import_export_widget(self.bottom_tools_frame, "FEN String:", self.load_fen_from_entry, self.copy_fen_to_clipboard)
+        self.pgn_entry = self._create_import_export_widget(self.bottom_tools_frame, "PGN Record:", self.load_pgn_from_entry, self.copy_pgn_to_clipboard)
 
     def _create_import_export_widget(self, parent_frame, label_text, load_cmd, copy_cmd):
         frame = ttk.Frame(parent_frame, style='Left.TFrame')
-        frame.pack(fill=tk.X, pady=(5, 5))
+        frame.pack(fill=tk.X, pady=(2, 2))
         ttk.Label(frame, text=label_text, style='SmallHeader.TLabel').pack(anchor=tk.W)
         entry = ttk.Entry(frame, font=('Courier', 10), style='TEntry')
-        entry.pack(fill=tk.X, pady=(2, 4))
+        entry.pack(fill=tk.X, pady=(2, 2))
         btn_frame = ttk.Frame(frame, style='Left.TFrame')
         btn_frame.pack(fill=tk.X)
         prefix = label_text.split()[0]
@@ -1224,6 +1231,7 @@ class EnhancedChessApp:
         self.depth_stats              = {}
         self.ai_series_running        = True
         self.current_opening_sequence = []
+        self.update_scoreboard()
         self.reset_game()
 
     def apply_series_opening_move(self):
