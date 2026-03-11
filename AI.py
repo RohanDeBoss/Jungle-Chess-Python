@@ -1,4 +1,4 @@
-# AI.py (v99 - Tuned material values @d2 1k)
+# AI.py (v99 - Tuned material values @depth2 & 200pos)
 
 import time
 import random
@@ -9,16 +9,20 @@ from TablebaseManager import TablebaseManager
 # --- EVALUATION CONSTANTS ---
 
 MG_PIECE_VALUES = {
-    Pawn: 100, Knight: 910, Bishop: 400, Rook: 320, Queen: 970, King: 20000
+    Pawn: 100,
+    Knight: 900,
+    Bishop: 600,
+    Rook: 500,
+    Queen: 950,
+    King: 20000
 }
 
-# The Tablebase-Proven Meta
 EG_PIECE_VALUES = {
-    Pawn: 80,    # Dangerous, easily promotes or kills sideways
-    Knight: 855,  # Almost as good as a queen in endgames, less pieces to fork.
-    Bishop: 550,  # Slightly lower value in endgames as it can't change colour or checkmate by itself
-    Rook: 860,    # A bit higher as its more active and good at eating pawns.
-    Queen: 1070,
+    Pawn: 100,
+    Knight: 900,
+    Bishop: 550,
+    Rook: 800,
+    Queen: 1000,
     King: 20000
 }
 

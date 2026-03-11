@@ -1,4 +1,6 @@
-# PieceTuner.py (v1.5 - Configurable generation depth + fixed step-size skipping)
+# PieceTuner.py (v1.7)
+# Full AI search for generation (TT, NMP, ProbCut, killers, history),
+# opening screen, TB adjudication, game statistics, crash checkpoints.
 
 import math
 import json
@@ -6,6 +8,7 @@ import os
 import random
 import time
 import multiprocessing as mp
+from collections import defaultdict
 
 from GameLogic import (
     Board, Pawn, Knight, Bishop, Rook, Queen, King,
@@ -18,17 +21,31 @@ from AI import board_hash
 # CONFIGURATION
 # ═══════════════════════════════════════════════════════════════════════════════
 
-GAMES_TO_GENERATE    = 1000  # Number of self-play games to generate
-GENERATION_DEPTH     = 2     # Search depth per move: 1 = fast, 2 = slower but better quality
-MAX_GAME_PLIES       = 200   # End game after this many half-moves (longer = more EG data)
-SAMPLE_EVERY_N_PLIES = 2     # Record 1 position per N plies (2 = good balance of volume vs correlation)
-DATA_FILE            = "tuner_positions.json"
+GAMES_TO_GENERATE       = 200   # Number of self-play games to generate
+GENERATION_DEPTH        = 4     # Search depth per move (full AI search — TT, NMP, ProbCut etc.)
+RANDOM_OPENING_PLIES    = 4     # Random moves before engine kicks in (diversity)
+MAX_GAME_PLIES          = 200   # Hard ply limit (should rarely trigger with TB adjudication)
+SAMPLE_EVERY_N_PLIES    = 2     # Record 1 position per N plies
+DATA_FILE               = "tuner_positions.json"
+CHECKPOINT_EVERY        = 50    # Flush partial results to disk every N games (crash safety)
 
-COORD_ROUNDS         = 20    # Max rounds per step size — early-exit handles convergence
-K_CALIBRATION_STEPS  = 40    # Golden-section steps to find optimal sigmoid K
-STEP_SIZES           = [50, 30, 20, 10, 5]  # Centipawn step sizes, coarse → fine
+OPENING_EVAL_THRESHOLD  = 500   # cp — discard game if post-opening eval exceeds this
+OPENING_SCREEN_DEPTH    = 2     # Depth for the opening screen check
+MAX_REGENERATION_TRIES  = 10    # Max attempts to find a balanced opening per game slot
+TB_ADJUDICATION_PIECES  = 4     # Probe TB and adjudicate immediately if pieces <= this
+
+COORD_ROUNDS            = 12    # Max rounds per step size (early-exit handles convergence)
+K_CALIBRATION_STEPS     = 40    # Golden-section steps to find optimal sigmoid K
+STEP_SIZES              = [50, 30, 20, 10, 5]  # Centipawn step sizes, coarse → fine
 
 NUM_WORKERS = max(1, (mp.cpu_count() or 2) - 1)
+
+# Terminal condition labels (used in stats)
+TERM_CHECKMATE    = 'checkmate'
+TERM_INSUFFICIENT = 'insufficient_material'
+TERM_THREEFOLD    = 'threefold_repetition'
+TERM_PLY_LIMIT    = 'ply_limit'
+TERM_TB           = 'tb_adjudication'
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # PIECE VALUE HELPERS
@@ -43,7 +60,6 @@ PARAM_BOUNDS  = [
 ]
 
 def patch_ai_values(mg_vals: dict, eg_vals: dict) -> None:
-    """Apply piece value dicts to the live AI module and recompute phase constant."""
     for cls in PIECE_CLASSES:
         AI.MG_PIECE_VALUES[cls] = mg_vals[cls]
         AI.EG_PIECE_VALUES[cls] = eg_vals[cls]
@@ -55,10 +71,8 @@ def patch_ai_values(mg_vals: dict, eg_vals: dict) -> None:
     )
 
 def vals_to_vec(mg: dict, eg: dict) -> list:
-    return [
-        mg[Knight], mg[Bishop], mg[Rook], mg[Queen],
-        eg[Pawn], eg[Knight], eg[Bishop], eg[Rook], eg[Queen],
-    ]
+    return [mg[Knight], mg[Bishop], mg[Rook], mg[Queen],
+            eg[Pawn], eg[Knight], eg[Bishop], eg[Rook], eg[Queen]]
 
 def vec_to_vals(vec: list) -> tuple:
     mg = {Pawn: 100, Knight: vec[0], Bishop: vec[1], Rook: vec[2], Queen: vec[3], King: 20000}
@@ -113,10 +127,6 @@ def fen_to_board(fen_str: str) -> tuple:
 # SELF-PLAY GAME GENERATION
 # ═══════════════════════════════════════════════════════════════════════════════
 
-# Defined at top level so multiprocessing can pickle it
-class MockTB:
-    def probe(self, *args, **kwargs): return None
-
 _bot_singleton = None
 
 def _get_bot() -> AI.ChessBot:
@@ -125,90 +135,211 @@ def _get_bot() -> AI.ChessBot:
         dummy_q = mp.Queue()
         dummy_e = mp.Event()
         _bot_singleton = AI.ChessBot(Board(), 'white', {}, dummy_q, dummy_e, 'Tuner')
-        _bot_singleton.tb_manager = MockTB()
+        # Real TablebaseManager is initialised by ChessBot.__init__ — no override needed
     return _bot_singleton
 
-def _play_one_game(args: tuple) -> list:
-    """
-    Play one self-play game at GENERATION_DEPTH + native Q-Search.
-    Depth 1 = fast, Depth 2 = stronger positional play, both avoid horizon blunders
-    thanks to Q-Search at the leaves.
-    """
-    game_idx, max_plies, sample_every, gen_depth = args
-    random.seed(game_idx * 31337 + int(time.time() * 1000) % 999_983)
 
-    board          = Board()
-    turn           = 'white'
-    position_count = {}
-    plies          = 0
-    sampled_fens   = []
-    outcome        = 0.5
-
+def _play_one_game(args: tuple) -> tuple:
+    """
+    Returns (positions, stats_dict).
+    positions: list of (fen_str, outcome) tuples sampled from the game.
+    stats_dict: dict with game_length and terminal_condition.
+    """
+    game_idx, max_plies, sample_every, gen_depth, rand_plies = args
     bot = _get_bot()
-    bot._initialize_search_state()  # Clear stale TT from prior games in this worker
 
-    while plies < max_plies:
+    for attempt in range(MAX_REGENERATION_TRIES):
+        seed = game_idx * 31337 + attempt * 7919 + int(time.time() * 1000) % 999_983
+        random.seed(seed)
+
+        board          = Board()
+        turn           = 'white'
+        position_count = {}
+        plies          = 0
+        sampled_fens   = []
+        outcome        = 0.5
+        pv_move        = None
+        terminal       = TERM_PLY_LIMIT  # default if nothing else triggers
+
+        # Reset TT and all heuristic tables for this attempt
+        bot._initialize_search_state()
+
+        # ── Random opening ───────────────────────────────────────────────────
+        while plies < rand_plies:
+            legal = get_all_legal_moves(board, turn)
+            if not legal:
+                break
+            chosen = random.choice(legal)
+            board.make_move(chosen[0], chosen[1])
+            turn = 'black' if turn == 'white' else 'white'
+            plies += 1
+
+        # ── Opening screen: discard wildly unbalanced positions ──────────────
         legal = get_all_legal_moves(board, turn)
         if not legal:
-            outcome = 1.0 if turn == 'black' else 0.0
-            break
-        if is_insufficient_material(board):
-            break
-        h = board_hash(board, turn)
-        position_count[h] = position_count.get(h, 0) + 1
-        if position_count[h] >= 3:
-            break
+            continue  # Degenerate opening — retry
 
-        if plies % sample_every == 0:
-            sampled_fens.append(board_to_fen(board, turn))
+        bot.board           = board
+        bot.color           = turn
+        bot.opponent_color  = 'black' if turn == 'white' else 'white'
+        bot.position_counts = position_count
+        root_hash = board_hash(board, turn)
 
-        if plies < 2 or len(legal) == 1:
-            # Force random opening moves for variety; also handles forced moves
-            move = random.choice(legal)
-        else:
-            random.shuffle(legal)
-            opp        = 'black' if turn == 'white' else 'white'
-            root_hash  = board_hash(board, turn)
-            best_score = -float('inf')
-            best_move  = legal[0]
+        screen_score, _ = bot._search_at_depth(
+            OPENING_SCREEN_DEPTH, legal, root_hash, None
+        )
+        if abs(screen_score) > OPENING_EVAL_THRESHOLD:
+            continue  # Opening too lopsided — try a different seed
 
-            for m in legal:
-                child = board.clone()
-                child.make_move(m[0], m[1])
-                score = -bot.negamax(
-                    child, gen_depth, -float('inf'), float('inf'),
-                    opp, 1, {root_hash},
-                    current_hash=board_hash(child, opp)
-                )
-                score += random.uniform(0, 10)  # Small noise to avoid deterministic repetition
-                if score > best_score:
-                    best_score, best_move = score, m
-            move = best_move
+        # Opening passed — TT is already warmed from the screen, keep it
 
-        board.make_move(move[0], move[1])
-        turn = 'black' if turn == 'white' else 'white'
-        plies += 1
+        # ── Main game loop ────────────────────────────────────────────────────
+        while plies < max_plies:
+            legal = get_all_legal_moves(board, turn)
+            if not legal:
+                outcome  = 1.0 if turn == 'black' else 0.0
+                terminal = TERM_CHECKMATE
+                break
 
-    return [(fen, outcome) for fen in sampled_fens]
+            if is_insufficient_material(board):
+                outcome  = 0.5
+                terminal = TERM_INSUFFICIENT
+                break
+
+            h = board_hash(board, turn)
+            position_count[h] = position_count.get(h, 0) + 1
+            if position_count[h] >= 3:
+                outcome  = 0.5
+                terminal = TERM_THREEFOLD
+                break
+
+            # TB adjudication — resolve endgames immediately without grinding
+            total_pieces = len(board.white_pieces) + len(board.black_pieces)
+            if total_pieces <= TB_ADJUDICATION_PIECES:
+                tb_score_abs = bot.tb_manager.probe(board, turn)
+                if tb_score_abs is not None:
+                    if tb_score_abs > bot.MATE_SCORE - 1000:
+                        outcome = 1.0 if turn == 'white' else 0.0
+                    elif tb_score_abs < -(bot.MATE_SCORE - 1000):
+                        outcome = 0.0 if turn == 'white' else 1.0
+                    else:
+                        outcome = 0.5
+                    terminal = TERM_TB
+                    break
+
+            if plies % sample_every == 0:
+                sampled_fens.append(board_to_fen(board, turn))
+
+            # Full AI search — TT, NMP, ProbCut, killers, history, LMR all active
+            bot.board           = board
+            bot.color           = turn
+            bot.opponent_color  = 'black' if turn == 'white' else 'white'
+            bot.position_counts = position_count
+            root_hash = board_hash(board, turn)
+
+            _, best_move = bot._search_at_depth(gen_depth, legal, root_hash, pv_move)
+            move    = best_move if best_move else random.choice(legal)
+            pv_move = move
+
+            board.make_move(move[0], move[1])
+            turn  = 'black' if turn == 'white' else 'white'
+            plies += 1
+
+        stats = {'game_length': plies, 'terminal': terminal}
+        return [(fen, outcome) for fen in sampled_fens], stats
+
+    # All attempts produced lopsided openings — return empty (very rare)
+    stats = {'game_length': 0, 'terminal': 'discarded'}
+    return [], stats
+
 
 def generate_training_data(n_games: int, max_plies: int, sample_every: int,
-                           gen_depth: int, n_workers: int) -> list:
-    print(f"\nGenerating {n_games} self-play games at Depth {gen_depth} + Q-Search ({n_workers} workers)...")
-    args = [(i, max_plies, sample_every, gen_depth) for i in range(n_games)]
+                           gen_depth: int, rand_plies: int,
+                           n_workers: int, checkpoint_every: int) -> list:
+    print(f"\nGenerating {n_games} self-play games — Full AI Depth {gen_depth} ({n_workers} workers)")
+    print(f"  Random opening: {rand_plies} plies  |  "
+          f"Sample every: {sample_every} plies  |  "
+          f"TB adjudication: ≤{TB_ADJUDICATION_PIECES} pieces\n")
+
+    args         = [(i, max_plies, sample_every, gen_depth, rand_plies) for i in range(n_games)]
     all_positions = []
-    start_time = time.time()
+    terminal_counts = defaultdict(int)
+    game_lengths    = []
+    start_time      = time.time()
+    partial_file    = DATA_FILE + '.partial'
 
     with mp.Pool(n_workers) as pool:
-        for i, result in enumerate(pool.imap_unordered(_play_one_game, args, chunksize=2), 1):
-            all_positions.extend(result)
+        for i, (positions, stats) in enumerate(
+                pool.imap_unordered(_play_one_game, args, chunksize=2), 1):
+
+            all_positions.extend(positions)
+            terminal_counts[stats['terminal']] += 1
+            if stats['game_length'] > 0:
+                game_lengths.append(stats['game_length'])
+
             elapsed = time.time() - start_time
             speed   = i / elapsed
             eta     = (n_games - i) / speed if speed > 0 else 0
-            print(f"  {i}/{n_games} games  |  {len(all_positions)} positions  |  ETA: {eta/60:.1f}m", flush=True)
+            print(f"  {i}/{n_games} games  |  {len(all_positions)} positions  |  "
+                  f"ETA: {eta/60:.1f}m", flush=True)
+
+            if i % checkpoint_every == 0:
+                with open(partial_file, 'w') as f:
+                    json.dump([{'fen': fen, 'outcome': out}
+                               for fen, out in all_positions], f)
+
+    if os.path.exists(partial_file):
+        os.remove(partial_file)
 
     random.shuffle(all_positions)
+
+    # ── Game statistics report ───────────────────────────────────────────────
+    total_games  = sum(terminal_counts.values())
+    avg_length   = sum(game_lengths) / len(game_lengths) if game_lengths else 0
+    print(f"\n{'─' * 55}")
+    print(f"  Game Statistics  ({total_games} games)")
+    print(f"{'─' * 55}")
+    print(f"  Average game length : {avg_length:.1f} plies  "
+          f"({avg_length/2:.1f} moves)")
+    print(f"  Min / Max           : {min(game_lengths)} / {max(game_lengths)} plies"
+          if game_lengths else "  No games recorded")
+    print()
+    order = [TERM_CHECKMATE, TERM_TB, TERM_THREEFOLD,
+             TERM_INSUFFICIENT, TERM_PLY_LIMIT, 'discarded']
+    labels = {
+        TERM_CHECKMATE:    'Checkmate',
+        TERM_TB:           'TB adjudication',
+        TERM_THREEFOLD:    'Threefold repetition',
+        TERM_INSUFFICIENT: 'Insufficient material',
+        TERM_PLY_LIMIT:    'Ply limit (200)',
+        'discarded':       'Discarded (lopsided)',
+    }
+    for key in order:
+        count = terminal_counts.get(key, 0)
+        if count == 0:
+            continue
+        pct = count / total_games * 100
+        bar = '█' * int(pct / 2)
+        print(f"  {labels[key]:<25} {count:>4}  ({pct:5.1f}%)  {bar}")
+    print(f"{'─' * 55}")
     print(f"\nTotal training positions: {len(all_positions)}")
     return all_positions
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# POSITION UNIQUENESS DIAGNOSTICS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def report_uniqueness(positions_data: list) -> None:
+    fens_only = [fen for fen, _ in positions_data]
+    unique    = len(set(fens_only))
+    total     = len(fens_only)
+    pct       = unique / total if total > 0 else 0
+    print(f"  Position uniqueness : {unique}/{total} ({pct:.1%})", flush=True)
+    if pct < 0.80:
+        print(f"  ⚠  Low uniqueness — consider increasing "
+              f"RANDOM_OPENING_PLIES (currently {RANDOM_OPENING_PLIES})", flush=True)
+    else:
+        print(f"  ✓  Diversity looks healthy", flush=True)
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # TEXEL LOSS
@@ -261,21 +392,26 @@ def coordinate_descent(positions_data: list, K: float, mg_start: dict, eg_start:
             for i, name in enumerate(PARAM_NAMES):
                 lo_bound, hi_bound = PARAM_BOUNDS[i]
 
-                v_up  = vec.copy(); v_up[i] += step
-                v_dn  = vec.copy(); v_dn[i] -= step
-                mse_up = compute_mse(positions_data, K, *vec_to_vals(v_up)) if v_up[i] <= hi_bound else float('inf')
-                mse_dn = compute_mse(positions_data, K, *vec_to_vals(v_dn)) if v_dn[i] >= lo_bound else float('inf')
+                v_up   = vec.copy(); v_up[i] += step
+                v_dn   = vec.copy(); v_dn[i] -= step
+                mse_up = compute_mse(positions_data, K, *vec_to_vals(v_up)) \
+                         if v_up[i] <= hi_bound else float('inf')
+                mse_dn = compute_mse(positions_data, K, *vec_to_vals(v_dn)) \
+                         if v_dn[i] >= lo_bound else float('inf')
 
                 if mse_up < best_mse and mse_up <= mse_dn:
                     old = vec[i]; vec = v_up; best_mse = mse_up; improved_any = True
-                    print(f"  {name:12s}: {old:.0f} → {vec[i]:.0f}  (MSE={best_mse:.6f})", flush=True)
+                    print(f"  {name:12s}: {old:.0f} → {vec[i]:.0f}"
+                          f"  (MSE={best_mse:.6f})", flush=True)
                 elif mse_dn < best_mse:
                     old = vec[i]; vec = v_dn; best_mse = mse_dn; improved_any = True
-                    print(f"  {name:12s}: {old:.0f} → {vec[i]:.0f}  (MSE={best_mse:.6f})", flush=True)
+                    print(f"  {name:12s}: {old:.0f} → {vec[i]:.0f}"
+                          f"  (MSE={best_mse:.6f})", flush=True)
 
-            print(f"  [round {round_num}] MSE = {best_mse:.6f}" + ("" if improved_any else "  (converged)"), flush=True)
+            print(f"  [round {round_num}] MSE = {best_mse:.6f}"
+                  + ("" if improved_any else "  (converged)"), flush=True)
             if not improved_any:
-                break  # Move to next step size; does NOT skip remaining step sizes
+                break  # Converged at this step size — move to finer step
 
     return vec_to_vals(vec), best_mse
 
@@ -296,15 +432,16 @@ def print_ai_dicts(mg: dict, eg: dict, header: str = "") -> None:
     print(f"\nEG_PIECE_VALUES = {{\n{_fmt(eg)}\n}}", flush=True)
 
     print("\n  Delta vs original AI.py values:")
-    print(f"  {'Piece':<10} {'MG orig':>8} {'MG new':>8} {'MG Δ':>7}  {'EG orig':>8} {'EG new':>8} {'EG Δ':>7}")
+    print(f"  {'Piece':<10} {'MG orig':>8} {'MG new':>8} {'MG Δ':>7}"
+          f"  {'EG orig':>8} {'EG new':>8} {'EG Δ':>7}")
     print("  " + "─" * 64)
     orig_mg = {Pawn: 100, Knight: 900, Bishop: 650, Rook: 550, Queen: 850}
     orig_eg = {Pawn: 130, Knight: 800, Bishop: 550, Rook: 600, Queen: 850}
     for cls in PIECE_CLASSES:
         dm = int(round(mg[cls])) - orig_mg[cls]
         de = int(round(eg[cls])) - orig_eg[cls]
-        print(f"  {cls.__name__:<10} {orig_mg[cls]:>8} {int(round(mg[cls])):>8} {dm:>+7}  "
-              f"{orig_eg[cls]:>8} {int(round(eg[cls])):>8} {de:>+7}", flush=True)
+        print(f"  {cls.__name__:<10} {orig_mg[cls]:>8} {int(round(mg[cls])):>8} {dm:>+7}"
+              f"  {orig_eg[cls]:>8} {int(round(eg[cls])):>8} {de:>+7}", flush=True)
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # MAIN
@@ -312,12 +449,31 @@ def print_ai_dicts(mg: dict, eg: dict, header: str = "") -> None:
 
 def main():
     print("═" * 60, flush=True)
-    print(f"  Jungle Chess Piece Value Auto-Tuner  (v1.5)", flush=True)
-    print(f"  Depth {GENERATION_DEPTH} + Q-Search  |  {GAMES_TO_GENERATE} games  |  {NUM_WORKERS} workers", flush=True)
+    print(f"  Jungle Chess Piece Value Auto-Tuner  (v1.7)", flush=True)
+    print(f"  Full AI Depth {GENERATION_DEPTH}  |  "
+          f"{GAMES_TO_GENERATE} games  |  {NUM_WORKERS} workers", flush=True)
     print("═" * 60, flush=True)
 
     positions_data = None
-    if os.path.exists(DATA_FILE) and os.path.getsize(DATA_FILE) > 0:
+    partial_file   = DATA_FILE + '.partial'
+
+    # Check for a partial checkpoint from a previous interrupted run
+    if os.path.exists(partial_file) and os.path.getsize(partial_file) > 0:
+        print(f"\n⚠  Found partial checkpoint: {partial_file}")
+        print("  Resume from checkpoint? (Y/n): ", end='', flush=True)
+        if input().strip().lower() != 'n':
+            try:
+                with open(partial_file) as f:
+                    raw = json.load(f)
+                positions_data = [(d['fen'], d['outcome']) for d in raw]
+                print(f"  Resumed {len(positions_data)} positions from checkpoint.")
+                print("  Note: generation was incomplete — "
+                      "consider regenerating for a full dataset.")
+            except Exception:
+                positions_data = None
+
+    if positions_data is None and os.path.exists(DATA_FILE) \
+            and os.path.getsize(DATA_FILE) > 0:
         try:
             with open(DATA_FILE) as f:
                 raw = json.load(f)
@@ -332,11 +488,13 @@ def main():
     if positions_data is None:
         positions_data = generate_training_data(
             GAMES_TO_GENERATE, MAX_GAME_PLIES, SAMPLE_EVERY_N_PLIES,
-            GENERATION_DEPTH, NUM_WORKERS
+            GENERATION_DEPTH, RANDOM_OPENING_PLIES,
+            NUM_WORKERS, CHECKPOINT_EVERY
         )
         print(f"\nSaving to {DATA_FILE}...", flush=True)
         with open(DATA_FILE, 'w') as f:
-            json.dump([{'fen': fen, 'outcome': out} for fen, out in positions_data], f)
+            json.dump([{'fen': fen, 'outcome': out}
+                       for fen, out in positions_data], f)
 
     if not positions_data:
         print("ERROR: No training positions generated. Exiting.")
@@ -346,7 +504,9 @@ def main():
     w = sum(o == 1.0 for o in outcomes) / len(outcomes)
     d = sum(o == 0.5 for o in outcomes) / len(outcomes)
     b = sum(o == 0.0 for o in outcomes) / len(outcomes)
-    print(f"\nOutcome distribution:  White {w:.1%}  |  Draw {d:.1%}  |  Black {b:.1%}", flush=True)
+    print(f"\nOutcome distribution:  White {w:.1%}  |  "
+          f"Draw {d:.1%}  |  Black {b:.1%}", flush=True)
+    report_uniqueness(positions_data)
 
     mg_start = {cls: AI.MG_PIECE_VALUES[cls] for cls in PIECE_CLASSES}
     eg_start = {cls: AI.EG_PIECE_VALUES[cls] for cls in PIECE_CLASSES}
@@ -354,7 +514,8 @@ def main():
 
     K = calibrate_K(positions_data, mg_start, eg_start, K_CALIBRATION_STEPS)
 
-    print(f"\nRunning coordinate descent ({COORD_ROUNDS} rounds max × {len(STEP_SIZES)} step sizes)...", flush=True)
+    print(f"\nRunning coordinate descent "
+          f"({COORD_ROUNDS} rounds max × {len(STEP_SIZES)} step sizes)...", flush=True)
     (mg_best, eg_best), final_mse = coordinate_descent(
         positions_data, K, mg_start, eg_start, COORD_ROUNDS, STEP_SIZES
     )
@@ -367,16 +528,19 @@ def main():
     result_file = "tuner_results.json"
     with open(result_file, 'w') as f:
         json.dump({
-            'K':                K,
-            'final_mse':        final_mse,
-            'generation_depth': GENERATION_DEPTH,
+            'K':                    K,
+            'final_mse':            final_mse,
+            'generation_depth':     GENERATION_DEPTH,
+            'random_opening_plies': RANDOM_OPENING_PLIES,
+            'tb_adjudication_pieces': TB_ADJUDICATION_PIECES,
             'mg': {cls.__name__: int(round(mg_best[cls])) for cls in PIECE_CLASSES},
             'eg': {cls.__name__: int(round(eg_best[cls])) for cls in PIECE_CLASSES},
-            'games_used':       GAMES_TO_GENERATE,
-            'positions_used':   len(positions_data),
-            'timestamp':        time.strftime('%Y-%m-%d %H:%M:%S'),
+            'games_used':           GAMES_TO_GENERATE,
+            'positions_used':       len(positions_data),
+            'timestamp':            time.strftime('%Y-%m-%d %H:%M:%S'),
         }, f, indent=2)
     print(f"\nResults saved to {result_file}", flush=True)
+
 
 if __name__ == '__main__':
     mp.freeze_support()
