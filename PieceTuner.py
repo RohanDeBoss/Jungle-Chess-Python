@@ -1,6 +1,8 @@
-# PieceTuner.py (v1.7)
-# Full AI search for generation (TT, NMP, ProbCut, killers, history),
-# opening screen, TB adjudication, game statistics, crash checkpoints.
+# PieceTuner.py (v1.8)
+# Adds: append mode (top up existing dataset without regenerating),
+#       chunksize=1 for better load balancing at high depths,
+#       fixed double-random-choice bug in opening loop,
+#       position_count isolation (bot gets a copy during search, not the live dict)
 
 import math
 import json
@@ -21,26 +23,26 @@ from AI import board_hash
 # CONFIGURATION
 # ═══════════════════════════════════════════════════════════════════════════════
 
-GAMES_TO_GENERATE       = 200   # Number of self-play games to generate
-GENERATION_DEPTH        = 4     # Search depth per move (full AI search — TT, NMP, ProbCut etc.)
+GAMES_TO_GENERATE       = 100   # Games to generate (or APPEND) per run
+GENERATION_DEPTH        = 4     # Search depth per move (full AI: TT, NMP, ProbCut, etc.)
 RANDOM_OPENING_PLIES    = 4     # Random moves before engine kicks in (diversity)
-MAX_GAME_PLIES          = 200   # Hard ply limit (should rarely trigger with TB adjudication)
+MAX_GAME_PLIES          = 200   # Hard ply limit
 SAMPLE_EVERY_N_PLIES    = 2     # Record 1 position per N plies
 DATA_FILE               = "tuner_positions.json"
-CHECKPOINT_EVERY        = 50    # Flush partial results to disk every N games (crash safety)
+CHECKPOINT_EVERY        = 50    # Flush partial results every N games (crash safety)
 
-OPENING_EVAL_THRESHOLD  = 500   # cp — discard game if post-opening eval exceeds this
+OPENING_EVAL_THRESHOLD  = 400   # cp — discard game if post-opening eval exceeds this
 OPENING_SCREEN_DEPTH    = 2     # Depth for the opening screen check
 MAX_REGENERATION_TRIES  = 10    # Max attempts to find a balanced opening per game slot
-TB_ADJUDICATION_PIECES  = 4     # Probe TB and adjudicate immediately if pieces <= this
+TB_ADJUDICATION_PIECES  = 5     # Probe TB and adjudicate if total pieces <= this
 
-COORD_ROUNDS            = 12    # Max rounds per step size (early-exit handles convergence)
+COORD_ROUNDS            = 12    # Max rounds per step size
 K_CALIBRATION_STEPS     = 40    # Golden-section steps to find optimal sigmoid K
-STEP_SIZES              = [50, 30, 20, 10, 5]  # Centipawn step sizes, coarse → fine
+STEP_SIZES              = [50, 30, 20, 10, 5]
 
 NUM_WORKERS = max(1, (mp.cpu_count() or 2) - 1)
 
-# Terminal condition labels (used in stats)
+# Terminal condition labels
 TERM_CHECKMATE    = 'checkmate'
 TERM_INSUFFICIENT = 'insufficient_material'
 TERM_THREEFOLD    = 'threefold_repetition'
@@ -55,8 +57,8 @@ PIECE_CLASSES = [Pawn, Knight, Bishop, Rook, Queen]
 PARAM_NAMES   = ['MG Knight', 'MG Bishop', 'MG Rook', 'MG Queen',
                  'EG Pawn', 'EG Knight', 'EG Bishop', 'EG Rook', 'EG Queen']
 PARAM_BOUNDS  = [
-    (200, 1800), (200, 1800), (200, 1800), (300, 2000),   # MG
-    ( 50,  350), (200, 1800), (200, 1800), (200, 1800), (300, 2000),  # EG
+    (200, 1800), (200, 1800), (200, 1800), (300, 2000),
+    ( 50,  350), (200, 1800), (200, 1800), (200, 1800), (300, 2000),
 ]
 
 def patch_ai_values(mg_vals: dict, eg_vals: dict) -> None:
@@ -135,15 +137,15 @@ def _get_bot() -> AI.ChessBot:
         dummy_q = mp.Queue()
         dummy_e = mp.Event()
         _bot_singleton = AI.ChessBot(Board(), 'white', {}, dummy_q, dummy_e, 'Tuner')
-        # Real TablebaseManager is initialised by ChessBot.__init__ — no override needed
+        # Real TablebaseManager initialised by ChessBot.__init__
     return _bot_singleton
 
 
 def _play_one_game(args: tuple) -> tuple:
     """
     Returns (positions, stats_dict).
-    positions: list of (fen_str, outcome) tuples sampled from the game.
-    stats_dict: dict with game_length and terminal_condition.
+    positions : list of (fen_str, outcome) sampled from the game.
+    stats_dict: {'game_length': int, 'terminal': str}
     """
     game_idx, max_plies, sample_every, gen_depth, rand_plies = args
     bot = _get_bot()
@@ -154,14 +156,14 @@ def _play_one_game(args: tuple) -> tuple:
 
         board          = Board()
         turn           = 'white'
-        position_count = {}
+        position_count = {}   # tracks repetitions for this game only
         plies          = 0
         sampled_fens   = []
         outcome        = 0.5
         pv_move        = None
-        terminal       = TERM_PLY_LIMIT  # default if nothing else triggers
+        terminal       = TERM_PLY_LIMIT
 
-        # Reset TT and all heuristic tables for this attempt
+        # Reset TT and heuristic tables once per attempt
         bot._initialize_search_state()
 
         # ── Random opening ───────────────────────────────────────────────────
@@ -169,29 +171,31 @@ def _play_one_game(args: tuple) -> tuple:
             legal = get_all_legal_moves(board, turn)
             if not legal:
                 break
-            chosen = random.choice(legal)
+            chosen = random.choice(legal)          # pick ONCE — avoids split-move bug
             board.make_move(chosen[0], chosen[1])
-            turn = 'black' if turn == 'white' else 'white'
+            turn  = 'black' if turn == 'white' else 'white'
             plies += 1
 
         # ── Opening screen: discard wildly unbalanced positions ──────────────
         legal = get_all_legal_moves(board, turn)
         if not legal:
-            continue  # Degenerate opening — retry
+            continue
 
         bot.board           = board
         bot.color           = turn
         bot.opponent_color  = 'black' if turn == 'white' else 'white'
-        bot.position_counts = position_count
+        # Give the bot a SNAPSHOT of position_count so search-internal +/- ops
+        # don't corrupt our game-level repetition tracker.
+        bot.position_counts = dict(position_count)
         root_hash = board_hash(board, turn)
 
         screen_score, _ = bot._search_at_depth(
             OPENING_SCREEN_DEPTH, legal, root_hash, None
         )
         if abs(screen_score) > OPENING_EVAL_THRESHOLD:
-            continue  # Opening too lopsided — try a different seed
+            continue  # Too lopsided — try a different seed
 
-        # Opening passed — TT is already warmed from the screen, keep it
+        # TT is already warm from the screen search — don't reset it
 
         # ── Main game loop ────────────────────────────────────────────────────
         while plies < max_plies:
@@ -213,7 +217,7 @@ def _play_one_game(args: tuple) -> tuple:
                 terminal = TERM_THREEFOLD
                 break
 
-            # TB adjudication — resolve endgames immediately without grinding
+            # TB adjudication — resolve endgames immediately
             total_pieces = len(board.white_pieces) + len(board.black_pieces)
             if total_pieces <= TB_ADJUDICATION_PIECES:
                 tb_score_abs = bot.tb_manager.probe(board, turn)
@@ -230,11 +234,11 @@ def _play_one_game(args: tuple) -> tuple:
             if plies % sample_every == 0:
                 sampled_fens.append(board_to_fen(board, turn))
 
-            # Full AI search — TT, NMP, ProbCut, killers, history, LMR all active
+            # Full AI search — pass a snapshot so search +/- ops stay isolated
             bot.board           = board
             bot.color           = turn
             bot.opponent_color  = 'black' if turn == 'white' else 'white'
-            bot.position_counts = position_count
+            bot.position_counts = dict(position_count)
             root_hash = board_hash(board, turn)
 
             _, best_move = bot._search_at_depth(gen_depth, legal, root_hash, pv_move)
@@ -248,29 +252,39 @@ def _play_one_game(args: tuple) -> tuple:
         stats = {'game_length': plies, 'terminal': terminal}
         return [(fen, outcome) for fen in sampled_fens], stats
 
-    # All attempts produced lopsided openings — return empty (very rare)
+    # All attempts produced lopsided openings
     stats = {'game_length': 0, 'terminal': 'discarded'}
     return [], stats
 
 
-def generate_training_data(n_games: int, max_plies: int, sample_every: int,
-                           gen_depth: int, rand_plies: int,
-                           n_workers: int, checkpoint_every: int) -> list:
-    print(f"\nGenerating {n_games} self-play games — Full AI Depth {gen_depth} ({n_workers} workers)")
-    print(f"  Random opening: {rand_plies} plies  |  "
-          f"Sample every: {sample_every} plies  |  "
+def _run_generation(n_games: int, game_id_offset: int, max_plies: int,
+                    sample_every: int, gen_depth: int, rand_plies: int,
+                    n_workers: int, checkpoint_every: int,
+                    partial_file: str) -> tuple:
+    """
+    Generate n_games games starting from game_id_offset.
+    Returns (positions, terminal_counts, game_lengths).
+    game_id_offset ensures different seeds when appending to existing data.
+    """
+    print(f"\nGenerating {n_games} self-play games — "
+          f"Full AI Depth {gen_depth} ({n_workers} workers)")
+    print(f"  Random opening : {rand_plies} plies  |  "
+          f"Sample every   : {sample_every} plies  |  "
           f"TB adjudication: ≤{TB_ADJUDICATION_PIECES} pieces\n")
 
-    args         = [(i, max_plies, sample_every, gen_depth, rand_plies) for i in range(n_games)]
-    all_positions = []
+    args = [(game_id_offset + i, max_plies, sample_every, gen_depth, rand_plies)
+            for i in range(n_games)]
+
+    all_positions   = []
     terminal_counts = defaultdict(int)
     game_lengths    = []
     start_time      = time.time()
-    partial_file    = DATA_FILE + '.partial'
 
     with mp.Pool(n_workers) as pool:
+        # chunksize=1: games vary wildly in length at depth 3+, so fine-grained
+        # scheduling prevents a few long games stalling the whole pool at the end.
         for i, (positions, stats) in enumerate(
-                pool.imap_unordered(_play_one_game, args, chunksize=2), 1):
+                pool.imap_unordered(_play_one_game, args, chunksize=1), 1):
 
             all_positions.extend(positions)
             terminal_counts[stats['terminal']] += 1
@@ -280,7 +294,8 @@ def generate_training_data(n_games: int, max_plies: int, sample_every: int,
             elapsed = time.time() - start_time
             speed   = i / elapsed
             eta     = (n_games - i) / speed if speed > 0 else 0
-            print(f"  {i}/{n_games} games  |  {len(all_positions)} positions  |  "
+            print(f"  {i}/{n_games} games  |  "
+                  f"{len(all_positions)} positions  |  "
                   f"ETA: {eta/60:.1f}m", flush=True)
 
             if i % checkpoint_every == 0:
@@ -291,21 +306,23 @@ def generate_training_data(n_games: int, max_plies: int, sample_every: int,
     if os.path.exists(partial_file):
         os.remove(partial_file)
 
-    random.shuffle(all_positions)
+    return all_positions, terminal_counts, game_lengths
 
-    # ── Game statistics report ───────────────────────────────────────────────
-    total_games  = sum(terminal_counts.values())
-    avg_length   = sum(game_lengths) / len(game_lengths) if game_lengths else 0
+
+def _print_game_stats(terminal_counts: dict, game_lengths: list) -> None:
+    total_games = sum(terminal_counts.values())
+    if not game_lengths:
+        print("  No games recorded.")
+        return
+    avg_length = sum(game_lengths) / len(game_lengths)
     print(f"\n{'─' * 55}")
     print(f"  Game Statistics  ({total_games} games)")
     print(f"{'─' * 55}")
-    print(f"  Average game length : {avg_length:.1f} plies  "
-          f"({avg_length/2:.1f} moves)")
-    print(f"  Min / Max           : {min(game_lengths)} / {max(game_lengths)} plies"
-          if game_lengths else "  No games recorded")
+    print(f"  Average game length : {avg_length:.1f} plies  ({avg_length/2:.1f} moves)")
+    print(f"  Min / Max           : {min(game_lengths)} / {max(game_lengths)} plies")
     print()
-    order = [TERM_CHECKMATE, TERM_TB, TERM_THREEFOLD,
-             TERM_INSUFFICIENT, TERM_PLY_LIMIT, 'discarded']
+    order  = [TERM_CHECKMATE, TERM_TB, TERM_THREEFOLD,
+              TERM_INSUFFICIENT, TERM_PLY_LIMIT, 'discarded']
     labels = {
         TERM_CHECKMATE:    'Checkmate',
         TERM_TB:           'TB adjudication',
@@ -322,8 +339,6 @@ def generate_training_data(n_games: int, max_plies: int, sample_every: int,
         bar = '█' * int(pct / 2)
         print(f"  {labels[key]:<25} {count:>4}  ({pct:5.1f}%)  {bar}")
     print(f"{'─' * 55}")
-    print(f"\nTotal training positions: {len(all_positions)}")
-    return all_positions
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # POSITION UNIQUENESS DIAGNOSTICS
@@ -354,7 +369,7 @@ def compute_mse(positions_data: list, K: float, mg_vals: dict, eg_vals: dict) ->
         try:
             board, _ = fen_to_board(fen_str)
             raw  = bot.evaluate_board(board, 'white')
-            prob = 1.0 / (1.0 + math.exp(-K * raw / 400.0))
+            prob = 1.0 / (1.0 + math.exp(max(-500, min(500, -K * raw / 400.0))))
             total += (prob - outcome) ** 2
             count += 1
         except Exception:
@@ -411,7 +426,7 @@ def coordinate_descent(positions_data: list, K: float, mg_start: dict, eg_start:
             print(f"  [round {round_num}] MSE = {best_mse:.6f}"
                   + ("" if improved_any else "  (converged)"), flush=True)
             if not improved_any:
-                break  # Converged at this step size — move to finer step
+                break
 
     return vec_to_vals(vec), best_mse
 
@@ -449,15 +464,17 @@ def print_ai_dicts(mg: dict, eg: dict, header: str = "") -> None:
 
 def main():
     print("═" * 60, flush=True)
-    print(f"  Jungle Chess Piece Value Auto-Tuner  (v1.7)", flush=True)
+    print(f"  Jungle Chess Piece Value Auto-Tuner  (v1.8)", flush=True)
     print(f"  Full AI Depth {GENERATION_DEPTH}  |  "
           f"{GAMES_TO_GENERATE} games  |  {NUM_WORKERS} workers", flush=True)
     print("═" * 60, flush=True)
 
-    positions_data = None
-    partial_file   = DATA_FILE + '.partial'
+    positions_data  = None
+    existing_count  = 0          # how many positions already on disk
+    game_id_offset  = 0          # seed offset so appended games get fresh seeds
+    partial_file    = DATA_FILE + '.partial'
 
-    # Check for a partial checkpoint from a previous interrupted run
+    # ── Check for interrupted partial run ────────────────────────────────────
     if os.path.exists(partial_file) and os.path.getsize(partial_file) > 0:
         print(f"\n⚠  Found partial checkpoint: {partial_file}")
         print("  Resume from checkpoint? (Y/n): ", end='', flush=True)
@@ -467,47 +484,82 @@ def main():
                     raw = json.load(f)
                 positions_data = [(d['fen'], d['outcome']) for d in raw]
                 print(f"  Resumed {len(positions_data)} positions from checkpoint.")
-                print("  Note: generation was incomplete — "
-                      "consider regenerating for a full dataset.")
             except Exception:
                 positions_data = None
 
+    # ── Load existing full dataset ────────────────────────────────────────────
     if positions_data is None and os.path.exists(DATA_FILE) \
             and os.path.getsize(DATA_FILE) > 0:
         try:
             with open(DATA_FILE) as f:
                 raw = json.load(f)
-            positions_data = [(d['fen'], d['outcome']) for d in raw]
-            print(f"\nFound existing training data: {len(positions_data)} positions.")
-            print("  Regenerate from scratch? (y/N): ", end='', flush=True)
-            if input().strip().lower() == 'y':
+            existing_positions = [(d['fen'], d['outcome']) for d in raw]
+            existing_count     = len(existing_positions)
+            print(f"\nFound existing training data: {existing_count} positions.")
+            print("  Options:")
+            print("    [r] Regenerate from scratch")
+            print("    [a] Append new games to existing data")
+            print("    [s] Skip generation — tune on existing data only")
+            print("  Choice (r/a/S): ", end='', flush=True)
+            choice = input().strip().lower()
+
+            if choice == 'r':
                 positions_data = None
+                game_id_offset = 0
+            elif choice == 'a':
+                positions_data = existing_positions
+                # Offset seeds so new games differ from already-generated ones
+                game_id_offset = existing_count
+                print(f"  Will append {GAMES_TO_GENERATE} new games to "
+                      f"{existing_count} existing positions.")
+            else:
+                # Default: skip generation
+                positions_data = existing_positions
+                print("  Skipping generation — tuning on existing data.")
         except Exception:
             positions_data = None
 
-    if positions_data is None:
-        positions_data = generate_training_data(
-            GAMES_TO_GENERATE, MAX_GAME_PLIES, SAMPLE_EVERY_N_PLIES,
+    # ── Generate (or append) ──────────────────────────────────────────────────
+    need_generation = (positions_data is None) or \
+                      (existing_count > 0 and game_id_offset > 0 and
+                       len(positions_data) == existing_count)
+
+    if need_generation:
+        new_positions, term_counts, game_lengths = _run_generation(
+            GAMES_TO_GENERATE, game_id_offset,
+            MAX_GAME_PLIES, SAMPLE_EVERY_N_PLIES,
             GENERATION_DEPTH, RANDOM_OPENING_PLIES,
-            NUM_WORKERS, CHECKPOINT_EVERY
+            NUM_WORKERS, CHECKPOINT_EVERY, partial_file
         )
-        print(f"\nSaving to {DATA_FILE}...", flush=True)
+        _print_game_stats(term_counts, game_lengths)
+
+        if positions_data is None:
+            positions_data = new_positions
+        else:
+            positions_data = positions_data + new_positions
+
+        random.shuffle(positions_data)
+        print(f"\nTotal training positions: {len(positions_data)}")
+        print(f"Saving to {DATA_FILE}...", flush=True)
         with open(DATA_FILE, 'w') as f:
             json.dump([{'fen': fen, 'outcome': out}
                        for fen, out in positions_data], f)
 
     if not positions_data:
-        print("ERROR: No training positions generated. Exiting.")
+        print("ERROR: No training positions available. Exiting.")
         return
 
+    # ── Dataset summary ───────────────────────────────────────────────────────
     outcomes = [o for _, o in positions_data]
     w = sum(o == 1.0 for o in outcomes) / len(outcomes)
     d = sum(o == 0.5 for o in outcomes) / len(outcomes)
     b = sum(o == 0.0 for o in outcomes) / len(outcomes)
-    print(f"\nOutcome distribution:  White {w:.1%}  |  "
+    print(f"\nDataset: {len(positions_data)} positions")
+    print(f"Outcome distribution:  White {w:.1%}  |  "
           f"Draw {d:.1%}  |  Black {b:.1%}", flush=True)
     report_uniqueness(positions_data)
 
+    # ── Tuning ───────────────────────────────────────────────────────────────
     mg_start = {cls: AI.MG_PIECE_VALUES[cls] for cls in PIECE_CLASSES}
     eg_start = {cls: AI.EG_PIECE_VALUES[cls] for cls in PIECE_CLASSES}
     print_ai_dicts(mg_start, eg_start, "Starting values (from AI.py):")
@@ -528,16 +580,15 @@ def main():
     result_file = "tuner_results.json"
     with open(result_file, 'w') as f:
         json.dump({
-            'K':                    K,
-            'final_mse':            final_mse,
-            'generation_depth':     GENERATION_DEPTH,
-            'random_opening_plies': RANDOM_OPENING_PLIES,
+            'K':                      K,
+            'final_mse':              final_mse,
+            'generation_depth':       GENERATION_DEPTH,
+            'random_opening_plies':   RANDOM_OPENING_PLIES,
             'tb_adjudication_pieces': TB_ADJUDICATION_PIECES,
             'mg': {cls.__name__: int(round(mg_best[cls])) for cls in PIECE_CLASSES},
             'eg': {cls.__name__: int(round(eg_best[cls])) for cls in PIECE_CLASSES},
-            'games_used':           GAMES_TO_GENERATE,
-            'positions_used':       len(positions_data),
-            'timestamp':            time.strftime('%Y-%m-%d %H:%M:%S'),
+            'total_positions':        len(positions_data),
+            'timestamp':              time.strftime('%Y-%m-%d %H:%M:%S'),
         }, f, indent=2)
     print(f"\nResults saved to {result_file}", flush=True)
 

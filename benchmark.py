@@ -112,13 +112,13 @@ def run_benchmark():
     avg_time_per_pass = total_time_all / NUM_RUNS
     avg_knps = (avg_nodes_per_pass / avg_time_per_pass / 1000) if avg_time_per_pass > 0 else 0
 
-    print(f" Average Nodes/Pass: {avg_nodes_per_pass:12,.0f}")
-    print(f" Average Time/Pass:  {avg_time_per_pass:12.3f} s")
-    print(f" Average Speed:      {avg_knps:12.1f} kN/s")
+    print(f" Average Nodes per Pass: {avg_nodes_per_pass:12,.0f}")
+    print(f" Average Time per Pass:  {avg_time_per_pass:12.3f} s")
+    print(f" Average Speed:   {avg_knps:12.1f} kN/s")
     print("=" * 70)
 
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    version_name = input("\nEnter a version name/tag for this run (e.g., 'v96'): ").strip()
+    version_name = input("\nEnter a version name: ").strip()
     if not version_name:
         version_name = "untagged"
 

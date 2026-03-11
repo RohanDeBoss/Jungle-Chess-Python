@@ -1,24 +1,23 @@
 {
-  "K": 0.5939290748038017,
-  "final_mse": 0.09660502740234302,
+  "K": 0.637179642515229,
+  "final_mse": 0.09451359658003576,
   "generation_depth": 4,
   "random_opening_plies": 4,
-  "tb_adjudication_pieces": 4,
+  "tb_adjudication_pieces": 5,
   "mg": {
     "Pawn": 100,
-    "Knight": 1160,
-    "Bishop": 820,
-    "Rook": 530,
-    "Queen": 1340
+    "Knight": 1050,
+    "Bishop": 810,
+    "Rook": 480,
+    "Queen": 1075
   },
   "eg": {
-    "Pawn": 50,
-    "Knight": 1020,
-    "Bishop": 560,
-    "Rook": 775,
-    "Queen": 1025
+    "Pawn": 60,
+    "Knight": 980,
+    "Bishop": 510,
+    "Rook": 740,
+    "Queen": 1030
   },
-  "games_used": 200,
-  "positions_used": 6116,
-  "timestamp": "2026-03-11 14:24:42"
+  "total_positions": 9473,
+  "timestamp": "2026-03-11 19:30:20"
 }
