@@ -1,4 +1,4 @@
-# AI.py (v100 - Stability, Order Moves Optimization, Capped Extensions and more bug fixed for an amazing milestone release!)
+# AI.py (v100.2 - More reduction fixes)
 
 import time
 import random
@@ -89,8 +89,9 @@ class ChessBot:
     NMP_DEPTH_DIVISOR = 6
     USE_NULL_MOVE_PRUNING = True
     
-    # Formerly "ProbCut", correctly renamed to Shallow Pruning (Reverse Futility)
-    USE_SHALLOW_PRUNING = True
+    # FIX: Disable Shallow Pruning! In highly explosive variants, 
+    # shallow searches hallucinate scores and blind the engine to deep blunders.
+    USE_SHALLOW_PRUNING = False   # <--- CHANGE THIS TO FALSE
     SHALLOW_PRUNING_MIN_DEPTH = 6
     SHALLOW_PRUNING_REDUCTION = 2
     SHALLOW_PRUNING_MARGIN = 200
@@ -591,7 +592,7 @@ class ChessBot:
             search_path.add(hash_val); path_added = True
 
         try:
-            # --- 3. SHALLOW PRUNING (Reverse Futility / formerly ProbCut) ---
+            # --- 3. SHALLOW PRUNING (Reverse Futility) ---
             if (self.USE_SHALLOW_PRUNING and ply > 0 and depth >= self.SHALLOW_PRUNING_MIN_DEPTH and not is_in_check_flag and
                 abs(beta) < self.MATE_SCORE - 1000):
                 
@@ -648,7 +649,12 @@ class ChessBot:
                     if depth >= 8: reduction += 1
 
                 child_hash = board_hash(child_board, opponent_turn)
+                
+                # --- CORRECTED LMR DEPTH FLOOR ---
                 search_depth = max(0, depth - 1 - reduction)
+                if reduction > 0 and search_depth == 0:
+                    search_depth = 1
+                # ---------------------------------
 
                 if legal_moves_count == 1:
                     score = -self.negamax(child_board, search_depth, -beta, -alpha, opponent_turn, ply + 1, search_path, child_hash, move, extensions)
