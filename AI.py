@@ -1,4 +1,4 @@
-# AI.py (v102 - small optimisations)
+# AI.py (v103 - more optimisations/dead code removal)
 
 import time
 import random
@@ -6,7 +6,7 @@ from collections import namedtuple
 from GameLogic import *
 from TablebaseManager import TablebaseManager
 
-# --- EVALUATION CONSTANTS ---
+# --- EVALUATION CONSTANTS -S--
 
 MG_PIECE_VALUES = {
     Pawn: 100,
@@ -575,6 +575,7 @@ class ChessBot:
 
         opponent_turn = 'black' if turn == 'white' else 'white'
         is_in_check_flag = is_in_check(board, turn)
+        static_eval = None
         
         # Capped check extensions to prevent infinite recursion in check chains
         if is_in_check_flag and extensions < 16: 
@@ -605,7 +606,8 @@ class ChessBot:
             if (self.USE_FUTILITY_PRUNING and depth == 1 and not is_in_check_flag and
                     abs(alpha) < self.MATE_SCORE - 1000):
                 self.used_heuristic_eval = True
-                static_eval = self.evaluate_board(board, turn)
+                if static_eval is None:
+                    static_eval = self.evaluate_board(board, turn)
                 if static_eval + self.FUTILITY_MARGIN < alpha:
                     futility_prune = True
 
@@ -863,6 +865,8 @@ class ChessBot:
         KNIGHT_ACTIVITY_BONUS    = self.KNIGHT_ACTIVITY_BONUS
         KING_ZONE_ATTACK_PENALTY = self.EVAL_KING_ZONE_ATTACK_PENALTY
         PASSED_PAWN_PER_RANK     = self.EVAL_PASSED_PAWN_PER_RANK
+        LONE_ROOK_PENALTIES      = self.LONE_ROOK_PENALTIES
+        LONE_BISHOP_PENALTIES    = self.LONE_BISHOP_PENALTIES
 
         king_zone_attacks = [0, 0]
 
@@ -871,7 +875,6 @@ class ChessBot:
             pieces = piece_lists[color_idx]
             is_white = (color_idx == 0)
             my_color_name = 'white' if is_white else 'black'
-            opp_color_name = 'black' if is_white else 'white'
             enemy_king = king_pos[1 - color_idx]
 
             for piece in pieces:
@@ -882,7 +885,7 @@ class ChessBot:
                 elif ptype is not King:
                     piece_counts[color_idx] += 1
                     last_piece_type[color_idx] = ptype
-                    phase_material_score += MG_PIECE_VALUES.get(ptype, 0)
+                    phase_material_score += MG_PIECE_VALUES[ptype]
                     if ptype is Rook:     rook_counts[color_idx] += 1
                     elif ptype is Bishop: bishop_counts[color_idx] += 1
                     elif ptype is Knight: knight_counts[color_idx] += 1
@@ -971,8 +974,8 @@ class ChessBot:
 
             if piece_counts[i] == 1 and pawn_counts[i] <= 4:
                 penalty = 0
-                if last_piece_type[i] is Rook:   penalty = self.LONE_ROOK_PENALTIES[pawn_counts[i]]
-                elif last_piece_type[i] is Bishop: penalty = self.LONE_BISHOP_PENALTIES[pawn_counts[i]]
+                if last_piece_type[i] is Rook:   penalty = LONE_ROOK_PENALTIES[pawn_counts[i]]
+                elif last_piece_type[i] is Bishop: penalty = LONE_BISHOP_PENALTIES[pawn_counts[i]]
                 if penalty > 0:
                     if i == 0 and scores_eg[0] > scores_eg[1]:
                         scores_eg[0] = max(scores_eg[1], scores_eg[0] - penalty)
