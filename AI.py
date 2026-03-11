@@ -1,4 +1,4 @@
-# AI.py (v101.2 - speed up evaluate more)
+# AI.py (v102 - small optimisations)
 
 import time
 import random
@@ -54,11 +54,9 @@ def board_hash(board, turn):
     idx = PIECE_TYPE_IDX
     
     for piece in board.white_pieces:
-        if piece.pos:
-            h ^= arr[0][idx[type(piece)]][piece.pos[0]][piece.pos[1]]
+        h ^= arr[0][idx[type(piece)]][piece.pos[0]][piece.pos[1]]
     for piece in board.black_pieces:
-        if piece.pos:
-            h ^= arr[1][idx[type(piece)]][piece.pos[0]][piece.pos[1]]
+        h ^= arr[1][idx[type(piece)]][piece.pos[0]][piece.pos[1]]
             
     if turn == 'black': 
         h ^= ZOBRIST_TURN
@@ -127,6 +125,8 @@ class ChessBot:
     EVAL_KING_ZONE_ATTACK_PENALTY = 15
     # Passed pawn: bonus per rank of advancement in the endgame
     EVAL_PASSED_PAWN_PER_RANK = 12
+    LONE_ROOK_PENALTIES = (550, 200, 150, 80, 40)
+    LONE_BISHOP_PENALTIES = (650, 250, 170, 100, 50)
 
     def __init__(self, board, color, position_counts, comm_queue, cancellation_event, bot_name=None, ply_count=0, game_mode="bot", max_moves=200):
         self.board = board
@@ -178,9 +178,6 @@ class ChessBot:
         child = board_before.clone()
         child.make_move(move[0], move[1])
         return format_move_san(board_before, child, move)
-
-    def _ordering_tactical_swing(self, board, move, moving_piece, target_piece):
-        return fast_approximate_material_swing(board, move, moving_piece, target_piece, ORDERING_VALUES)
 
     def _is_opening_position(self, board):
         return (len(board.white_pieces) + len(board.black_pieces)) >= self.OPENING_TOTAL_PIECE_THRESHOLD
@@ -623,9 +620,12 @@ class ChessBot:
             best_move_for_node = None
             legal_moves_count = 0
             quiet_moves_tried = []
+            history_table = self.history_heuristic_table[0 if turn == 'white' else 1]
 
             for move, meta in ordered_entries:
                 is_good_tactic, moving_piece = meta
+                f_sq = move[0][0] * 8 + move[0][1]
+                t_sq = move[1][0] * 8 + move[1][1]
                 child_board = board.clone()
                 child_board.make_move(move[0], move[1])
 
@@ -643,8 +643,7 @@ class ChessBot:
                 reduction = 0
                 if depth >= self.LMR_DEPTH_THRESHOLD and legal_moves_count > self.LMR_MOVE_COUNT_THRESHOLD and not is_in_check_flag and not is_good_tactic:
                     reduction = self.LMR_REDUCTION
-                    f_sq, t_sq = move[0][0]*8+move[0][1], move[1][0]*8+move[1][1]
-                    if self.history_heuristic_table[0 if turn == 'white' else 1][f_sq][t_sq] < 0:
+                    if history_table[f_sq][t_sq] < 0:
                         reduction += 1
                     if depth >= 8: reduction += 1
 
@@ -675,12 +674,13 @@ class ChessBot:
                         if moving_piece:
                             c_idx = 0 if turn == 'white' else 1
                             bonus = depth * depth
-                            f_idx, t_idx = move[0][0]*8+move[0][1], move[1][0]*8+move[1][1]
-                            self.history_heuristic_table[c_idx][f_idx][t_idx] = min(2_000_000, self.history_heuristic_table[c_idx][f_idx][t_idx] + bonus)
+                            history_table = self.history_heuristic_table[c_idx]
+                            history_table[f_sq][t_sq] = min(2_000_000, history_table[f_sq][t_sq] + bonus)
                             for f_move in quiet_moves_tried:
                                 if f_move != move:
-                                    ff, ft = f_move[0][0]*8+f_move[0][1], f_move[1][0]*8+f_move[1][1]
-                                    self.history_heuristic_table[c_idx][ff][ft] = max(-2_000_000, self.history_heuristic_table[c_idx][ff][ft] - bonus)
+                                    ff = f_move[0][0] * 8 + f_move[0][1]
+                                    ft = f_move[1][0] * 8 + f_move[1][1]
+                                    history_table[ff][ft] = max(-2_000_000, history_table[ff][ft] - bonus)
 
                     score_to_store = beta
                     if beta > self.MATE_SCORE - 1000: score_to_store = beta + ply
@@ -740,7 +740,7 @@ class ChessBot:
         for move in promising_moves:
             moving_piece = board.grid[move[0][0]][move[0][1]]
             target_piece = board.grid[move[1][0]][move[1][1]]
-            swing = self._ordering_tactical_swing(board, move, moving_piece, target_piece)
+            swing = fast_approximate_material_swing(board, move, moving_piece, target_piece, ORDERING_VALUES)
             
             if not is_in_check_flag and swing < 0:
                 continue
@@ -782,12 +782,13 @@ class ChessBot:
         killers = self.killer_moves[ply] if ply < len(self.killer_moves) else [None, None]
         c_idx = 0 if turn == 'white' else 1
         is_opening = (ply <= self.OPENING_BONUS_MAX_PLY and self._is_opening_position(board))
+        history_table = self.history_heuristic_table[c_idx]
 
         for move in moves:
             moving_piece = board.grid[move[0][0]][move[0][1]]
             target_piece = board.grid[move[1][0]][move[1][1]]
 
-            swing = self._ordering_tactical_swing(board, move, moving_piece, target_piece)
+            swing = fast_approximate_material_swing(board, move, moving_piece, target_piece, ORDERING_VALUES)
             is_capture_or_promo = target_piece is not None or (isinstance(moving_piece, Pawn) and (move[1][0] == 0 or move[1][0] == ROWS - 1))
             is_good_tactic = (swing > 0) or (swing == 0 and is_capture_or_promo)
 
@@ -800,7 +801,7 @@ class ChessBot:
             elif move == counter_move:
                 score = 2_000_000
             else:
-                score = self.history_heuristic_table[c_idx][move[0][0]*8+move[0][1]][move[1][0]*8+move[1][1]]
+                score = history_table[move[0][0] * 8 + move[0][1]][move[1][0] * 8 + move[1][1]]
 
             if is_opening: score += self._opening_development_bonus(move, moving_piece)
             scored_moves.append((score, move, is_good_tactic, moving_piece))
@@ -817,6 +818,7 @@ class ChessBot:
             return self.DRAW_SCORE
 
         grid = board.grid
+        PST = PIECE_SQUARE_TABLES
 
         # --- PRECOMPUTE: Pawn file occupancy (Optimized) ---
         white_pawn_files = [False] * COLS
@@ -891,20 +893,21 @@ class ChessBot:
                 r_pst = r if is_white else 7 - r
 
                 if ptype is King:
-                    scores_mg[color_idx] += PIECE_SQUARE_TABLES['king_midgame'][r_pst][c]
-                    scores_eg[color_idx] += PIECE_SQUARE_TABLES['king_endgame'][r_pst][c]
+                    scores_mg[color_idx] += PST['king_midgame'][r_pst][c]
+                    scores_eg[color_idx] += PST['king_endgame'][r_pst][c]
                 elif ptype is Pawn:
-                    scores_mg[color_idx] += val_mg + PIECE_SQUARE_TABLES[Pawn][r_pst][c]
-                    scores_eg[color_idx] += val_eg + PIECE_SQUARE_TABLES['pawn_endgame'][r_pst][c]
+                    scores_mg[color_idx] += val_mg + PST[Pawn][r_pst][c]
+                    scores_eg[color_idx] += val_eg + PST['pawn_endgame'][r_pst][c]
                 else:
-                    scores_mg[color_idx] += val_mg + PIECE_SQUARE_TABLES[ptype][r_pst][c]
-                    scores_eg[color_idx] += val_eg + PIECE_SQUARE_TABLES[ptype][r_pst][c]
+                    scores_mg[color_idx] += val_mg + PST[ptype][r_pst][c]
+                    scores_eg[color_idx] += val_eg + PST[ptype][r_pst][c]
 
                 # --- Variant-Specific & Structural Heuristics ---
                 if ptype is Pawn:
-                    # OPTIMIZATION: Use type() is instead of slower isinstance()
-                    if (c > 0 and type(grid[r][c-1]) is Pawn and grid[r][c-1].color == my_color_name) or \
-                       (c < COLS-1 and type(grid[r][c+1]) is Pawn and grid[r][c+1].color == my_color_name):
+                    left = grid[r][c-1] if c > 0 else None
+                    right = grid[r][c+1] if c < COLS-1 else None
+                    if (left and type(left) is Pawn and left.color == my_color_name) or \
+                       (right and type(right) is Pawn and right.color == my_color_name):
                         scores_mg[color_idx] += PAWN_PHALANX_BONUS
 
                     # Passed pawn check (O(1) using precomputed data)
@@ -961,9 +964,6 @@ class ChessBot:
         if piece_counts[0] > piece_counts[1]: scores_eg[0] += PIECE_DOMINANCE_FACTOR // (piece_counts[1] + 1)
         elif piece_counts[1] > piece_counts[0]: scores_eg[1] += PIECE_DOMINANCE_FACTOR // (piece_counts[0] + 1)
 
-        LONE_ROOK_PENALTIES   = [550, 200, 150, 80, 40]
-        LONE_BISHOP_PENALTIES = [650, 250, 170, 100, 50]
-
         for i in (0, 1):
             if pawn_counts[i] < 4:
                 penalty = int(-250 * (4 - pawn_counts[i])**2 / 16)
@@ -971,8 +971,8 @@ class ChessBot:
 
             if piece_counts[i] == 1 and pawn_counts[i] <= 4:
                 penalty = 0
-                if last_piece_type[i] is Rook:   penalty = LONE_ROOK_PENALTIES[pawn_counts[i]]
-                elif last_piece_type[i] is Bishop: penalty = LONE_BISHOP_PENALTIES[pawn_counts[i]]
+                if last_piece_type[i] is Rook:   penalty = self.LONE_ROOK_PENALTIES[pawn_counts[i]]
+                elif last_piece_type[i] is Bishop: penalty = self.LONE_BISHOP_PENALTIES[pawn_counts[i]]
                 if penalty > 0:
                     if i == 0 and scores_eg[0] > scores_eg[1]:
                         scores_eg[0] = max(scores_eg[1], scores_eg[0] - penalty)
