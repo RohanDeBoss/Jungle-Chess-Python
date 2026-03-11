@@ -1,4 +1,4 @@
-# AI.py (v100.2 - More reduction fixes)
+# AI.py (v101.2 - speed up evaluate more)
 
 import time
 import random
@@ -88,13 +88,15 @@ class ChessBot:
     NMP_BASE_REDUCTION = 2
     NMP_DEPTH_DIVISOR = 6
     USE_NULL_MOVE_PRUNING = True
-    
-    # FIX: Disable Shallow Pruning! In highly explosive variants, 
-    # shallow searches hallucinate scores and blind the engine to deep blunders.
-    USE_SHALLOW_PRUNING = False   # <--- CHANGE THIS TO FALSE
-    SHALLOW_PRUNING_MIN_DEPTH = 6
-    SHALLOW_PRUNING_REDUCTION = 2
-    SHALLOW_PRUNING_MARGIN = 200
+
+    # --- FUTILITY PRUNING ---
+    # Large margin to account for variant swings (single knight evaporation = 950).
+    # Only fires at depth == 1 on clearly hopeless quiet moves.
+    USE_FUTILITY_PRUNING = True
+    FUTILITY_MARGIN = 1200
+
+    # --- TT SIZE CAP ---
+    TT_MAX_SIZE = 20_000_000
 
     BONUS_PV_MOVE = 10_000_000
     BONUS_CAPTURE = 8_000_000
@@ -114,11 +116,17 @@ class ChessBot:
     # Evaluation constants (class-level to avoid reallocation in hot eval loop)
     EVAL_PAWN_PHALANX_BONUS = 5
     EVAL_ROOK_ALIGNMENT_BONUS = 15
+    EVAL_ROOK_OPEN_FILE_BONUS_MG = 25
+    EVAL_ROOK_OPEN_FILE_BONUS_EG = 20
     EVAL_PIECE_DOMINANCE_FACTOR = 40
     EVAL_PAIR_BONUS = 20
     EVAL_DOUBLE_ROOK_PENALTY = 15
     EVAL_ROOK_PAWN_SCALING = 5
     KNIGHT_ACTIVITY_BONUS = 12
+    # King safety: penalty per attacker unit aimed at the king zone
+    EVAL_KING_ZONE_ATTACK_PENALTY = 15
+    # Passed pawn: bonus per rank of advancement in the endgame
+    EVAL_PASSED_PAWN_PER_RANK = 12
 
     def __init__(self, board, color, position_counts, comm_queue, cancellation_event, bot_name=None, ply_count=0, game_mode="bot", max_moves=200):
         self.board = board
@@ -150,14 +158,15 @@ class ChessBot:
         self.tb_hits = 0
         self.killer_moves = [[None, None] for _ in range(max(200, self.max_moves))]
         self.history_heuristic_table = [[[0 for _ in range(64)] for _ in range(64)] for _ in range(2)]
-        # Counter-Move Heuristic Table [color][prev_from_sq][prev_to_sq]
         self.counter_moves = [[[None for _ in range(64)] for _ in range(64)] for _ in range(2)]
     
     def _store_tt(self, hash_val, score, depth, flag, move):
         existing = self.tt.get(hash_val)
-        # Always prefer deeper entries. Only overwrite if new search is >= existing depth.
+        # Cap TT size to prevent unbounded memory growth during long ponder sessions.
+        # Clearing is safe — the TT is a cache only, correctness is never affected.
+        if len(self.tt) > self.TT_MAX_SIZE:
+            self.tt.clear()
         if not existing or depth >= existing.depth:
-            # Preserve existing best_move if we are storing a bound without a move (like from Shallow Pruning)
             best_move = move if move is not None else (existing.best_move if existing else None)
             self.tt[hash_val] = TTEntry(score, depth, flag, best_move)
 
@@ -342,11 +351,8 @@ class ChessBot:
             
             tt_entry = self.tt.get(h)
             if not tt_entry or not tt_entry.best_move: break
-            
-            # --- FIX: Prevent garbage PV tails ---
-            # The true main line consists ONLY of EXACT nodes. 
-            # If we hit an upper/lower bound, the best_move is just what caused a cutoff,
-            # which is almost always a spite-check or nonsensical delay tactic.
+
+            # Only follow EXACT nodes — bounds nodes contain spite-checks and delay tactics
             if tt_entry.flag != TT_FLAG_EXACT:
                 break
                 
@@ -365,12 +371,10 @@ class ChessBot:
         self._report_log(f"  > {self.bot_name} (TB): {self._format_move(self.board, tb_move)}, Eval={eval_for_ui/100:+.2f}, TBhits={self.tb_hits}{suffix}")
         self._report_eval(display_eval, "TB")
         
-        # --- PV BROADCAST ---
         move_num = (self.ply_count // 2) + 1
         prefix = f"{move_num}. " if self.color == 'white' else f"{move_num}... "
         pv_str = prefix + self._format_move(self.board, tb_move)
         self.comm_queue.put(('pv', display_eval, "TB", [pv_str], [tb_move]))
-        # --------------------
 
         if emit_move: self._report_move(tb_move)
         return True
@@ -410,11 +414,9 @@ class ChessBot:
                     self._report_log(f"  > {self.bot_name} (D{depth_label}): {move_str}, Eval={eval_for_ui/100:+.2f}, NodesTotal={total_nodes}, KNPS={knps:.1f}, TBhits={self.tb_hits}, Time={iter_duration:.2f}s")
                     self._report_eval(best_score_this_iter, depth_label)
 
-                    # --- PV BROADCAST ---
                     ui_eval = best_score_this_iter if self.color == 'white' else -best_score_this_iter
                     pv_str, pv_raw = self._get_pv_data(current_depth, best_move_this_iter)
                     self.comm_queue.put(('pv', ui_eval, depth_label, pv_str, pv_raw))
-                    # --------------------
 
                     if best_score_this_iter > self.MATE_SCORE - 2000: break
                 else:
@@ -462,17 +464,14 @@ class ChessBot:
                     self._report_log(f"  > {self.bot_name} (D{depth_label}): {self._format_move(self.board, best_move_this_iter)}, Eval={eval_for_ui/100:+.2f}, NodesTotal={total_nodes}, KNPS={knps:.1f}, TBhits={self.tb_hits}, Time={iter_duration:.2f}s")
                     self._report_eval(best_score_this_iter, depth_label)
 
-                    # --- PV BROADCAST ---
                     ui_eval = best_score_this_iter if self.color == 'white' else -best_score_this_iter
                     pv_str, pv_raw = self._get_pv_data(current_depth, best_move_this_iter)
                     self.comm_queue.put(('pv', ui_eval, depth_label, pv_str, pv_raw))
-                    # --------------------
 
                     if depth_label == "TB":
                         while not self.cancellation_event.is_set(): time.sleep(0.1)
                         return
 
-                    # Only set the floor if we actually hit a raw Tablebase win, NOT a heuristic/search mate.
                     if best_score_this_iter > self.MATE_SCORE - 1000 and not self.used_heuristic_eval: 
                         tb_alpha_floor = best_score_this_iter
                     else: 
@@ -514,7 +513,6 @@ class ChessBot:
 
             try:
                 if alpha_floor is not None:
-                    # PASS child_hash AND prev_move=move
                     probe_score = -self.negamax(
                         child_board, depth - 1, -(alpha_floor + 1), -alpha_floor,
                         self.opponent_color, 1, search_path, current_hash=child_hash, prev_move=move
@@ -526,7 +524,6 @@ class ChessBot:
                         self.opponent_color, 1, search_path, current_hash=child_hash, prev_move=move
                     )
                 else:
-                    # PASS child_hash AND prev_move=move
                     score = -self.negamax(child_board, depth - 1, -beta, -alpha, self.opponent_color, 1, search_path, current_hash=child_hash, prev_move=move)
             finally:
                 self.position_counts[child_hash] -= 1
@@ -582,7 +579,7 @@ class ChessBot:
         opponent_turn = 'black' if turn == 'white' else 'white'
         is_in_check_flag = is_in_check(board, turn)
         
-        # Capped Check Extensions to prevent infinite recursion bombs
+        # Capped check extensions to prevent infinite recursion in check chains
         if is_in_check_flag and extensions < 16: 
             depth += 1
             extensions += 1
@@ -592,21 +589,7 @@ class ChessBot:
             search_path.add(hash_val); path_added = True
 
         try:
-            # --- 3. SHALLOW PRUNING (Reverse Futility) ---
-            if (self.USE_SHALLOW_PRUNING and ply > 0 and depth >= self.SHALLOW_PRUNING_MIN_DEPTH and not is_in_check_flag and
-                abs(beta) < self.MATE_SCORE - 1000):
-                
-                shallow_beta = beta + self.SHALLOW_PRUNING_MARGIN
-                prob_score = self.negamax(board, depth - self.SHALLOW_PRUNING_REDUCTION, shallow_beta - 1, shallow_beta, turn, ply, search_path, current_hash, prev_move, extensions)
-                
-                if prob_score >= shallow_beta:
-                    score_to_store = beta
-                    if beta > self.MATE_SCORE - 1000: score_to_store = beta + ply
-                    elif beta < -self.MATE_SCORE + 1000: score_to_store = beta - ply
-                    self._store_tt(hash_val, score_to_store, depth, TT_FLAG_LOWERBOUND, None)
-                    return beta
-            
-            # --- 4. NULL MOVE PRUNING ---
+            # --- 3. NULL MOVE PRUNING ---
             if (self.USE_NULL_MOVE_PRUNING and depth >= self.NMP_MIN_DEPTH and ply > 0 and not is_in_check_flag and abs(beta) < self.MATE_SCORE - 1000):
                 if (board.piece_counts['white'][Knight] + board.piece_counts['white'][Bishop] + board.piece_counts['white'][Rook] + board.piece_counts['white'][Queen] > 0) and \
                    (board.piece_counts['black'][Knight] + board.piece_counts['black'][Bishop] + board.piece_counts['black'][Rook] + board.piece_counts['black'][Queen] > 0):
@@ -616,6 +599,18 @@ class ChessBot:
                         reduction = self.NMP_BASE_REDUCTION + (depth // self.NMP_DEPTH_DIVISOR)
                         score = -self.negamax(board, depth - 1 - reduction, -beta, -beta + 1, opponent_turn, ply + 1, search_path, hash_val ^ ZOBRIST_TURN, None, extensions)
                         if score >= beta: return beta
+
+            # --- 4. FUTILITY PRUNING (depth == 1 only) ---
+            # Safe because it only skips quiet moves at the leaf level.
+            # Large margin accounts for variant swings (knight evaporation ~950).
+            # We compute static_eval here only if NMP didn't already compute it above.
+            futility_prune = False
+            if (self.USE_FUTILITY_PRUNING and depth == 1 and not is_in_check_flag and
+                    abs(alpha) < self.MATE_SCORE - 1000):
+                self.used_heuristic_eval = True
+                static_eval = self.evaluate_board(board, turn)
+                if static_eval + self.FUTILITY_MARGIN < alpha:
+                    futility_prune = True
 
             # --- 5. MAIN MOVE SEARCH ---
             pseudo_moves = get_all_pseudo_legal_moves(board, turn)
@@ -640,6 +635,11 @@ class ChessBot:
                 legal_moves_count += 1
                 if not is_good_tactic: quiet_moves_tried.append(move)
 
+                # Futility: skip quiet moves at depth 1 when position is clearly lost.
+                # Always search at least the first legal move and all tactical moves.
+                if futility_prune and not is_good_tactic and legal_moves_count > 1:
+                    continue
+
                 reduction = 0
                 if depth >= self.LMR_DEPTH_THRESHOLD and legal_moves_count > self.LMR_MOVE_COUNT_THRESHOLD and not is_in_check_flag and not is_good_tactic:
                     reduction = self.LMR_REDUCTION
@@ -649,12 +649,12 @@ class ChessBot:
                     if depth >= 8: reduction += 1
 
                 child_hash = board_hash(child_board, opponent_turn)
-                
-                # --- CORRECTED LMR DEPTH FLOOR ---
+
+                # LMR depth floor: only clamp to 1 when a reduction is actually applied,
+                # so normal depth progression can still reach 0 and enter qsearch naturally.
                 search_depth = max(0, depth - 1 - reduction)
                 if reduction > 0 and search_depth == 0:
                     search_depth = 1
-                # ---------------------------------
 
                 if legal_moves_count == 1:
                     score = -self.negamax(child_board, search_depth, -beta, -alpha, opponent_turn, ply + 1, search_path, child_hash, move, extensions)
@@ -703,7 +703,6 @@ class ChessBot:
         self.nodes_searched += 1
         if self.cancellation_event.is_set(): raise SearchCancelledException()
 
-        # 1. Tablebase / Material / Depth Termination
         if len(board.white_pieces) + len(board.black_pieces) <= 4:
             tb_score_absolute = self.tb_manager.probe(board, turn)
             if tb_score_absolute is not None:
@@ -715,12 +714,10 @@ class ChessBot:
 
         if is_insufficient_material(board): return self.DRAW_SCORE
         
-        # Termination at your requested Depth 10
         if ply >= self.MAX_Q_SEARCH_DEPTH:
             self.used_heuristic_eval = True
             return self.evaluate_board(board, turn)
 
-        # 2. Stand Pat Evaluation
         self.used_heuristic_eval = True
         stand_pat = self.evaluate_board(board, turn)
         is_in_check_flag = is_in_check(board, turn)
@@ -729,40 +726,31 @@ class ChessBot:
             if stand_pat >= beta: return beta
             alpha = max(alpha, stand_pat)
 
-        # 3. Dynamic Margin Logic restored
         if ply <= 4:
             current_margin = self.Q_MARGIN_MAX
         else:
-            # 700 point total drop over 6 steps = ~117 per ply
             current_margin = max(self.Q_MARGIN_MIN, self.Q_MARGIN_MAX - (ply - 4) * 117)
 
-        # 4. Move Generation
         if is_in_check_flag:
             promising_moves = list(get_all_pseudo_legal_moves(board, turn))
         else:
             promising_moves = list(generate_all_tactical_moves(board, turn))
 
-        # 5. Move Scoring and Pruning
         scored_moves = []
         for move in promising_moves:
             moving_piece = board.grid[move[0][0]][move[0][1]]
             target_piece = board.grid[move[1][0]][move[1][1]]
             swing = self._ordering_tactical_swing(board, move, moving_piece, target_piece)
             
-            # Skip moves with negative tactical value if not in check
             if not is_in_check_flag and swing < 0:
                 continue
-            
-            # Use dynamic current_margin instead of the old constant
             if not is_in_check_flag and (stand_pat + swing + current_margin < alpha):
                 continue
 
             scored_moves.append((swing, move))
 
-        # 6. Sort moves for efficiency
         scored_moves.sort(key=lambda item: item[0], reverse=True)
 
-        # 7. Recursive Search Loop
         legal_moves_count = 0
         opponent_turn = 'black' if turn == 'white' else 'white'
         
@@ -770,24 +758,19 @@ class ChessBot:
             sim_board = board.clone()
             sim_board.make_move(move[0], move[1])
 
-            # Immediate win detection
             if not sim_board.find_king_pos(opponent_turn):
                 return self.MATE_SCORE - ply
             
-            # Filter out moves that leave own king in check
             if is_in_check(sim_board, turn):
                 continue
 
             legal_moves_count += 1
-            
-            # Recursive call
             search_score = -self.qsearch(sim_board, -beta, -alpha, opponent_turn, ply + 1)
             
             if search_score >= beta: 
                 return beta
             alpha = max(alpha, search_score)
 
-        # 8. Checkmate Detection
         if is_in_check_flag and legal_moves_count == 0:
             return -self.MATE_SCORE + ply
 
@@ -820,8 +803,6 @@ class ChessBot:
                 score = self.history_heuristic_table[c_idx][move[0][0]*8+move[0][1]][move[1][0]*8+move[1][1]]
 
             if is_opening: score += self._opening_development_bonus(move, moving_piece)
-            
-            # Using tuple packing to avoid expensive dictionary allocations in hot loop
             scored_moves.append((score, move, is_good_tactic, moving_piece))
 
         scored_moves.sort(key=lambda item: item[0], reverse=True)
@@ -835,29 +816,60 @@ class ChessBot:
         if is_insufficient_material(board):
             return self.DRAW_SCORE
 
+        grid = board.grid
+
+        # --- PRECOMPUTE: Pawn file occupancy (Optimized) ---
+        white_pawn_files = [False] * COLS
+        black_pawn_files = [False] * COLS
+        white_pawn_front = [8] * COLS
+        black_pawn_front = [-1] * COLS
+
+        # OPTIMIZATION: Early-exit if there are no pawns on the board.
+        total_pawns = board.piece_counts['white'][Pawn] + board.piece_counts['black'][Pawn]
+        if total_pawns > 0:
+            for piece in board.white_pieces:
+                if type(piece) is Pawn:
+                    c = piece.pos[1]; r = piece.pos[0]
+                    white_pawn_files[c] = True
+                    if r < white_pawn_front[c]:
+                        white_pawn_front[c] = r
+
+            for piece in board.black_pieces:
+                if type(piece) is Pawn:
+                    c = piece.pos[1]; r = piece.pos[0]
+                    black_pawn_files[c] = True
+                    if r > black_pawn_front[c]:
+                        black_pawn_front[c] = r
+
         scores_mg = [0, 0]; scores_eg = [0, 0]
         piece_counts = [0, 0]; pawn_counts = [0, 0]; last_piece_type = [None, None]
         rook_counts = [0, 0]; bishop_counts = [0, 0]; knight_counts = [0, 0]; queen_counts = [0, 0]
 
         king_pos = [board.white_king_pos, board.black_king_pos]
         piece_lists = [board.white_pieces, board.black_pieces]
-        grid = board.grid
         phase_material_score = 0
 
-        # Constants pulled from class level to avoid reallocation
-        PAWN_PHALANX_BONUS    = self.EVAL_PAWN_PHALANX_BONUS
-        ROOK_ALIGNMENT_BONUS  = self.EVAL_ROOK_ALIGNMENT_BONUS
-        PIECE_DOMINANCE_FACTOR= self.EVAL_PIECE_DOMINANCE_FACTOR
-        PAIR_BONUS            = self.EVAL_PAIR_BONUS
-        DOUBLE_ROOK_PENALTY   = self.EVAL_DOUBLE_ROOK_PENALTY
-        ROOK_PAWN_SCALING     = self.EVAL_ROOK_PAWN_SCALING
-        KNIGHT_ACTIVITY_BONUS = self.KNIGHT_ACTIVITY_BONUS
+        # Constants hoisted from class level to avoid attribute lookups in hot loop
+        PAWN_PHALANX_BONUS       = self.EVAL_PAWN_PHALANX_BONUS
+        ROOK_ALIGNMENT_BONUS     = self.EVAL_ROOK_ALIGNMENT_BONUS
+        ROOK_OPEN_FILE_BONUS_MG  = self.EVAL_ROOK_OPEN_FILE_BONUS_MG
+        ROOK_OPEN_FILE_BONUS_EG  = self.EVAL_ROOK_OPEN_FILE_BONUS_EG
+        PIECE_DOMINANCE_FACTOR   = self.EVAL_PIECE_DOMINANCE_FACTOR
+        PAIR_BONUS               = self.EVAL_PAIR_BONUS
+        DOUBLE_ROOK_PENALTY      = self.EVAL_DOUBLE_ROOK_PENALTY
+        ROOK_PAWN_SCALING        = self.EVAL_ROOK_PAWN_SCALING
+        KNIGHT_ACTIVITY_BONUS    = self.KNIGHT_ACTIVITY_BONUS
+        KING_ZONE_ATTACK_PENALTY = self.EVAL_KING_ZONE_ATTACK_PENALTY
+        PASSED_PAWN_PER_RANK     = self.EVAL_PASSED_PAWN_PER_RANK
 
-        # 1. Main Loop
+        king_zone_attacks = [0, 0]
+
+        # 1. Main Piece Loop
         for color_idx in (0, 1):
             pieces = piece_lists[color_idx]
             is_white = (color_idx == 0)
             my_color_name = 'white' if is_white else 'black'
+            opp_color_name = 'black' if is_white else 'white'
             enemy_king = king_pos[1 - color_idx]
 
             for piece in pieces:
@@ -869,7 +881,7 @@ class ChessBot:
                     piece_counts[color_idx] += 1
                     last_piece_type[color_idx] = ptype
                     phase_material_score += MG_PIECE_VALUES.get(ptype, 0)
-                    if ptype is Rook:   rook_counts[color_idx] += 1
+                    if ptype is Rook:     rook_counts[color_idx] += 1
                     elif ptype is Bishop: bishop_counts[color_idx] += 1
                     elif ptype is Knight: knight_counts[color_idx] += 1
                     elif ptype is Queen:  queen_counts[color_idx] += 1
@@ -881,34 +893,69 @@ class ChessBot:
                 if ptype is King:
                     scores_mg[color_idx] += PIECE_SQUARE_TABLES['king_midgame'][r_pst][c]
                     scores_eg[color_idx] += PIECE_SQUARE_TABLES['king_endgame'][r_pst][c]
+                elif ptype is Pawn:
+                    scores_mg[color_idx] += val_mg + PIECE_SQUARE_TABLES[Pawn][r_pst][c]
+                    scores_eg[color_idx] += val_eg + PIECE_SQUARE_TABLES['pawn_endgame'][r_pst][c]
                 else:
-                    scores_mg[color_idx] += val_mg
-                    scores_eg[color_idx] += val_eg
-                    pst_val = PIECE_SQUARE_TABLES[ptype][r_pst][c]
-                    scores_mg[color_idx] += pst_val
-                    scores_eg[color_idx] += pst_val
+                    scores_mg[color_idx] += val_mg + PIECE_SQUARE_TABLES[ptype][r_pst][c]
+                    scores_eg[color_idx] += val_eg + PIECE_SQUARE_TABLES[ptype][r_pst][c]
 
-                # Variant Heuristics
+                # --- Variant-Specific & Structural Heuristics ---
                 if ptype is Pawn:
-                    if (c > 0 and isinstance(grid[r][c-1], Pawn) and grid[r][c-1].color == my_color_name) or \
-                    (c < COLS-1 and isinstance(grid[r][c+1], Pawn) and grid[r][c+1].color == my_color_name):
+                    # OPTIMIZATION: Use type() is instead of slower isinstance()
+                    if (c > 0 and type(grid[r][c-1]) is Pawn and grid[r][c-1].color == my_color_name) or \
+                       (c < COLS-1 and type(grid[r][c+1]) is Pawn and grid[r][c+1].color == my_color_name):
                         scores_mg[color_idx] += PAWN_PHALANX_BONUS
+
+                    # Passed pawn check (O(1) using precomputed data)
+                    is_passed = True
+                    if is_white:
+                        for pc in (c - 1, c, c + 1):
+                            if 0 <= pc < COLS and black_pawn_files[pc] and black_pawn_front[pc] < r:
+                                is_passed = False; break
+                    else: # is black
+                        for pc in (c - 1, c, c + 1):
+                            if 0 <= pc < COLS and white_pawn_files[pc] and white_pawn_front[pc] > r:
+                                is_passed = False; break
+                    if is_passed:
+                        advance = max(0, (6 - r) if is_white else (r - 1))
+                        scores_eg[color_idx] += advance * PASSED_PAWN_PER_RANK
 
                 elif ptype is Rook:
                     if enemy_king and (r == enemy_king[0] or c == enemy_king[1]):
                         scores_mg[color_idx] += ROOK_ALIGNMENT_BONUS
 
+                    # Open file check (O(1) using precomputed data)
+                    my_pawn_files = white_pawn_files if is_white else black_pawn_files
+                    if not my_pawn_files[c]:
+                        scores_mg[color_idx] += ROOK_OPEN_FILE_BONUS_MG
+                        scores_eg[color_idx] += ROOK_OPEN_FILE_BONUS_EG
+
                 elif ptype is Knight:
                     for ar, ac in KNIGHT_ATTACKS_FROM[(r, c)]:
                         threatened = grid[ar][ac]
-                        if threatened and threatened.color != my_color_name and type(threatened) is not King:
+                        if threatened and type(threatened) is not King and threatened.color != my_color_name:
                             scores_mg[color_idx] += KNIGHT_ACTIVITY_BONUS
                             scores_eg[color_idx] += KNIGHT_ACTIVITY_BONUS
 
-        # 2. Global Calculations
-        phase = min(256, (phase_material_score * 256) // INITIAL_PHASE_MATERIAL) if INITIAL_PHASE_MATERIAL > 0 else 0
-        inv_phase = 256 - phase
+                    if enemy_king:
+                        for ar, ac in KNIGHT_ATTACKS_FROM[(r, c)]:
+                            if abs(ar - enemy_king[0]) <= 2 and abs(ac - enemy_king[1]) <= 2:
+                                king_zone_attacks[1 - color_idx] += 1; break
 
+                elif ptype is Queen:
+                    if enemy_king and (abs(r - enemy_king[0]) + abs(c - enemy_king[1]) <= 3):
+                        king_zone_attacks[1 - color_idx] += 2
+
+        # 2. Apply king zone attack penalties
+        phase = min(256, (phase_material_score * 256) // INITIAL_PHASE_MATERIAL) if INITIAL_PHASE_MATERIAL > 0 else 0
+        for i in (0, 1):
+            if king_zone_attacks[i] > 0:
+                mg_penalty = (king_zone_attacks[i] * KING_ZONE_ATTACK_PENALTY * phase) >> 8
+                scores_mg[i] -= mg_penalty
+
+        # 3. Global Calculations
+        inv_phase = 256 - phase
         total_pawns_on_board = pawn_counts[0] + pawn_counts[1]
 
         if piece_counts[0] > piece_counts[1]: scores_eg[0] += PIECE_DOMINANCE_FACTOR // (piece_counts[1] + 1)
@@ -960,9 +1007,10 @@ class ChessBot:
         elif final_score < 0 and not can_force_mate[1]: final_score //= 8
 
         return final_score if turn_to_move == 'white' else -final_score
-    
 
 # --- Piece-Square Tables (PSTs) ---
+
+# Midgame pawn PST: rewards central presence and advancement
 pawn_pst = [
     [  0,   0,   0,   0,   0,   0,   0,   0],
     [ 90,  90,  90,  90,  90,  90,  90,  90],
@@ -973,6 +1021,20 @@ pawn_pst = [
     [  0,   0,   0,  -5, -10,   0,   0,   0],
     [  0,   0,   0,   0,   0,   0,   0,   0]
 ]
+
+# Endgame pawn PST: strongly rewards advanced/passed pawns, less central bias.
+# Promotion in this variant is forced-queen, making passed pawns extremely dangerous.
+pawn_endgame_pst = [
+    [  0,   0,   0,   0,   0,   0,   0,   0],
+    [160, 160, 160, 160, 160, 160, 160, 160],
+    [ 80,  85,  85,  85,  85,  85,  85,  80],
+    [ 45,  50,  50,  55,  55,  50,  50,  45],
+    [ 25,  30,  30,  35,  35,  30,  30,  25],
+    [ 10,  15,  15,  20,  20,  15,  15,  10],
+    [  0,   5,   5,   5,   5,   5,   5,   0],
+    [  0,   0,   0,   0,   0,   0,   0,   0]
+]
+
 knight_pst = [
     [-60, -40, -30, -30, -30, -30, -40, -60],
     [-40, -20,   5,  10,  10,   5, -20, -40],
@@ -1035,6 +1097,12 @@ king_endgame_pst = [
 ]
 
 PIECE_SQUARE_TABLES = {
-    Pawn: pawn_pst, Knight: knight_pst, Bishop: bishop_pst, Rook: rook_pst, 
-    Queen: queen_pst, 'king_midgame': king_midgame_pst, 'king_endgame': king_endgame_pst
+    Pawn: pawn_pst,
+    'pawn_endgame': pawn_endgame_pst,
+    Knight: knight_pst,
+    Bishop: bishop_pst,
+    Rook: rook_pst, 
+    Queen: queen_pst,
+    'king_midgame': king_midgame_pst,
+    'king_endgame': king_endgame_pst
 }
