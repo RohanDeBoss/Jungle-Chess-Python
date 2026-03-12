@@ -1,8 +1,12 @@
-# TablebaseManager.py (v4.1 - Memmap Optimization for Zero-Latency Loading)
+# TablebaseManager.py (v4.2 - Memmap Optimization, Tightened Exceptions & Sorts)
 
 import os
 import numpy as np
 from GameLogic import King, Board
+
+def _flip(pos):
+    """Helper to flip board coordinates for Black's perspective."""
+    return (7 - pos[0], pos[1])
 
 class TablebaseManager:
     def __init__(self):
@@ -62,7 +66,8 @@ class TablebaseManager:
         
         return ai_score if attacker_color == 'white' else -ai_score
 
-    def _flat_idx_raw_4(self, i0, i1, i2, i3, i4):
+    @staticmethod
+    def _flat_idx_raw_4(i0, i1, i2, i3, i4):
         return (((((i0 * 64 + i1) * 64 + i2) * 64 + i3) * 2) + i4)
 
     def probe(self, board, turn):
@@ -82,7 +87,7 @@ class TablebaseManager:
                     idx = (wk[0]*8+wk[1], wp.pos[0]*8+wp.pos[1], bk[0]*8+bk[1], t_idx)
                     score = int(self.tables[p_name][idx])
                     return self._tb_score_to_ai_score(score, 'white')
-                except Exception:
+                except (IndexError, KeyError, StopIteration):
                     return None
 
             elif black_count == 2 and white_count == 1:
@@ -92,12 +97,11 @@ class TablebaseManager:
                     p_name = f"K_{bp.__class__.__name__}_K"
                     if p_name not in self.tables: return None
                     
-                    def flip(p): return (7-p[0], p[1])
                     t_idx = 0 if turn == 'black' else 1
-                    idx = (flip(bk)[0]*8+flip(bk)[1], flip(bp.pos)[0]*8+flip(bp.pos)[1], flip(wk)[0]*8+flip(wk)[1], t_idx)
+                    idx = (_flip(bk)[0]*8+_flip(bk)[1], _flip(bp.pos)[0]*8+_flip(bp.pos)[1], _flip(wk)[0]*8+_flip(wk)[1], t_idx)
                     score = int(self.tables[p_name][idx])
                     return self._tb_score_to_ai_score(score, 'black')
-                except Exception:
+                except (IndexError, KeyError, StopIteration):
                     return None
                     
         # --- 4-Man Probe ---
@@ -107,9 +111,12 @@ class TablebaseManager:
             if white_count == 3 and black_count == 1:
                 try:
                     w_p = [p for p in board.white_pieces if not isinstance(p, King)]
-                    w_p.sort(key=lambda x: type(x).__name__) 
-                    if type(w_p[0]) == type(w_p[1]):
+                    
+                    # Optimized single sort
+                    if type(w_p[0]) is type(w_p[1]):
                         w_p.sort(key=lambda p: p.pos[0]*8 + p.pos[1])
+                    else:
+                        w_p.sort(key=lambda x: type(x).__name__) 
                     
                     p_name = f"K_{type(w_p[0]).__name__}_{type(w_p[1]).__name__}_K"
                     if p_name not in self.tables: return None
@@ -120,17 +127,19 @@ class TablebaseManager:
                     idx = self._flat_idx_raw_4(wk[0]*8+wk[1], w_p[0].pos[0]*8+w_p[0].pos[1], w_p[1].pos[0]*8+w_p[1].pos[1], bk[0]*8+bk[1], t_idx)
                     score = int(self.tables[p_name].flat[idx])
                     return self._tb_score_to_ai_score(score, 'white')
-                except Exception:
+                except (IndexError, KeyError, StopIteration):
                     return None
                     
             # 2. 4-Man Same Side (Black)
             elif black_count == 3 and white_count == 1:
                 try:
                     b_p = [p for p in board.black_pieces if not isinstance(p, King)]
-                    b_p.sort(key=lambda x: type(x).__name__)
-                    def flip(p): return (7-p[0], p[1])
-                    if type(b_p[0]) == type(b_p[1]):
-                        b_p.sort(key=lambda p: flip(p.pos)[0]*8 + flip(p.pos)[1])
+                    
+                    # Optimized single sort with flip
+                    if type(b_p[0]) is type(b_p[1]):
+                        b_p.sort(key=lambda p: _flip(p.pos)[0]*8 + _flip(p.pos)[1])
+                    else:
+                        b_p.sort(key=lambda x: type(x).__name__)
                     
                     p_name = f"K_{type(b_p[0]).__name__}_{type(b_p[1]).__name__}_K"
                     if p_name not in self.tables: return None
@@ -138,10 +147,10 @@ class TablebaseManager:
                     t_idx = 0 if turn == 'black' else 1
                     bk, wk = board.black_king_pos, board.white_king_pos
                     
-                    idx = self._flat_idx_raw_4(flip(bk)[0]*8+flip(bk)[1], flip(b_p[0].pos)[0]*8+flip(b_p[0].pos)[1], flip(b_p[1].pos)[0]*8+flip(b_p[1].pos)[1], flip(wk)[0]*8+flip(wk)[1], t_idx)
+                    idx = self._flat_idx_raw_4(_flip(bk)[0]*8+_flip(bk)[1], _flip(b_p[0].pos)[0]*8+_flip(b_p[0].pos)[1], _flip(b_p[1].pos)[0]*8+_flip(b_p[1].pos)[1], _flip(wk)[0]*8+_flip(wk)[1], t_idx)
                     score = int(self.tables[p_name].flat[idx])
                     return self._tb_score_to_ai_score(score, 'black')
-                except Exception:
+                except (IndexError, KeyError, StopIteration):
                     return None
                     
             # 3. 4-Man Cross Tables (White Piece vs Black Piece)
@@ -173,9 +182,8 @@ class TablebaseManager:
                         return self._tb_score_to_ai_score(score_w, 'white')
                         
                     # Check if Black is winning (flip spatial coordinates and invert attacker logic)
-                    def flip(p): return (7-p[0], p[1])
                     t_idx_b = 0 if turn == 'black' else 1
-                    idx_b = self._flat_idx_raw_4(flip(bk)[0]*8+flip(bk)[1], flip(bp)[0]*8+flip(bp)[1], flip(wk)[0]*8+flip(wk)[1], flip(wp)[0]*8+flip(wp)[1], t_idx_b)
+                    idx_b = self._flat_idx_raw_4(_flip(bk)[0]*8+_flip(bk)[1], _flip(bp)[0]*8+_flip(bp)[1], _flip(wk)[0]*8+_flip(wk)[1], _flip(wp)[0]*8+_flip(wp)[1], t_idx_b)
                     score_b = int(self.tables[t_name_b].flat[idx_b])
                     
                     if score_b != 0:
@@ -184,7 +192,7 @@ class TablebaseManager:
                     # If neither side wins, it is mathematically proven to be a dead draw
                     return 0
                     
-                except Exception:
+                except (IndexError, KeyError, StopIteration):
                     return None
 
         return None

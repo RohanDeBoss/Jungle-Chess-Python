@@ -1,8 +1,4 @@
-# PieceTuner.py (v1.8)
-# Adds: append mode (top up existing dataset without regenerating),
-#       chunksize=1 for better load balancing at high depths,
-#       fixed double-random-choice bug in opening loop,
-#       position_count isolation (bot gets a copy during search, not the live dict)
+# PieceTuner.py (v1.81 - 1 line bugfix)
 
 import math
 import json
@@ -243,7 +239,6 @@ def _play_one_game(args: tuple) -> tuple:
 
             _, best_move = bot._search_at_depth(gen_depth, legal, root_hash, pv_move)
             move    = best_move if best_move else random.choice(legal)
-            pv_move = move
 
             board.make_move(move[0], move[1])
             turn  = 'black' if turn == 'white' else 'white'
