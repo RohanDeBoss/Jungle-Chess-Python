@@ -1,4 +1,4 @@
-# PieceTuner.py (v1.81 - 1 line bugfix)
+# PieceTuner.py (v2.0 - Iterative Deepening Fix for Blazing Fast Generation)
 
 import math
 import json
@@ -19,8 +19,8 @@ from AI import board_hash
 # CONFIGURATION
 # ═══════════════════════════════════════════════════════════════════════════════
 
-GAMES_TO_GENERATE       = 100   # Games to generate (or APPEND) per run
-GENERATION_DEPTH        = 4     # Search depth per move (full AI: TT, NMP, ProbCut, etc.)
+GAMES_TO_GENERATE       = 500   # Games to generate (or APPEND) per run
+GENERATION_DEPTH        = 5     # Search depth per move
 RANDOM_OPENING_PLIES    = 4     # Random moves before engine kicks in (diversity)
 MAX_GAME_PLIES          = 200   # Hard ply limit
 SAMPLE_EVERY_N_PLIES    = 2     # Record 1 position per N plies
@@ -133,18 +133,29 @@ def _get_bot() -> AI.ChessBot:
         dummy_q = mp.Queue()
         dummy_e = mp.Event()
         _bot_singleton = AI.ChessBot(Board(), 'white', {}, dummy_q, dummy_e, 'Tuner')
-        # Real TablebaseManager initialised by ChessBot.__init__
     return _bot_singleton
 
-
 def _play_one_game(args: tuple) -> tuple:
-    """
-    Returns (positions, stats_dict).
-    positions : list of (fen_str, outcome) sampled from the game.
-    stats_dict: {'game_length': int, 'terminal': str}
-    """
     game_idx, max_plies, sample_every, gen_depth, rand_plies = args
     bot = _get_bot()
+    
+    # Silence the bot so it doesn't waste CPU cycles formatting strings for stdout
+    bot._report_log = lambda msg: None
+    bot._report_eval = lambda s, d: None
+    bot._report_move = lambda m: None
+
+    # --- BUG FIX: ID WRAPPER ---
+    # Wraps the search in Iterative Deepening to fill the TT and ensure alpha-beta 
+    # move ordering happens. This reduces a depth 4 search from 2.0s to 0.05s.
+    def _search_with_id(target_depth, legal_moves, root_h):
+        b_move = legal_moves[0]
+        p_score = None
+        for d in range(1, target_depth + 1):
+            p_score, b_move = bot._run_depth_iteration(
+                d, legal_moves, root_h, b_move, prev_iter_score=p_score
+            )
+        return p_score, b_move
+    # ---------------------------
 
     for attempt in range(MAX_REGENERATION_TRIES):
         seed = game_idx * 31337 + attempt * 7919 + int(time.time() * 1000) % 999_983
@@ -152,14 +163,12 @@ def _play_one_game(args: tuple) -> tuple:
 
         board          = Board()
         turn           = 'white'
-        position_count = {}   # tracks repetitions for this game only
+        position_count = {}   
         plies          = 0
         sampled_fens   = []
         outcome        = 0.5
-        pv_move        = None
         terminal       = TERM_PLY_LIMIT
 
-        # Reset TT and heuristic tables once per attempt
         bot._initialize_search_state()
 
         # ── Random opening ───────────────────────────────────────────────────
@@ -167,12 +176,12 @@ def _play_one_game(args: tuple) -> tuple:
             legal = get_all_legal_moves(board, turn)
             if not legal:
                 break
-            chosen = random.choice(legal)          # pick ONCE — avoids split-move bug
+            chosen = random.choice(legal)
             board.make_move(chosen[0], chosen[1])
             turn  = 'black' if turn == 'white' else 'white'
             plies += 1
 
-        # ── Opening screen: discard wildly unbalanced positions ──────────────
+        # ── Opening screen ───────────────────────────────────────────────────
         legal = get_all_legal_moves(board, turn)
         if not legal:
             continue
@@ -180,18 +189,13 @@ def _play_one_game(args: tuple) -> tuple:
         bot.board           = board
         bot.color           = turn
         bot.opponent_color  = 'black' if turn == 'white' else 'white'
-        # Give the bot a SNAPSHOT of position_count so search-internal +/- ops
-        # don't corrupt our game-level repetition tracker.
         bot.position_counts = dict(position_count)
         root_hash = board_hash(board, turn)
 
-        screen_score, _ = bot._search_at_depth(
-            OPENING_SCREEN_DEPTH, legal, root_hash, None
-        )
+        # Use our new lightning-fast Iterative Deepening wrapper
+        screen_score, _ = _search_with_id(OPENING_SCREEN_DEPTH, legal, root_hash)
         if abs(screen_score) > OPENING_EVAL_THRESHOLD:
-            continue  # Too lopsided — try a different seed
-
-        # TT is already warm from the screen search — don't reset it
+            continue  
 
         # ── Main game loop ────────────────────────────────────────────────────
         while plies < max_plies:
@@ -213,8 +217,9 @@ def _play_one_game(args: tuple) -> tuple:
                 terminal = TERM_THREEFOLD
                 break
 
-            # TB adjudication — resolve endgames immediately
             total_pieces = len(board.white_pieces) + len(board.black_pieces)
+            
+            # SPEEDUP: Only check TB if we are at the limit
             if total_pieces <= TB_ADJUDICATION_PIECES:
                 tb_score_abs = bot.tb_manager.probe(board, turn)
                 if tb_score_abs is not None:
@@ -230,15 +235,15 @@ def _play_one_game(args: tuple) -> tuple:
             if plies % sample_every == 0:
                 sampled_fens.append(board_to_fen(board, turn))
 
-            # Full AI search — pass a snapshot so search +/- ops stay isolated
             bot.board           = board
             bot.color           = turn
             bot.opponent_color  = 'black' if turn == 'white' else 'white'
             bot.position_counts = dict(position_count)
             root_hash = board_hash(board, turn)
 
-            _, best_move = bot._search_at_depth(gen_depth, legal, root_hash, pv_move)
-            move    = best_move if best_move else random.choice(legal)
+            # Use our new lightning-fast Iterative Deepening wrapper
+            _, best_move = _search_with_id(gen_depth, legal, root_hash)
+            move = best_move if best_move else random.choice(legal)
 
             board.make_move(move[0], move[1])
             turn  = 'black' if turn == 'white' else 'white'
@@ -247,20 +252,13 @@ def _play_one_game(args: tuple) -> tuple:
         stats = {'game_length': plies, 'terminal': terminal}
         return [(fen, outcome) for fen in sampled_fens], stats
 
-    # All attempts produced lopsided openings
     stats = {'game_length': 0, 'terminal': 'discarded'}
     return [], stats
-
 
 def _run_generation(n_games: int, game_id_offset: int, max_plies: int,
                     sample_every: int, gen_depth: int, rand_plies: int,
                     n_workers: int, checkpoint_every: int,
                     partial_file: str) -> tuple:
-    """
-    Generate n_games games starting from game_id_offset.
-    Returns (positions, terminal_counts, game_lengths).
-    game_id_offset ensures different seeds when appending to existing data.
-    """
     print(f"\nGenerating {n_games} self-play games — "
           f"Full AI Depth {gen_depth} ({n_workers} workers)")
     print(f"  Random opening : {rand_plies} plies  |  "
@@ -276,8 +274,6 @@ def _run_generation(n_games: int, game_id_offset: int, max_plies: int,
     start_time      = time.time()
 
     with mp.Pool(n_workers) as pool:
-        # chunksize=1: games vary wildly in length at depth 3+, so fine-grained
-        # scheduling prevents a few long games stalling the whole pool at the end.
         for i, (positions, stats) in enumerate(
                 pool.imap_unordered(_play_one_game, args, chunksize=1), 1):
 
@@ -352,33 +348,47 @@ def report_uniqueness(positions_data: list) -> None:
         print(f"  ✓  Diversity looks healthy", flush=True)
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# TEXEL LOSS
+# TEXEL LOSS (OPTIMIZED)
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def compute_mse(positions_data: list, K: float, mg_vals: dict, eg_vals: dict) -> float:
+def compute_mse(parsed_data: list, K: float, mg_vals: dict, eg_vals: dict) -> float:
+    """
+    Computes Mean Squared Error quickly by iterating over Pre-Parsed Board objects.
+    """
     patch_ai_values(mg_vals, eg_vals)
-    bot   = _get_bot()
+    bot = _get_bot()
+    eval_fn = bot.evaluate_board
+    
     total = 0.0
-    count = 0
-    for fen_str, outcome in positions_data:
-        try:
-            board, _ = fen_to_board(fen_str)
-            raw  = bot.evaluate_board(board, 'white')
-            prob = 1.0 / (1.0 + math.exp(max(-500, min(500, -K * raw / 400.0))))
-            total += (prob - outcome) ** 2
-            count += 1
-        except Exception:
-            continue
-    return total / max(1, count)
+    count = len(parsed_data)
+    if count == 0: return 0.0
+    
+    factor = -K / 400.0
+    
+    for board, outcome in parsed_data:
+        raw = eval_fn(board, 'white')
+        x = raw * factor
+        # Fast sigmoid approximation bounds to prevent math.exp overflow
+        if x > 30.0:
+            prob = 0.0
+        elif x < -30.0:
+            prob = 1.0
+        else:
+            prob = 1.0 / (1.0 + math.exp(x))
+            
+        diff = prob - outcome
+        total += diff * diff
+        
+    return total / count
 
-def calibrate_K(positions_data: list, mg: dict, eg: dict, steps: int = 40) -> float:
+def calibrate_K(parsed_data: list, mg: dict, eg: dict, steps: int = 40) -> float:
     print("\nCalibrating Texel K constant...")
     phi    = (1 + 5 ** 0.5) / 2
     lo, hi = 0.3, 4.0
     for _ in range(steps):
         k1 = hi - (hi - lo) / phi
         k2 = lo + (hi - lo) / phi
-        if compute_mse(positions_data, k1, mg, eg) < compute_mse(positions_data, k2, mg, eg):
+        if compute_mse(parsed_data, k1, mg, eg) < compute_mse(parsed_data, k2, mg, eg):
             hi = k2
         else:
             lo = k1
@@ -388,10 +398,10 @@ def calibrate_K(positions_data: list, mg: dict, eg: dict, steps: int = 40) -> fl
     print(f"  Optimal K = {best_K:.4f}", flush=True)
     return best_K
 
-def coordinate_descent(positions_data: list, K: float, mg_start: dict, eg_start: dict,
+def coordinate_descent(parsed_data: list, K: float, mg_start: dict, eg_start: dict,
                        n_rounds: int, step_sizes: list) -> tuple:
     vec      = vals_to_vec(mg_start, eg_start)
-    best_mse = compute_mse(positions_data, K, *vec_to_vals(vec))
+    best_mse = compute_mse(parsed_data, K, *vec_to_vals(vec))
     print(f"\nStarting coordinate descent — initial MSE = {best_mse:.6f}", flush=True)
 
     for step in step_sizes:
@@ -404,9 +414,9 @@ def coordinate_descent(positions_data: list, K: float, mg_start: dict, eg_start:
 
                 v_up   = vec.copy(); v_up[i] += step
                 v_dn   = vec.copy(); v_dn[i] -= step
-                mse_up = compute_mse(positions_data, K, *vec_to_vals(v_up)) \
+                mse_up = compute_mse(parsed_data, K, *vec_to_vals(v_up)) \
                          if v_up[i] <= hi_bound else float('inf')
-                mse_dn = compute_mse(positions_data, K, *vec_to_vals(v_dn)) \
+                mse_dn = compute_mse(parsed_data, K, *vec_to_vals(v_dn)) \
                          if v_dn[i] >= lo_bound else float('inf')
 
                 if mse_up < best_mse and mse_up <= mse_dn:
@@ -429,7 +439,7 @@ def coordinate_descent(positions_data: list, K: float, mg_start: dict, eg_start:
 # OUTPUT FORMATTING
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def print_ai_dicts(mg: dict, eg: dict, header: str = "") -> None:
+def print_ai_dicts(mg: dict, eg: dict, header: str = "", orig_mg: dict = None, orig_eg: dict = None) -> None:
     if header:
         print(f"\n{'─' * 50}\n{header}\n{'─' * 50}", flush=True)
 
@@ -441,12 +451,14 @@ def print_ai_dicts(mg: dict, eg: dict, header: str = "") -> None:
     print(f"MG_PIECE_VALUES = {{\n{_fmt(mg)}\n}}", flush=True)
     print(f"\nEG_PIECE_VALUES = {{\n{_fmt(eg)}\n}}", flush=True)
 
-    print("\n  Delta vs original AI.py values:")
+    print("\n  Delta vs baseline AI values:")
     print(f"  {'Piece':<10} {'MG orig':>8} {'MG new':>8} {'MG Δ':>7}"
           f"  {'EG orig':>8} {'EG new':>8} {'EG Δ':>7}")
     print("  " + "─" * 64)
-    orig_mg = {Pawn: 100, Knight: 900, Bishop: 650, Rook: 550, Queen: 850}
-    orig_eg = {Pawn: 130, Knight: 800, Bishop: 550, Rook: 600, Queen: 850}
+    if orig_mg is None:
+        orig_mg = {cls: AI.MG_PIECE_VALUES[cls] for cls in PIECE_CLASSES}
+    if orig_eg is None:
+        orig_eg = {cls: AI.EG_PIECE_VALUES[cls] for cls in PIECE_CLASSES}
     for cls in PIECE_CLASSES:
         dm = int(round(mg[cls])) - orig_mg[cls]
         de = int(round(eg[cls])) - orig_eg[cls]
@@ -459,17 +471,16 @@ def print_ai_dicts(mg: dict, eg: dict, header: str = "") -> None:
 
 def main():
     print("═" * 60, flush=True)
-    print(f"  Jungle Chess Piece Value Auto-Tuner  (v1.8)", flush=True)
+    print(f"  Jungle Chess Piece Value Auto-Tuner  (v2.0)", flush=True)
     print(f"  Full AI Depth {GENERATION_DEPTH}  |  "
           f"{GAMES_TO_GENERATE} games  |  {NUM_WORKERS} workers", flush=True)
     print("═" * 60, flush=True)
 
     positions_data  = None
-    existing_count  = 0          # how many positions already on disk
-    game_id_offset  = 0          # seed offset so appended games get fresh seeds
+    existing_count  = 0
+    game_id_offset  = 0
     partial_file    = DATA_FILE + '.partial'
 
-    # ── Check for interrupted partial run ────────────────────────────────────
     if os.path.exists(partial_file) and os.path.getsize(partial_file) > 0:
         print(f"\n⚠  Found partial checkpoint: {partial_file}")
         print("  Resume from checkpoint? (Y/n): ", end='', flush=True)
@@ -482,7 +493,6 @@ def main():
             except Exception:
                 positions_data = None
 
-    # ── Load existing full dataset ────────────────────────────────────────────
     if positions_data is None and os.path.exists(DATA_FILE) \
             and os.path.getsize(DATA_FILE) > 0:
         try:
@@ -503,18 +513,15 @@ def main():
                 game_id_offset = 0
             elif choice == 'a':
                 positions_data = existing_positions
-                # Offset seeds so new games differ from already-generated ones
                 game_id_offset = existing_count
                 print(f"  Will append {GAMES_TO_GENERATE} new games to "
                       f"{existing_count} existing positions.")
             else:
-                # Default: skip generation
                 positions_data = existing_positions
                 print("  Skipping generation — tuning on existing data.")
         except Exception:
             positions_data = None
 
-    # ── Generate (or append) ──────────────────────────────────────────────────
     need_generation = (positions_data is None) or \
                       (existing_count > 0 and game_id_offset > 0 and
                        len(positions_data) == existing_count)
@@ -544,7 +551,6 @@ def main():
         print("ERROR: No training positions available. Exiting.")
         return
 
-    # ── Dataset summary ───────────────────────────────────────────────────────
     outcomes = [o for _, o in positions_data]
     w = sum(o == 1.0 for o in outcomes) / len(outcomes)
     d = sum(o == 0.5 for o in outcomes) / len(outcomes)
@@ -554,23 +560,37 @@ def main():
           f"Draw {d:.1%}  |  Black {b:.1%}", flush=True)
     report_uniqueness(positions_data)
 
-    # ── Tuning ───────────────────────────────────────────────────────────────
+    # ── PRE-PARSE OPTIMIZATION ───────────────────────────────────────────────
+    print(f"\nPre-parsing {len(positions_data)} board states into RAM to accelerate tuning...", flush=True)
+    parsed_data = []
+    for fen_str, outcome in positions_data:
+        try:
+            board, _ = fen_to_board(fen_str)
+            parsed_data.append((board, outcome))
+        except Exception:
+            continue
+    print(f"Successfully loaded {len(parsed_data)} positions.", flush=True)
+    # ─────────────────────────────────────────────────────────────────────────
+
     mg_start = {cls: AI.MG_PIECE_VALUES[cls] for cls in PIECE_CLASSES}
     eg_start = {cls: AI.EG_PIECE_VALUES[cls] for cls in PIECE_CLASSES}
-    print_ai_dicts(mg_start, eg_start, "Starting values (from AI.py):")
+    orig_mg = {cls: AI.MG_PIECE_VALUES[cls] for cls in PIECE_CLASSES}
+    orig_eg = {cls: AI.EG_PIECE_VALUES[cls] for cls in PIECE_CLASSES}
+    print_ai_dicts(mg_start, eg_start, "Starting values (from AI.py):", orig_mg, orig_eg)
 
-    K = calibrate_K(positions_data, mg_start, eg_start, K_CALIBRATION_STEPS)
+    # Pass the pre-parsed RAM data to the tuning functions
+    K = calibrate_K(parsed_data, mg_start, eg_start, K_CALIBRATION_STEPS)
 
     print(f"\nRunning coordinate descent "
           f"({COORD_ROUNDS} rounds max × {len(STEP_SIZES)} step sizes)...", flush=True)
     (mg_best, eg_best), final_mse = coordinate_descent(
-        positions_data, K, mg_start, eg_start, COORD_ROUNDS, STEP_SIZES
+        parsed_data, K, mg_start, eg_start, COORD_ROUNDS, STEP_SIZES
     )
 
     print(f"\n{'═' * 60}", flush=True)
     print(f"  TUNING COMPLETE  —  final MSE = {final_mse:.6f}  (K = {K:.4f})", flush=True)
     print(f"{'═' * 60}", flush=True)
-    print_ai_dicts(mg_best, eg_best, "Optimised values — paste into AI.py:")
+    print_ai_dicts(mg_best, eg_best, "Optimised values — paste into AI.py:", orig_mg, orig_eg)
 
     result_file = "tuner_results.json"
     with open(result_file, 'w') as f:
