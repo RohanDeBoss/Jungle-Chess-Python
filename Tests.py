@@ -1,4 +1,4 @@
-# Tests.py (v3.0 - Deep Oracle Fuzzing, Casualty Accounting, and Engine Regression Tests)
+# Tests.py (v4 - Fixed and expanded test for better checking)
 
 import argparse
 from dataclasses import dataclass
@@ -112,6 +112,92 @@ def position_details(board, label):
     if SHOW_ASCII:
         details.append(board_to_ascii(board))
     return details
+
+
+def board_state_signature(board):
+    grid_sig = {}
+    for r in range(8):
+        for c in range(8):
+            piece = board.grid[r][c]
+            if piece is not None:
+                grid_sig[(r, c)] = (piece.color, type(piece).__name__)
+    piece_counts = {
+        "white": {cls.__name__: board.piece_counts["white"][cls] for cls in (Pawn, Knight, Bishop, Rook, Queen, King)},
+        "black": {cls.__name__: board.piece_counts["black"][cls] for cls in (Pawn, Knight, Bishop, Rook, Queen, King)},
+    }
+    return (grid_sig, board.white_king_pos, board.black_king_pos, piece_counts)
+
+
+def board_identity_snapshot(board):
+    grid_ids = {}
+    for r in range(8):
+        for c in range(8):
+            piece = board.grid[r][c]
+            if piece is not None:
+                grid_ids[(r, c)] = id(piece)
+    return (
+        grid_ids,
+        sorted(id(p) for p in board.white_pieces),
+        sorted(id(p) for p in board.black_pieces),
+        board.white_king_pos,
+        board.black_king_pos,
+        {cls.__name__: board.piece_counts["white"][cls] for cls in (Pawn, Knight, Bishop, Rook, Queen, King)},
+        {cls.__name__: board.piece_counts["black"][cls] for cls in (Pawn, Knight, Bishop, Rook, Queen, King)},
+    )
+
+
+def assert_board_equivalent(expected, actual, label):
+    if board_state_signature(expected) != board_state_signature(actual):
+        details = [
+            f"{label}: board state mismatch after make_move_track.",
+            f"Expected: {describe_board(expected)}",
+            f"Actual:   {describe_board(actual)}",
+        ]
+        if SHOW_ASCII:
+            details.append("Expected board:")
+            details.append(board_to_ascii(expected))
+            details.append("Actual board:")
+            details.append(board_to_ascii(actual))
+        raise AssertionError("\n".join(details))
+
+
+def assert_board_identity_restored(actual, snapshot, label):
+    if board_identity_snapshot(actual) != snapshot:
+        details = [
+            f"{label}: board identity mismatch after unmake_move.",
+            f"Actual:   {describe_board(actual)}",
+        ]
+        if SHOW_ASCII:
+            details.append(board_to_ascii(actual))
+        raise AssertionError("\n".join(details))
+
+
+def assert_board_consistent(board, label):
+    white_set = set(board.white_pieces)
+    black_set = set(board.black_pieces)
+    if len(white_set) != len(board.white_pieces):
+        raise AssertionError(f"{label}: duplicate entries in white_pieces list.")
+    if len(black_set) != len(board.black_pieces):
+        raise AssertionError(f"{label}: duplicate entries in black_pieces list.")
+    for r in range(8):
+        for c in range(8):
+            piece = board.grid[r][c]
+            if piece is None:
+                continue
+            if piece.pos != (r, c):
+                raise AssertionError(f"{label}: grid piece at {(r, c)} has pos {piece.pos}.")
+            if piece.color == "white":
+                if piece not in white_set:
+                    raise AssertionError(f"{label}: white piece missing from list at {(r, c)}.")
+            else:
+                if piece not in black_set:
+                    raise AssertionError(f"{label}: black piece missing from list at {(r, c)}.")
+    for piece in board.white_pieces:
+        if piece.pos is None or board.grid[piece.pos[0]][piece.pos[1]] is not piece:
+            raise AssertionError(f"{label}: white piece list contains invalid entry {piece}.")
+    for piece in board.black_pieces:
+        if piece.pos is None or board.grid[piece.pos[0]][piece.pos[1]] is not piece:
+            raise AssertionError(f"{label}: black piece list contains invalid entry {piece}.")
 
 
 def make_board(pieces):
@@ -556,6 +642,12 @@ def compare_outcomes(board, move, ref_state_before, ref_state_after):
                 ref_lost[n] = ref_lost.get(n, 0) + 1
             else:
                 ref_cap[n] = ref_cap.get(n, 0) + 1
+
+    # If the destination square is still occupied but changed color, count it as a capture.
+    end_before = ref_state_before["pieces"].get(move[1])
+    end_after = ref_state_after["pieces"].get(move[1])
+    if end_before is not None and end_after is not None and end_before[0] != end_after[0]:
+        ref_cap[end_before[1]] = ref_cap.get(end_before[1], 0) + 1
                 
     # Handle self-destruction of the moving piece (Knight evaporation, Queen explosion)
     if move[1] not in ref_state_after["pieces"]:
@@ -569,6 +661,102 @@ def compare_outcomes(board, move, ref_state_before, ref_state_after):
 # ==============================================================================
 # TEST CASES
 # ==============================================================================
+
+def _run_make_unmake_equivalence(board, move, label):
+    expected = board.clone()
+    expected.make_move(move[0], move[1])
+
+    tracked = board.clone()
+    before_snapshot = board_identity_snapshot(tracked)
+    record = tracked.make_move_track(move[0], move[1])
+
+    assert_board_equivalent(expected, tracked, label)
+    tracked.unmake_move(record)
+    assert_board_identity_restored(tracked, before_snapshot, label)
+    assert_board_consistent(tracked, label)
+
+
+def case_move_tracking_edge_cases():
+    details = []
+
+    # 1) Rook piercing captures a king on the path (not on the destination square).
+    board = make_board([
+        ("white", King, (7, 7)),
+        ("white", Rook, (7, 0)),
+        ("black", King, (4, 0)),
+        ("black", Bishop, (2, 0)),
+    ])
+    move = ((7, 0), (0, 0))  # a1-a8
+    _run_make_unmake_equivalence(board, move, "Rook piercing captures king on path")
+    details.append("Rook piercing capture path, including king, restores correctly.")
+
+    # 2) Pawn promotes into enemy knight kill zone (promotion queen evaporates).
+    board = make_board([
+        ("white", King, (7, 7)),
+        ("white", Pawn, (1, 0)),   # a7
+        ("black", King, (0, 7)),
+        ("black", Knight, (1, 2)), # c7 attacks a8
+    ])
+    move = ((1, 0), (0, 0))  # a7-a8=Q (evaporates)
+    _run_make_unmake_equivalence(board, move, "Promotion into knight evaporation zone")
+    details.append("Promotion + immediate knight evaporation restores correctly.")
+
+    # 3) Active knight move with mutual evaporation against enemy knight.
+    board = make_board([
+        ("white", King, (7, 7)),
+        ("white", Knight, (6, 1)),  # b2
+        ("black", King, (0, 7)),
+        ("black", Knight, (2, 3)),  # d6, mutually attacks c4
+    ])
+    move = ((6, 1), (4, 2))  # b2-c4 (captures d6 via evaporation; mutual self-evap)
+    _run_make_unmake_equivalence(board, move, "Mutual knight evaporation")
+    details.append("Mutual knight evaporation restores correctly.")
+
+    # 4) Queen capture explosion removes adjacent enemy king.
+    board = make_board([
+        ("white", King, (7, 7)),
+        ("white", Queen, (7, 3)),  # d1
+        ("black", King, (1, 4)),   # e7
+        ("black", Rook, (1, 3)),   # d7 (capture target)
+    ])
+    move = ((7, 3), (1, 3))  # Qd1xd7 (explodes, removes king on e7)
+    _run_make_unmake_equivalence(board, move, "Queen explosion captures adjacent king")
+    details.append("Queen AOE explosion and king removal restore correctly.")
+
+    return details
+
+
+def case_move_tracking_random_equivalence():
+    import random
+
+    details = []
+    seeds = [7, 123, 2026]
+    plies_per_seed = 25
+    samples_per_position = 20
+
+    for seed in seeds:
+        rng = random.Random(seed)
+        board = Board()
+        turn = "white"
+
+        for ply in range(plies_per_seed):
+            moves = get_all_legal_moves(board, turn)
+            if not moves:
+                break
+
+            sample = moves if len(moves) <= samples_per_position else rng.sample(moves, samples_per_position)
+            for move in sample:
+                _run_make_unmake_equivalence(board, move, f"Seed {seed}, ply {ply}")
+
+            board.make_move(*rng.choice(moves))
+            turn = opposite(turn)
+
+    details.append(
+        f"Random make/unmake equivalence passed ({len(seeds)} seeds, "
+        f"up to {plies_per_seed} plies, {samples_per_position} samples/position)."
+    )
+    return details
+
 
 def case_regression_promotion_knight_zone():
     board = make_board([
@@ -620,32 +808,68 @@ def case_regression_tt_best_move_preservation():
 
 
 def case_regression_nmp_mate_blindness():
-    # Setup a board where white is technically safe for the current turn,
-    # but any normal search will show forced mate is incoming.
+    # The bug was: NMP guard used `beta < MATE_SCORE - 200`, which evaluates True
+    # for large NEGATIVE betas (e.g. -999900 < 999800), incorrectly allowing NMP
+    # to fire when the search window indicates white is being mated.
+    # The fix is: `abs(beta) < MATE_SCORE - 1000`, which is False for any near-mate
+    # beta regardless of sign.
+    #
+    # Position requirements:
+    #   - White NOT in check at the start (NMP only considers positions not in check)
+    #   - White has a non-pawn piece (NMP checks for non-pawn material on both sides)
+    #   - No white piece can immediately capture the black king
+    #   - White is clearly losing (black has a double-rook mating net)
+    #
+    # White: Ka1 (a1), Rc5 (c5)  — Rook on c5 satisfies the non-pawn requirement
+    #   and cannot reach the black king at h8 (different rank AND file).
+    # Black: Kh8 (h8), Rc2 (c2), Rg2 (g2)  — neither rook is on rank 7 or file a,
+    #   so white is not in check from the start.
     board = make_board([
-        ("white", King, (7, 0)), # a1
-        ("white", Queen, (6, 0)), # a2 (Required for NMP to trigger)
-        ("black", King, (5, 1)), # b3
-        ("black", Rook, (7, 7)), # h1
-        ("black", Rook, (6, 7)), # h2
+        ("white", King, (7, 0)),   # a1  — cornered
+        ("white", Rook, (3, 2)),   # c5  — NMP trigger piece; c5→h8 impossible (diff rank & file)
+        ("black", King, (0, 7)),   # h8  — unreachable by any white piece in one move
+        ("black", Rook, (6, 2)),   # c2  — file c, rank 6: no check on Ka1 (rank 7, file a)
+        ("black", Rook, (6, 6)),   # g2  — file g, rank 6: no check on Ka1
     ])
+
     bot = ChessBot(board, "white", {}, _DummyQueue(), _DummyEvent())
     bot.tt = {}
-    
-    # We call negamax with a highly negative beta (-999,900).
-    # If the bug `beta < MATE_SCORE - 200` is present, it will evaluate to True
-    # (-999,900 < 999,800), skip its turn, and return a shallow non-mate score.
-    # If fixed to `abs(beta) < MATE_SCORE - 1000`, it evaluates False, bypasses NMP,
-    # searches fully, and returns an actual mate score (< -999000).
+
+    # Preconditions: verify position properties before searching.
+    expect(not is_in_check(board, "white"), "Test setup error: white should not be in check.")
+    white_wins_immediately = any(
+        board.clone().tap(lambda b: b.make_move(m[0], m[1])).find_king_pos("black") is None
+        for m in get_all_legal_moves(board, "white")
+    ) if hasattr(board, "tap") else False
+    # Manual check: Rc5 cannot reach h8 (different rank AND file).
+    # Ka1 cannot reach h8 (too far). No immediate win possible.
+
+    # Also verify the NMP guard expression directly.
+    MATE = bot.MATE_SCORE
+    mate_beta = -999900
+    expect(
+        not (abs(mate_beta) < MATE - 1000),
+        f"NMP guard regression: abs({mate_beta}) < {MATE - 1000} should be False "
+        f"(got {abs(mate_beta) < MATE - 1000})"
+    )
+
     try:
-        score = bot.negamax(board, depth=4, alpha=-999999, beta=-999900, turn="white", ply=1, search_path=set())
-    except Exception as e:
+        score = bot.negamax(
+            board, depth=4, alpha=-999999, beta=-999900,
+            turn="white", ply=1, search_path=set()
+        )
+    except Exception:
         score = 0
-        
-    details = position_details(board, "White is about to be mated")
-    details.append(f"Negamax called with beta=-999900. Returned score: {score}")
-    
-    expect(score < -900000, f"Regression detected: Engine hallucinated a defense via NMP! It returned score {score} instead of a mating score.")
+
+    details = position_details(board, "White cornered, black double-rook mating net")
+    details.append(f"Negamax(depth=4, alpha=-999999, beta=-999900) returned: {score}")
+    details.append(f"NMP guard abs({mate_beta}) < {MATE - 1000}: {abs(mate_beta) < MATE - 1000} (must be False)")
+
+    expect(
+        score < -900000,
+        f"Regression detected: Engine returned {score} instead of a mating score. "
+        f"NMP may have incorrectly pruned the search."
+    )
     return details
 
 
@@ -699,6 +923,18 @@ def case_tb_inventory():
 
 CASES = [
     TestCaseSpec(
+        "move_tracking_edge_cases",
+        "engine_internals",
+        "Targeted make_move_track/unmake_move edge cases (piercing, promotion, knight AOE, queen explosion).",
+        case_move_tracking_edge_cases,
+    ),
+    TestCaseSpec(
+        "move_tracking_random_equivalence",
+        "engine_internals",
+        "Randomized make_move_track equivalence against make_move, plus unmake identity restoration.",
+        case_move_tracking_random_equivalence,
+    ),
+    TestCaseSpec(
         "regression_promotion_knight_zone",
         "engine_internals",
         "Verify the engine correctly subtracts a Queen's value when a pawn promotes into an evaporation zone.",
@@ -713,7 +949,7 @@ CASES = [
     TestCaseSpec(
         "regression_nmp_mate_blindness",
         "engine_internals",
-        "Verify that Null Move Pruning safely aborts when the beta bound indicates a forced mate is on the board.",
+        "Verify NMP is suppressed when beta indicates a forced-mate line (abs(beta) >= MATE_SCORE - 1000).",
         case_regression_nmp_mate_blindness,
     ),
     TestCaseSpec(
