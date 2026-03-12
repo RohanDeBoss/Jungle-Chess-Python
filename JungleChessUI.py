@@ -1,4 +1,4 @@
-# JungleChessUI.py (v13.2 - Bottom-Clamped FEN/PGN & Instant Scoreboard)
+# JungleChessUI.py (v14 - New time management)
 
 import tkinter as tk
 from tkinter import ttk, messagebox
@@ -29,9 +29,16 @@ _CLASS_TO_FEN_CHAR = {
 }
 
 def run_ai_process(board, color, position_counts, comm_queue, cancellation_event,
-                   bot_class, bot_name, search_depth, ply_count, game_mode):
-    bot = bot_class(board, color, position_counts, comm_queue, cancellation_event,
-                    bot_name, ply_count, game_mode)
+                   bot_class, bot_name, search_depth, ply_count, game_mode,
+                   time_left=None, increment=None):
+    try:
+        # Pass time controls down to the new AI
+        bot = bot_class(board, color, position_counts, comm_queue, cancellation_event,
+                        bot_name, ply_count, game_mode, time_left=time_left, increment=increment)
+    except TypeError:
+        # Fallback just in case you haven't updated OpponentAI.py yet!
+        bot = bot_class(board, color, position_counts, comm_queue, cancellation_event,
+                        bot_name, ply_count, game_mode)
     bot.search_depth = search_depth
     if search_depth == 99:
         bot.ponder_indefinitely()
@@ -97,6 +104,15 @@ class EnhancedChessApp:
         self.last_eval_depth = None
         self.last_eval_bar_w = 0
         self.last_eval_bar_h = 0
+
+        # --- TIME STATE ---
+        self.time_control_seconds = tk.IntVar(value=300)
+        self.white_time = 0.0
+        self.black_time = 0.0
+        self.increment = 0.0
+        self.last_clock_tick = None
+        self.clock_running = False
+        # ------------------
 
         self.COLORS = self.setup_styles()
         self.master.configure(bg=self.COLORS['bg_dark'])
@@ -241,7 +257,7 @@ class EnhancedChessApp:
         self.flip_view_btn.pack(fill=tk.X, pady=3)
         ttk.Button(self.controls_frame, text="AI vs OP Series", command=self.start_ai_series,  style='Control.TButton').pack(fill=tk.X, pady=3)
 
-        ttk.Label(self.controls_frame, text="Bot Depth:", style='SmallHeader.TLabel').pack(anchor=tk.W, pady=(10, 0))
+        ttk.Label(self.controls_frame, text="Depth:", style='SmallHeader.TLabel').pack(anchor=tk.W, pady=(10, 0))
         self.bot_depth_slider = tk.Scale(
             self.controls_frame, from_=1, to=self.slidermaxvalue, orient=tk.HORIZONTAL,
             bg=self.COLORS['bg_dark'], fg=self.COLORS['text_light'],
@@ -272,6 +288,41 @@ class EnhancedChessApp:
         self.game_info_label.pack(anchor=tk.W)
         self.turn_label = ttk.Label(self.info_frame, text="WHITE'S TURN", style='Status.TLabel')
         self.turn_label.pack(fill=tk.X, pady=(5, 5))
+
+        # --- CLOCK UI ---
+        self.clock_frame = ttk.Frame(self.info_frame, style='Left.TFrame')
+        self.clock_frame.pack(fill=tk.X, pady=(5, 5))
+
+        self.black_clock_lbl = tk.Label(
+            self.clock_frame, text="00:00.0", font=('Courier', 20, 'bold'),
+            bg=self.COLORS['bg_medium'], fg=self.COLORS['text_light'], pady=4)
+        self.black_clock_lbl.pack(side=tk.TOP, fill=tk.X, pady=2)
+
+        self.white_clock_lbl = tk.Label(
+            self.clock_frame, text="00:00.0", font=('Courier', 20, 'bold'),
+            bg=self.COLORS['bg_light'], fg=self.COLORS['text_light'], pady=4)
+        self.white_clock_lbl.pack(side=tk.BOTTOM, fill=tk.X, pady=2)
+        # ----------------
+
+        # --- TIME CONTROL SLIDER ---
+        self.time_control_frame = ttk.Frame(self.info_frame, style='Left.TFrame')
+        self.time_control_frame.pack(fill=tk.X, pady=(5, 5))
+
+        self.time_control_label = ttk.Label(
+            self.time_control_frame, text="Time Control: 05:00",
+            style='SmallHeader.TLabel')
+        self.time_control_label.pack(anchor=tk.W)
+
+        self.time_control_slider = tk.Scale(
+            self.time_control_frame, from_=10, to=600, orient=tk.HORIZONTAL,
+            bg=self.COLORS['bg_dark'], fg=self.COLORS['text_light'],
+            highlightthickness=0, relief='flat', showvalue=False,
+            variable=self.time_control_seconds,
+            command=lambda _=None: self._update_time_control_label())
+        self.time_control_slider.set(int(self.time_control_seconds.get()))
+        self.time_control_slider.pack(fill=tk.X, pady=(2, 2))
+        self.time_control_slider.bind("<ButtonRelease-1>", lambda e: self.reset_game())
+        # ---------------------------
 
         # 2. Move History
         ttk.Label(parent_frame, text="Move History", style='SmallHeader.TLabel').pack(anchor=tk.W)
@@ -685,7 +736,20 @@ class EnhancedChessApp:
 
     # ------------------------------------------------------------------ core gameplay
     def execute_move_and_check_state(self, player_who_moved, move):
+        # --- ADD INCREMENT ---
+        if not self.game_over and self.increment:
+            if player_who_moved == 'white':
+                self.white_time += self.increment
+            else:
+                self.black_time += self.increment
+            self.render_clocks()
+        # ---------------------
+
         self.switch_turn()
+        if not self.game_over and not self.clock_running:
+            self.last_clock_tick = time.time()
+            self.clock_running = True
+            self._tick_clock()
         if self.history_pointer < len(self.full_history) - 1:
             self.full_history = self.full_history[:self.history_pointer + 1]
             self.position_counts.clear()
@@ -803,6 +867,17 @@ class EnhancedChessApp:
         self.selected, self.valid_moves = None, []
 
         self._reset_game_state_vars()
+
+        # --- TIME RESET ---
+        base_seconds = float(self.time_control_seconds.get())
+        self.white_time = base_seconds
+        self.black_time = base_seconds
+        self.increment = base_seconds / 60.0
+        self.clock_running = False # Starts on first move
+        self._update_time_control_label()
+        self.render_clocks()
+        # ------------------
+
         self.fen_entry.delete(0, tk.END)
         self.pgn_entry.delete(0, tk.END)
         self._start_game_if_needed()
@@ -1078,9 +1153,16 @@ class EnhancedChessApp:
         if self.ai_process and self.ai_process.is_alive():
             return
         self.ai_cancellation_event.clear()
+        
+        # --- TIME PASS-DOWN ---
+        time_left = self.white_time if self.turn == 'white' else self.black_time
+        inc = self.increment
+        # ----------------------
+
         args = (self.board.clone(), self.turn, self.position_counts.copy(),
                 self.comm_queue, self.ai_cancellation_event,
-                bot_class, bot_name, search_depth, self.history_pointer, self.game_mode.get())
+                bot_class, bot_name, search_depth, self.history_pointer, self.game_mode.get(),
+                time_left, inc)
         self.ai_process      = mp.Process(target=run_ai_process, args=args, daemon=True)
         self.ai_process.name = bot_name
         self.ai_process.start()
@@ -1120,6 +1202,71 @@ class EnhancedChessApp:
     def _start_game_if_needed(self):
         if not self.game_started:
             self.game_started = True
+
+    def _update_time_control_label(self):
+        t = int(self.time_control_seconds.get())
+        m = t // 60
+        s = t % 60
+        self.time_control_label.config(text=f"Time Control: {m:02d}:{s:02d}")
+
+    def render_clocks(self):
+        self.clock_frame.pack(after=self.turn_label, fill=tk.X, pady=(5, 5))
+
+        def fmt(t):
+            if t < 0: t = 0
+            m = int(t) // 60
+            s = int(t) % 60
+            ms = int((t - int(t)) * 10)
+            return f"{m:02d}:{s:02d}.{ms}"
+
+        self.white_clock_lbl.config(text=f"W: {fmt(self.white_time)}")
+        self.black_clock_lbl.config(text=f"B: {fmt(self.black_time)}")
+
+        # Highlight active clock
+        if self.turn == 'white' and not self.game_over:
+            self.white_clock_lbl.config(bg=self.COLORS['accent'], fg=self.COLORS['text_light'])
+            self.black_clock_lbl.config(bg=self.COLORS['bg_medium'], fg=self.COLORS['text_dark'])
+        elif self.turn == 'black' and not self.game_over:
+            self.white_clock_lbl.config(bg=self.COLORS['bg_light'], fg=self.COLORS['text_dark'])
+            self.black_clock_lbl.config(bg=self.COLORS['accent'], fg=self.COLORS['text_light'])
+        else:
+            self.white_clock_lbl.config(bg=self.COLORS['bg_light'], fg=self.COLORS['text_light'])
+            self.black_clock_lbl.config(bg=self.COLORS['bg_medium'], fg=self.COLORS['text_light'])
+
+    def _tick_clock(self):
+        if not self.clock_running or self.game_over:
+            return
+
+        now = time.time()
+        elapsed = now - self.last_clock_tick
+        self.last_clock_tick = now
+
+        if self.turn == 'white':
+            self.white_time -= elapsed
+            if self.white_time <= 0:
+                self.white_time = 0
+                self.handle_timeout('white')
+        else:
+            self.black_time -= elapsed
+            if self.black_time <= 0:
+                self.black_time = 0
+                self.handle_timeout('black')
+
+        self.render_clocks()
+
+        if not self.game_over:
+            self.master.after(50, self._tick_clock)
+
+    def handle_timeout(self, color):
+        self.game_over = True
+        self.clock_running = False
+        winner = 'black' if color == 'white' else 'white'
+        self.game_result = ('timeout', winner)
+        self.update_turn_label()
+        self._log_game_over()
+        self._stop_ai_process()
+        if self.game_mode.get() == GameMode.AI_VS_AI.value and self.ai_series_running:
+            self.process_ai_series_result()
 
     def _log_game_over(self):
         if self.game_result:

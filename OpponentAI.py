@@ -1,4 +1,4 @@
-# OPAI.py (v98.8 - Good Baseline for testing)
+# OPAI.py (v98.9 - Good Baseline for testing, time management support)
 
 import time
 import random
@@ -113,7 +113,9 @@ class OpponentAI:
     EVAL_ROOK_PAWN_SCALING = 5
     KNIGHT_ACTIVITY_BONUS = 12
 
-    def __init__(self, board, color, position_counts, comm_queue, cancellation_event, bot_name=None, ply_count=0, game_mode="bot", max_moves=200):
+    def __init__(self, board, color, position_counts, comm_queue, cancellation_event,
+                 bot_name=None, ply_count=0, game_mode="bot", max_moves=200,
+                 time_left=None, increment=None):
         self.board = board
         self.color = color
         self.opponent_color = 'black' if color == 'white' else 'white'
@@ -123,6 +125,12 @@ class OpponentAI:
         self.ply_count = ply_count
         self.game_mode = game_mode
         self.max_moves = max_moves
+
+        # --- TIME MANAGEMENT ---
+        self.time_left = time_left
+        self.increment = increment
+        self.stop_time = None
+        # -----------------------
         
         self.tb_manager = TablebaseManager()
         
@@ -364,7 +372,7 @@ class OpponentAI:
     def make_move(self):
         try:
             self._age_history_table()
-            if len(self.board.white_pieces) + len(self.board.black_pieces) <= 4: 
+            if len(self.board.white_pieces) + len(self.board.black_pieces) <= 4:
                 tb_move, tb_eval = self._get_best_tablebase_move_with_eval()
                 if self._report_root_tb_solution(tb_move, tb_eval, emit_move=True): return
 
@@ -372,43 +380,68 @@ class OpponentAI:
             if not root_moves:
                 self._report_move(None)
                 return
-            
+
             best_move_overall = root_moves[0]
             prev_iter_score = None
             total_nodes = 0
             root_hash = board_hash(self.board, self.color)
-            for current_depth in range(1, self.search_depth + 1):
+
+            # --- TIME ALLOCATION STRATEGY ---
+            if self.time_left is not None and self.increment is not None:
+                # Target time: ~1/30th of remaining time + 80% of the increment
+                allocated = (self.time_left / 30.0) + (self.increment * 0.8)
+                # Never spend more than we have (leave a 0.1s buffer so we don't flag)
+                if allocated >= self.time_left - 0.1:
+                    allocated = max(0.1, self.time_left - 0.1)
+                self.stop_time = time.time() + allocated
+                target_depth = 100  # Will be aborted by time
+            else:
+                self.stop_time = None
+                target_depth = self.search_depth
+            # --------------------------------
+
+            for current_depth in range(1, target_depth + 1):
                 iter_start_time = time.time()
                 best_score_this_iter, best_move_this_iter = self._run_depth_iteration(
                     current_depth, root_moves, root_hash, best_move_overall, prev_iter_score=prev_iter_score
                 )
-                
-                if not self.cancellation_event.is_set():
-                    best_move_overall = best_move_this_iter
-                    prev_iter_score = best_score_this_iter
-                    total_nodes += self.nodes_searched
-                    iter_duration = time.time() - iter_start_time
-                    knps = (self.nodes_searched / iter_duration / 1000) if iter_duration > 0 else 0
-                    eval_for_ui = best_score_this_iter if self.color == 'white' else -best_score_this_iter
-                    move_str = self._format_move(self.board, best_move_this_iter)
-                    depth_label = "TB" if not self.used_heuristic_eval else current_depth
-                    
-                    self._report_log(f"  > {self.bot_name} (D{depth_label}): {move_str}, Eval={eval_for_ui/100:+.2f}, NodesTotal={total_nodes}, KNPS={knps:.1f}, TBhits={self.tb_hits}, Time={iter_duration:.2f}s")
-                    self._report_eval(best_score_this_iter, depth_label)
 
-                    # --- PV BROADCAST ---
-                    ui_eval = best_score_this_iter if self.color == 'white' else -best_score_this_iter
-                    pv_str, pv_raw = self._get_pv_data(current_depth, best_move_this_iter)
-                    self.comm_queue.put(('pv', ui_eval, depth_label, pv_str, pv_raw))
-                    # --------------------
-
-                    if best_score_this_iter > self.MATE_SCORE - 2000: break
-                else:
+                if self.cancellation_event.is_set():
                     raise SearchCancelledException()
-            
+
+                # Time check AFTER an iteration completes
+                if self.stop_time and time.time() > self.stop_time:
+                    best_move_overall = best_move_this_iter
+                    break # Out of time! Drop out of loop and play the move.
+
+                best_move_overall = best_move_this_iter
+                prev_iter_score = best_score_this_iter
+                total_nodes += self.nodes_searched
+                iter_duration = time.time() - iter_start_time
+                knps = (self.nodes_searched / iter_duration / 1000) if iter_duration > 0 else 0
+                eval_for_ui = best_score_this_iter if self.color == 'white' else -best_score_this_iter
+                depth_label = "TB" if not self.used_heuristic_eval else current_depth
+
+                self._report_log(f"  > {self.bot_name} (D{depth_label}): {self._format_move(self.board, best_move_this_iter)}, Eval={eval_for_ui/100:+.2f}, NodesTotal={total_nodes}, KNPS={knps:.1f}, TBhits={self.tb_hits}, Time={iter_duration:.2f}s")
+                self._report_eval(best_score_this_iter, depth_label)
+
+                # --- PV BROADCAST ---
+                ui_eval = best_score_this_iter if self.color == 'white' else -best_score_this_iter
+                pv_str, pv_raw = self._get_pv_data(current_depth, best_move_this_iter)
+                self.comm_queue.put(('pv', ui_eval, depth_label, pv_str, pv_raw))
+                # --------------------
+
+                if best_score_this_iter > self.MATE_SCORE - 2000: break
+
             self._report_move(best_move_overall)
         except SearchCancelledException:
-            self._report_move(None)
+            # Did the user click "New Game"?
+            if self.cancellation_event.is_set():
+                self._report_move(None)
+            else:
+                # Time limit expired MID-SEARCH.
+                # Discard the incomplete iteration, and play the Best Move from the LAST depth!
+                self._report_move(best_move_overall)
 
     def ponder_indefinitely(self):
         try:
@@ -529,8 +562,13 @@ class OpponentAI:
         return best_score_this_iter, best_move_this_iter
 
     def negamax(self, board, depth, alpha, beta, turn, ply, search_path, current_hash=None, prev_move=None):
+        # --- FAST CLOCK CHECK ---
         self.nodes_searched += 1
-        if self.cancellation_event.is_set(): raise SearchCancelledException()
+        # Bitwise AND is extremely fast. We only check the clock every 2048 nodes!
+        if (self.nodes_searched & 2047) == 0:
+            if self.cancellation_event.is_set() or (self.stop_time and time.time() > self.stop_time):
+                raise SearchCancelledException()
+        # ------------------------
 
         # --- 1. TABLEBASE / MATE LOOKUPS ---
         if len(board.white_pieces) + len(board.black_pieces) <= 4:
@@ -677,8 +715,12 @@ class OpponentAI:
             if path_added: search_path.remove(hash_val)
 
     def qsearch(self, board, alpha, beta, turn, ply):
+        # --- FAST CLOCK CHECK ---
         self.nodes_searched += 1
-        if self.cancellation_event.is_set(): raise SearchCancelledException()
+        if (self.nodes_searched & 2047) == 0:
+            if self.cancellation_event.is_set() or (self.stop_time and time.time() > self.stop_time):
+                raise SearchCancelledException()
+        # ------------------------
 
         # 1. Tablebase / Material / Depth Termination
         if len(board.white_pieces) + len(board.black_pieces) <= 4:
