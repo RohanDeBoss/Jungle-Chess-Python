@@ -32,9 +32,9 @@ DATA_FILE               = "tuner_positions.json"
 CHECKPOINT_EVERY        = 50    # Flush partial results every N games (crash safety)
 
 OPENING_EVAL_THRESHOLD  = 400   # cp — discard game if post-opening eval exceeds this
-OPENING_SCREEN_DEPTH    = 2     # Depth for the opening screen check
+OPENING_SCREEN_DEPTH    = 6     # Depth for the opening screen check
 MAX_REGENERATION_TRIES  = 10    # Max attempts to find a balanced opening per game slot
-TB_ADJUDICATION_PIECES  = 5     # Probe TB and adjudicate if total pieces <= this
+TB_ADJUDICATION_PIECES  = 4     # Probe TB and adjudicate if total pieces <= this
 
 COORD_ROUNDS            = 12    # Max rounds per step size
 K_CALIBRATION_STEPS     = 40    # Golden-section steps to find optimal sigmoid K

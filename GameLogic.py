@@ -1,4 +1,4 @@
-# GameLogic.py (v50.1 - promotion bug fix)
+# GameLogic.py (v51 - make/unmake move support)
 
 # -----------------------------
 # Global Constants
@@ -17,25 +17,19 @@ DIRECTIONS = {
 }
 ADJACENT_DIRS = DIRECTIONS['king']
 
-# BISHOP_ZIGZAG_DIRS pulled out to a constant to avoid reallocation inside the loop
 BISHOP_ZIGZAG_DIRS = (
-    ((-1, 1), (-1, -1)), ((-1, -1), (-1, 1)), # Forward zig-zags
-    ((1, 1), (1, -1)), ((1, -1), (1, 1)),     # Backward zig-zags
-    ((-1, 1), (1, 1)), ((1, 1), (-1, 1)),     # Rightward zig-zags
-    ((-1, -1), (1, -1)), ((1, -1), (-1, -1))  # Leftward zig-zags
+    ((-1, 1), (-1, -1)), ((-1, -1), (-1, 1)),
+    ((1, 1), (1, -1)), ((1, -1), (1, 1)),
+    ((-1, 1), (1, 1)), ((1, 1), (-1, 1)),
+    ((-1, -1), (1, -1)), ((1, -1), (-1, -1))
 )
 
-# --- Pre-computation Maps for Performance ---
 KNIGHT_ATTACKS_FROM = { (r, c):[(r+dr, c+dc) for dr, dc in DIRECTIONS['knight'] if 0 <= r+dr < ROWS and 0 <= c+dc < COLS] for r in range(ROWS) for c in range(COLS) }
 ADJACENT_SQUARES_MAP = { (r, c):[(r+dr, c+dc) for dr, dc in ADJACENT_DIRS if 0 <= r+dr < ROWS and 0 <= c+dc < COLS] for r in range(ROWS) for c in range(COLS) }
 
-# ------------------------------------------------------------
-# Precomputed Rays for ultra-fast threat detection
-# ------------------------------------------------------------
 RAYS = [[[] for _ in range(8)] for _ in range(64)]
 
 def _init_rays():
-    # Order: N, S, E, W (Orthogonal 0-3), NE, NW, SE, SW (Diagonal 4-7)
     dy_dx =[(-1, 0), (1, 0), (0, 1), (0, -1), (-1, 1), (-1, -1), (1, 1), (1, -1)]
     for r in range(ROWS):
         for c in range(COLS):
@@ -49,7 +43,6 @@ def _init_rays():
 _init_rays()
 
 def _clone_piece_fast(piece):
-    """Fast clone for search boards: bypass __init__ and copy stable fields directly."""
     cls = piece.__class__
     new_piece = cls.__new__(cls)
     new_piece.color = piece.color
@@ -61,7 +54,7 @@ def _clone_piece_fast(piece):
     return new_piece
 
 # ---------------------------------------------------
-# PIECE CLASSES: THE SINGLE SOURCE OF TRUTH
+# PIECE CLASSES
 # ---------------------------------------------------
 class Piece:
     def __init__(self, color):
@@ -80,7 +73,6 @@ class Piece:
 class King(Piece):
     def symbol(self): return "♔" if self.color == "white" else "♚"
     def get_valid_moves(self, board, pos):
-        # The King can dash 2 squares through attacked squares, but NOT through occupied squares.
         moves =[]
         r_start, c_start = pos
         for dr, dc in DIRECTIONS['king']:
@@ -127,7 +119,7 @@ class Rook(Piece):
 class Bishop(Piece):
     def symbol(self): return "♗" if self.color == "white" else "♝"
     def get_valid_moves(self, board, pos):
-        moves = {} 
+        moves = {}
         grid = board.grid
         r_start, c_start = pos
         start_index = r_start * COLS + c_start
@@ -140,7 +132,7 @@ class Bishop(Piece):
                         moves[(r, c)] = None
                     break
                 moves[(r, c)] = None
-                
+
         for d1, d2 in BISHOP_ZIGZAG_DIRS:
             cr, cc, cd = r_start, c_start, d1
             while True:
@@ -151,14 +143,13 @@ class Bishop(Piece):
                     if target.color != self.color: moves[(cr, cc)] = None
                     break
                 moves[(cr, cc)] = None; cd = d2 if cd == d1 else d1
-                
+
         return list(moves)
-    
+
 class Knight(Piece):
     def symbol(self): return "♘" if self.color == "white" else "♞"
     def get_valid_moves(self, board, pos):
-        # Knights can ONLY jump to empty squares in this variant!
-        return[(r, c) for r, c in KNIGHT_ATTACKS_FROM[pos] 
+        return[(r, c) for r, c in KNIGHT_ATTACKS_FROM[pos]
                 if board.grid[r][c] is None]
 
 class Pawn(Piece):
@@ -174,7 +165,7 @@ class Pawn(Piece):
         r, c = pos
         direction = self.direction
         grid = board.grid
-        
+
         one_r = r + direction
         if 0 <= one_r < ROWS:
             target1 = grid[one_r][c]
@@ -195,7 +186,37 @@ class Pawn(Piece):
             if target and target.color == self.opponent_color:
                 moves.append((r, c+1))
         return moves
-        
+
+
+# ---------------------------------------------------
+# MOVE RECORD — lightweight snapshot for make/unmake
+# ---------------------------------------------------
+class MoveRecord:
+    """
+    Records all board mutations caused by one call to make_move_track() so they
+    can be reversed exactly by unmake_move().
+
+    removed_pieces : list[(piece, r, c)]  — every piece removed from the board
+    added_pieces   : list[(piece, r, c)]  — every piece added  (promotions only)
+
+    Design invariants
+    -----------------
+    * The moving piece always appears in removed_pieces when it self-destructs
+      (queen explosion, knight self-evap, pawn promotion).  unmake_move skips it
+      there and restores it via the 'mp_pos is None' branch instead.
+    * Pieces created during this move (promoted queens) are tracked in added_pieces
+      AND possibly in removed_pieces (if immediately evaporated).  unmake_move
+      uses added_ids to skip re-adding them in step 3.
+    """
+    __slots__ = ('start', 'end', 'moving_piece', 'removed_pieces', 'added_pieces')
+
+    def __init__(self, start, end, moving_piece):
+        self.start = start
+        self.end = end
+        self.moving_piece = moving_piece
+        self.removed_pieces = []   # (piece, r, c)
+        self.added_pieces   = []   # (piece, r, c)  — promotion queens only
+
 
 # ---------------------------------------------
 # Board Class
@@ -208,7 +229,7 @@ class Board:
         self.white_pieces = []
         self.black_pieces =[]
         self.piece_counts = {
-            'white': {Pawn:0, Knight:0, Bishop:0, Rook:0, Queen:0, King:0}, 
+            'white': {Pawn:0, Knight:0, Bishop:0, Rook:0, Queen:0, King:0},
             'black': {Pawn:0, Knight:0, Bishop:0, Rook:0, Queen:0, King:0}
         }
         if setup: self._setup_initial_board()
@@ -225,33 +246,28 @@ class Board:
         piece.pos = (r, c)
         if piece.color == 'white': self.white_pieces.append(piece)
         else: self.black_pieces.append(piece)
-        
         self.piece_counts[piece.color][type(piece)] += 1
-        
+         # --- BUG FIX STARTS HERE ---
         if isinstance(piece, King):
-            if piece.color == "white": self.white_king_pos = (r, c)
-            else: self.black_king_pos = (r, c)
-            
+            if piece.color == 'white': self.white_king_pos = (r, c)
+            else:                      self.black_king_pos = (r, c)
+        # --- BUG FIX ENDS HERE ---
+
     def remove_piece(self, r, c):
         piece = self.grid[r][c]
         if not piece: return
-        
-        # Fast removal without the O(N) `in` check overhead
         try:
             if piece.color == 'white':
                 self.white_pieces.remove(piece)
-            else: 
+            else:
                 self.black_pieces.remove(piece)
         except ValueError:
             pass
-            
         self.piece_counts[piece.color][type(piece)] -= 1
-            
         if isinstance(piece, King):
             if piece.color == "white": self.white_king_pos = None
             else: self.black_king_pos = None
-                
-        piece.pos = None 
+        piece.pos = None
         self.grid[r][c] = None
 
     def move_piece(self, start, end):
@@ -267,7 +283,6 @@ class Board:
     def find_king_pos(self, color): return self.white_king_pos if color == 'white' else self.black_king_pos
 
     def clone(self):
-        # Hot path: bypass __init__ to avoid repeated setup=False construction costs.
         new_board = Board.__new__(Board)
         new_board.grid = [[None] * COLS for _ in range(ROWS)]
         new_board.white_king_pos = self.white_king_pos
@@ -286,7 +301,6 @@ class Board:
             r, c = p.pos
             grid[r][c] = p
 
-        # Note: Shallow copy is perfectly safe here as the inner values are immutable ints.
         piece_counts = self.piece_counts
         new_board.piece_counts = {
             'white': piece_counts['white'].copy(),
@@ -297,14 +311,14 @@ class Board:
     def make_move(self, start, end):
         moving_piece = self.grid[start[0]][start[1]]
         if not moving_piece: return
-        
+
         target_piece = self.grid[end[0]][end[1]]
         is_capture = target_piece is not None
-        
+
         if isinstance(moving_piece, Rook): self._apply_rook_piercing(start, end, moving_piece.color)
         if is_capture: self.remove_piece(end[0], end[1])
         self.move_piece(start, end)
-        
+
         if isinstance(moving_piece, Queen) and is_capture:
             self._apply_queen_aoe(end, moving_piece.color)
         elif isinstance(moving_piece, Pawn):
@@ -314,6 +328,197 @@ class Board:
                 self.add_piece(Queen(moving_piece.color), end[0], end[1])
 
         self._apply_knight_aoe(end, is_active_move=isinstance(moving_piece, Knight))
+
+    # ------------------------------------------------------------------
+    # make_move_track / unmake_move  (used by search — no allocation)
+    # ------------------------------------------------------------------
+
+    def make_move_track(self, start, end):
+        """
+        Execute a move exactly like make_move() but return a MoveRecord that
+        allows the board to be restored perfectly via unmake_move().
+
+        All Jungle Chess side-effects are inlined here so every board mutation
+        is captured in the record:
+          • Rook piercing
+          • Queen AOE self-explosion
+          • Pawn promotion (+ the new queen's passive evaporation, if any)
+          • Active knight evaporation chains (including mutual annihilation)
+          • Passive knight evaporation (non-knight lands in a kill zone)
+        """
+        moving_piece = self.grid[start[0]][start[1]]
+        record = MoveRecord(start, end, moving_piece)
+        removed = record.removed_pieces
+        mc = moving_piece.color
+
+        target_piece = self.grid[end[0]][end[1]]
+        is_capture = target_piece is not None
+
+        # ── 1. Rook piercing: destroy enemy pieces along the path (excl. end) ──
+        if isinstance(moving_piece, Rook):
+            dr = (end[0] > start[0]) - (start[0] > end[0])
+            dc = (end[1] > start[1]) - (start[1] > end[1])
+            cr, cc = start[0] + dr, start[1] + dc
+            while (cr, cc) != end:
+                t = self.grid[cr][cc]
+                if t is not None and t.color != mc:
+                    removed.append((t, cr, cc))
+                    self.remove_piece(cr, cc)
+                cr += dr; cc += dc
+
+        # ── 2. Remove the piece on the end square (standard capture) ──
+        if is_capture:
+            removed.append((target_piece, end[0], end[1]))
+            self.remove_piece(end[0], end[1])
+
+        # ── 3. Move the piece ──
+        self.move_piece(start, end)
+
+        # ── 4. Queen AOE explosion ──
+        if isinstance(moving_piece, Queen) and is_capture:
+            # Queen self-destructs at end
+            removed.append((moving_piece, end[0], end[1]))
+            self.remove_piece(end[0], end[1])
+            # Destroy all adjacent enemies
+            for r, c in ADJACENT_SQUARES_MAP.get(end, ()):
+                adj = self.grid[r][c]
+                if adj is not None and adj.color != mc:
+                    removed.append((adj, r, c))
+                    self.remove_piece(r, c)
+
+        # ── 5. Pawn promotion ──
+        elif isinstance(moving_piece, Pawn):
+            promo_rank = 0 if mc == "white" else (ROWS - 1)
+            if end[0] == promo_rank:
+                removed.append((moving_piece, end[0], end[1]))
+                self.remove_piece(end[0], end[1])
+                new_queen = Queen(mc)
+                self.add_piece(new_queen, end[0], end[1])
+                record.added_pieces.append((new_queen, end[0], end[1]))
+
+        # ── 6. Knight AOE ──
+        grid = self.grid
+        if isinstance(moving_piece, Knight):
+            # Active evaporation: the knight just moved; process all side-effects.
+            knight_instance = grid[end[0]][end[1]]
+            if knight_instance is not None:
+                captured_ev, passive_losses, enemy_knights = \
+                    self._collect_knight_evaporation(end, mc, knight_instance)
+                delayed = set(enemy_knights)
+                done = set()
+
+                # First pass: non-delayed, non-self pieces
+                for piece in captured_ev + passive_losses:
+                    if (piece is None or piece is knight_instance or
+                            piece in delayed or piece in done or piece.pos is None):
+                        continue
+                    removed.append((piece, piece.pos[0], piece.pos[1]))
+                    self.remove_piece(piece.pos[0], piece.pos[1])
+                    done.add(piece)
+
+                # Second pass: enemy knights (counter-evaporate)
+                for ek in enemy_knights:
+                    if ek.pos is not None:
+                        removed.append((ek, ek.pos[0], ek.pos[1]))
+                        self.remove_piece(ek.pos[0], ek.pos[1])
+
+                # Last: check if the moving knight itself self-evaporated
+                if knight_instance in passive_losses and knight_instance.pos is not None:
+                    removed.append((knight_instance, end[0], end[1]))
+                    self.remove_piece(end[0], end[1])
+
+        else:
+            # Passive evaporation: did the piece that just arrived land in an
+            # enemy knight's kill zone?
+            victim = grid[end[0]][end[1]]
+            if victim is not None:
+                for r, c in KNIGHT_ATTACKS_FROM[end]:
+                    killer = grid[r][c]
+                    if (killer is not None and type(killer) is Knight
+                            and killer.color != victim.color):
+                        removed.append((victim, end[0], end[1]))
+                        self.remove_piece(end[0], end[1])
+                        break
+
+        return record
+
+    def unmake_move(self, record):
+        """
+        Restore the board to the exact state it was in before make_move_track()
+        was called.  No board cloning needed; every mutation is reversed in place.
+
+        Steps
+        -----
+        1. Undo promoted pieces (remove queen that was placed by promotion).
+        2. Restore the moving piece to its start square.
+        3. Restore every piece that was removed during the move.
+
+        Edge cases handled
+        ------------------
+        • Queen/knight self-destruction:   moving_piece.pos is None  → re-added at start.
+        • Promoted queen that was immediately evaporated: appears in both
+          added_pieces and removed_pieces; added_ids guards against double-restore.
+        • Pawn promotion (queen still alive): queen removed in step 1, pawn re-added
+          at start in step 2.
+        """
+        start, end = record.start, record.end
+        moving_piece = record.moving_piece
+        removed = record.removed_pieces
+
+        # IDs of pieces *created* during this move; must NOT be re-added in step 3
+        # even if they also appear in removed_pieces (e.g. promoted-then-evaporated queen).
+        added_ids = {id(p) for p, _r, _c in record.added_pieces} if record.added_pieces else set()
+
+        # ── 1. Undo promoted pieces ──
+        for piece, r, c in reversed(record.added_pieces):
+            if piece.pos is not None:          # still on the board
+                self.grid[r][c] = None
+                piece.pos = None
+                try:
+                    if piece.color == 'white': self.white_pieces.remove(piece)
+                    else:                      self.black_pieces.remove(piece)
+                except ValueError:
+                    pass
+                self.piece_counts[piece.color][type(piece)] -= 1
+            # else: already evaporated — piece_counts already decremented by remove_piece
+
+        # ── 2. Restore the moving piece to start ──
+        mp_pos = moving_piece.pos
+        if mp_pos is not None:
+            # Still on the board (at end, or wherever move_piece left it)
+            self.grid[mp_pos[0]][mp_pos[1]] = None
+            self.grid[start[0]][start[1]] = moving_piece
+            moving_piece.pos = start
+            if isinstance(moving_piece, King):
+                if moving_piece.color == 'white': self.white_king_pos = start
+                else:                             self.black_king_pos = start
+        else:
+            # Removed during the move (queen explosion, knight self-evap, pawn promo)
+            self.grid[start[0]][start[1]] = moving_piece
+            moving_piece.pos = start
+            if moving_piece.color == 'white': self.white_pieces.append(moving_piece)
+            else:                             self.black_pieces.append(moving_piece)
+            self.piece_counts[moving_piece.color][type(moving_piece)] += 1
+            if isinstance(moving_piece, King):
+                if moving_piece.color == 'white': self.white_king_pos = start
+                else:                             self.black_king_pos = start
+
+        # ── 3. Restore all removed pieces ──
+        for piece, r, c in removed:
+            if piece is moving_piece:   continue   # handled above
+            if id(piece) in added_ids:  continue   # created+destroyed this move
+            self.grid[r][c] = piece
+            piece.pos = (r, c)
+            if piece.color == 'white': self.white_pieces.append(piece)
+            else:                      self.black_pieces.append(piece)
+            self.piece_counts[piece.color][type(piece)] += 1
+            if isinstance(piece, King):
+                if piece.color == 'white': self.white_king_pos = (r, c)
+                else:                      self.black_king_pos = (r, c)
+
+    # ------------------------------------------------------------------
+    # Original special-effect helpers (used by make_move and make_move_track)
+    # ------------------------------------------------------------------
 
     def _apply_queen_aoe(self, pos, queen_color):
         if self.grid[pos[0]][pos[1]]: self.remove_piece(pos[0], pos[1])
@@ -359,7 +564,7 @@ class Board:
                 if (potential_killer and isinstance(potential_killer, Knight) and potential_killer.color != victim.color):
                     self.remove_piece(pos[0], pos[1])
                     return
-                    
+
     def _get_rook_piercing_captures(self, start, end, rook_color):
         captured = []
         dr = (end[0] > start[0]) - (start[0] > end[0])
@@ -377,7 +582,7 @@ class Board:
             adj_piece = self.grid[r][c]
             if adj_piece and adj_piece.color != queen_color: captured.append(adj_piece)
         return captured
-    
+
     def _collect_knight_evaporation(self, knight_pos, knight_color, self_piece=None):
         captured = []
         passive_losses = []
@@ -398,7 +603,6 @@ class Board:
                     continue
                 for r, c in KNIGHT_ATTACKS_FROM.get(enemy_knight.pos, ()):
                     target = self_piece if (r, c) == knight_pos else self.grid[r][c]
-                    # List inclusion check is highly performant here due to tiny array size (max 8)
                     if target and target.color == knight_color and target not in passive_losses:
                         passive_losses.append(target)
 
@@ -433,8 +637,8 @@ class Board:
                 friendly_lost.add(moving_piece)
 
         if not isinstance(moving_piece, Knight):
-            if isinstance(moving_piece, Queen) and is_capture: passive_victim_type = None 
-            elif promotion_type is not None: passive_victim_type = Queen 
+            if isinstance(moving_piece, Queen) and is_capture: passive_victim_type = None
+            elif promotion_type is not None: passive_victim_type = Queen
             else: passive_victim_type = type(moving_piece)
 
             if passive_victim_type is not None:
@@ -443,15 +647,13 @@ class Board:
                     if (potential_killer and isinstance(potential_killer, Knight) and
                         potential_killer.color != moving_piece.color and
                         potential_killer not in opponent_captured):
-                        
-                        # Note: We append a newly instantiated "Ghost Piece" here so calculate_material_swing
-                        # can properly read its type without needing special string parsing logic.
                         friendly_lost.add(passive_victim_type(moving_piece.color))
                         break
         return friendly_lost, opponent_captured, promotion_type
 
+
 # ----------------------------------------------------
-# GLOBAL GAME LOGIC: ROBUST & CENTRALIZED
+# GLOBAL GAME LOGIC
 # ----------------------------------------------------
 def _bishop_attacks_square(board, start, target, bishop_color):
     tr, tc = target
@@ -479,17 +681,11 @@ def _bishop_attacks_square(board, start, target, bishop_color):
     return False
 
 def is_square_attacked(board, r, c, attacking_color):
-    """
-    100% accurate check validation that natively understands 
-    Knight Evaporation, Queen Proxy Explosions, and Infinite Rook Piercing.
-    Corrected King reach: No knight jumps, path-dependent 2-step.
-    """
     grid = board.grid
     defending_color = 'black' if attacking_color == 'white' else 'white'
-    
+
     attacker_counts = board.piece_counts[attacking_color]
 
-    # Quick short-circuit: if the attacker only has a king
     non_king_pieces = (
         attacker_counts.get(Pawn, 0) + attacker_counts.get(Knight, 0) +
         attacker_counts.get(Bishop, 0) + attacker_counts.get(Rook, 0) +
@@ -502,54 +698,42 @@ def is_square_attacked(board, r, c, attacking_color):
             dr, dc = r - kr, c - kc
             abs_dr, abs_dc = abs(dr), abs(dc)
             m_dist = max(abs_dr, abs_dc)
-            # 1-step hit
             if m_dist == 1: return True
-            # 2-step hit: Must be Cardinal/Diagonal AND path must be clear
             if m_dist == 2 and (abs_dr == abs_dc or abs_dr == 0 or abs_dc == 0):
                 if grid[kr + dr//2][kc + dc//2] is None: return True
         return False
 
     attacking_pieces = board.white_pieces if attacking_color == 'white' else board.black_pieces
 
-    # 1. Check Knights (Active Evaporation & Passive Zones)
     if attacker_counts[Knight] > 0:
         for piece in attacking_pieces:
             if type(piece) is Knight and piece.pos:
-                start = piece.pos
-
-                # A. Passive Evaporation Zone (The King stepping near a resting Knight)
-                for pr, pc in KNIGHT_ATTACKS_FROM[start]:
+                start_sq = piece.pos
+                for pr, pc in KNIGHT_ATTACKS_FROM[start_sq]:
                     if pr == r and pc == c:
                         return True
-
-                # B. Active Evaporation Zone (The Knight jumping to an empty square near the King)
-                for dst in KNIGHT_ATTACKS_FROM[start]:
-                    if grid[dst[0]][dst[1]] is None: # Must land on an empty square
+                for dst in KNIGHT_ATTACKS_FROM[start_sq]:
+                    if grid[dst[0]][dst[1]] is None:
                         for ar, ac in KNIGHT_ATTACKS_FROM[dst]:
                             if ar == r and ac == c:
                                 return True
 
-    # 1.5 Check Queens (Direct Hit & Proxy Explosion - Any Angle)
     if attacker_counts[Queen] > 0:
         for piece in attacking_pieces:
             if type(piece) is Queen and piece.pos:
                 qr, qc = piece.pos
                 q_idx = qr * COLS + qc
-                # Shoot rays from the Queen to see what it can capture
                 for i in range(8):
                     for (cr, cc) in RAYS[q_idx][i]:
                         target = grid[cr][cc]
                         if target is not None:
                             if target.color == defending_color:
-                                # It's a capture or a direct hit on the square.
-                                # Does the explosion radius overlap the square we are checking?
                                 if abs(cr - r) <= 1 and abs(cc - c) <= 1:
                                     return True
-                            break # Ray is blocked after encountering the first piece
+                            break
 
     has_rooks = attacker_counts[Rook] > 0
 
-    # 2. Check Sliding Pieces (Rook/Bishop) using Precomputed Rays
     start_index = r * COLS + c
 
     for direction_idx, ray_path in enumerate(RAYS[start_index]):
@@ -564,27 +748,22 @@ def is_square_attacked(board, r, c, attacking_color):
             if piece.color == attacking_color:
                 if is_orthogonal:
                     if p_type is Rook:
-                        return True # Rooks safely pierce infinite defenders
+                        return True
                 else:
                     if p_type is Bishop:
                         if defenders_passed == 0: return True
-                break 
+                break
             else:
                 defenders_passed += 1
-                # Optimization: Since Queens are handled above and Bishops don't pierce,
-                # any defender immediately blocks the ray unless the attacker has a Rook.
                 if not has_rooks: break
 
-    # 3. Check Pawns (Strict Backward-Looking geometry calculation)
     pawn_move_dir = -1 if attacking_color == 'white' else 1
-    
-    # 1-step forward dash (backward from target)
+
     pr = r - pawn_move_dir
     if 0 <= pr < ROWS:
         p = grid[pr][c]
-        if p is not None and p.color == attacking_color and type(p) is Pawn: 
+        if p is not None and p.color == attacking_color and type(p) is Pawn:
             return True
-        # 2-step forward dash (only if intermediate is empty)
         elif p is None:
             two_pr = r - (2 * pawn_move_dir)
             starting_row = 6 if attacking_color == 'white' else 1
@@ -593,30 +772,24 @@ def is_square_attacked(board, r, c, attacking_color):
                 if p2 is not None and p2.color == attacking_color and type(p2) is Pawn:
                     return True
 
-    # Sideways captures
     for dc in [-1, 1]:
         pc = c + dc
         if 0 <= pc < COLS:
             p = grid[r][pc]
             if p is not None and p.color == attacking_color and type(p) is Pawn: return True
 
-    # 4. Check King (Corrected Math: No Knight Jumps + Path Blocking)
     enemy_king_pos = board.find_king_pos(attacking_color)
     if enemy_king_pos:
         kr, kc = enemy_king_pos
         dr, dc = r - kr, c - kc
         abs_dr, abs_dc = abs(dr), abs(dc)
         m_dist = max(abs_dr, abs_dc)
-        
-        # 1-step hit
         if m_dist == 1:
             return True
-        # 2-step hit: Must be Cardinal/Diagonal AND path must be clear
         if m_dist == 2 and (abs_dr == abs_dc or abs_dr == 0 or abs_dc == 0):
             if grid[kr + dr//2][kc + dc//2] is None:
                 return True
 
-    # 5. Zig-Zag Bishop Fallback
     if attacker_counts[Bishop] > 0:
         for piece in attacking_pieces:
             if type(piece) is Bishop and piece.pos:
@@ -627,17 +800,14 @@ def is_square_attacked(board, r, c, attacking_color):
 
 def is_in_check(board, color):
     king_pos = board.find_king_pos(color)
-    if not king_pos: 
+    if not king_pos:
         return True
     opponent_color = "black" if color == "white" else "white"
-    
-    # The optimized raycast function is now 100% comprehensive.
-    # No sluggish simulation loop is required.
     return is_square_attacked(board, king_pos[0], king_pos[1], opponent_color)
 
 def generate_legal_moves_generator(board, color, yield_boards=False):
     piece_list = board.white_pieces if color == 'white' else board.black_pieces
-    for piece in piece_list: 
+    for piece in piece_list:
         start_pos = piece.pos
         if start_pos is None: continue
         for end_pos in piece.get_valid_moves(board, start_pos):
@@ -666,26 +836,25 @@ def has_legal_moves(board, color):
         return True
     except StopIteration:
         return False
-        
+
 def is_insufficient_material(board):
     return (len(board.white_pieces) + len(board.black_pieces)) <= 2
 
 def get_game_state(board, turn_to_move, position_counts, ply_count, max_moves):
-    # No stalemates in Jungle Chess! 0 legal moves is an absolute loss.
     if not has_legal_moves(board, turn_to_move):
         winner = 'black' if turn_to_move == 'white' else 'white'
         return ("checkmate", winner)
-    
+
     if is_insufficient_material(board): return ("insufficient_material", None)
-    
+
     try:
         from AI import board_hash
         current_hash = board_hash(board, turn_to_move)
         if position_counts.get(current_hash, 0) >= 3: return ("repetition", None)
     except ImportError: pass
-        
+
     if ply_count >= max_moves: return ("move_limit", None)
-        
+
     return "ongoing", None
 
 def calculate_material_swing(board, move, tapered_vals_by_type):
@@ -699,7 +868,6 @@ def calculate_material_swing(board, move, tapered_vals_by_type):
 
 def is_draw(board, turn_to_move, position_counts, ply_count, max_moves):
     state, _ = get_game_state(board, turn_to_move, position_counts, ply_count, max_moves)
-    # "stalemate" has been removed from the draw conditions
     return state in["insufficient_material", "repetition", "move_limit"]
 
 def is_rook_piercing_capture(board, move):
@@ -839,10 +1007,9 @@ def fast_approximate_material_swing(board, move, moving_piece, target_piece, pie
             potential_killer = board.grid[r][c]
             if potential_killer and type(potential_killer) is Knight and potential_killer.color != moving_piece.color:
                 if (r, c) not in pierced_knights:
-                    # FIX: If we promoted, the piece dying to evaporation is a Queen, not a Pawn!
                     evaporation_target_type = Queen if (my_type is Pawn and (move[1][0] == 0 or move[1][0] == ROWS - 1)) else my_type
                     swing -= piece_values.get(evaporation_target_type, 0)
-                    break 
+                    break
 
     return swing
 
@@ -855,20 +1022,18 @@ def format_move_san(board_before, board_after, move):
     if not move: return "None"
     start_pos, end_pos = move
     moving_piece = board_before.grid[start_pos[0]][start_pos[1]]
-    if not moving_piece: return format_move(move) # fallback
-    
+    if not moving_piece: return format_move(move)
+
     ptype = type(moving_piece)
-    
-    # Rule clarification: Knights cannot directly capture by landing on pieces.
+
     is_capture = False
     if ptype != Knight:
         is_capture = board_before.grid[end_pos[0]][end_pos[1]] is not None
-        
+
     def file_of(c): return "abcdefgh"[c]
     def rank_of(r): return "87654321"[r]
     def sq_name(pos): return file_of(pos[1]) + rank_of(pos[0])
-    
-    # Standard Disambiguation
+
     disambig = ""
     if ptype != Pawn and ptype != King:
         others =[]
@@ -878,7 +1043,7 @@ def format_move_san(board_before, board_after, move):
                 if p and type(p) == ptype and p.color == moving_piece.color and (r, c) != start_pos:
                     if end_pos in p.get_valid_moves(board_before, (r, c)):
                         others.append((r, c))
-        
+
         if others:
             same_file = any(pos[1] == start_pos[1] for pos in others)
             same_rank = any(pos[0] == start_pos[0] for pos in others)
@@ -898,43 +1063,38 @@ def format_move_san(board_before, board_after, move):
         p_char = {King: 'K', Queen: 'Q', Rook: 'R', Bishop: 'B', Knight: 'N'}[ptype]
         cap_str = "x" if is_capture else ""
         base_str = p_char + disambig + cap_str + sq_name(end_pos)
-        
-    # Promotion
+
     if ptype == Pawn and (end_pos[0] == 0 or end_pos[0] == ROWS - 1):
         base_str += "=Q"
-        
-    # Calculate casualties for parentheses using board delta
+
     dead_squares =[]
     for r in range(ROWS):
         for c in range(COLS):
             pb = board_before.grid[r][c]
             pa = board_after.grid[r][c]
-            
+
             if (r, c) == start_pos:
-                continue # The moving piece vacated this square normally
-            
+                continue
+
             if (r, c) == end_pos:
                 if pa is None:
-                    # The moving piece self-destructed upon landing! (e.g. Explosion / Evaporation)
                     dead_squares.append((r, c))
                 continue
-                
+
             if pb is not None and pa is None:
-                # Collateral casualty!
                 dead_squares.append((r, c))
-                
+
     if dead_squares:
         dead_squares.sort(key=lambda pos: (8 - pos[0], pos[1]))
         cas_str = " ".join([f"x{sq_name(pos)}" for pos in dead_squares])
         base_str += f" ({cas_str})"
-        
-    # Check / Mate detection
+
     opp_color = "black" if moving_piece.color == "white" else "white"
     is_mate = not has_legal_moves(board_after, opp_color)
-    
+
     if is_mate:
         base_str += "#"
     elif is_in_check(board_after, opp_color):
         base_str += "+"
-        
+
     return base_str
