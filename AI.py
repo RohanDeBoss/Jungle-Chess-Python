@@ -1,4 +1,4 @@
-# AI.py (v105 - Time Mangement support)
+# AI.py (v105.1 time management and new tuned piecevalues at d5 500games)
 
 import time
 import random
@@ -10,19 +10,19 @@ from TablebaseManager import TablebaseManager
 
 MG_PIECE_VALUES = {
     Pawn: 100,
-    Knight: 1000,
-    Bishop: 750,
-    Rook: 500,
-    Queen: 1050,
+    Knight: 940,
+    Bishop: 820,
+    Rook: 620,
+    Queen: 895,
     King: 20000
 }
 
 EG_PIECE_VALUES = {
-    Pawn: 70,
-    Knight: 950,
-    Bishop: 450,
-    Rook: 700,
-    Queen: 1000,
+    Pawn: 50,
+    Knight: 715,
+    Bishop: 610,
+    Rook: 980,
+    Queen: 1005,
     King: 20000
 }
 

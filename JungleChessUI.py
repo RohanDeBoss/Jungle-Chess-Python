@@ -1,4 +1,4 @@
-# JungleChessUI.py (v14 - New time management)
+# JungleChessUI.py (v14.1 - New time management + qol)
 
 import tkinter as tk
 from tkinter import ttk, messagebox
@@ -52,6 +52,7 @@ class EnhancedChessApp:
     ANALYSIS_AI_NAME = "Analysis"
     slidermaxvalue   = 12
     MAX_GAME_MOVES   = 200
+    AI_SERIES_GAMES  = 300
 
     def __init__(self, master):
         self.master = master
@@ -1365,7 +1366,7 @@ class EnhancedChessApp:
         if self.auto_save_stats_var.get():
             self.save_depth_stats_to_file()
 
-        if self.ai_series_running and self.ai_series_stats['game_count'] < 100:
+        if self.ai_series_running and self.ai_series_stats['game_count'] < self.AI_SERIES_GAMES:
             self.master.after(1000, self.reset_game)
         else:
             self.ai_series_running = False
@@ -1406,7 +1407,8 @@ class EnhancedChessApp:
     def update_scoreboard(self):
         if self.game_mode.get() == GameMode.AI_VS_AI.value and self.ai_series_running:
             s = self.ai_series_stats
-            text = (f"{self.MAIN_AI_NAME} vs {self.OPPONENT_AI_NAME} (Game {s['game_count'] + 1}/100)\n"
+            text = (f"{self.MAIN_AI_NAME} vs {self.OPPONENT_AI_NAME} "
+                    f"({s['game_count']}/{self.AI_SERIES_GAMES} games completed)\n"
                     f"  {self.MAIN_AI_NAME} Wins: {s['my_ai_wins']}\n"
                     f"  {self.OPPONENT_AI_NAME} Wins: {s['op_ai_wins']}\n"
                     f"  Draws: {s['draws']}")

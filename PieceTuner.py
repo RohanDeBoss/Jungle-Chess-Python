@@ -1,4 +1,4 @@
-# PieceTuner.py (v2.0 - Iterative Deepening Fix for Blazing Fast Generation)
+# PieceTuner.py (v2.1 - Added History Aging & Mate-Break for ID Loop)
 
 import math
 import json
@@ -139,14 +139,10 @@ def _play_one_game(args: tuple) -> tuple:
     game_idx, max_plies, sample_every, gen_depth, rand_plies = args
     bot = _get_bot()
     
-    # Silence the bot so it doesn't waste CPU cycles formatting strings for stdout
     bot._report_log = lambda msg: None
     bot._report_eval = lambda s, d: None
     bot._report_move = lambda m: None
 
-    # --- BUG FIX: ID WRAPPER ---
-    # Wraps the search in Iterative Deepening to fill the TT and ensure alpha-beta 
-    # move ordering happens. This reduces a depth 4 search from 2.0s to 0.05s.
     def _search_with_id(target_depth, legal_moves, root_h):
         b_move = legal_moves[0]
         p_score = None
@@ -154,8 +150,10 @@ def _play_one_game(args: tuple) -> tuple:
             p_score, b_move = bot._run_depth_iteration(
                 d, legal_moves, root_h, b_move, prev_iter_score=p_score
             )
+            # FIX 2: Break early if we found a forced mate!
+            if p_score is not None and abs(p_score) > bot.MATE_SCORE - 2000:
+                break
         return p_score, b_move
-    # ---------------------------
 
     for attempt in range(MAX_REGENERATION_TRIES):
         seed = game_idx * 31337 + attempt * 7919 + int(time.time() * 1000) % 999_983
@@ -170,6 +168,7 @@ def _play_one_game(args: tuple) -> tuple:
         terminal       = TERM_PLY_LIMIT
 
         bot._initialize_search_state()
+        bot._age_history_table()
 
         # ── Random opening ───────────────────────────────────────────────────
         while plies < rand_plies:
@@ -192,7 +191,6 @@ def _play_one_game(args: tuple) -> tuple:
         bot.position_counts = dict(position_count)
         root_hash = board_hash(board, turn)
 
-        # Use our new lightning-fast Iterative Deepening wrapper
         screen_score, _ = _search_with_id(OPENING_SCREEN_DEPTH, legal, root_hash)
         if abs(screen_score) > OPENING_EVAL_THRESHOLD:
             continue  
@@ -218,8 +216,6 @@ def _play_one_game(args: tuple) -> tuple:
                 break
 
             total_pieces = len(board.white_pieces) + len(board.black_pieces)
-            
-            # SPEEDUP: Only check TB if we are at the limit
             if total_pieces <= TB_ADJUDICATION_PIECES:
                 tb_score_abs = bot.tb_manager.probe(board, turn)
                 if tb_score_abs is not None:
@@ -241,7 +237,6 @@ def _play_one_game(args: tuple) -> tuple:
             bot.position_counts = dict(position_count)
             root_hash = board_hash(board, turn)
 
-            # Use our new lightning-fast Iterative Deepening wrapper
             _, best_move = _search_with_id(gen_depth, legal, root_hash)
             move = best_move if best_move else random.choice(legal)
 
@@ -352,9 +347,6 @@ def report_uniqueness(positions_data: list) -> None:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def compute_mse(parsed_data: list, K: float, mg_vals: dict, eg_vals: dict) -> float:
-    """
-    Computes Mean Squared Error quickly by iterating over Pre-Parsed Board objects.
-    """
     patch_ai_values(mg_vals, eg_vals)
     bot = _get_bot()
     eval_fn = bot.evaluate_board
@@ -368,7 +360,6 @@ def compute_mse(parsed_data: list, K: float, mg_vals: dict, eg_vals: dict) -> fl
     for board, outcome in parsed_data:
         raw = eval_fn(board, 'white')
         x = raw * factor
-        # Fast sigmoid approximation bounds to prevent math.exp overflow
         if x > 30.0:
             prob = 0.0
         elif x < -30.0:
@@ -471,7 +462,7 @@ def print_ai_dicts(mg: dict, eg: dict, header: str = "", orig_mg: dict = None, o
 
 def main():
     print("═" * 60, flush=True)
-    print(f"  Jungle Chess Piece Value Auto-Tuner  (v2.0)", flush=True)
+    print(f"  Jungle Chess Piece Value Auto-Tuner  (v2.1)", flush=True)
     print(f"  Full AI Depth {GENERATION_DEPTH}  |  "
           f"{GAMES_TO_GENERATE} games  |  {NUM_WORKERS} workers", flush=True)
     print("═" * 60, flush=True)
@@ -560,7 +551,6 @@ def main():
           f"Draw {d:.1%}  |  Black {b:.1%}", flush=True)
     report_uniqueness(positions_data)
 
-    # ── PRE-PARSE OPTIMIZATION ───────────────────────────────────────────────
     print(f"\nPre-parsing {len(positions_data)} board states into RAM to accelerate tuning...", flush=True)
     parsed_data = []
     for fen_str, outcome in positions_data:
@@ -570,7 +560,6 @@ def main():
         except Exception:
             continue
     print(f"Successfully loaded {len(parsed_data)} positions.", flush=True)
-    # ─────────────────────────────────────────────────────────────────────────
 
     mg_start = {cls: AI.MG_PIECE_VALUES[cls] for cls in PIECE_CLASSES}
     eg_start = {cls: AI.EG_PIECE_VALUES[cls] for cls in PIECE_CLASSES}
@@ -578,7 +567,6 @@ def main():
     orig_eg = {cls: AI.EG_PIECE_VALUES[cls] for cls in PIECE_CLASSES}
     print_ai_dicts(mg_start, eg_start, "Starting values (from AI.py):", orig_mg, orig_eg)
 
-    # Pass the pre-parsed RAM data to the tuning functions
     K = calibrate_K(parsed_data, mg_start, eg_start, K_CALIBRATION_STEPS)
 
     print(f"\nRunning coordinate descent "
@@ -606,7 +594,6 @@ def main():
             'timestamp':              time.strftime('%Y-%m-%d %H:%M:%S'),
         }, f, indent=2)
     print(f"\nResults saved to {result_file}", flush=True)
-
 
 if __name__ == '__main__':
     mp.freeze_support()
