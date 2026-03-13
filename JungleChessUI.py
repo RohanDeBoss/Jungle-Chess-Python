@@ -1,4 +1,4 @@
-# JungleChessUI.py (v14.1 - New time management + qol)
+# JungleChessUI.py (v14.2 - Time Optimisations, removed buffers from ai vs op series)
 
 import tkinter as tk
 from tkinter import ttk, messagebox
@@ -113,6 +113,7 @@ class EnhancedChessApp:
         self.increment = 0.0
         self.last_clock_tick = None
         self.clock_running = False
+        self.use_clock_var = tk.BooleanVar(value=True)
         # ------------------
 
         self.COLORS = self.setup_styles()
@@ -289,6 +290,15 @@ class EnhancedChessApp:
         self.game_info_label.pack(anchor=tk.W)
         self.turn_label = ttk.Label(self.info_frame, text="WHITE'S TURN", style='Status.TLabel')
         self.turn_label.pack(fill=tk.X, pady=(5, 5))
+
+        # --- CLOCK TOGGLE ---
+        self.clock_toggle_frame = ttk.Frame(self.info_frame, style='Left.TFrame')
+        self.clock_toggle_frame.pack(fill=tk.X, pady=(2, 2))
+        self.clock_toggle_btn = ttk.Checkbutton(
+            self.clock_toggle_frame, text="Use Clock",
+            variable=self.use_clock_var, command=self._toggle_clock)
+        self.clock_toggle_btn.pack(anchor=tk.W)
+        # --------------------
 
         # --- CLOCK UI ---
         self.clock_frame = ttk.Frame(self.info_frame, style='Left.TFrame')
@@ -482,10 +492,10 @@ class EnhancedChessApp:
         if mode == GameMode.HUMAN_VS_BOT.value:
             self.board_orientation = self.human_color
             if not self.game_over and self.turn != self.human_color:
-                self.master.after(20, self._make_game_ai_move)
+                self.master.after(self._get_ai_move_delay(), self._make_game_ai_move)
         elif mode == GameMode.AI_VS_AI.value:
             if not self.game_over:
-                self.master.after(20, self._make_game_ai_move)
+                self.master.after(self._get_ai_move_delay(), self._make_game_ai_move)
         elif mode == GameMode.HUMAN_VS_HUMAN.value:
             self._update_analysis_after_state_change()
         self._update_flip_view_button_style()
@@ -500,8 +510,7 @@ class EnhancedChessApp:
             self.update_ui_after_state_change()
             if not self.game_over and self.turn != self.human_color:
                 print(f"Swapped sides. AI ({self.turn}) taking over...")
-                delay = 4 if self.instant_move.get() else 20
-                self.master.after(delay, self._make_game_ai_move)
+                self.master.after(self._get_ai_move_delay(), self._make_game_ai_move)
 
     def _reset_game_state_vars(self):
         self.full_history    = [(self.board.clone(), self.turn, None)]
@@ -590,7 +599,7 @@ class EnhancedChessApp:
         if (not self.game_over
                 and self.game_mode.get() == GameMode.HUMAN_VS_BOT.value
                 and self.turn != self.human_color):
-            self.master.after(20, self._make_game_ai_move)
+            self.master.after(self._get_ai_move_delay(), self._make_game_ai_move)
 
     def get_current_pgn(self):
         moves = []
@@ -738,7 +747,7 @@ class EnhancedChessApp:
     # ------------------------------------------------------------------ core gameplay
     def execute_move_and_check_state(self, player_who_moved, move):
         # --- ADD INCREMENT ---
-        if not self.game_over and self.increment:
+        if self.use_clock_var.get() and (not self.game_over) and self.increment:
             if player_who_moved == 'white':
                 self.white_time += self.increment
             else:
@@ -783,8 +792,7 @@ class EnhancedChessApp:
             self.board.make_move(the_move[0], the_move[1])
             self.execute_move_and_check_state(self.turn, the_move)
             if not self.game_over and self.game_mode.get() == GameMode.AI_VS_AI.value:
-                delay = 4 if self.instant_move.get() else 20
-                self.master.after(delay, self._make_game_ai_move)
+                self.master.after(self._get_ai_move_delay(), self._make_game_ai_move)
         else:
             print("AI reported no valid move.")
 
@@ -849,7 +857,7 @@ class EnhancedChessApp:
             if not self.game_over:
                 mode = self.game_mode.get()
                 if mode == GameMode.HUMAN_VS_BOT.value and self.turn != self.human_color:
-                    self.master.after(4 if self.instant_move.get() else 20, self._make_game_ai_move)
+                    self.master.after(self._get_ai_move_delay(), self._make_game_ai_move)
                 elif mode == GameMode.HUMAN_VS_HUMAN.value:
                     self._update_analysis_after_state_change()
 
@@ -877,6 +885,7 @@ class EnhancedChessApp:
         self.clock_running = False # Starts on first move
         self._update_time_control_label()
         self.render_clocks()
+        self._toggle_clock()
         # ------------------
 
         self.fen_entry.delete(0, tk.END)
@@ -884,7 +893,7 @@ class EnhancedChessApp:
         self._start_game_if_needed()
 
         mode  = self.game_mode.get()
-        delay = 4 if self.instant_move.get() else 20
+        delay = self._get_ai_move_delay()
         if mode == GameMode.AI_VS_AI.value:
             self.white_playing_bot_type = "op" if (self.ai_series_running and self.ai_series_stats['game_count'] % 2 == 1) else "main"
             self.board_orientation      = "white" if self.white_playing_bot_type == "main" else "black"
@@ -1113,7 +1122,7 @@ class EnhancedChessApp:
         except Exception:
             pass
         finally:
-            self.master.after(100, self.process_comm_queue)
+            self.master.after(20, self.process_comm_queue)
 
     def _render_pv(self):
         """Render (or hide) the PV line. Called on new PV data and on toggle."""
@@ -1156,8 +1165,12 @@ class EnhancedChessApp:
         self.ai_cancellation_event.clear()
         
         # --- TIME PASS-DOWN ---
-        time_left = self.white_time if self.turn == 'white' else self.black_time
-        inc = self.increment
+        if self.use_clock_var.get():
+            time_left = self.white_time if self.turn == 'white' else self.black_time
+            inc = self.increment
+        else:
+            time_left = None
+            inc = None
         # ----------------------
 
         args = (self.board.clone(), self.turn, self.position_counts.copy(),
@@ -1210,7 +1223,30 @@ class EnhancedChessApp:
         s = t % 60
         self.time_control_label.config(text=f"Time Control: {m:02d}:{s:02d}")
 
+    def _toggle_clock(self):
+        if self.use_clock_var.get():
+            self.clock_frame.pack(after=self.turn_label, fill=tk.X, pady=(5, 5))
+            self.time_control_frame.pack(after=self.clock_frame, fill=tk.X, pady=(5, 5))
+            self._update_time_control_label()
+            self.render_clocks()
+            if self.game_started and (not self.game_over) and (not self.clock_running):
+                self.last_clock_tick = time.time()
+                self.clock_running = True
+                self._tick_clock()
+        else:
+            self.clock_frame.pack_forget()
+            self.time_control_frame.pack_forget()
+            self.clock_running = False
+            self.last_clock_tick = None
+
+    def _get_ai_move_delay(self):
+        if self.use_clock_var.get():
+            return 0
+        return 4 if self.instant_move.get() else 20
+
     def render_clocks(self):
+        if not self.use_clock_var.get():
+            return
         self.clock_frame.pack(after=self.turn_label, fill=tk.X, pady=(5, 5))
 
         def fmt(t):
@@ -1235,7 +1271,8 @@ class EnhancedChessApp:
             self.black_clock_lbl.config(bg=self.COLORS['bg_medium'], fg=self.COLORS['text_light'])
 
     def _tick_clock(self):
-        if not self.clock_running or self.game_over:
+        if (not self.use_clock_var.get()) or (not self.clock_running) or self.game_over:
+            self.clock_running = False
             return
 
         now = time.time()
@@ -1256,7 +1293,7 @@ class EnhancedChessApp:
         self.render_clocks()
 
         if not self.game_over:
-            self.master.after(50, self._tick_clock)
+            self.master.after(25, self._tick_clock)
 
     def handle_timeout(self, color):
         self.game_over = True

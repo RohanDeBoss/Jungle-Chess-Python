@@ -1,25 +1,22 @@
 === AI vs OP Series Depth Stats ===
-Games Completed: 100
-Score: AI Bot 45 - 31 OP Bot (Draws: 24)
+Games Completed: 5
+Score: AI Bot 2 - 3 OP Bot (Draws: 0)
 
 --- Global Averages ---
-  Depth 1   | Avg: 0.033s | Max: 1.950s | Samples: 6644
-  Depth 2   | Avg: 0.165s | Max: 2.750s | Samples: 6570
-  Depth 3   | Avg: 0.507s | Max: 8.840s | Samples: 6478
-  Depth 4   | Avg: 1.169s | Max: 24.980s | Samples: 6415
-  Depth TB  | Avg: 0.003s | Max: 0.020s | Samples: 147
+  Depth 1   | Avg: 0.032s | Max: 0.260s | Samples: 109
+  Depth 2   | Avg: 0.091s | Max: 0.230s | Samples: 82
+  Depth 3   | Avg: 0.138s | Max: 0.330s | Samples: 31
+  Depth 4   | Avg: 0.149s | Max: 0.330s | Samples: 7
 
 --- AI Bot Averages ---
-  Depth 1   | Avg: 0.023s | Max: 0.850s | Samples: 3372
-  Depth 2   | Avg: 0.126s | Max: 2.240s | Samples: 3329
-  Depth 3   | Avg: 0.381s | Max: 6.710s | Samples: 3304
-  Depth 4   | Avg: 0.801s | Max: 9.620s | Samples: 3269
-  Depth TB  | Avg: 0.000s | Max: 0.010s | Samples: 21
+  Depth 1   | Avg: 0.026s | Max: 0.170s | Samples: 54
+  Depth 2   | Avg: 0.084s | Max: 0.230s | Samples: 44
+  Depth 3   | Avg: 0.135s | Max: 0.330s | Samples: 20
+  Depth 4   | Avg: 0.104s | Max: 0.220s | Samples: 5
 
 --- OP Bot Averages ---
-  Depth 1   | Avg: 0.044s | Max: 1.950s | Samples: 3272
-  Depth 2   | Avg: 0.206s | Max: 2.750s | Samples: 3241
-  Depth 3   | Avg: 0.638s | Max: 8.840s | Samples: 3174
-  Depth 4   | Avg: 1.551s | Max: 24.980s | Samples: 3146
-  Depth TB  | Avg: 0.003s | Max: 0.020s | Samples: 126
+  Depth 1   | Avg: 0.037s | Max: 0.260s | Samples: 55
+  Depth 2   | Avg: 0.100s | Max: 0.230s | Samples: 38
+  Depth 3   | Avg: 0.143s | Max: 0.320s | Samples: 11
+  Depth 4   | Avg: 0.260s | Max: 0.330s | Samples: 2
 

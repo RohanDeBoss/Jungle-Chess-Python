@@ -1,4 +1,4 @@
-# OPAI.py (v98.9 - Good Baseline for testing, time management support)
+# OPAI.py (v98.91 - Good Baseline for testing, time management support (time buffer))
 
 import time
 import random
@@ -7,6 +7,9 @@ from GameLogic import *
 from TablebaseManager import TablebaseManager
 
 # --- EVALUATION CONSTANTS ---
+TIME_BUFFER_SEC = 0.50
+TIME_BUFFER_PCT = 0.05
+MIN_MOVE_TIME   = 0.03
 
 MG_PIECE_VALUES = {
     Pawn: 100, Knight: 900, Bishop: 650, Rook: 550, Queen: 850, King: 20000
@@ -130,6 +133,7 @@ class OpponentAI:
         self.time_left = time_left
         self.increment = increment
         self.stop_time = None
+        self.time_check_mask = 2047
         # -----------------------
         
         self.tb_manager = TablebaseManager()
@@ -165,6 +169,19 @@ class OpponentAI:
     def _report_log(self, message): self.comm_queue.put(('log', message))
     def _report_eval(self, score, depth): self.comm_queue.put(('eval', score if self.color == 'white' else -score, depth))
     def _report_move(self, move): self.comm_queue.put(('move', move))
+
+    def _calc_time_check_mask(self, allocated):
+        if allocated <= 0.15:
+            return 31
+        if allocated <= 0.30:
+            return 63
+        if allocated <= 0.60:
+            return 127
+        if allocated <= 1.20:
+            return 255
+        if allocated <= 2.50:
+            return 511
+        return 2047
     def _format_move(self, board_before, move):
         if not move: return "None"
         child = board_before.clone()
@@ -390,13 +407,17 @@ class OpponentAI:
             if self.time_left is not None and self.increment is not None:
                 # Target time: ~1/30th of remaining time + 80% of the increment
                 allocated = (self.time_left / 30.0) + (self.increment * 0.8)
-                # Never spend more than we have (leave a 0.1s buffer so we don't flag)
-                if allocated >= self.time_left - 0.1:
-                    allocated = max(0.1, self.time_left - 0.1)
+                # Never spend more than we have (leave a safety buffer so we don't flag)
+                buffer = max(TIME_BUFFER_SEC, self.time_left * TIME_BUFFER_PCT, self.increment * 1.5)
+                max_alloc = max(0.0, self.time_left - buffer)
+                allocated = min(allocated, max_alloc)
+                allocated = min(max_alloc, max(MIN_MOVE_TIME, allocated))
                 self.stop_time = time.time() + allocated
+                self.time_check_mask = self._calc_time_check_mask(allocated)
                 target_depth = 100  # Will be aborted by time
             else:
                 self.stop_time = None
+                self.time_check_mask = 2047
                 target_depth = self.search_depth
             # --------------------------------
 
@@ -564,8 +585,8 @@ class OpponentAI:
     def negamax(self, board, depth, alpha, beta, turn, ply, search_path, current_hash=None, prev_move=None):
         # --- FAST CLOCK CHECK ---
         self.nodes_searched += 1
-        # Bitwise AND is extremely fast. We only check the clock every 2048 nodes!
-        if (self.nodes_searched & 2047) == 0:
+        # Bitwise AND is extremely fast. Clock check cadence adapts to allocated time.
+        if (self.nodes_searched & self.time_check_mask) == 0:
             if self.cancellation_event.is_set() or (self.stop_time and time.time() > self.stop_time):
                 raise SearchCancelledException()
         # ------------------------
@@ -717,7 +738,7 @@ class OpponentAI:
     def qsearch(self, board, alpha, beta, turn, ply):
         # --- FAST CLOCK CHECK ---
         self.nodes_searched += 1
-        if (self.nodes_searched & 2047) == 0:
+        if (self.nodes_searched & self.time_check_mask) == 0:
             if self.cancellation_event.is_set() or (self.stop_time and time.time() > self.stop_time):
                 raise SearchCancelledException()
         # ------------------------
