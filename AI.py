@@ -1,4 +1,4 @@
-# AI.py (v105.2 time spend buffer safegards
+# AI.py (v106 - Small touch ups, safety check added)
 
 import time
 import random
@@ -6,11 +6,12 @@ from collections import namedtuple
 from GameLogic import *
 from TablebaseManager import TablebaseManager
 
-# --- EVALUATION CONSTANTS ---
+# --- TIME CONSTANTS ---
 TIME_BUFFER_SEC = 0.50
 TIME_BUFFER_PCT = 0.05
 MIN_MOVE_TIME   = 0.03
 
+# --- EVALUATION CONSTANTS (Tuned) ---
 MG_PIECE_VALUES = {
     Pawn: 100,
     Knight: 940,
@@ -81,19 +82,8 @@ def board_hash(board, turn):
         h ^= ZOBRIST_TURN
     return h
 
-
 def incremental_hash(parent_hash, record):
-    """O(changed pieces) hash update using a MoveRecord.
-
-    Replaces board_hash() inside the inner move loop, where the board has
-    already been mutated by make_move_track().  Avoids iterating all ~25
-    pieces on every node; instead XORs only the 2–5 pieces that actually
-    changed.
-
-    parent_hash must be the Zobrist hash of the position BEFORE the move.
-    The returned hash is for the resulting position with the turn flipped.
-    """
-    h = parent_hash ^ ZOBRIST_TURN   # flip side to move
+    h = parent_hash ^ ZOBRIST_TURN 
     arr = ZOBRIST_ARRAY
     idx = PIECE_TYPE_IDX
 
@@ -103,25 +93,16 @@ def incremental_hash(parent_hash, record):
     sr, sc = record.start
     er, ec = record.end
 
-    # Always XOR the moving piece out of its origin square.
     h ^= arr[c_idx][p_idx][sr][sc]
-
-    # If the moving piece survived (not self-destroyed), XOR it into its
-    # destination.  Self-destruction (queen explosion, knight evaporation,
-    # pawn promotion) shows up as the piece being in record.removed_pieces.
     mp_removed = any(p is mp for p, _r, _c in record.removed_pieces)
     if not mp_removed:
         h ^= arr[c_idx][p_idx][er][ec]
 
-    # XOR out every piece that was removed from the board by this move
-    # (captures, AOE victims, pierced rook targets, etc.), skipping the
-    # moving piece itself — we already handled it above.
     for piece, r, c in record.removed_pieces:
         if piece is not mp:
             pc_idx = 0 if piece.color == 'white' else 1
             h ^= arr[pc_idx][idx[type(piece)]][r][c]
 
-    # XOR in any pieces added to the board (pawn→queen promotion).
     for piece, r, c in record.added_pieces:
         pc_idx = 0 if piece.color == 'white' else 1
         h ^= arr[pc_idx][idx[type(piece)]][r][c]
@@ -237,16 +218,11 @@ class ChessBot:
     def _report_move(self, move):     self.comm_queue.put(('move', move))
 
     def _calc_time_check_mask(self, allocated):
-        if allocated <= 0.15:
-            return 31
-        if allocated <= 0.30:
-            return 63
-        if allocated <= 0.60:
-            return 127
-        if allocated <= 1.20:
-            return 255
-        if allocated <= 2.50:
-            return 511
+        if allocated <= 0.15: return 31
+        if allocated <= 0.30: return 63
+        if allocated <= 0.60: return 127
+        if allocated <= 1.20: return 255
+        if allocated <= 2.50: return 511
         return 2047
 
     def _format_move(self, board_before, move):
@@ -259,8 +235,7 @@ class ChessBot:
         return (len(board.white_pieces) + len(board.black_pieces)) >= self.OPENING_TOTAL_PIECE_THRESHOLD
 
     def _opening_development_bonus(self, move, moving_piece):
-        if moving_piece is None:
-            return 0
+        if moving_piece is None: return 0
         (fr, fc), (tr, tc) = move
         from_center = abs(fr - 3.5) + abs(fc - 3.5)
         to_center   = abs(tr - 3.5) + abs(tc - 3.5)
@@ -280,15 +255,13 @@ class ChessBot:
 
     def _get_root_tb_eval_relative(self):
         root_abs = self.tb_manager.probe(self.board, self.color)
-        if root_abs is None:
-            return None
+        if root_abs is None: return None
         self.tb_hits += 1
         return root_abs if self.color == 'white' else -root_abs
 
     def _get_best_tablebase_move_with_eval(self):
         root_abs = self.tb_manager.probe(self.board, self.color)
-        if root_abs is None and not is_insufficient_material(self.board):
-            return None, None
+        if root_abs is None and not is_insufficient_material(self.board): return None, None
 
         best_move  = None
         best_score = -float('inf')
@@ -297,17 +270,14 @@ class ChessBot:
             sim = self.board.clone()
             sim.make_move(move[0], move[1])
 
-            if not sim.find_king_pos(self.opponent_color):
-                return move, self.MATE_SCORE - 1
-            if not has_legal_moves(sim, self.opponent_color):
-                return move, self.MATE_SCORE - 1
+            if not sim.find_king_pos(self.opponent_color): return move, self.MATE_SCORE - 1
+            if not has_legal_moves(sim, self.opponent_color): return move, self.MATE_SCORE - 1
 
             if len(sim.white_pieces) + len(sim.black_pieces) <= 2:
                 score = 0
             else:
                 score_abs = self.tb_manager.probe(sim, self.opponent_color)
-                if score_abs is None:
-                    return None, None
+                if score_abs is None: return None, None
                 self.tb_hits += 1
                 score = score_abs if self.color == 'white' else -score_abs
                 if score > self.MATE_SCORE - 1000: score -= 1
@@ -339,7 +309,7 @@ class ChessBot:
                 iter_tb_hits += self.tb_hits
                 if self.used_heuristic_eval: any_heuristic_eval = True
 
-                if self.cancellation_event.is_set():
+                if self.cancellation_event.is_set() or (self.stop_time and time.time() > self.stop_time):
                     raise SearchCancelledException()
 
                 if best_score <= alpha_bound:
@@ -382,7 +352,6 @@ class ChessBot:
         current_board = self.board.clone()
         current_turn  = self.color
         current_ply   = self.ply_count
-
         seen_hashes = set()
         move = root_move
 
@@ -463,13 +432,11 @@ class ChessBot:
                 self.stop_time = None
                 self.time_check_mask = 2047
                 target_depth = self.search_depth
-            # --------------------------------
 
             for current_depth in range(1, target_depth + 1):
                 iter_start_time = time.time()
                 best_score_this_iter, best_move_this_iter = self._run_depth_iteration(
-                    current_depth, root_moves, root_hash, best_move_overall,
-                    prev_iter_score=prev_iter_score)
+                    current_depth, root_moves, root_hash, best_move_overall, prev_iter_score=prev_iter_score)
 
                 if self.cancellation_event.is_set():
                     raise SearchCancelledException()
@@ -497,7 +464,6 @@ class ChessBot:
                 if best_score_this_iter > self.MATE_SCORE - 2000: break
 
             self._report_move(best_move_overall)
-
         except SearchCancelledException:
             # Did the user click "New Game"?
             if self.cancellation_event.is_set():
@@ -562,12 +528,7 @@ class ChessBot:
         except SearchCancelledException:
             pass
 
-    # ------------------------------------------------------------------
-    # _search_at_depth  — root loop, now uses make/unmake
-    # ------------------------------------------------------------------
-
-    def _search_at_depth(self, depth, root_moves, root_hash, pv_move,
-                         alpha_floor=None, aspiration_window=None):
+    def _search_at_depth(self, depth, root_moves, root_hash, pv_move, alpha_floor=None, aspiration_window=None):
         self.nodes_searched    = 0
         self.used_heuristic_eval = False
         self.tb_hits           = 0
@@ -586,7 +547,7 @@ class ChessBot:
             beta  =  float('inf')
 
         ordered_root_moves = self.order_moves(self.board, root_moves, 0, pv_move, self.color)
-        board = self.board          # local alias — mutated in-place via make/unmake
+        board = self.board 
         all_moves_draw = True
 
         for move in ordered_root_moves:
@@ -600,7 +561,6 @@ class ChessBot:
             search_path = {root_hash}
             try:
                 if alpha_floor is not None:
-                    # Probe window: skip moves that don't beat the floor
                     probe_score = -self.negamax(
                         board, depth - 1, -(alpha_floor + 1), -alpha_floor,
                         self.opponent_color, 1, search_path,
@@ -631,21 +591,12 @@ class ChessBot:
             best_score_this_iter = self.DRAW_SCORE
         return best_score_this_iter, best_move_this_iter
 
-    # ------------------------------------------------------------------
-    # negamax — make/unmake, no clone
-    # ------------------------------------------------------------------
-
-    def negamax(self, board, depth, alpha, beta, turn, ply, search_path,
-                current_hash=None, prev_move=None, extensions=0):
-        # --- FAST CLOCK CHECK ---
+    def negamax(self, board, depth, alpha, beta, turn, ply, search_path, current_hash=None, prev_move=None, extensions=0):
         self.nodes_searched += 1
-        # Bitwise AND is extremely fast. Clock check cadence adapts to allocated time.
         if (self.nodes_searched & self.time_check_mask) == 0:
             if self.cancellation_event.is_set() or (self.stop_time and time.time() > self.stop_time):
                 raise SearchCancelledException()
-        # ------------------------
 
-        # --- 1. TABLEBASE ---
         if len(board.white_pieces) + len(board.black_pieces) <= 4:
             tb_score_absolute = self.tb_manager.probe(board, turn)
             if tb_score_absolute is not None:
@@ -663,7 +614,6 @@ class ChessBot:
         if is_insufficient_material(board) or self.ply_count + ply >= self.max_moves:
             return self.DRAW_SCORE
 
-        # --- 2. TT LOOKUP ---
         original_alpha = alpha
         tt_entry = self.tt.get(hash_val)
         if ply > 0 and tt_entry and tt_entry.depth >= depth:
@@ -694,7 +644,6 @@ class ChessBot:
             path_added = True
 
         try:
-            # --- 3. NULL MOVE PRUNING ---
             if (self.USE_NULL_MOVE_PRUNING and depth >= self.NMP_MIN_DEPTH and
                     ply > 0 and not is_in_check_flag and abs(beta) < self.MATE_SCORE - 1000):
                 pc = board.piece_counts
@@ -710,7 +659,6 @@ class ChessBot:
                                               null_hash, None, extensions)
                         if score >= beta: return beta
 
-            # --- 4. FUTILITY PRUNING ---
             futility_prune = False
             if (self.USE_FUTILITY_PRUNING and depth == 1 and not is_in_check_flag and
                     abs(alpha) < self.MATE_SCORE - 1000):
@@ -720,7 +668,6 @@ class ChessBot:
                 if static_eval + self.FUTILITY_MARGIN < alpha:
                     futility_prune = True
 
-            # --- 5. MAIN MOVE SEARCH ---
             pseudo_moves = get_all_pseudo_legal_moves(board, turn)
             hash_move    = tt_entry.best_move if tt_entry else None
             c_move       = None
@@ -832,17 +779,11 @@ class ChessBot:
         finally:
             if path_added: search_path.discard(hash_val)
 
-    # ------------------------------------------------------------------
-    # qsearch — make/unmake, no clone
-    # ------------------------------------------------------------------
-
     def qsearch(self, board, alpha, beta, turn, ply):
-        # --- FAST CLOCK CHECK ---
         self.nodes_searched += 1
         if (self.nodes_searched & self.time_check_mask) == 0:
             if self.cancellation_event.is_set() or (self.stop_time and time.time() > self.stop_time):
                 raise SearchCancelledException()
-        # ------------------------
 
         if len(board.white_pieces) + len(board.black_pieces) <= 4:
             tb_score_absolute = self.tb_manager.probe(board, turn)
@@ -920,12 +861,7 @@ class ChessBot:
 
         return alpha
 
-    # ------------------------------------------------------------------
-    # order_moves
-    # ------------------------------------------------------------------
-
-    def order_moves(self, board, moves, ply, hash_move, turn,
-                    return_meta=False, counter_move=None):
+    def order_moves(self, board, moves, ply, hash_move, turn, return_meta=False, counter_move=None):
         if not moves: return []
         scored_moves = []
         killers   = self.killer_moves[ply] if ply < len(self.killer_moves) else [None, None]
@@ -963,10 +899,6 @@ class ChessBot:
             return [(item[1], (item[2], item[3])) for item in scored_moves]
         else:
             return [item[1] for item in scored_moves]
-
-    # ------------------------------------------------------------------
-    # evaluate_board (unchanged)
-    # ------------------------------------------------------------------
 
     def evaluate_board(self, board, turn_to_move):
         if is_insufficient_material(board):
@@ -1237,11 +1169,11 @@ king_midgame_pst = [
 ]
 
 king_endgame_pst = [
-    [-40, -30, -30, -30, -30, -30, -30, -40],
+    [-40, -30, -30, -30, -30, -30, -30, -40], 
     [-30, -10,   0,   0,   0,   0, -10, -30],
     [-30,   0,  10,  20,  20,  10,   0, -30],
     [-30,   5,  20,  20,  20,  20,   5, -30],
-    [-30,   5,  15,  20,  20,  15,   5, -30],
+    [-30,   5,  15,  20,  20,  15,   5, -30], 
     [-30,   0,  10,  10,  10,  10,   0, -30],
     [-30,   0,   5,   5,   5,   5,   0, -30],
     [-40, -30, -10, -10, -10, -10, -30, -40]
