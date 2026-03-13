@@ -1,4 +1,4 @@
-# JungleChessUI.py (v14.4 - History/Clock & Tag-Leak Fixes)
+# JungleChessUI.py (v14.5 - UI Layout Polish & Toggle Clock Fix)
 
 import tkinter as tk
 from tkinter import ttk, messagebox
@@ -124,7 +124,6 @@ class EnhancedChessApp:
 
     # ------------------------------------------------------------------ helpers
     def _format_san_display(self, san_str):
-        """Strip casualty brackets when long notation is off."""
         if self.long_notation_var.get() or not san_str:
             return san_str
         return _CASUALTIES_RE.sub('', san_str)
@@ -135,7 +134,6 @@ class EnhancedChessApp:
 
     # ------------------------------------------------------------------ clock helpers
     def _start_clock(self):
-        """Start the clock ticking from now (resets the tick baseline)."""
         if not self.use_clock_var.get() or self.game_over or self.clock_running:
             return
         self.last_clock_tick = time.time()
@@ -143,13 +141,11 @@ class EnhancedChessApp:
         self._tick_clock()
 
     def _pause_clock(self):
-        """Stop the clock without resetting times; returns whether it was running."""
         was_running        = self.clock_running
         self.clock_running = False
         return was_running
 
     def _reset_clock_state(self):
-        """Zero-out all clock state (called on new game / FEN / PGN load)."""
         base = float(self.time_control_seconds.get())
         self.white_time      = base
         self.black_time      = base
@@ -174,7 +170,8 @@ class EnhancedChessApp:
         self.title_label = ttk.Label(
             self.left_panel, text="JUNGLE CHESS", style='Header.TLabel',
             font=('Helvetica', 22, 'bold'))
-        self.title_label.pack(pady=(0, 15))
+        # POLISH: Reduced padding under title
+        self.title_label.pack(pady=(0, 5))
 
         self.pv_text = tk.Text(
             self.left_panel, height=6,
@@ -304,7 +301,7 @@ class EnhancedChessApp:
             ).pack(anchor=tk.W, pady=(2, 2))
 
     def _build_right_sidebar_widgets(self, parent_frame):
-        # 1. Info Frame (sticks to the top)
+        # 1. Info Frame (sticks to top)
         self.info_frame = ttk.Frame(parent_frame, style='Left.TFrame')
         self.info_frame.pack(side=tk.TOP, fill=tk.X, pady=(0, 5))
         self.game_info_label = ttk.Label(self.info_frame, text="Match Info", style='Header.TLabel')
@@ -324,15 +321,16 @@ class EnhancedChessApp:
         self.clock_frame = ttk.Frame(self.info_frame, style='Left.TFrame')
         self.clock_frame.pack(fill=tk.X, pady=(5, 5))
 
+        # POLISH: Smaller font, less Y padding
         self.black_clock_lbl = tk.Label(
-            self.clock_frame, text="00:00.0", font=('Courier', 20, 'bold'),
-            bg=self.COLORS['bg_medium'], fg=self.COLORS['text_light'], pady=4)
-        self.black_clock_lbl.pack(side=tk.TOP, fill=tk.X, pady=2)
+            self.clock_frame, text="00:00.0", font=('Courier', 18, 'bold'),
+            bg=self.COLORS['bg_medium'], fg=self.COLORS['text_light'], pady=2)
+        self.black_clock_lbl.pack(side=tk.TOP, fill=tk.X, pady=1)
 
         self.white_clock_lbl = tk.Label(
-            self.clock_frame, text="00:00.0", font=('Courier', 20, 'bold'),
-            bg=self.COLORS['bg_light'], fg=self.COLORS['text_light'], pady=4)
-        self.white_clock_lbl.pack(side=tk.BOTTOM, fill=tk.X, pady=2)
+            self.clock_frame, text="00:00.0", font=('Courier', 18, 'bold'),
+            bg=self.COLORS['bg_light'], fg=self.COLORS['text_light'], pady=2)
+        self.white_clock_lbl.pack(side=tk.BOTTOM, fill=tk.X, pady=1)
 
         # Time-control slider
         self.time_control_frame = ttk.Frame(self.info_frame, style='Left.TFrame')
@@ -353,24 +351,23 @@ class EnhancedChessApp:
         self.time_control_slider.pack(fill=tk.X, pady=(2, 2))
         self.time_control_slider.bind("<ButtonRelease-1>", lambda e: self.reset_game())
 
-        # 4. Bottom Tools (sticks to the bottom)
+        # 4. Bottom Tools (sticks to bottom)
         self.bottom_tools_frame = ttk.Frame(parent_frame, style='Left.TFrame')
         self.bottom_tools_frame.pack(side=tk.BOTTOM, fill=tk.X, pady=(0, 10))
 
         self.fen_entry = self._create_import_export_widget(self.bottom_tools_frame, "FEN String:", self.load_fen_from_entry, self.copy_fen_to_clipboard)
         self.pgn_entry = self._create_import_export_widget(self.bottom_tools_frame, "PGN Record:", self.load_pgn_from_entry, self.copy_pgn_to_clipboard)
-        
-        # 3. Scoreboard (sits just above the bottom tools)
+
+        # 3. Scoreboard (above bottom tools)
         self.scoreboard_label = ttk.Label(
             parent_frame, text="", font=("Helvetica", 11), justify=tk.LEFT,
             background=self.COLORS['bg_dark'], foreground=self.COLORS['text_light'])
         self.scoreboard_label.pack(side=tk.BOTTOM, fill=tk.X, pady=(5, 5))
 
-        # 2. Move History (expands to fill the remaining middle space)
+        # 2. Move History (expands to fill middle)
         ttk.Label(parent_frame, text="Move History", style='SmallHeader.TLabel').pack(side=tk.TOP, anchor=tk.W)
 
         self.tree_frame = tk.Frame(parent_frame, bg=self.COLORS['bg_medium'])
-        # BUG FIX: Pack last with expand=True so it fills all available space
         self.tree_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True, pady=(2, 10))
 
         self.history_header = tk.Frame(self.tree_frame, bg=self.COLORS['bg_light'])
@@ -386,8 +383,7 @@ class EnhancedChessApp:
             self.tree_frame, font=('Courier', 11),
             bg=self.COLORS['bg_medium'], fg=self.COLORS['text_light'],
             borderwidth=0, highlightthickness=0, state=tk.DISABLED,
-            cursor="arrow", wrap=tk.NONE) # BUG FIX: Removed fixed height=16
-            
+            cursor="arrow", wrap=tk.NONE)
         scrollbar = ttk.Scrollbar(self.tree_frame, orient=tk.VERTICAL, command=self.moves_text.yview)
         self.moves_text.configure(yscrollcommand=scrollbar.set)
         self.moves_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
@@ -428,10 +424,11 @@ class EnhancedChessApp:
         style.configure('SmallHeader.TLabel', background=C['bg_dark'],  foreground=C['text_light'], font=('Helvetica', 12, 'bold'), padding=(0, 1))
         style.configure('Status.TLabel',      background=C['bg_light'], foreground=C['text_light'], font=('Helvetica', 14, 'bold'), padding=(6, 4), relief='solid', borderwidth=1)
 
-        style.configure('Control.TButton', background=C['accent'],   foreground=C['text_light'], font=('Helvetica', 11, 'bold'), padding=(8, 6), borderwidth=0)
+        # POLISH: Reduced vertical padding from (8, 6) to (8, 4) to make red buttons slightly thinner
+        style.configure('Control.TButton', background=C['accent'],   foreground=C['text_light'], font=('Helvetica', 11, 'bold'), padding=(8, 4), borderwidth=0)
         style.map('Control.TButton',       background=[('active', C['accent']), ('pressed', '#d13550')])
 
-        style.configure('Flipped.TButton', background=C['warning'],  foreground=C['text_light'], font=('Helvetica', 11, 'bold'), padding=(8, 6), borderwidth=0)
+        style.configure('Flipped.TButton', background=C['warning'],  foreground=C['text_light'], font=('Helvetica', 11, 'bold'), padding=(8, 4), borderwidth=0)
         style.map('Flipped.TButton',       background=[('active', C['warning']), ('pressed', '#E07B00')])
 
         style.configure('Nav.TButton',     background=C['bg_light'], foreground=C['text_light'], font=('Helvetica', 16, 'bold'), padding=(10, 5), borderwidth=0)
@@ -602,10 +599,8 @@ class EnhancedChessApp:
         self.turn         = "white" if turn_part.lower() == 'w' else "black"
         self.game_started = True
 
-        # Reset clocks so the loaded position starts fresh
         self._reset_clock_state()
         self.render_clocks()
-
         self._reset_game_state_vars()
 
         status, winner = get_game_state(self.board, self.turn, self.position_counts,
@@ -668,8 +663,6 @@ class EnhancedChessApp:
             return
         self.reset_game()
 
-        # Suspend clock for the duration of the synchronous parse so no
-        # elapsed wall-clock time is charged to either player.
         self._pause_clock()
         self.last_clock_tick = None
 
@@ -705,7 +698,6 @@ class EnhancedChessApp:
                 messagebox.showwarning("PGN Error", f"Could not parse next move from: {pgn_text[:20]}...")
                 break
 
-        # Reset tick baseline so parse wall-time doesn't eat into the clock.
         self.last_clock_tick = time.time()
 
     # ------------------------------------------------------------------ move history UI
@@ -713,8 +705,6 @@ class EnhancedChessApp:
         self.moves_text.config(state=tk.NORMAL)
         self.moves_text.delete(1.0, tk.END)
 
-        # BUG 2 FIX: Delete stale ply tags before rebuilding to prevent binding
-        # accumulation (each call would otherwise stack another handler per tag).
         for tag in self.moves_text.tag_names():
             if tag.startswith("ply_"):
                 self.moves_text.tag_delete(tag)
@@ -783,7 +773,6 @@ class EnhancedChessApp:
 
     # ------------------------------------------------------------------ core gameplay
     def execute_move_and_check_state(self, player_who_moved, move):
-        # Add increment to the player who just moved
         if self.use_clock_var.get() and not self.game_over and self.increment:
             if player_who_moved == 'white':
                 self.white_time += self.increment
@@ -792,8 +781,6 @@ class EnhancedChessApp:
             self.render_clocks()
 
         self.switch_turn()
-
-        # Start the clock on the first real move (guarded by use_clock_var)
         self._start_clock()
 
         if self.history_pointer < len(self.full_history) - 1:
@@ -893,10 +880,6 @@ class EnhancedChessApp:
             if not self.game_over:
                 mode = self.game_mode.get()
                 if mode == GameMode.HUMAN_VS_BOT.value and self.turn != self.human_color:
-                    # BUG 7 FIX: Lock the board immediately, before the after-callback
-                    # fires, so there is no window for a second drag to sneak in.
-                    # execute_move_and_check_state already called update_ui_after_state_change,
-                    # so no second call is needed here.
                     self.drag_start = None
                     self.set_interactivity(False)
                     self.master.after(self._get_ai_move_delay(), self._make_game_ai_move)
@@ -919,8 +902,6 @@ class EnhancedChessApp:
         self.selected, self.valid_moves = None, []
 
         self._reset_game_state_vars()
-
-        # Reset clocks
         self._reset_clock_state()
         self._update_time_control_label()
         self.render_clocks()
@@ -986,10 +967,6 @@ class EnhancedChessApp:
 
     def _load_state_from_history(self):
         self._stop_ai_process()
-
-        # BUG 1 FIX: Pause the clock while browsing history so self.turn changes
-        # don't cause the wrong player's clock to drain.  Resume only when
-        # the user returns to the live (latest) position.
         was_running = self._pause_clock()
 
         board_state, turn_state, _ = self.full_history[self.history_pointer]
@@ -1010,7 +987,6 @@ class EnhancedChessApp:
             self.game_over   = True
             self.game_result = (status, winner)
 
-        # Resume clock only when the user is back at the live end of the game
         at_live_end = (self.history_pointer == len(self.full_history) - 1)
         if was_running and at_live_end and not self.game_over:
             self.last_clock_tick = time.time()
@@ -1174,7 +1150,6 @@ class EnhancedChessApp:
             self.master.after(20, self.process_comm_queue)
 
     def _render_pv(self):
-        """Render (or hide) the PV line. Called on new PV data and on toggle."""
         if not getattr(self, 'show_pv_var', None) or not self.show_pv_var.get():
             self.pv_text.pack_forget()
             return
@@ -1266,7 +1241,8 @@ class EnhancedChessApp:
             self.time_control_frame.pack(after=self.clock_frame, fill=tk.X, pady=(5, 5))
             self._update_time_control_label()
             self.render_clocks()
-            if self.game_started and not self.game_over:
+            # BUG FIX: Only start the clock if the game is already in progress (a move has been made)
+            if self.game_started and not self.game_over and self.history_pointer > 0:
                 self._start_clock()
         else:
             self.clock_frame.pack_forget()
@@ -1280,8 +1256,6 @@ class EnhancedChessApp:
         return 4 if self.instant_move.get() else 20
 
     def render_clocks(self):
-        """Update the clock label text and highlight the active player. 
-        Does NOT touch geometry — that is _toggle_clock's job."""
         if not self.use_clock_var.get():
             return
 
@@ -1335,7 +1309,7 @@ class EnhancedChessApp:
         self.clock_running = False
         winner             = 'black' if color == 'white' else 'white'
         self.game_result   = ('timeout', winner)
-        self.update_ui_after_state_change()   # full refresh: board, nav buttons, turn label
+        self.update_ui_after_state_change()
         self._log_game_over()
         self._stop_ai_process()
         if self.game_mode.get() == GameMode.AI_VS_AI.value and self.ai_series_running:
@@ -1469,8 +1443,6 @@ class EnhancedChessApp:
                 temp_board.make_move(move[0], move[1])
                 temp_turn = "black" if temp_turn == "white" else "white"
 
-        # Suspend the clock during opening playback; re-baseline afterwards so
-        # series setup time is never charged to either player.
         self._pause_clock()
 
         for move in self.current_opening_sequence:
@@ -1481,7 +1453,7 @@ class EnhancedChessApp:
             self.execute_move_and_check_state(self.turn, move)
 
         self.last_clock_tick = time.time()
-        self.clock_running   = False   # clock starts fresh on the first real AI move
+        self.clock_running   = False   
 
     def update_scoreboard(self):
         if self.game_mode.get() == GameMode.AI_VS_AI.value and self.ai_series_running:
