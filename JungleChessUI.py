@@ -1,4 +1,4 @@
-# JungleChessUI.py (v14.2 - Time Optimisations, removed buffers from ai vs op series)
+# JungleChessUI.py (v14.4 - History/Clock & Tag-Leak Fixes)
 
 import tkinter as tk
 from tkinter import ttk, messagebox
@@ -20,7 +20,7 @@ class GameMode(Enum):
 # Compiled once at module level — used by _format_san_display
 _CASUALTIES_RE = re.compile(r'\s*\(.*?\)')
 
-# FEN character → piece class (shared by load_fen and get_current_fen)
+# FEN character ↔ piece class
 _FEN_CHAR_TO_CLASS = {
     'p': Pawn, 'n': Knight, 'b': Bishop, 'r': Rook, 'q': Queen, 'k': King,
 }
@@ -32,11 +32,9 @@ def run_ai_process(board, color, position_counts, comm_queue, cancellation_event
                    bot_class, bot_name, search_depth, ply_count, game_mode,
                    time_left=None, increment=None):
     try:
-        # Pass time controls down to the new AI
         bot = bot_class(board, color, position_counts, comm_queue, cancellation_event,
                         bot_name, ply_count, game_mode, time_left=time_left, increment=increment)
     except TypeError:
-        # Fallback just in case you haven't updated OpponentAI.py yet!
         bot = bot_class(board, color, position_counts, comm_queue, cancellation_event,
                         bot_name, ply_count, game_mode)
     bot.search_depth = search_depth
@@ -79,8 +77,8 @@ class EnhancedChessApp:
         self.position_counts = {}
 
         self.current_opening_sequence = []
-        self.square_size       = 75
-        self.base_sidebar_width = 280
+        self.square_size              = 75
+        self.base_sidebar_width       = 280
 
         self.game_mode           = tk.StringVar(value=GameMode.HUMAN_VS_BOT.value)
         self.analysis_mode_var   = tk.BooleanVar(value=True)
@@ -108,12 +106,12 @@ class EnhancedChessApp:
 
         # --- TIME STATE ---
         self.time_control_seconds = tk.IntVar(value=300)
-        self.white_time = 0.0
-        self.black_time = 0.0
-        self.increment = 0.0
+        self.white_time      = 0.0
+        self.black_time      = 0.0
+        self.increment       = 0.0
         self.last_clock_tick = None
-        self.clock_running = False
-        self.use_clock_var = tk.BooleanVar(value=True)
+        self.clock_running   = False
+        self.use_clock_var   = tk.BooleanVar(value=True)
         # ------------------
 
         self.COLORS = self.setup_styles()
@@ -134,6 +132,30 @@ class EnhancedChessApp:
     def _on_notation_toggle(self):
         self.update_moves_list()
         self._render_pv()
+
+    # ------------------------------------------------------------------ clock helpers
+    def _start_clock(self):
+        """Start the clock ticking from now (resets the tick baseline)."""
+        if not self.use_clock_var.get() or self.game_over or self.clock_running:
+            return
+        self.last_clock_tick = time.time()
+        self.clock_running   = True
+        self._tick_clock()
+
+    def _pause_clock(self):
+        """Stop the clock without resetting times; returns whether it was running."""
+        was_running        = self.clock_running
+        self.clock_running = False
+        return was_running
+
+    def _reset_clock_state(self):
+        """Zero-out all clock state (called on new game / FEN / PGN load)."""
+        base = float(self.time_control_seconds.get())
+        self.white_time      = base
+        self.black_time      = base
+        self.increment       = base / 60.0
+        self.clock_running   = False
+        self.last_clock_tick = None
 
     # ------------------------------------------------------------------ UI build
     def build_ui(self):
@@ -197,8 +219,7 @@ class EnhancedChessApp:
             self.canvas_frame,
             width=COLS * self.square_size, height=ROWS * self.square_size,
             bg=self.COLORS['bg_medium'], highlightthickness=0)
-        self.board_image_white = self.create_board_image("white")
-        self.board_image_black = self.create_board_image("black")
+        self.board_image    = self.create_board_image()
         self.board_image_id = self.canvas.create_image(0, 0, anchor='nw', tags="board")
         self.canvas.pack(expand=True)
 
@@ -213,14 +234,14 @@ class EnhancedChessApp:
             background=self.COLORS['bg_medium'], foreground=self.COLORS['text_light'],
             anchor="center", justify=tk.CENTER)
 
-        # Navigation bar 
+        # Navigation bar
         self.navigation_frame = ttk.Frame(self.center_panel, style='Right.TFrame')
         self.navigation_frame.pack(fill=tk.X, pady=(5, 10))
 
-        self.start_button = ttk.Button(self.navigation_frame, text="«", command=self.go_to_start,  style='Nav.TButton', state=tk.DISABLED)
-        self.undo_button  = ttk.Button(self.navigation_frame, text="‹", command=self.undo_move,    style='Nav.TButton', state=tk.DISABLED)
-        self.redo_button  = ttk.Button(self.navigation_frame, text="›", command=self.redo_move,    style='Nav.TButton', state=tk.DISABLED)
-        self.end_button   = ttk.Button(self.navigation_frame, text="»", command=self.go_to_end,    style='Nav.TButton', state=tk.DISABLED)
+        self.start_button = ttk.Button(self.navigation_frame, text="«", command=self.go_to_start, style='Nav.TButton', state=tk.DISABLED)
+        self.undo_button  = ttk.Button(self.navigation_frame, text="‹", command=self.undo_move,   style='Nav.TButton', state=tk.DISABLED)
+        self.redo_button  = ttk.Button(self.navigation_frame, text="›", command=self.redo_move,   style='Nav.TButton', state=tk.DISABLED)
+        self.end_button   = ttk.Button(self.navigation_frame, text="»", command=self.go_to_end,   style='Nav.TButton', state=tk.DISABLED)
 
         self.navigation_frame.columnconfigure(0, weight=1)
         self.navigation_frame.columnconfigure(5, weight=1)
@@ -235,7 +256,7 @@ class EnhancedChessApp:
         self.right_panel.pack_propagate(False)
         self._build_right_sidebar_widgets(self.right_panel)
 
-        self.main_frame.bind("<Configure>", self.handle_main_resize)
+        self.main_frame.bind("<Configure>",   self.handle_main_resize)
         self.center_panel.bind("<Configure>", self.handle_board_resize)
 
     def _build_control_widgets(self, parent_frame):
@@ -253,11 +274,11 @@ class EnhancedChessApp:
         self.controls_frame = ttk.Frame(parent_frame, style='Left.TFrame')
         self.controls_frame.pack(fill=tk.X, pady=10)
 
-        ttk.Button(self.controls_frame, text="NEW GAME",       command=self.reset_game,        style='Control.TButton').pack(fill=tk.X, pady=3)
-        ttk.Button(self.controls_frame, text="SWAP SIDES",     command=self.swap_sides,        style='Control.TButton').pack(fill=tk.X, pady=3)
-        self.flip_view_btn = ttk.Button(self.controls_frame, text="FLIP VIEW", command=self.toggle_board_view, style='Control.TButton')
+        ttk.Button(self.controls_frame, text="NEW GAME",      command=self.reset_game,       style='Control.TButton').pack(fill=tk.X, pady=3)
+        ttk.Button(self.controls_frame, text="SWAP SIDES",    command=self.swap_sides,       style='Control.TButton').pack(fill=tk.X, pady=3)
+        self.flip_view_btn = ttk.Button(self.controls_frame,  text="FLIP VIEW",              command=self.toggle_board_view, style='Control.TButton')
         self.flip_view_btn.pack(fill=tk.X, pady=3)
-        ttk.Button(self.controls_frame, text="AI vs OP Series", command=self.start_ai_series,  style='Control.TButton').pack(fill=tk.X, pady=3)
+        ttk.Button(self.controls_frame, text="AI vs OP Series", command=self.start_ai_series, style='Control.TButton').pack(fill=tk.X, pady=3)
 
         ttk.Label(self.controls_frame, text="Depth:", style='SmallHeader.TLabel').pack(anchor=tk.W, pady=(10, 0))
         self.bot_depth_slider = tk.Scale(
@@ -269,11 +290,11 @@ class EnhancedChessApp:
 
         self.instant_move = tk.BooleanVar(value=False)
         checkboxes = [
-            ("Instant Moves",               self.instant_move,          None),
-            ("Analysis Mode (H-vs-H)",      self.analysis_mode_var,     self._update_analysis_after_state_change),
-            ("Auto-save Depth Stats",       self.auto_save_stats_var,   None),
-            ("Show Engine Lines (PV)",      self.show_pv_var,           self._render_pv),
-            ("Long Notation (Casualties)",  self.long_notation_var,     self._on_notation_toggle),
+            ("Instant Moves",               self.instant_move,        None),
+            ("Analysis Mode (H-vs-H)",      self.analysis_mode_var,   self._update_analysis_after_state_change),
+            ("Auto-save Depth Stats",       self.auto_save_stats_var, None),
+            ("Show Engine Lines (PV)",      self.show_pv_var,         self._render_pv),
+            ("Long Notation (Casualties)",  self.long_notation_var,   self._on_notation_toggle),
         ]
         for text, var, cmd in checkboxes:
             kw = {'command': cmd} if cmd else {}
@@ -283,24 +304,23 @@ class EnhancedChessApp:
             ).pack(anchor=tk.W, pady=(2, 2))
 
     def _build_right_sidebar_widgets(self, parent_frame):
-        # 1. Info Frame
+        # 1. Info Frame (sticks to the top)
         self.info_frame = ttk.Frame(parent_frame, style='Left.TFrame')
-        self.info_frame.pack(fill=tk.X, pady=(0, 5))
+        self.info_frame.pack(side=tk.TOP, fill=tk.X, pady=(0, 5))
         self.game_info_label = ttk.Label(self.info_frame, text="Match Info", style='Header.TLabel')
         self.game_info_label.pack(anchor=tk.W)
         self.turn_label = ttk.Label(self.info_frame, text="WHITE'S TURN", style='Status.TLabel')
         self.turn_label.pack(fill=tk.X, pady=(5, 5))
 
-        # --- CLOCK TOGGLE ---
+        # Clock toggle
         self.clock_toggle_frame = ttk.Frame(self.info_frame, style='Left.TFrame')
         self.clock_toggle_frame.pack(fill=tk.X, pady=(2, 2))
-        self.clock_toggle_btn = ttk.Checkbutton(
+        ttk.Checkbutton(
             self.clock_toggle_frame, text="Use Clock",
-            variable=self.use_clock_var, command=self._toggle_clock)
-        self.clock_toggle_btn.pack(anchor=tk.W)
-        # --------------------
+            variable=self.use_clock_var, command=self._toggle_clock
+        ).pack(anchor=tk.W)
 
-        # --- CLOCK UI ---
+        # Clock display
         self.clock_frame = ttk.Frame(self.info_frame, style='Left.TFrame')
         self.clock_frame.pack(fill=tk.X, pady=(5, 5))
 
@@ -313,9 +333,8 @@ class EnhancedChessApp:
             self.clock_frame, text="00:00.0", font=('Courier', 20, 'bold'),
             bg=self.COLORS['bg_light'], fg=self.COLORS['text_light'], pady=4)
         self.white_clock_lbl.pack(side=tk.BOTTOM, fill=tk.X, pady=2)
-        # ----------------
 
-        # --- TIME CONTROL SLIDER ---
+        # Time-control slider
         self.time_control_frame = ttk.Frame(self.info_frame, style='Left.TFrame')
         self.time_control_frame.pack(fill=tk.X, pady=(5, 5))
 
@@ -333,13 +352,26 @@ class EnhancedChessApp:
         self.time_control_slider.set(int(self.time_control_seconds.get()))
         self.time_control_slider.pack(fill=tk.X, pady=(2, 2))
         self.time_control_slider.bind("<ButtonRelease-1>", lambda e: self.reset_game())
-        # ---------------------------
 
-        # 2. Move History
-        ttk.Label(parent_frame, text="Move History", style='SmallHeader.TLabel').pack(anchor=tk.W)
+        # 4. Bottom Tools (sticks to the bottom)
+        self.bottom_tools_frame = ttk.Frame(parent_frame, style='Left.TFrame')
+        self.bottom_tools_frame.pack(side=tk.BOTTOM, fill=tk.X, pady=(0, 10))
+
+        self.fen_entry = self._create_import_export_widget(self.bottom_tools_frame, "FEN String:", self.load_fen_from_entry, self.copy_fen_to_clipboard)
+        self.pgn_entry = self._create_import_export_widget(self.bottom_tools_frame, "PGN Record:", self.load_pgn_from_entry, self.copy_pgn_to_clipboard)
+        
+        # 3. Scoreboard (sits just above the bottom tools)
+        self.scoreboard_label = ttk.Label(
+            parent_frame, text="", font=("Helvetica", 11), justify=tk.LEFT,
+            background=self.COLORS['bg_dark'], foreground=self.COLORS['text_light'])
+        self.scoreboard_label.pack(side=tk.BOTTOM, fill=tk.X, pady=(5, 5))
+
+        # 2. Move History (expands to fill the remaining middle space)
+        ttk.Label(parent_frame, text="Move History", style='SmallHeader.TLabel').pack(side=tk.TOP, anchor=tk.W)
 
         self.tree_frame = tk.Frame(parent_frame, bg=self.COLORS['bg_medium'])
-        self.tree_frame.pack(fill=tk.X, expand=False, pady=(2, 10))
+        # BUG FIX: Pack last with expand=True so it fills all available space
+        self.tree_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True, pady=(2, 10))
 
         self.history_header = tk.Frame(self.tree_frame, bg=self.COLORS['bg_light'])
         self.history_header.pack(fill=tk.X)
@@ -354,24 +386,12 @@ class EnhancedChessApp:
             self.tree_frame, font=('Courier', 11),
             bg=self.COLORS['bg_medium'], fg=self.COLORS['text_light'],
             borderwidth=0, highlightthickness=0, state=tk.DISABLED,
-            cursor="arrow", wrap=tk.NONE, height=16) # Fixed height
+            cursor="arrow", wrap=tk.NONE) # BUG FIX: Removed fixed height=16
+            
         scrollbar = ttk.Scrollbar(self.tree_frame, orient=tk.VERTICAL, command=self.moves_text.yview)
         self.moves_text.configure(yscrollcommand=scrollbar.set)
-        self.moves_text.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        self.moves_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-
-        # 3. Scoreboard (Top-aligned, just below history)
-        self.scoreboard_label = ttk.Label(
-            parent_frame, text="", font=("Helvetica", 11), justify=tk.LEFT,
-            background=self.COLORS['bg_dark'], foreground=self.COLORS['text_light'])
-        self.scoreboard_label.pack(fill=tk.X, pady=(5, 5))
-
-        # 4. Bottom Tools (Clamped permanently to bottom)
-        self.bottom_tools_frame = ttk.Frame(parent_frame, style='Left.TFrame')
-        self.bottom_tools_frame.pack(side=tk.BOTTOM, fill=tk.X, pady=(0, 10))
-
-        self.fen_entry = self._create_import_export_widget(self.bottom_tools_frame, "FEN String:", self.load_fen_from_entry, self.copy_fen_to_clipboard)
-        self.pgn_entry = self._create_import_export_widget(self.bottom_tools_frame, "PGN Record:", self.load_pgn_from_entry, self.copy_pgn_to_clipboard)
 
     def _create_import_export_widget(self, parent_frame, label_text, load_cmd, copy_cmd):
         frame = ttk.Frame(parent_frame, style='Left.TFrame')
@@ -440,12 +460,12 @@ class EnhancedChessApp:
         nav_h  = self.navigation_frame.winfo_height() if self.navigation_frame.winfo_height() > 1 else self.navigation_frame.winfo_reqheight()
         reserved_height = eval_h + nav_h + 35
 
-        view_width  = event.width - 40
+        view_width  = event.width  - 40
         view_height = event.height - reserved_height
         if view_width <= 1 or view_height <= 1:
             return
 
-        new_square_size  = min(view_width // COLS, view_height // ROWS)
+        new_square_size   = min(view_width // COLS, view_height // ROWS)
         board_pixel_width = COLS * self.square_size
         self.eval_frame.config(width=board_pixel_width)
         self.eval_bar_canvas.config(width=board_pixel_width)
@@ -456,8 +476,7 @@ class EnhancedChessApp:
             self.canvas.config(width=board_pixel_width, height=ROWS * self.square_size)
             self.eval_frame.config(width=board_pixel_width)
             self.eval_bar_canvas.config(width=board_pixel_width)
-            self.board_image_white = self.create_board_image("white")
-            self.board_image_black = self.create_board_image("black")
+            self.board_image = self.create_board_image()
             self.draw_board()
         self._position_side_labels()
 
@@ -548,8 +567,7 @@ class EnhancedChessApp:
                 fen += str(empty)
             if r < ROWS - 1:
                 fen += "/"
-        turn_char = 'w' if self.turn == 'white' else 'b'
-        return f"{fen} {turn_char} - - 0 1"
+        return f"{fen} {'w' if self.turn == 'white' else 'b'} - - 0 1"
 
     def copy_fen_to_clipboard(self):
         fen = self.get_current_fen()
@@ -583,6 +601,11 @@ class EnhancedChessApp:
 
         self.turn         = "white" if turn_part.lower() == 'w' else "black"
         self.game_started = True
+
+        # Reset clocks so the loaded position starts fresh
+        self._reset_clock_state()
+        self.render_clocks()
+
         self._reset_game_state_vars()
 
         status, winner = get_game_state(self.board, self.turn, self.position_counts,
@@ -615,8 +638,8 @@ class EnhancedChessApp:
         start_turn = self.full_history[0][1]
 
         if start_turn == 'black' and moves:
-            pgn    += f"{move_num}... {moves[0]} "
-            moves   = moves[1:]
+            pgn      += f"{move_num}... {moves[0]} "
+            moves     = moves[1:]
             move_num += 1
 
         for i in range(0, len(moves), 2):
@@ -626,7 +649,7 @@ class EnhancedChessApp:
             move_num += 1
 
         if self.game_result:
-            res = self.game_result[1]
+            res  = self.game_result[1]
             pgn += "1-0" if res == 'white' else "0-1" if res == 'black' else "1/2-1/2"
         else:
             pgn += "*"
@@ -644,6 +667,11 @@ class EnhancedChessApp:
         if not pgn_text:
             return
         self.reset_game()
+
+        # Suspend clock for the duration of the synchronous parse so no
+        # elapsed wall-clock time is charged to either player.
+        self._pause_clock()
+        self.last_clock_tick = None
 
         for res in ["1-0", "0-1", "1/2-1/2", "*"]:
             pgn_text = pgn_text.replace(res, "")
@@ -677,10 +705,19 @@ class EnhancedChessApp:
                 messagebox.showwarning("PGN Error", f"Could not parse next move from: {pgn_text[:20]}...")
                 break
 
+        # Reset tick baseline so parse wall-time doesn't eat into the clock.
+        self.last_clock_tick = time.time()
+
     # ------------------------------------------------------------------ move history UI
     def update_moves_list(self):
         self.moves_text.config(state=tk.NORMAL)
         self.moves_text.delete(1.0, tk.END)
+
+        # BUG 2 FIX: Delete stale ply tags before rebuilding to prevent binding
+        # accumulation (each call would otherwise stack another handler per tag).
+        for tag in self.moves_text.tag_names():
+            if tag.startswith("ply_"):
+                self.moves_text.tag_delete(tag)
 
         formatted_moves = []
         for i in range(1, len(self.full_history)):
@@ -746,20 +783,19 @@ class EnhancedChessApp:
 
     # ------------------------------------------------------------------ core gameplay
     def execute_move_and_check_state(self, player_who_moved, move):
-        # --- ADD INCREMENT ---
-        if self.use_clock_var.get() and (not self.game_over) and self.increment:
+        # Add increment to the player who just moved
+        if self.use_clock_var.get() and not self.game_over and self.increment:
             if player_who_moved == 'white':
                 self.white_time += self.increment
             else:
                 self.black_time += self.increment
             self.render_clocks()
-        # ---------------------
 
         self.switch_turn()
-        if not self.game_over and not self.clock_running:
-            self.last_clock_tick = time.time()
-            self.clock_running = True
-            self._tick_clock()
+
+        # Start the clock on the first real move (guarded by use_clock_var)
+        self._start_clock()
+
         if self.history_pointer < len(self.full_history) - 1:
             self.full_history = self.full_history[:self.history_pointer + 1]
             self.position_counts.clear()
@@ -814,8 +850,8 @@ class EnhancedChessApp:
         if self.game_mode.get() == GameMode.HUMAN_VS_BOT.value and self.turn != self.human_color:
             return
 
-        self.selected  = (r, c)
-        self.dragging  = True
+        self.selected   = (r, c)
+        self.dragging   = True
         self.drag_start = (r, c)
         self.valid_moves = get_all_legal_moves(self.board, self.turn)
         self.valid_moves_for_highlight = [end for start, end in self.valid_moves if start == self.selected]
@@ -857,7 +893,14 @@ class EnhancedChessApp:
             if not self.game_over:
                 mode = self.game_mode.get()
                 if mode == GameMode.HUMAN_VS_BOT.value and self.turn != self.human_color:
+                    # BUG 7 FIX: Lock the board immediately, before the after-callback
+                    # fires, so there is no window for a second drag to sneak in.
+                    # execute_move_and_check_state already called update_ui_after_state_change,
+                    # so no second call is needed here.
+                    self.drag_start = None
+                    self.set_interactivity(False)
                     self.master.after(self._get_ai_move_delay(), self._make_game_ai_move)
+                    return
                 elif mode == GameMode.HUMAN_VS_HUMAN.value:
                     self._update_analysis_after_state_change()
 
@@ -877,20 +920,15 @@ class EnhancedChessApp:
 
         self._reset_game_state_vars()
 
-        # --- TIME RESET ---
-        base_seconds = float(self.time_control_seconds.get())
-        self.white_time = base_seconds
-        self.black_time = base_seconds
-        self.increment = base_seconds / 60.0
-        self.clock_running = False # Starts on first move
+        # Reset clocks
+        self._reset_clock_state()
         self._update_time_control_label()
         self.render_clocks()
         self._toggle_clock()
-        # ------------------
 
         self.fen_entry.delete(0, tk.END)
         self.pgn_entry.delete(0, tk.END)
-        self._start_game_if_needed()
+        self.game_started = True
 
         mode  = self.game_mode.get()
         delay = self._get_ai_move_delay()
@@ -917,8 +955,7 @@ class EnhancedChessApp:
         print(f"\n--- Turn {self.history_pointer + 1} ({self.turn.capitalize()}) ---")
         self.last_move_timestamp = time.time()
         mode      = self.game_mode.get()
-        bot_class = None
-        bot_name  = None
+        bot_class = bot_name = None
         if mode == GameMode.HUMAN_VS_BOT.value:
             if self.turn != self.human_color:
                 bot_class, bot_name = ChessBot, self.MAIN_AI_NAME
@@ -949,10 +986,16 @@ class EnhancedChessApp:
 
     def _load_state_from_history(self):
         self._stop_ai_process()
+
+        # BUG 1 FIX: Pause the clock while browsing history so self.turn changes
+        # don't cause the wrong player's clock to drain.  Resume only when
+        # the user returns to the live (latest) position.
+        was_running = self._pause_clock()
+
         board_state, turn_state, _ = self.full_history[self.history_pointer]
-        self.board     = board_state.clone()
-        self.turn      = turn_state
-        self.game_over = False
+        self.board       = board_state.clone()
+        self.turn        = turn_state
+        self.game_over   = False
         self.game_result = None
 
         self.position_counts.clear()
@@ -966,6 +1009,13 @@ class EnhancedChessApp:
         if status != "ongoing":
             self.game_over   = True
             self.game_result = (status, winner)
+
+        # Resume clock only when the user is back at the live end of the game
+        at_live_end = (self.history_pointer == len(self.full_history) - 1)
+        if was_running and at_live_end and not self.game_over:
+            self.last_clock_tick = time.time()
+            self.clock_running   = True
+            self._tick_clock()
 
         self.update_ui_after_state_change()
         self._update_analysis_after_state_change()
@@ -981,7 +1031,7 @@ class EnhancedChessApp:
         self.game_info_label.config(text=text)
 
     # ------------------------------------------------------------------ board drawing
-    def create_board_image(self, orientation):
+    def create_board_image(self):
         if self.square_size <= 0:
             return None
         img = tk.PhotoImage(width=COLS * self.square_size, height=ROWS * self.square_size)
@@ -994,10 +1044,9 @@ class EnhancedChessApp:
         return img
 
     def draw_board(self):
-        current_image = self.board_image_white if self.board_orientation == "white" else self.board_image_black
-        if not current_image:
+        if not self.board_image:
             return
-        self.canvas.itemconfig(self.board_image_id, image=current_image)
+        self.canvas.itemconfig(self.board_image_id, image=self.board_image)
         self.canvas.delete("highlight", "piece", "check_highlight", "border_highlight")
 
         mode = self.game_mode.get()
@@ -1009,9 +1058,9 @@ class EnhancedChessApp:
                                          outline=self.COLORS['warning'], width=4, tags="border_highlight")
 
         for r_move, c_move in getattr(self, 'valid_moves_for_highlight', []):
-            x1, y1   = self.board_to_canvas(r_move, c_move)
-            r_dot    = self.square_size // 5
-            cx, cy   = x1 + self.square_size // 2, y1 + self.square_size // 2
+            x1, y1 = self.board_to_canvas(r_move, c_move)
+            r_dot   = self.square_size // 5
+            cx, cy  = x1 + self.square_size // 2, y1 + self.square_size // 2
             self.canvas.create_oval(cx - r_dot, cy - r_dot, cx + r_dot, cy + r_dot,
                                     fill="#1E90FF", outline="", tags="highlight")
 
@@ -1026,11 +1075,11 @@ class EnhancedChessApp:
             return
         desired_label_width = max(96, int(self.square_size * 1.9))
         self.board_row_frame.update_idletasks()
-        canvas_x   = self.canvas.winfo_x()
-        canvas_y   = self.canvas.winfo_y()
-        board_h    = ROWS * self.square_size
-        available  = max(1, canvas_x - 10)
-        label_w    = min(desired_label_width, available)
+        canvas_x  = self.canvas.winfo_x()
+        canvas_y  = self.canvas.winfo_y()
+        board_h   = ROWS * self.square_size
+        available = max(1, canvas_x - 10)
+        label_w   = min(desired_label_width, available)
 
         if label_w < 20:
             self.top_bot_label.place_forget()
@@ -1042,7 +1091,7 @@ class EnhancedChessApp:
 
         strip_right = max(3, canvas_x - 8)
         left_x      = 2 + max(0, (strip_right - 2 - label_w) // 2)
-        self.top_bot_label   .place(in_=self.board_row_frame, x=left_x, y=canvas_y + 4,          width=label_w, anchor="nw")
+        self.top_bot_label   .place(in_=self.board_row_frame, x=left_x, y=canvas_y + 4,           width=label_w, anchor="nw")
         self.bottom_bot_label.place(in_=self.board_row_frame, x=left_x, y=canvas_y + board_h - 4, width=label_w, anchor="sw")
 
     def draw_piece_with_check(self, r, c):
@@ -1068,7 +1117,7 @@ class EnhancedChessApp:
         sym       = piece.symbol()
         self.canvas.create_text(cx + 1, cy + 1, text=sym, font=font, fill="#888888", tags="piece")
         fill = "#000000" if piece.color == "black" else "#FFFFFF"
-        self.canvas.create_text(cx, cy, text=sym, font=font, fill=fill, tags="piece")
+        self.canvas.create_text(cx, cy,     text=sym, font=font, fill=fill,      tags="piece")
 
     def draw_eval_bar(self, eval_score, depth=None):
         score = eval_score / 100.0
@@ -1163,15 +1212,9 @@ class EnhancedChessApp:
         if self.ai_process and self.ai_process.is_alive():
             return
         self.ai_cancellation_event.clear()
-        
-        # --- TIME PASS-DOWN ---
-        if self.use_clock_var.get():
-            time_left = self.white_time if self.turn == 'white' else self.black_time
-            inc = self.increment
-        else:
-            time_left = None
-            inc = None
-        # ----------------------
+
+        time_left = (self.white_time if self.turn == 'white' else self.black_time) if self.use_clock_var.get() else None
+        inc       = self.increment if self.use_clock_var.get() else None
 
         args = (self.board.clone(), self.turn, self.position_counts.copy(),
                 self.comm_queue, self.ai_cancellation_event,
@@ -1213,15 +1256,9 @@ class EnhancedChessApp:
             self.master.after(50, lambda: self._start_ai_process(ChessBot, self.ANALYSIS_AI_NAME, 99))
 
     # ------------------------------------------------------------------ misc helpers
-    def _start_game_if_needed(self):
-        if not self.game_started:
-            self.game_started = True
-
     def _update_time_control_label(self):
         t = int(self.time_control_seconds.get())
-        m = t // 60
-        s = t % 60
-        self.time_control_label.config(text=f"Time Control: {m:02d}:{s:02d}")
+        self.time_control_label.config(text=f"Time Control: {t // 60:02d}:{t % 60:02d}")
 
     def _toggle_clock(self):
         if self.use_clock_var.get():
@@ -1229,14 +1266,12 @@ class EnhancedChessApp:
             self.time_control_frame.pack(after=self.clock_frame, fill=tk.X, pady=(5, 5))
             self._update_time_control_label()
             self.render_clocks()
-            if self.game_started and (not self.game_over) and (not self.clock_running):
-                self.last_clock_tick = time.time()
-                self.clock_running = True
-                self._tick_clock()
+            if self.game_started and not self.game_over:
+                self._start_clock()
         else:
             self.clock_frame.pack_forget()
             self.time_control_frame.pack_forget()
-            self.clock_running = False
+            self._pause_clock()
             self.last_clock_tick = None
 
     def _get_ai_move_delay(self):
@@ -1245,37 +1280,37 @@ class EnhancedChessApp:
         return 4 if self.instant_move.get() else 20
 
     def render_clocks(self):
+        """Update the clock label text and highlight the active player. 
+        Does NOT touch geometry — that is _toggle_clock's job."""
         if not self.use_clock_var.get():
             return
-        self.clock_frame.pack(after=self.turn_label, fill=tk.X, pady=(5, 5))
 
         def fmt(t):
             if t < 0: t = 0
-            m = int(t) // 60
-            s = int(t) % 60
+            m  = int(t) // 60
+            s  = int(t) % 60
             ms = int((t - int(t)) * 10)
             return f"{m:02d}:{s:02d}.{ms}"
 
         self.white_clock_lbl.config(text=f"W: {fmt(self.white_time)}")
         self.black_clock_lbl.config(text=f"B: {fmt(self.black_time)}")
 
-        # Highlight active clock
         if self.turn == 'white' and not self.game_over:
-            self.white_clock_lbl.config(bg=self.COLORS['accent'], fg=self.COLORS['text_light'])
+            self.white_clock_lbl.config(bg=self.COLORS['accent'],    fg=self.COLORS['text_light'])
             self.black_clock_lbl.config(bg=self.COLORS['bg_medium'], fg=self.COLORS['text_dark'])
         elif self.turn == 'black' and not self.game_over:
-            self.white_clock_lbl.config(bg=self.COLORS['bg_light'], fg=self.COLORS['text_dark'])
-            self.black_clock_lbl.config(bg=self.COLORS['accent'], fg=self.COLORS['text_light'])
+            self.white_clock_lbl.config(bg=self.COLORS['bg_light'],  fg=self.COLORS['text_dark'])
+            self.black_clock_lbl.config(bg=self.COLORS['accent'],    fg=self.COLORS['text_light'])
         else:
-            self.white_clock_lbl.config(bg=self.COLORS['bg_light'], fg=self.COLORS['text_light'])
+            self.white_clock_lbl.config(bg=self.COLORS['bg_light'],  fg=self.COLORS['text_light'])
             self.black_clock_lbl.config(bg=self.COLORS['bg_medium'], fg=self.COLORS['text_light'])
 
     def _tick_clock(self):
-        if (not self.use_clock_var.get()) or (not self.clock_running) or self.game_over:
+        if not self.use_clock_var.get() or not self.clock_running or self.game_over:
             self.clock_running = False
             return
 
-        now = time.time()
+        now     = time.time()
         elapsed = now - self.last_clock_tick
         self.last_clock_tick = now
 
@@ -1284,23 +1319,23 @@ class EnhancedChessApp:
             if self.white_time <= 0:
                 self.white_time = 0
                 self.handle_timeout('white')
+                return
         else:
             self.black_time -= elapsed
             if self.black_time <= 0:
                 self.black_time = 0
                 self.handle_timeout('black')
+                return
 
         self.render_clocks()
-
-        if not self.game_over:
-            self.master.after(25, self._tick_clock)
+        self.master.after(25, self._tick_clock)
 
     def handle_timeout(self, color):
-        self.game_over = True
+        self.game_over     = True
         self.clock_running = False
-        winner = 'black' if color == 'white' else 'white'
-        self.game_result = ('timeout', winner)
-        self.update_turn_label()
+        winner             = 'black' if color == 'white' else 'white'
+        self.game_result   = ('timeout', winner)
+        self.update_ui_after_state_change()   # full refresh: board, nav buttons, turn label
         self._log_game_over()
         self._stop_ai_process()
         if self.game_mode.get() == GameMode.AI_VS_AI.value and self.ai_series_running:
@@ -1322,8 +1357,8 @@ class EnhancedChessApp:
             white_label = self.MAIN_AI_NAME     if self.white_playing_bot_type == "main" else self.OPPONENT_AI_NAME
             black_label = self.OPPONENT_AI_NAME if self.white_playing_bot_type == "main" else self.MAIN_AI_NAME
         elif mode == GameMode.HUMAN_VS_BOT.value:
-            white_label = "Human"       if self.human_color == "white" else self.MAIN_AI_NAME
-            black_label = "Human"       if self.human_color == "black" else self.MAIN_AI_NAME
+            white_label = "Human"        if self.human_color == "white" else self.MAIN_AI_NAME
+            black_label = "Human"        if self.human_color == "black" else self.MAIN_AI_NAME
         else:
             white_label, black_label = "White", "Black"
 
@@ -1434,6 +1469,10 @@ class EnhancedChessApp:
                 temp_board.make_move(move[0], move[1])
                 temp_turn = "black" if temp_turn == "white" else "white"
 
+        # Suspend the clock during opening playback; re-baseline afterwards so
+        # series setup time is never charged to either player.
+        self._pause_clock()
+
         for move in self.current_opening_sequence:
             child = self.board.clone()
             child.make_move(move[0], move[1])
@@ -1441,9 +1480,12 @@ class EnhancedChessApp:
             self.board.make_move(move[0], move[1])
             self.execute_move_and_check_state(self.turn, move)
 
+        self.last_clock_tick = time.time()
+        self.clock_running   = False   # clock starts fresh on the first real AI move
+
     def update_scoreboard(self):
         if self.game_mode.get() == GameMode.AI_VS_AI.value and self.ai_series_running:
-            s = self.ai_series_stats
+            s    = self.ai_series_stats
             text = (f"{self.MAIN_AI_NAME} vs {self.OPPONENT_AI_NAME} "
                     f"({s['game_count']}/{self.AI_SERIES_GAMES} games completed)\n"
                     f"  {self.MAIN_AI_NAME} Wins: {s['my_ai_wins']}\n"
@@ -1457,7 +1499,7 @@ class EnhancedChessApp:
         if not self.depth_stats or not self.depth_stats.get('Global'):
             return
         filename = "AI_Series_Depth_Averages.txt"
-        def sort_key(k): return int(k) if k.isdigit() else 999
+        sort_key = lambda k: int(k) if k.isdigit() else 999
         try:
             with open(filename, "w") as f:
                 s = self.ai_series_stats
