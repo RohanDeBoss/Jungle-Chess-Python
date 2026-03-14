@@ -1,4 +1,4 @@
-# AI.py (v106 - Small touch ups, safety check added)
+# AI.py (v106.1 - Small touch ups, safety check added)
 
 import time
 import random
@@ -241,12 +241,12 @@ class ChessBot:
         to_center   = abs(tr - 3.5) + abs(tc - 3.5)
         center_delta = from_center - to_center
         bonus = 0
-        if isinstance(moving_piece, Knight):
+        if type(moving_piece) is Knight:
             bonus += int(center_delta * self.OPENING_KNIGHT_CENTER_WEIGHT)
             if (moving_piece.color == 'white' and fr == ROWS - 1) or (moving_piece.color == 'black' and fr == 0):
                 bonus += self.OPENING_KNIGHT_DEVELOP_BONUS
             return bonus
-        if isinstance(moving_piece, Pawn):
+        if type(moving_piece) is Pawn:
             bonus += int(center_delta * self.OPENING_PAWN_CENTER_WEIGHT)
             if tc in self.OPENING_CENTRAL_FILES:
                 bonus += self.OPENING_CENTER_PAWN_BONUS
@@ -875,7 +875,7 @@ class ChessBot:
 
             swing = fast_approximate_material_swing(board, move, moving_piece, target_piece, ORDERING_VALUES)
             is_capture_or_promo = (target_piece is not None or
-                                   (isinstance(moving_piece, Pawn) and
+                                   (type(moving_piece) is Pawn and
                                     (move[1][0] == 0 or move[1][0] == ROWS - 1)))
             is_good_tactic = (swing > 0) or (swing == 0 and is_capture_or_promo)
 
