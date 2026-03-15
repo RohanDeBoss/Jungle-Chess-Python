@@ -54,7 +54,7 @@ POSITIONS = {
     "03. Midgame 2": "r2qk3/pppb4/2npp3/8/6p1/2B1P3/PPPQ3P/R3KB2 b",
     "04. Midgame 3 (Complex)": "2b3kr/7p/pq1p4/1r2p1p1/3PP2P/2B5/4BPP1/R3K2R w",
     "05. Midgame 4": "2b3kr/7p/p2p4/3rp2p/8/8/4BPP1/R3K2R w",
-    "06. Midgame 5": "r2qkb1r/ppp2pp1/4bn1p/8/3P4/2N2N2/PPP2PPP/R2QK2R w",
+    "06. Midgame 5": "r1bqk2r/ppp3pp/n3pp2/3p4/8/1P2KNP1/P1PP3P/RNBQ4 w", #Updated with new position
     "07. Midgame 6": "r2qk2r/1p2bpp1/2p1bn1p/p7/3P4/2NQ1NP1/PPP2P1P/R1K4R w",
     "08. Midgame 7": "3rk2r/b4pp1/5n1p/pp6/8/5NP1/PPP1KP1P/R3R3 b",
     "09. Midgame 8 (complexyyy)": "3r1n2/2r2k1p/R7/2p1b1p1/1p3p2/2P5/2K1QBP1/1R6 w",

@@ -1,9 +1,10 @@
-# BookGenerator.py (v1.2 - Fixed Eval Perspective to Absolute White)
+# BookGenerator.py (v1.3 - Optimized Queue, Safe TT Clears, Engine Sync)
 
 import os
 import json
 import time
 import math
+from collections import deque
 import multiprocessing as mp
 from GameLogic import Board, Pawn, Knight, Bishop, Rook, Queen, King, get_all_legal_moves, format_move_san, ROWS, COLS
 import AI
@@ -15,8 +16,8 @@ from AI import board_hash
 
 BOOK_FILE        = "opening_book.json"
 BOOK_PLY_DEPTH   = 4    # How deep into the game to explore (4 plies = 2 full turns)
-BRANCHING_FACTOR = 3    # Keep up to the Top N moves for every position
-SEARCH_DEPTH     = 7    # How deep the AI calculates to evaluate the moves
+BRANCHING_FACTOR = 4    # Keep up to the Top N moves for every position
+SEARCH_DEPTH     = 8    # How deep the AI calculates to evaluate the moves
 EVAL_TOLERANCE   = 300  # Discard moves if they are > 300cp worse than the best move.
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -58,6 +59,8 @@ def generate_book():
     dummy_q = mp.Queue()
     dummy_e = mp.Event()
     bot = AI.ChessBot(Board(), 'white', {}, dummy_q, dummy_e, 'BookBuilder')
+    
+    # Silence the UI reporting
     bot._report_log = lambda msg: None
     bot._report_eval = lambda s, d: None
     bot._report_move = lambda m: None
@@ -65,12 +68,13 @@ def generate_book():
     book = {}
     visited_fens = set()
     
-    queue = [(Board(), 'white', 0)]
+    # Use deque for O(1) popping
+    queue = deque([(Board(), 'white', 0)])
     start_time = time.time()
     positions_evaluated = 0
 
     while queue:
-        current_board, turn, ply = queue.pop(0)
+        current_board, turn, ply = queue.popleft()
         fen = board_to_fen(current_board, turn)
 
         if fen in visited_fens:
@@ -84,23 +88,29 @@ def generate_book():
         if not legal_moves:
             continue
 
-        bot.tt.clear()
+        # Sync the AI state to the current node
         bot.board = current_board
         bot.color = turn
         bot.opponent_color = 'black' if turn == 'white' else 'white'
+        bot.ply_count = ply 
+        
         root_hash = board_hash(current_board, turn)
-
         best_overall_score = None
         node_moves = []
 
-        print(f"\nEvaluating Ply {ply} | FEN: {fen.split()[0]}")
+        print(f"\nEvaluating Ply {ply} | Queue size: {len(queue)} | FEN: {fen.split()[0]}")
 
         for branch in range(BRANCHING_FACTOR):
             if not legal_moves:
                 break
 
+            # Clear TT *inside* the branch loop to prevent Alpha-Beta bounds 
+            # from previous best-move searches from causing false cutoffs.
+            bot.tt.clear() 
+
             b_move = legal_moves[0]
             p_score = None
+            
             for d in range(1, SEARCH_DEPTH + 1):
                 p_score, b_move = bot._run_depth_iteration(d, legal_moves, root_hash, b_move, prev_iter_score=p_score)
 
@@ -112,10 +122,8 @@ def generate_book():
 
             diff = abs(best_overall_score - p_score)
             
-            # --- BUG FIX: ABSOLUTE WHITE EVALUATION ---
-            # Negamax returns score relative to side-to-move. We must convert to White's perspective.
+            # Negamax returns score relative to side-to-move. Convert to White's perspective.
             abs_score = p_score if turn == 'white' else -p_score
-            # ------------------------------------------
             
             child = current_board.clone()
             child.make_move(b_move[0], b_move[1])
@@ -131,11 +139,13 @@ def generate_book():
             node_moves.append({
                 "move": [b_move[0], b_move[1]],
                 "san": san,
-                "score": abs_score, # Save absolute white score!
+                "score": abs_score,
                 "weight": weight
             })
 
             queue.append((child, 'black' if turn == 'white' else 'white', ply + 1))
+            
+            # Remove the move so the next branch finds the *next* best move
             legal_moves.remove(b_move)
 
         if node_moves:

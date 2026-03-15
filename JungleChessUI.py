@@ -366,7 +366,7 @@ class EnhancedChessApp:
         ]:
             kw = {'command': cmd} if cmd else {}
             ttk.Checkbutton(cf, text=text, variable=var,
-                            style='Custom.TCheckbutton', **kw).pack(anchor=tk.W, pady=(2, 2))
+                            style='Custom.TCheckbutton', **kw).pack(anchor=tk.W, pady=0)
 
     def _build_right_sidebar_widgets(self, parent):
         info = ttk.Frame(parent, style='Left.TFrame')

@@ -1,4 +1,4 @@
-# AI.py (v106.7 - Passed pawn fix, run_ai_process dead code fix + pst tuning + TB repetition fix)
+# AI.py (v106.81 - Depth check extention limit)
 import json
 import os
 import time
@@ -191,6 +191,8 @@ class ChessBot:
     OPENING_CENTRAL_FILES = (COLS // 2 - 1, COLS // 2)
     ASP_WINDOW_INIT = 150
     ASP_MAX_RETRIES = 3
+
+    MAX_EXTENSION_DEPTH = 14  # absolute ply ceiling including check extensions
 
     EVAL_PAWN_PHALANX_BONUS = 5
     EVAL_ROOK_ALIGNMENT_BONUS = 15
@@ -649,19 +651,14 @@ class ChessBot:
             if self.cancellation_event.is_set() or (self.stop_time and time.time() > self.stop_time):
                 raise SearchCancelledException()
 
-        # 1. Calculate hash first
+        # --- REPETITION CHECKS (must come before TB probe) ---
         hash_val = current_hash if current_hash is not None else board_hash(board, turn)
-
-        # 2. Check for draws by repetition BEFORE probing the Tablebase
         if ply > 0:
-            # If a position has occurred twice in the real game, visiting it again is a draw.
             if self.position_counts.get(hash_val, 0) >= 2:
                 return self.DRAW_SCORE
-            # Prevent infinite loops within the search tree itself.
             if hash_val in search_path:
                 return self.DRAW_SCORE
 
-        # 3. Probe the Tablebase ONLY if it's not a repetition draw
         if len(board.white_pieces) + len(board.black_pieces) <= 4:
             tb_score_absolute = self.tb_manager.probe(board, turn)
             if tb_score_absolute is not None:
@@ -671,7 +668,6 @@ class ChessBot:
                 elif tb_score < -self.MATE_SCORE + 1000: return tb_score + ply
                 return tb_score
 
-        # 4. Check for insufficient material or max moves
         if is_insufficient_material(board) or self.ply_count + ply >= self.max_moves:
             return self.DRAW_SCORE
 
@@ -695,7 +691,8 @@ class ChessBot:
         is_in_check_flag = is_in_check(board, turn)
         static_eval      = None
 
-        if is_in_check_flag and extensions < 16:
+        # --- CHECK EXTENSION with absolute ceiling ---
+        if is_in_check_flag and extensions < 16 and ply < self.MAX_EXTENSION_DEPTH:
             depth      += 1
             extensions += 1
 
@@ -716,8 +713,8 @@ class ChessBot:
                         reduction  = self.NMP_BASE_REDUCTION + (depth // self.NMP_DEPTH_DIVISOR)
                         null_hash  = hash_val ^ ZOBRIST_TURN
                         score = -self.negamax(board, depth - 1 - reduction, -beta, -beta + 1,
-                                              opponent_turn, ply + 1, search_path,
-                                              null_hash, None, extensions)
+                                            opponent_turn, ply + 1, search_path,
+                                            null_hash, None, extensions)
                         if score >= beta: return beta
 
             futility_prune = False
@@ -734,11 +731,11 @@ class ChessBot:
             c_move       = None
             if prev_move:
                 c_move = self.counter_moves[0 if turn == 'white' else 1]\
-                                           [prev_move[0][0]*8+prev_move[0][1]]\
-                                           [prev_move[1][0]*8+prev_move[1][1]]
+                                        [prev_move[0][0]*8+prev_move[0][1]]\
+                                        [prev_move[1][0]*8+prev_move[1][1]]
 
             ordered_entries = self.order_moves(board, pseudo_moves, ply, hash_move, turn,
-                                               return_meta=True, counter_move=c_move)
+                                            return_meta=True, counter_move=c_move)
             best_move_for_node = None
             legal_moves_count  = 0
             quiet_moves_tried  = []
@@ -752,7 +749,7 @@ class ChessBot:
                 record     = board.make_move_track(move[0], move[1])
                 child_hash = incremental_hash(hash_val, record)
 
-                opp_king_alive = board.find_king_pos(opponent_turn) is not None
+                opp_king_alive    = board.find_king_pos(opponent_turn) is not None
                 own_king_in_check = is_in_check(board, turn)
 
                 if not opp_king_alive:
@@ -784,13 +781,13 @@ class ChessBot:
 
                 if legal_moves_count == 1:
                     score = -self.negamax(board, search_depth_child, -beta, -alpha,
-                                         opponent_turn, ply + 1, search_path, child_hash, move, extensions)
+                                        opponent_turn, ply + 1, search_path, child_hash, move, extensions)
                 else:
                     score = -self.negamax(board, search_depth_child, -(alpha + 1), -alpha,
-                                         opponent_turn, ply + 1, search_path, child_hash, move, extensions)
+                                        opponent_turn, ply + 1, search_path, child_hash, move, extensions)
                     if alpha < score < beta:
                         score = -self.negamax(board, depth - 1, -beta, -alpha,
-                                              opponent_turn, ply + 1, search_path, child_hash, move, extensions)
+                                            opponent_turn, ply + 1, search_path, child_hash, move, extensions)
 
                 board.unmake_move(record)
 
@@ -804,8 +801,8 @@ class ChessBot:
                                 self.killer_moves[ply][0], move
                         if prev_move:
                             self.counter_moves[0 if turn == 'white' else 1]\
-                                              [prev_move[0][0]*8+prev_move[0][1]]\
-                                              [prev_move[1][0]*8+prev_move[1][1]] = move
+                                            [prev_move[0][0]*8+prev_move[0][1]]\
+                                            [prev_move[1][0]*8+prev_move[1][1]] = move
                         if moving_piece:
                             c_idx = 0 if turn == 'white' else 1
                             bonus = depth * depth
@@ -835,6 +832,7 @@ class ChessBot:
 
         finally:
             if path_added: search_path.discard(hash_val)
+
 
     def qsearch(self, board, alpha, beta, turn, ply):
         self.nodes_searched += 1
