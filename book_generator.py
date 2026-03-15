@@ -1,8 +1,9 @@
-# BookGenerator.py (v1.0 - Jungle Chess Opening Book Builder)
+# BookGenerator.py (v1.2 - Fixed Eval Perspective to Absolute White)
 
 import os
 import json
 import time
+import math
 import multiprocessing as mp
 from GameLogic import Board, Pawn, Knight, Bishop, Rook, Queen, King, get_all_legal_moves, format_move_san, ROWS, COLS
 import AI
@@ -15,8 +16,8 @@ from AI import board_hash
 BOOK_FILE        = "opening_book.json"
 BOOK_PLY_DEPTH   = 4    # How deep into the game to explore (4 plies = 2 full turns)
 BRANCHING_FACTOR = 3    # Keep up to the Top N moves for every position
-SEARCH_DEPTH     = 6    # How deep the AI calculates to evaluate the moves
-EVAL_TOLERANCE   = 50   # If the 2nd best move is >50cp worse than the 1st, discard it.
+SEARCH_DEPTH     = 7    # How deep the AI calculates to evaluate the moves
+EVAL_TOLERANCE   = 300  # Discard moves if they are > 300cp worse than the best move.
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # FEN GENERATOR (To use as Dictionary Keys)
@@ -54,7 +55,6 @@ def generate_book():
     print(f"  Target Depth: {BOOK_PLY_DEPTH} plies | Branching: Top {BRANCHING_FACTOR} | Eval Depth: {SEARCH_DEPTH}")
     print("═" * 60)
 
-    # Initialize a silent bot
     dummy_q = mp.Queue()
     dummy_e = mp.Event()
     bot = AI.ChessBot(Board(), 'white', {}, dummy_q, dummy_e, 'BookBuilder')
@@ -65,9 +65,7 @@ def generate_book():
     book = {}
     visited_fens = set()
     
-    # Breadth-First Search Queue: (Board, Turn, Current_Ply)
     queue = [(Board(), 'white', 0)]
-    
     start_time = time.time()
     positions_evaluated = 0
 
@@ -75,7 +73,6 @@ def generate_book():
         current_board, turn, ply = queue.pop(0)
         fen = board_to_fen(current_board, turn)
 
-        # Skip if we already evaluated this exact position via a transposition
         if fen in visited_fens:
             continue
         visited_fens.add(fen)
@@ -87,9 +84,7 @@ def generate_book():
         if not legal_moves:
             continue
 
-        # Clear TT for a completely fresh evaluation of this node
         bot.tt.clear()
-        
         bot.board = current_board
         bot.color = turn
         bot.opponent_color = 'black' if turn == 'white' else 'white'
@@ -98,14 +93,12 @@ def generate_book():
         best_overall_score = None
         node_moves = []
 
-        print(f"Evaluating Ply {ply} | Positions Done: {positions_evaluated} | FEN: {fen.split()[0]}")
+        print(f"\nEvaluating Ply {ply} | FEN: {fen.split()[0]}")
 
-        # --- THE MULTI-PV TRICK ---
         for branch in range(BRANCHING_FACTOR):
             if not legal_moves:
                 break
 
-            # Iterative Deepening
             b_move = legal_moves[0]
             p_score = None
             for d in range(1, SEARCH_DEPTH + 1):
@@ -117,36 +110,38 @@ def generate_book():
             if best_overall_score is None:
                 best_overall_score = p_score
 
-            # Check Tolerance (Don't save blunders just to fill the branching factor)
-            if abs(best_overall_score - p_score) > EVAL_TOLERANCE:
-                break 
-
-            # Format Move
+            diff = abs(best_overall_score - p_score)
+            
+            # --- BUG FIX: ABSOLUTE WHITE EVALUATION ---
+            # Negamax returns score relative to side-to-move. We must convert to White's perspective.
+            abs_score = p_score if turn == 'white' else -p_score
+            # ------------------------------------------
+            
             child = current_board.clone()
             child.make_move(b_move[0], b_move[1])
             san = format_move_san(current_board, child, b_move)
 
-            # Assign a weight (moves closer to the best score are picked more often)
-            weight = max(1, 100 - abs(best_overall_score - p_score))
+            if diff > EVAL_TOLERANCE:
+                print(f"  [X] Discarded #{branch+1}: {san:<8} | Eval: {abs_score/100:+.2f} (Diff: {diff/100:.2f} > {EVAL_TOLERANCE/100:.2f})")
+                break 
+
+            weight = max(1, int(100 * math.exp(-diff / 100.0)))
+            print(f"  [✓] Saved     #{branch+1}: {san:<8} | Eval: {abs_score/100:+.2f} | Weight: {weight}")
 
             node_moves.append({
                 "move": [b_move[0], b_move[1]],
                 "san": san,
-                "score": p_score,
+                "score": abs_score, # Save absolute white score!
                 "weight": weight
             })
 
-            # Queue child position to be evaluated later
             queue.append((child, 'black' if turn == 'white' else 'white', ply + 1))
-
-            # Remove this move from the legal list, so the next loop finds the 2nd best move
             legal_moves.remove(b_move)
 
         if node_moves:
             book[fen] = node_moves
             positions_evaluated += 1
 
-    # Save to disk
     with open(BOOK_FILE, 'w') as f:
         json.dump(book, f, indent=4)
 

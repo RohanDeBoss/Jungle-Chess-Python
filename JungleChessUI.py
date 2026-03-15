@@ -1,4 +1,4 @@
-# JungleChessUI.py (v14.6r - Refactored, PEP 8 Clean)
+# JungleChessUI.py (v14.7 - Opening Book Toggle)
 
 import tkinter as tk
 from tkinter import ttk, messagebox
@@ -23,13 +23,20 @@ _CLASS_TO_FEN_CHAR = {Pawn:'P', Knight:'N', Bishop:'B', Rook:'R', Queen:'Q', Kin
 
 def run_ai_process(board, color, position_counts, comm_queue, cancellation_event,
                    bot_class, bot_name, search_depth, ply_count, game_mode,
-                   time_left=None, increment=None):
+                   time_left=None, increment=None, use_opening_book=True):
     try:
         bot = bot_class(board, color, position_counts, comm_queue, cancellation_event,
-                        bot_name, ply_count, game_mode, time_left=time_left, increment=increment)
+                        bot_name, ply_count, game_mode, time_left=time_left, increment=increment, use_opening_book=use_opening_book)
     except TypeError:
-        bot = bot_class(board, color, position_counts, comm_queue, cancellation_event,
-                        bot_name, ply_count, game_mode)
+        try:
+            # Fallback for bots that don't support the opening book argument yet
+            bot = bot_class(board, color, position_counts, comm_queue, cancellation_event,
+                            bot_name, ply_count, game_mode, time_left=time_left, increment=increment)
+        except TypeError:
+            # Fallback for even older bots
+            bot = bot_class(board, color, position_counts, comm_queue, cancellation_event,
+                            bot_name, ply_count, game_mode)
+            
     bot.search_depth = search_depth
     if search_depth == 99:
         bot.ponder_indefinitely()
@@ -80,6 +87,7 @@ class EnhancedChessApp:
         self.show_pv_var         = tk.BooleanVar(value=True)
         self.long_notation_var   = tk.BooleanVar(value=False)
         self.instant_move        = tk.BooleanVar(value=False)
+        self.use_opening_book_var = tk.BooleanVar(value=True)
 
         self.current_pv_raw  = []
         self.current_pv_san  = []
@@ -255,6 +263,7 @@ class EnhancedChessApp:
         self.bot_depth_slider.pack(fill=tk.X, pady=(0, 5))
 
         for text, var, cmd in [
+            ("Use Opening Book",           self.use_opening_book_var,None),
             ("Instant Moves",              self.instant_move,        None),
             ("Analysis Mode (H-vs-H)",     self.analysis_mode_var,   self._update_analysis_after_state_change),
             ("Auto-save Depth Stats",      self.auto_save_stats_var, None),
@@ -377,7 +386,6 @@ class EnhancedChessApp:
         style.map('Nav.TButton', background=[('active', C['bg_light']), ('pressed', C['bg_medium'])],
                                  foreground=[('disabled', C['text_dark'])])
 
-        # Control and Flipped share the same structure — loop to avoid repetition
         for name, bg, pressed in [('Control', C['accent'], '#d13550'),
                                    ('Flipped', C['warning'], '#E07B00')]:
             style.configure(f'{name}.TButton', background=bg, foreground=C['text_light'],

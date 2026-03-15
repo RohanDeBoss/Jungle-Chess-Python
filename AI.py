@@ -1,5 +1,6 @@
-# AI.py (v106.1 - Small touch ups, safety check added)
-
+# AI.py (v106.3 - Threefold fix, safety check added, massive d6 1000g piece value tuning!)
+import json
+import os
 import time
 import random
 from collections import namedtuple
@@ -14,19 +15,19 @@ MIN_MOVE_TIME   = 0.03
 # --- EVALUATION CONSTANTS (Tuned) ---
 MG_PIECE_VALUES = {
     Pawn: 100,
-    Knight: 940,
-    Bishop: 820,
-    Rook: 620,
-    Queen: 895,
+    Knight: 965,
+    Bishop: 550,
+    Rook: 655,
+    Queen: 1445,
     King: 20000
 }
 
 EG_PIECE_VALUES = {
-    Pawn: 50,
-    Knight: 715,
-    Bishop: 610,
-    Rook: 980,
-    Queen: 1005,
+    Pawn: 90,
+    Knight: 1075,
+    Bishop: 770,
+    Rook: 750,
+    Queen: 895,
     King: 20000
 }
 
@@ -109,6 +110,39 @@ def incremental_hash(parent_hash, record):
 
     return h
 
+# --- OPENING BOOK SETUP ---
+_CLS_TO_CHAR = {Pawn: 'P', Knight: 'N', Bishop: 'B', Rook: 'R', Queen: 'Q', King: 'K'}
+
+def board_to_fen(board, turn):
+    fen = ''
+    for r in range(ROWS):
+        empty = 0
+        for c in range(COLS):
+            piece = board.grid[r][c]
+            if piece is None:
+                empty += 1
+            else:
+                if empty:
+                    fen += str(empty)
+                    empty = 0
+                ch = _CLS_TO_CHAR[type(piece)]
+                fen += ch if piece.color == 'white' else ch.lower()
+        if empty:
+            fen += str(empty)
+        if r < ROWS - 1:
+            fen += '/'
+    return fen + (' w' if turn == 'white' else ' b')
+
+OPENING_BOOK = {}
+try:
+    if os.path.exists("opening_book.json"):
+        with open("opening_book.json", "r") as f:
+            OPENING_BOOK = json.load(f)
+        print(f"Loaded Opening Book with {len(OPENING_BOOK)} positions.")
+except Exception as e:
+    print(f"Opening book not found or invalid: {e}")
+# --------------------------
+
 # --- SEARCH STRUCTURES ---
 TTEntry = namedtuple('TTEntry', ['score', 'depth', 'flag', 'best_move'])
 TT_FLAG_EXACT, TT_FLAG_LOWERBOUND, TT_FLAG_UPPERBOUND = 0, 1, 2
@@ -169,7 +203,8 @@ class ChessBot:
 
     def __init__(self, board, color, position_counts, comm_queue, cancellation_event,
                  bot_name=None, ply_count=0, game_mode="bot", max_moves=200,
-                 time_left=None, increment=None):
+                 time_left=None, increment=None, use_opening_book=True): # <--- ADDED HERE
+        
         self.board = board
         self.color = color
         self.opponent_color = 'black' if color == 'white' else 'white'
@@ -186,6 +221,9 @@ class ChessBot:
         self.stop_time = None
         self.time_check_mask = 2047
         # -----------------------
+
+        # --- OPENING BOOK FLAG ---
+        self.use_opening_book = use_opening_book  # <--- ADDED HERE
 
         self.tb_manager = TablebaseManager()
 
@@ -402,9 +440,36 @@ class ChessBot:
     def make_move(self):
         try:
             self._age_history_table()
+            
+            # 1. Check Tablebases
             if len(self.board.white_pieces) + len(self.board.black_pieces) <= 4:
                 tb_move, tb_eval = self._get_best_tablebase_move_with_eval()
                 if self._report_root_tb_solution(tb_move, tb_eval, emit_move=True): return
+
+            # --- 2. CHECK OPENING BOOK ---
+            if self.use_opening_book and self.ply_count <= 12: # <--- ADDED FLAG CHECK
+                fen = board_to_fen(self.board, self.color)
+                if fen in OPENING_BOOK:
+                    book_options = OPENING_BOOK[fen]
+                    weights = [opt["weight"] for opt in book_options]
+                    
+                    # Pick a move randomly, but weighted heavily toward the best move
+                    chosen = random.choices(book_options, weights=weights, k=1)[0]
+                    
+                    # Convert list back to tuple format ((r1,c1), (r2,c2))
+                    move_tuple = (tuple(chosen["move"][0]), tuple(chosen["move"][1]))
+                    
+                    # --- BUG FIX: Convert absolute score to relative for internal reporting ---
+                    abs_score = chosen['score']
+                    rel_score = abs_score if self.color == 'white' else -abs_score
+                    
+                    self._report_log(f"  > {self.bot_name} (Book): {chosen['san']}")
+                    self._report_eval(rel_score, "Book")  # <--- Pass rel_score here
+                    
+                    # Send PV to UI (PV directly uses Absolute score, so abs_score is fine)
+                    self.comm_queue.put(('pv', abs_score, "Book", [chosen['san']], [move_tuple]))
+                    self._report_move(move_tuple)
+                    return
 
             root_moves = get_all_legal_moves(self.board, self.color)
             if not root_moves:
@@ -553,10 +618,9 @@ class ChessBot:
         for move in ordered_root_moves:
             if self.cancellation_event.is_set(): raise SearchCancelledException()
 
-            # ── make ──
+            # --- MAKE / UNMAKE (position_counts is NO LONGER modified here) ---
             record     = board.make_move_track(move[0], move[1])
             child_hash = incremental_hash(root_hash, record)
-            self.position_counts[child_hash] = self.position_counts.get(child_hash, 0) + 1
 
             search_path = {root_hash}
             try:
@@ -577,8 +641,8 @@ class ChessBot:
                         self.opponent_color, 1, search_path,
                         current_hash=child_hash, prev_move=move)
             finally:
-                self.position_counts[child_hash] -= 1
-                board.unmake_move(record)   # ── unmake ──
+                board.unmake_move(record)
+            # -----------------------------------------------------------------
 
             if score != self.DRAW_SCORE: all_moves_draw = False
 
@@ -590,7 +654,7 @@ class ChessBot:
         if alpha_floor is None and all_moves_draw:
             best_score_this_iter = self.DRAW_SCORE
         return best_score_this_iter, best_move_this_iter
-
+    
     def negamax(self, board, depth, alpha, beta, turn, ply, search_path, current_hash=None, prev_move=None, extensions=0):
         self.nodes_searched += 1
         if (self.nodes_searched & self.time_check_mask) == 0:
@@ -609,8 +673,15 @@ class ChessBot:
         hash_val = current_hash if current_hash is not None else board_hash(board, turn)
 
         if ply > 0:
-            if hash_val in search_path or self.position_counts.get(hash_val, 0) >= 3:
+            # --- THREEFOLD REPETITION CHECK (CORRECTED) ---
+            # If a position has occurred twice, the next move to it is a draw.
+            if self.position_counts.get(hash_val, 0) >= 2:
                 return self.DRAW_SCORE
+            # --- SEARCH LOOP REPETITION CHECK ---
+            # This prevents the search from getting stuck in an infinite loop.
+            if hash_val in search_path:
+                return self.DRAW_SCORE
+
         if is_insufficient_material(board) or self.ply_count + ply >= self.max_moves:
             return self.DRAW_SCORE
 
@@ -688,27 +759,23 @@ class ChessBot:
                 f_sq = move[0][0] * 8 + move[0][1]
                 t_sq = move[1][0] * 8 + move[1][1]
 
-                # ── make ──
                 record     = board.make_move_track(move[0], move[1])
                 child_hash = incremental_hash(hash_val, record)
 
-                # Legality check: did the opponent's king survive and is our king safe?
                 opp_king_alive = board.find_king_pos(opponent_turn) is not None
                 own_king_in_check = is_in_check(board, turn)
 
                 if not opp_king_alive:
-                    # Moving piece captured the enemy king — mate
-                    board.unmake_move(record)   # ── unmake ──
+                    board.unmake_move(record)
                     return self.MATE_SCORE - ply
 
                 if own_king_in_check:
-                    board.unmake_move(record)   # ── unmake ── (illegal move)
+                    board.unmake_move(record)
                     continue
 
                 legal_moves_count += 1
                 if not is_good_tactic: quiet_moves_tried.append(move)
 
-                # Futility: skip quiet moves at depth 1 in clearly lost positions
                 if futility_prune and not is_good_tactic and legal_moves_count > 1:
                     board.unmake_move(record)
                     continue
@@ -735,7 +802,7 @@ class ChessBot:
                         score = -self.negamax(board, depth - 1, -beta, -alpha,
                                               opponent_turn, ply + 1, search_path, child_hash, move, extensions)
 
-                board.unmake_move(record)   # ── unmake ──
+                board.unmake_move(record)
 
                 if score > alpha:
                     alpha, best_move_for_node = score, move

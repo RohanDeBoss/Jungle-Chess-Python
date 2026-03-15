@@ -57,9 +57,9 @@ POSITIONS = {
     "06. Midgame 5": "r2qkb1r/ppp2pp1/4bn1p/8/3P4/2N2N2/PPP2PPP/R2QK2R w",
     "07. Midgame 6": "r2qk2r/1p2bpp1/2p1bn1p/p7/3P4/2NQ1NP1/PPP2P1P/R1K4R w",
     "08. Midgame 7": "3rk2r/b4pp1/5n1p/pp6/8/5NP1/PPP1KP1P/R3R3 b",
-    "09. Endgame 1 (K+R+P vs K+B+P)": "2b5/8/p2p2k1/2K1p3/8/8/5PPr/R7 w",
-    "10. Endgame 2 (Rook vs Pawns)": "8/8/p7/3ppk2/8/R3K2P/5P2/8 b",
-    "11. Endgame 3 (Rook vs Pawn)": "8/8/8/3R4/4p3/3K4/5k2/8 b"
+    "09. Midgame 8 (complexyyy)": "3r1n2/2r2k1p/R7/2p1b1p1/1p3p2/2P5/2K1QBP1/1R6 w",
+    "10. Endgame 1 (K+R+P vs K+B+P)": "2b5/8/p2p2k1/2K1p3/8/8/5PPr/R7 w",
+    "11. Endgame 2 (Rook vs Pawns)": "8/8/p7/3ppk2/8/R3K2P/5P2/8 b",
 }
 
 def run_benchmark():
