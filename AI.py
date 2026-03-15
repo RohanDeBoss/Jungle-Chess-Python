@@ -1,4 +1,4 @@
-# AI.py (v106.81 - Depth check extention limit)
+# AI.py (v107 - Finalised piece values, futility margin = 1000 for speed)
 import json
 import os
 import time
@@ -15,19 +15,19 @@ MIN_MOVE_TIME   = 0.03
 # --- EVALUATION CONSTANTS (Tuned) ---
 MG_PIECE_VALUES = {
     Pawn: 100,
-    Knight: 965,
-    Bishop: 550,
-    Rook: 655,
-    Queen: 1445,
+    Knight: 960,
+    Bishop: 580,
+    Rook: 640,
+    Queen: 1400,
     King: 20000
 }
 
 EG_PIECE_VALUES = {
-    Pawn: 90,
-    Knight: 1075,
-    Bishop: 770,
-    Rook: 750,
-    Queen: 895,
+    Pawn: 100,
+    Knight: 1080,
+    Bishop: 740,
+    Rook: 770,
+    Queen: 900,
     King: 20000
 }
 
@@ -173,7 +173,7 @@ class ChessBot:
     USE_NULL_MOVE_PRUNING = True
 
     USE_FUTILITY_PRUNING = True
-    FUTILITY_MARGIN = 1200
+    FUTILITY_MARGIN = 1000 # Lowered for speed at the cost of some tactical loss
 
     TT_MAX_SIZE = 20_000_000
 
