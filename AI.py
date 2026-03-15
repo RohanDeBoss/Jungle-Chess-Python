@@ -1,4 +1,4 @@
-# AI.py (v106.4 - Randomness fix for opening book)
+# AI.py (v106.7 - Passed pawn fix, run_ai_process dead code fix + pst tuning + TB repetition fix)
 import json
 import os
 import time
@@ -48,21 +48,25 @@ def initialize_zobrist_table():
     random.seed(42) # Set seed for stable Zobrist keys
     ZOBRIST_ARRAY = [[[[random.getrandbits(64) for _ in range(8)] for _ in range(8)] for _ in range(6)] for _ in range(2)]
     ZOBRIST_TURN = random.getrandbits(64)
-    random.seed() # <--- ADD THIS: Restore true randomness for move selection
+    random.seed() # Restore true randomness for move selection
 
 initialize_zobrist_table()
 
 def run_ai_process(board, color, position_counts, comm_queue, cancellation_event,
                    bot_class, bot_name, search_depth, ply_count, game_mode,
-                   time_left=None, increment=None):
+                   time_left=None, increment=None, use_opening_book=True):
     try:
-        # Pass time controls down to the new AI
         bot = bot_class(board, color, position_counts, comm_queue, cancellation_event,
-                        bot_name, ply_count, game_mode, time_left=time_left, increment=increment)
+                        bot_name, ply_count, game_mode, time_left=time_left, increment=increment, use_opening_book=use_opening_book)
     except TypeError:
-        # Fallback just in case you haven't updated OpponentAI.py yet!
-        bot = bot_class(board, color, position_counts, comm_queue, cancellation_event,
-                        bot_name, ply_count, game_mode)
+        try:
+            # Fallback for bots missing the opening book argument
+            bot = bot_class(board, color, position_counts, comm_queue, cancellation_event,
+                            bot_name, ply_count, game_mode, time_left=time_left, increment=increment)
+        except TypeError:
+            # Fallback for very old bots
+            bot = bot_class(board, color, position_counts, comm_queue, cancellation_event,
+                            bot_name, ply_count, game_mode)
 
     bot.search_depth = search_depth
     if search_depth == 99:
@@ -85,7 +89,7 @@ def board_hash(board, turn):
     return h
 
 def incremental_hash(parent_hash, record):
-    h = parent_hash ^ ZOBRIST_TURN 
+    h = parent_hash ^ ZOBRIST_TURN
     arr = ZOBRIST_ARRAY
     idx = PIECE_TYPE_IDX
 
@@ -204,8 +208,8 @@ class ChessBot:
 
     def __init__(self, board, color, position_counts, comm_queue, cancellation_event,
                  bot_name=None, ply_count=0, game_mode="bot", max_moves=200,
-                 time_left=None, increment=None, use_opening_book=True): # <--- ADDED HERE
-        
+                 time_left=None, increment=None, use_opening_book=True):
+
         self.board = board
         self.color = color
         self.opponent_color = 'black' if color == 'white' else 'white'
@@ -224,7 +228,7 @@ class ChessBot:
         # -----------------------
 
         # --- OPENING BOOK FLAG ---
-        self.use_opening_book = use_opening_book  # <--- ADDED HERE
+        self.use_opening_book = use_opening_book
 
         self.tb_manager = TablebaseManager()
 
@@ -441,33 +445,24 @@ class ChessBot:
     def make_move(self):
         try:
             self._age_history_table()
-            
+
             # 1. Check Tablebases
             if len(self.board.white_pieces) + len(self.board.black_pieces) <= 4:
                 tb_move, tb_eval = self._get_best_tablebase_move_with_eval()
                 if self._report_root_tb_solution(tb_move, tb_eval, emit_move=True): return
 
-            # --- 2. CHECK OPENING BOOK ---
-            if self.use_opening_book and self.ply_count <= 12: # <--- ADDED FLAG CHECK
+            # 2. Check Opening Book
+            if self.use_opening_book and self.ply_count <= 12:
                 fen = board_to_fen(self.board, self.color)
                 if fen in OPENING_BOOK:
                     book_options = OPENING_BOOK[fen]
                     weights = [opt["weight"] for opt in book_options]
-                    
-                    # Pick a move randomly, but weighted heavily toward the best move
                     chosen = random.choices(book_options, weights=weights, k=1)[0]
-                    
-                    # Convert list back to tuple format ((r1,c1), (r2,c2))
                     move_tuple = (tuple(chosen["move"][0]), tuple(chosen["move"][1]))
-                    
-                    # --- BUG FIX: Convert absolute score to relative for internal reporting ---
                     abs_score = chosen['score']
                     rel_score = abs_score if self.color == 'white' else -abs_score
-                    
                     self._report_log(f"  > {self.bot_name} (Book): {chosen['san']}")
-                    self._report_eval(rel_score, "Book")  # <--- Pass rel_score here
-                    
-                    # Send PV to UI (PV directly uses Absolute score, so abs_score is fine)
+                    self._report_eval(rel_score, "Book")
                     self.comm_queue.put(('pv', abs_score, "Book", [chosen['san']], [move_tuple]))
                     self._report_move(move_tuple)
                     return
@@ -484,16 +479,14 @@ class ChessBot:
 
             # --- TIME ALLOCATION STRATEGY ---
             if self.time_left is not None and self.increment is not None:
-                # Target time: ~1/30th of remaining time + 80% of the increment
                 allocated = (self.time_left / 30.0) + (self.increment * 0.8)
-                # Never spend more than we have (leave a safety buffer so we don't flag)
                 buffer = max(TIME_BUFFER_SEC, self.time_left * TIME_BUFFER_PCT, self.increment * 1.5)
                 max_alloc = max(0.0, self.time_left - buffer)
                 allocated = min(allocated, max_alloc)
                 allocated = min(max_alloc, max(MIN_MOVE_TIME, allocated))
                 self.stop_time = time.time() + allocated
                 self.time_check_mask = self._calc_time_check_mask(allocated)
-                target_depth = 100  # Will be aborted by time
+                target_depth = 100
             else:
                 self.stop_time = None
                 self.time_check_mask = 2047
@@ -507,10 +500,9 @@ class ChessBot:
                 if self.cancellation_event.is_set():
                     raise SearchCancelledException()
 
-                # Time check AFTER an iteration completes
                 if self.stop_time and time.time() > self.stop_time:
                     best_move_overall = best_move_this_iter
-                    break # Out of time! Drop out of loop and play the move.
+                    break
 
                 best_move_overall = best_move_this_iter
                 prev_iter_score   = best_score_this_iter
@@ -531,12 +523,9 @@ class ChessBot:
 
             self._report_move(best_move_overall)
         except SearchCancelledException:
-            # Did the user click "New Game"?
             if self.cancellation_event.is_set():
                 self._report_move(None)
             else:
-                # Time limit expired MID-SEARCH.
-                # Discard the incomplete iteration, and play the Best Move from the LAST depth!
                 self._report_move(best_move_overall)
 
     def ponder_indefinitely(self):
@@ -613,13 +602,12 @@ class ChessBot:
             beta  =  float('inf')
 
         ordered_root_moves = self.order_moves(self.board, root_moves, 0, pv_move, self.color)
-        board = self.board 
+        board = self.board
         all_moves_draw = True
 
         for move in ordered_root_moves:
             if self.cancellation_event.is_set(): raise SearchCancelledException()
 
-            # --- MAKE / UNMAKE (position_counts is NO LONGER modified here) ---
             record     = board.make_move_track(move[0], move[1])
             child_hash = incremental_hash(root_hash, record)
 
@@ -643,7 +631,6 @@ class ChessBot:
                         current_hash=child_hash, prev_move=move)
             finally:
                 board.unmake_move(record)
-            # -----------------------------------------------------------------
 
             if score != self.DRAW_SCORE: all_moves_draw = False
 
@@ -655,13 +642,26 @@ class ChessBot:
         if alpha_floor is None and all_moves_draw:
             best_score_this_iter = self.DRAW_SCORE
         return best_score_this_iter, best_move_this_iter
-    
+
     def negamax(self, board, depth, alpha, beta, turn, ply, search_path, current_hash=None, prev_move=None, extensions=0):
         self.nodes_searched += 1
         if (self.nodes_searched & self.time_check_mask) == 0:
             if self.cancellation_event.is_set() or (self.stop_time and time.time() > self.stop_time):
                 raise SearchCancelledException()
 
+        # 1. Calculate hash first
+        hash_val = current_hash if current_hash is not None else board_hash(board, turn)
+
+        # 2. Check for draws by repetition BEFORE probing the Tablebase
+        if ply > 0:
+            # If a position has occurred twice in the real game, visiting it again is a draw.
+            if self.position_counts.get(hash_val, 0) >= 2:
+                return self.DRAW_SCORE
+            # Prevent infinite loops within the search tree itself.
+            if hash_val in search_path:
+                return self.DRAW_SCORE
+
+        # 3. Probe the Tablebase ONLY if it's not a repetition draw
         if len(board.white_pieces) + len(board.black_pieces) <= 4:
             tb_score_absolute = self.tb_manager.probe(board, turn)
             if tb_score_absolute is not None:
@@ -671,18 +671,7 @@ class ChessBot:
                 elif tb_score < -self.MATE_SCORE + 1000: return tb_score + ply
                 return tb_score
 
-        hash_val = current_hash if current_hash is not None else board_hash(board, turn)
-
-        if ply > 0:
-            # --- THREEFOLD REPETITION CHECK (CORRECTED) ---
-            # If a position has occurred twice, the next move to it is a draw.
-            if self.position_counts.get(hash_val, 0) >= 2:
-                return self.DRAW_SCORE
-            # --- SEARCH LOOP REPETITION CHECK ---
-            # This prevents the search from getting stuck in an infinite loop.
-            if hash_val in search_path:
-                return self.DRAW_SCORE
-
+        # 4. Check for insufficient material or max moves
         if is_insufficient_material(board) or self.ply_count + ply >= self.max_moves:
             return self.DRAW_SCORE
 
@@ -905,21 +894,19 @@ class ChessBot:
         opponent_turn     = 'black' if turn == 'white' else 'white'
 
         for swing, move in scored_moves:
-            # ── make ──
             record = board.make_move_track(move[0], move[1])
 
-            # Legality checks
             if not board.find_king_pos(opponent_turn):
                 board.unmake_move(record)
                 return self.MATE_SCORE - ply
 
             if is_in_check(board, turn):
-                board.unmake_move(record)   # ── unmake (illegal) ──
+                board.unmake_move(record)
                 continue
 
             legal_moves_count += 1
             search_score = -self.qsearch(board, -beta, -alpha, opponent_turn, ply + 1)
-            board.unmake_move(record)       # ── unmake ──
+            board.unmake_move(record)
 
             if search_score >= beta: return beta
             alpha = max(alpha, search_score)
@@ -977,8 +964,12 @@ class ChessBot:
 
         white_pawn_files = [False] * COLS
         black_pawn_files = [False] * COLS
-        white_pawn_front = [8]    * COLS
-        black_pawn_front = [-1]   * COLS
+        # For white pawn (moving toward row 0) to be passed, need no black pawn at row < r.
+        # Track the MINIMUM row of black pawns per file.
+        black_pawn_min_row = [8] * COLS
+        # For black pawn (moving toward row 7) to be passed, need no white pawn at row > r.
+        # Track the MAXIMUM row of white pawns per file.
+        white_pawn_max_row = [-1] * COLS
 
         total_pawns = board.piece_counts['white'][Pawn] + board.piece_counts['black'][Pawn]
         if total_pawns > 0:
@@ -986,12 +977,12 @@ class ChessBot:
                 if type(piece) is Pawn:
                     c, r = piece.pos[1], piece.pos[0]
                     white_pawn_files[c] = True
-                    if r < white_pawn_front[c]: white_pawn_front[c] = r
+                    if r > white_pawn_max_row[c]: white_pawn_max_row[c] = r
             for piece in board.black_pieces:
                 if type(piece) is Pawn:
                     c, r = piece.pos[1], piece.pos[0]
                     black_pawn_files[c] = True
-                    if r > black_pawn_front[c]: black_pawn_front[c] = r
+                    if r < black_pawn_min_row[c]: black_pawn_min_row[c] = r
 
         scores_mg = [0, 0]; scores_eg = [0, 0]
         piece_counts  = [0, 0]; pawn_counts   = [0, 0]
@@ -1063,12 +1054,14 @@ class ChessBot:
 
                     is_passed = True
                     if is_white:
+                        # White pawn is passed if no black pawn is strictly ahead (row < r)
                         for pc in (c - 1, c, c + 1):
-                            if 0 <= pc < COLS and black_pawn_files[pc] and black_pawn_front[pc] < r:
+                            if 0 <= pc < COLS and black_pawn_files[pc] and black_pawn_min_row[pc] < r:
                                 is_passed = False; break
                     else:
+                        # Black pawn is passed if no white pawn is strictly ahead (row > r)
                         for pc in (c - 1, c, c + 1):
-                            if 0 <= pc < COLS and white_pawn_files[pc] and white_pawn_front[pc] > r:
+                            if 0 <= pc < COLS and white_pawn_files[pc] and white_pawn_max_row[pc] > r:
                                 is_passed = False; break
                     if is_passed:
                         advance = max(0, (6 - r) if is_white else (r - 1))
@@ -1166,7 +1159,7 @@ pawn_pst = [
     [ 25,  30,  30,  45,  50,  30,  30,  25],
     [ 15,  15,  20,  30,  35,  20,  15,  15],
     [ 10,  10,  20,  25,  30,  20,  10,  10],
-    [  0,   0,   0,  -5, -10,   0,   0,   0],
+    [  0,   0,   0,  -5, -10,  10,   0,   0],
     [  0,   0,   0,   0,   0,   0,   0,   0]
 ]
 
@@ -1177,74 +1170,74 @@ pawn_endgame_pst = [
     [ 45,  50,  50,  55,  55,  50,  50,  45],
     [ 25,  30,  30,  35,  35,  30,  30,  25],
     [ 10,  15,  15,  20,  20,  15,  15,  10],
-    [  0,   5,   5,   5,   5,   5,   5,   0],
+    [  0,   5,   5,   5,   5,  15,   5,   0],
     [  0,   0,   0,   0,   0,   0,   0,   0]
 ]
 
 knight_pst = [
-    [-60, -40, -30, -30, -30, -30, -40, -60],
-    [-40, -20,   5,  10,  10,   5, -20, -40],
-    [-30,   5,  20,  25,  25,  20,   5, -30],
-    [-30,  10,  25,  35,  35,  25,  10, -30],
-    [-20,  15,  25,  35,  35,  25,  15, -20],
-    [-30,  10,  20,  25,  25,  30,  10, -30],
-    [-40, -20,   5,  10,  10,   5, -20, -40],
-    [-60, -50, -30, -30, -30, -30, -50, -60]
+    [ -90,  -60,  -45,  -45,  -45,  -45,  -60,  -90],
+    [ -60,  -30,    8,   15,   15,    8,  -30,  -60],
+    [ -45,    8,   30,   38,   38,   30,    8,  -45],
+    [ -45,   15,   38,   52,   52,   38,   15,  -45],
+    [ -30,   22,   38,   52,   52,   38,   22,  -30],
+    [ -45,   15,   30,   38,   38,   45,   15,  -45],
+    [ -60,  -30,    8,   15,   15,    8,  -30,  -60],
+    [ -90,  -75,  -45,  -45,  -45,  -45,  -75,  -90],
 ]
 
 bishop_pst = [
-    [-20, -10, -10, -10, -10, -10, -10, -20],
-    [-10,   0,   0,   0,   0,   0,   0, -10],
-    [-10,   0,   5,  10,  10,   5,   0, -10],
-    [-10,   5,   5,  10,  10,   5,   5, -10],
-    [-10,   5,  15,  10,  10,  15,   5, -10],
-    [-10,  10,  10,   5,   5,  10,  10, -10],
-    [-10,   5,   0,   0,   0,   0,   5, -10],
-    [-20, -10, -10, -15, -15, -10, -10, -20]
+    [ -30,  -15,  -15,  -15,  -15,  -15,  -15,  -30],
+    [ -15,    0,    0,    0,    0,    0,    0,  -15],
+    [ -15,    0,    8,   15,   15,    8,    0,  -15],
+    [ -15,    8,    8,   15,   15,    8,    8,  -15],
+    [ -15,    8,   22,   15,   15,   22,    8,  -15],
+    [ -15,   15,   15,    8,    8,   15,   15,  -15],
+    [ -15,    8,    0,    0,    0,    0,    8,  -15],
+    [ -30,  -15,  -15,  -22,  -22,  -15,  -15,  -30],
 ]
 
 rook_pst = [
-    [ 10,  10,  10,  15,  15,  10,  10,  10],
-    [ 15,  15,  15,  20,  20,  15,  15,  15],
-    [  5,   0,   0,   5,   5,   0,   0,   5],
-    [  5,   0,   0,   5,   5,   0,   0,   5],
-    [  5,   0,   0,   5,   5,   0,   0,   5],
-    [  5,   0,   0,   5,   5,   0,   0,   5],
-    [  0,   0,   0,   5,   5,   0,   0,   0],
-    [  0,   0,   0,  10,  10,   5,   5,   0]
+    [  15,   15,   15,   22,   22,   15,   15,   15],
+    [  22,   22,   22,   30,   30,   22,   22,   22],
+    [   8,    0,    0,    8,    8,    0,    0,    8],
+    [   8,    0,    0,    8,    8,    0,    0,    8],
+    [   8,    0,    0,    8,    8,    0,    0,    8],
+    [   8,    0,    0,    8,    8,    0,    0,    8],
+    [   0,    0,    0,    8,    8,    0,    0,    0],
+    [  10,   -5,    0,   15,   15,    0,   -5,   10],
 ]
 
 queen_pst = [
-    [-30, -20, -10, -10, -10, -10, -20, -30],
-    [-20,   0,   0,   0,   0,   0,   0, -20],
-    [-10,   0,   5,  10,  10,   5,   0, -10],
-    [ -5,  10,  20,  30,  30,  20,  10,  -5],
-    [ -5,   5,  20,  30,  30,  20,   5,  -5],
-    [-10,   5,  15,  15,  15,  15,   5, -10],
-    [-20, -10,   0,   5,   5,   0, -10, -20],
-    [-30, -20, -20, -10, -20, -20, -20, -30]
+    [ -45,  -30,  -15,  -15,  -15,  -15,  -30,  -45],
+    [ -30,    0,    0,    0,    0,    0,    0,  -30],
+    [ -15,    0,    8,   15,   15,    8,    0,  -15],
+    [  -8,   15,   30,   45,   45,   30,   15,   -8],
+    [  -8,    8,   30,   45,   45,   30,    8,   -8],
+    [ -15,    8,   22,   22,   22,   22,    8,  -15],
+    [ -30,  -15,    0,    8,    8,    0,  -15,  -30],
+    [ -45,  -30,  -30,  -15,  -30,  -30,  -30,  -45],
 ]
 
 king_midgame_pst = [
-    [-60, -50, -50, -50, -50, -50, -50, -60],
-    [-40, -50, -50, -60, -60, -50, -50, -40],
-    [-40, -50, -50, -60, -60, -50, -50, -40],
-    [-40, -50, -50, -60, -60, -50, -50, -40],
-    [-30, -40, -40, -40, -40, -40, -40, -30],
-    [-10, -10, -20, -20, -20, -20, -10, -10],
-    [ -5,   0,   5,   5,   5,   5,   0,  -5],
-    [-20,  10,  10,  10,  20,  10,  10, -20]
+    [ -90,  -75,  -75,  -75,  -75,  -75,  -75,  -90],
+    [ -60,  -75,  -75,  -90,  -90,  -75,  -75,  -60],
+    [ -60,  -75,  -75,  -90,  -90,  -75,  -75,  -60],
+    [ -60,  -75,  -75,  -90,  -90,  -75,  -75,  -60],
+    [ -45,  -60,  -60,  -60,  -60,  -60,  -60,  -45],
+    [ -15,  -15,  -30,  -30,  -30,  -30,  -15,  -15],
+    [  -8,    0,    8,    8,    8,    8,    0,   -8],
+    [ -30,   15,   15,   15,   30,   15,   15,  -30],
 ]
 
 king_endgame_pst = [
-    [-40, -30, -30, -30, -30, -30, -30, -40], 
-    [-30, -10,   0,   0,   0,   0, -10, -30],
-    [-30,   0,  10,  20,  20,  10,   0, -30],
-    [-30,   5,  20,  20,  20,  20,   5, -30],
-    [-30,   5,  15,  20,  20,  15,   5, -30], 
-    [-30,   0,  10,  10,  10,  10,   0, -30],
-    [-30,   0,   5,   5,   5,   5,   0, -30],
-    [-40, -30, -10, -10, -10, -10, -30, -40]
+    [ -60,  -45,  -45,  -45,  -45,  -45,  -45,  -60],
+    [ -45,  -15,    0,    0,    0,    0,  -15,  -45],
+    [ -45,    0,   15,   30,   30,   15,    0,  -45],
+    [ -45,    8,   30,   30,   30,   30,    8,  -45],
+    [ -45,    8,   22,   30,   30,   22,    8,  -45],
+    [ -45,    0,   15,   15,   15,   15,    0,  -45],
+    [ -45,    0,    8,    8,    8,    8,    0,  -45],
+    [ -60,  -45,  -15,  -15,  -15,  -15,  -45,  -60],
 ]
 
 PIECE_SQUARE_TABLES = {

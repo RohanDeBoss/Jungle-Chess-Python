@@ -31,7 +31,7 @@ Piece Changes:
 
 5. Pawn:
    o Moves forward one square at a time (or two squares on its first move).
-   o Captures forward or sideways (but not diagonally). Can capture forward two squares on their first move if there's an enemy piece there.
+   o Captures forward or sideways (but not diagonally). Can capture forward two squares on their first move if there's an enemy piece there, and there is not blocking piece directly in front of it.
    o Pawns promote to a queen on the last rank (non optional).
    o Does not have en-passant.
 

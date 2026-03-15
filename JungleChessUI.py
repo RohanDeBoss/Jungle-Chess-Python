@@ -1,4 +1,4 @@
-# JungleChessUI.py (v14.8 - bug fixes for opening book)
+# JungleChessUI.py (v14.91 - Persistent Worker Processes + IPC Race Condition Fixes)
 
 import tkinter as tk
 from tkinter import ttk, messagebox
@@ -21,29 +21,82 @@ _CASUALTIES_RE = re.compile(r'\s*\(.*?\)')
 _FEN_CHAR_TO_CLASS = {'p': Pawn, 'n': Knight, 'b': Bishop, 'r': Rook, 'q': Queen, 'k': King}
 _CLASS_TO_FEN_CHAR = {Pawn:'P', Knight:'N', Bishop:'B', Rook:'R', Queen:'Q', King:'K'}
 
-def run_ai_process(board, color, position_counts, comm_queue, cancellation_event,
-                   bot_class, bot_name, search_depth, ply_count, game_mode,
-                   time_left=None, increment=None, use_opening_book=True):
-    try:
-        bot = bot_class(board, color, position_counts, comm_queue, cancellation_event,
-                        bot_name, ply_count, game_mode, time_left=time_left, increment=increment, use_opening_book=use_opening_book)
-    except TypeError:
+
+# ---------------------------------------------------------------------------
+# Persistent worker — runs in a subprocess, imports happen ONCE at startup.
+# ---------------------------------------------------------------------------
+class TaskQueueWrapper:
+    """Intercepts messages from the bot to attach the current task_id to moves."""
+    def __init__(self, real_queue, task_id):
+        self.real_queue = real_queue
+        self.task_id = task_id
+
+    def put(self, item):
+        # Attach the task_id only to 'move' messages
+        if isinstance(item, tuple) and item[0] == 'move':
+            self.real_queue.put(('move', item[1], self.task_id))
+        else:
+            self.real_queue.put(item)
+
+def persistent_worker(work_queue, comm_queue, cancel_event, bot_class):
+    """
+    Sits in a loop waiting for task dicts. Each task dict contains everything
+    the bot needs. Sending None shuts the worker down.
+    """
+    while True:
+        task = work_queue.get()          # blocks until a task arrives
+        if task is None:                 # shutdown signal
+            break
+
+        # The worker clears the event AFTER receiving the task. 
+        # This prevents the UI from accidentally "un-cancelling" an aborting task.
+        cancel_event.clear()             
+
+        task_id = task.get('task_id', -1)
+        wrapped_comm = TaskQueueWrapper(comm_queue, task_id)
+
         try:
-            # Fallback for bots that don't support the opening book argument yet
-            bot = bot_class(board, color, position_counts, comm_queue, cancellation_event,
-                            bot_name, ply_count, game_mode, time_left=time_left, increment=increment)
-        except TypeError:
-            # Fallback for even older bots
-            bot = bot_class(board, color, position_counts, comm_queue, cancellation_event,
-                            bot_name, ply_count, game_mode)
-            
-    bot.search_depth = search_depth
-    if search_depth == 99:
-        bot.ponder_indefinitely()
-    else:
-        bot.make_move()
+            try:
+                bot = bot_class(
+                    task['board'], task['color'], task['position_counts'],
+                    wrapped_comm, cancel_event,
+                    task['bot_name'], task['ply_count'], task['game_mode'],
+                    time_left=task.get('time_left'),
+                    increment=task.get('increment'),
+                    use_opening_book=task.get('use_opening_book', True),
+                )
+            except TypeError:
+                try:
+                    bot = bot_class(
+                        task['board'], task['color'], task['position_counts'],
+                        wrapped_comm, cancel_event,
+                        task['bot_name'], task['ply_count'], task['game_mode'],
+                        time_left=task.get('time_left'),
+                        increment=task.get('increment'),
+                    )
+                except TypeError:
+                    bot = bot_class(
+                        task['board'], task['color'], task['position_counts'],
+                        wrapped_comm, cancel_event,
+                        task['bot_name'], task['ply_count'], task['game_mode'],
+                    )
+
+            bot.search_depth = task['search_depth']
+            if task['search_depth'] == 99:
+                bot.ponder_indefinitely()
+            else:
+                bot.make_move()
+                
+        except Exception as e:
+            # Prevents a silent crash from locking up the UI forever
+            import traceback
+            traceback.print_exc()
+            wrapped_comm.put(('move', None))
 
 
+# ---------------------------------------------------------------------------
+# Main application
+# ---------------------------------------------------------------------------
 class EnhancedChessApp:
     MAIN_AI_NAME     = "AI Bot"
     OPPONENT_AI_NAME = "OP Bot"
@@ -57,19 +110,30 @@ class EnhancedChessApp:
         self.master.title("Jungle Chess")
         random.seed()
 
-        self.comm_queue            = mp.Queue()
-        self.ai_process            = None
-        self.ai_cancellation_event = mp.Event()
-        self.board                 = Board()
+        # --- COMMUNICATION ---
+        self.comm_queue = mp.Queue()
 
-        self.turn             = "white"
-        self.selected         = None
-        self.valid_moves      = []
-        self.game_over        = False
-        self.game_result      = None
-        self.dragging         = False
+        # --- PERSISTENT WORKER STATE ---
+        self.current_task_id   = 0
+        self.main_work_queue   = mp.Queue()
+        self.op_work_queue     = mp.Queue()
+        self.main_cancel_event = mp.Event()
+        self.op_cancel_event   = mp.Event()
+        self.active_worker_name = None   # 'main' | 'op' | None
+        self.analysis_thinking  = False
+        self.main_worker        = None   
+        self.op_worker          = None
+
+        # --- BOARD / GAME STATE ---
+        self.board        = Board()
+        self.turn         = "white"
+        self.selected     = None
+        self.valid_moves  = []
+        self.game_over    = False
+        self.game_result  = None
+        self.dragging     = False
         self.drag_piece_ghost = None
-        self.drag_start       = None
+        self.drag_start   = None
 
         self.full_history         = []
         self.history_pointer      = -1
@@ -112,14 +176,41 @@ class EnhancedChessApp:
         self.last_clock_tick = None
         self.clock_running   = False
         self.use_clock_var   = tk.BooleanVar(value=True)
-        # ------------------
 
         self.COLORS = self.setup_styles()
         self.master.configure(bg=self.COLORS['bg_dark'])
         self.build_ui()
         self.master.bind("<Key>", self.handle_key_press)
+        self.master.protocol("WM_DELETE_WINDOW", self._on_close)
+        self._start_persistent_workers()
         self.process_comm_queue()
         self.reset_game()
+
+    # ------------------------------------------------------------------ workers
+    def _start_persistent_workers(self):
+        self.main_worker = mp.Process(
+            target=persistent_worker,
+            args=(self.main_work_queue, self.comm_queue,
+                  self.main_cancel_event, ChessBot),
+            daemon=True,
+        )
+        self.op_worker = mp.Process(
+            target=persistent_worker,
+            args=(self.op_work_queue, self.comm_queue,
+                  self.op_cancel_event, OpponentAI),
+            daemon=True,
+        )
+        self.main_worker.start()
+        self.op_worker.start()
+
+    def _on_close(self):
+        """Gracefully shut down workers before destroying the window."""
+        try:
+            self.main_work_queue.put(None)
+            self.op_work_queue.put(None)
+        except Exception:
+            pass
+        self.master.destroy()
 
     # ------------------------------------------------------------------ helpers
     def _format_san_display(self, s):
@@ -263,19 +354,18 @@ class EnhancedChessApp:
         self.bot_depth_slider.pack(fill=tk.X, pady=(0, 5))
 
         for text, var, cmd in [
-            ("Use Opening Book",           self.use_opening_book_var,None),
-            ("Instant Moves",              self.instant_move,        None),
-            ("Analysis Mode (H-vs-H)",     self.analysis_mode_var,   self._update_analysis_after_state_change),
-            ("Auto-save Depth Stats",      self.auto_save_stats_var, None),
-            ("Show Engine Lines (PV)",     self.show_pv_var,         self._render_pv),
-            ("Long Notation (Casualties)", self.long_notation_var,   self._on_notation_toggle),
+            ("Use Opening Book",           self.use_opening_book_var, None),
+            ("Instant Moves",              self.instant_move,         None),
+            ("Analysis Mode (H-vs-H)",     self.analysis_mode_var,    self._update_analysis_after_state_change),
+            ("Auto-save Depth Stats",      self.auto_save_stats_var,  None),
+            ("Show Engine Lines (PV)",     self.show_pv_var,          self._render_pv),
+            ("Long Notation (Casualties)", self.long_notation_var,    self._on_notation_toggle),
         ]:
             kw = {'command': cmd} if cmd else {}
             ttk.Checkbutton(cf, text=text, variable=var,
                             style='Custom.TCheckbutton', **kw).pack(anchor=tk.W, pady=(2, 2))
 
     def _build_right_sidebar_widgets(self, parent):
-        # 1. Info (sticks to top)
         info = ttk.Frame(parent, style='Left.TFrame')
         info.pack(side=tk.TOP, fill=tk.X, pady=(0, 5))
         self.info_frame = info
@@ -286,7 +376,6 @@ class EnhancedChessApp:
         ttk.Checkbutton(info, text="Use Clock", variable=self.use_clock_var,
                         command=self._toggle_clock).pack(anchor=tk.W, pady=(2, 2))
 
-        # Clock display
         self.clock_frame = ttk.Frame(info, style='Left.TFrame')
         self.clock_frame.pack(fill=tk.X, pady=(5, 5))
         self.black_clock_lbl = tk.Label(self.clock_frame, text="00:00.0",
@@ -300,7 +389,6 @@ class EnhancedChessApp:
                                         fg=self.COLORS['text_light'], pady=2)
         self.white_clock_lbl.pack(side=tk.BOTTOM, fill=tk.X, pady=1)
 
-        # Time-control slider
         self.time_control_frame = ttk.Frame(info, style='Left.TFrame')
         self.time_control_frame.pack(fill=tk.X, pady=(5, 5))
         self.time_control_label = ttk.Label(self.time_control_frame,
@@ -317,7 +405,6 @@ class EnhancedChessApp:
         self.time_control_slider.pack(fill=tk.X, pady=(2, 2))
         self.time_control_slider.bind("<ButtonRelease-1>", lambda e: self.reset_game())
 
-        # 4. Bottom Tools (sticks to bottom)
         self.bottom_tools_frame = ttk.Frame(parent, style='Left.TFrame')
         self.bottom_tools_frame.pack(side=tk.BOTTOM, fill=tk.X, pady=(0, 10))
         self.fen_entry = self._create_import_export_widget(
@@ -325,13 +412,11 @@ class EnhancedChessApp:
         self.pgn_entry = self._create_import_export_widget(
             self.bottom_tools_frame, "PGN Record:", self.load_pgn_from_entry, self.copy_pgn_to_clipboard)
 
-        # 3. Scoreboard (above bottom tools)
         self.scoreboard_label = ttk.Label(parent, text="", font=("Helvetica", 11),
                                           justify=tk.LEFT, background=self.COLORS['bg_dark'],
                                           foreground=self.COLORS['text_light'])
         self.scoreboard_label.pack(side=tk.BOTTOM, fill=tk.X, pady=(5, 5))
 
-        # 2. Move History (expands to fill middle)
         ttk.Label(parent, text="Move History", style='SmallHeader.TLabel').pack(side=tk.TOP, anchor=tk.W)
         self.tree_frame = tk.Frame(parent, bg=self.COLORS['bg_medium'])
         self.tree_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True, pady=(2, 10))
@@ -429,7 +514,7 @@ class EnhancedChessApp:
         self._position_side_labels()
 
     def handle_key_press(self, event):
-        if self.is_ai_thinking() and self.ai_process.name != self.ANALYSIS_AI_NAME:
+        if self.is_ai_thinking() and not self.analysis_thinking:
             return
         action = {'Left': self.undo_move, 'Right': self.redo_move,
                   'Home': self.go_to_start, 'End': self.go_to_end}.get(event.keysym)
@@ -531,8 +616,7 @@ class EnhancedChessApp:
         r = c = 0
         for ch in parts[0]:
             if ch == '/':
-                r += 1
-                c = 0
+                r += 1; c = 0
             elif ch.isdigit():
                 c += int(ch)
             else:
@@ -729,7 +813,7 @@ class EnhancedChessApp:
     def on_drag_start(self, event):
         if self.game_over:
             return
-        if self.is_ai_thinking() and self.ai_process.name != self.ANALYSIS_AI_NAME:
+        if self.is_ai_thinking() and not self.analysis_thinking:
             return
         r, c = self.canvas_to_board(event.x, event.y)
         if r == -1 or not self.board.grid[r][c]:
@@ -756,7 +840,7 @@ class EnhancedChessApp:
             self.canvas.coords(self.drag_piece_ghost, event.x, event.y)
 
     def on_drag_end(self, event):
-        is_analysis = self.is_ai_thinking() and self.ai_process.name == self.ANALYSIS_AI_NAME
+        is_analysis = self.is_ai_thinking() and self.analysis_thinking
         if self.is_ai_thinking() and not is_analysis:
             self.valid_moves = []
             self.draw_board()
@@ -1009,7 +1093,13 @@ class EnhancedChessApp:
                     self.last_pv_message = msg
                     self._render_pv()
                 elif kind == 'move':
-                    self._execute_ai_move(msg[1])
+                    msg_task_id = msg[2] if len(msg) > 2 else -1
+                    
+                    # Only accept the move if it matches the current generation ID
+                    if self.active_worker_name is not None and msg_task_id == self.current_task_id:
+                        self.active_worker_name = None
+                        self.analysis_thinking  = False
+                        self._execute_ai_move(msg[1])
         except Exception:
             pass
         finally:
@@ -1044,42 +1134,65 @@ class EnhancedChessApp:
 
     # ------------------------------------------------------------------ AI process
     def _start_ai_process(self, bot_class, bot_name, search_depth):
-        if self.ai_process and self.ai_process.is_alive():
-            return
-        self.ai_cancellation_event.clear()
+        """Submit a task to the appropriate persistent worker."""
+        if self.active_worker_name is not None:
+            return   
 
-        time_left = (self.white_time if self.turn == 'white' else self.black_time) if self.use_clock_var.get() else None
-        inc       = self.increment if self.use_clock_var.get() else None
+        time_left = (self.white_time if self.turn == 'white' else self.black_time) \
+                    if self.use_clock_var.get() else None
+        inc = self.increment if self.use_clock_var.get() else None
 
-        args = (self.board.clone(), self.turn, self.position_counts.copy(),
-                self.comm_queue, self.ai_cancellation_event,
-                bot_class, bot_name, search_depth, self.history_pointer, self.game_mode.get(),
-                time_left, inc, 
-                self.use_opening_book_var.get()) # <--- ADD THIS ARGUMENT HERE
-        
-        self.ai_process = mp.Process(target=run_ai_process, args=args, daemon=True)
-        self.ai_process.name = bot_name
-        self.ai_process.start()
-        if bot_name != self.ANALYSIS_AI_NAME:
+        self.current_task_id += 1  # Increment task generation
+
+        task = {
+            'board':            self.board.clone(),
+            'color':            self.turn,
+            'position_counts':  self.position_counts.copy(),
+            'bot_name':         bot_name,
+            'ply_count':        self.history_pointer,
+            'game_mode':        self.game_mode.get(),
+            'search_depth':     search_depth,
+            'time_left':        time_left,
+            'increment':        inc,
+            'use_opening_book': self.use_opening_book_var.get(),
+            'task_id':          self.current_task_id  # Pass it to the worker
+        }
+
+        self.analysis_thinking = (bot_name == self.ANALYSIS_AI_NAME)
+
+        if bot_class is ChessBot:
+            self.active_worker_name = 'main'
+            self.main_work_queue.put(task)
+        else:
+            self.active_worker_name = 'op'
+            self.op_work_queue.put(task)
+
+        if not self.analysis_thinking:
             self.set_interactivity(False)
         self.update_bot_labels()
 
     def _stop_ai_process(self):
-        if self.ai_process and self.ai_process.is_alive():
-            self.ai_cancellation_event.set()
-            self.ai_process.join(timeout=0.1)
-            if self.ai_process.is_alive():
-                self.ai_process.terminate()
-            self.ai_process = None
+        """Cancel the current task (worker stays alive)."""
+        if self.active_worker_name == 'main':
+            self.main_cancel_event.set()
+        elif self.active_worker_name == 'op':
+            self.op_cancel_event.set()
+
+        self.active_worker_name = None
+        self.analysis_thinking  = False
+
+        # Drain any messages already in the queue from the cancelled task.
         while not self.comm_queue.empty():
             try:
                 self.comm_queue.get_nowait()
             except Exception:
                 break
+
         if self.game_mode.get() == GameMode.HUMAN_VS_HUMAN.value and not self.analysis_mode_var.get():
             self.last_eval_score, self.last_eval_depth = 0.0, None
             self.draw_eval_bar(0)
             self.eval_score_label.config(text="Even")
+
         self.set_interactivity(True)
         self.update_bot_labels()
 
@@ -1114,8 +1227,6 @@ class EnhancedChessApp:
         return 0 if self.use_clock_var.get() else (4 if self.instant_move.get() else 20)
 
     def render_clocks(self):
-        """Update clock label text and active-player highlight.
-        Does NOT touch geometry — that is _toggle_clock's responsibility."""
         if not self.use_clock_var.get():
             return
 
@@ -1150,10 +1261,8 @@ class EnhancedChessApp:
         timed_out = (self.turn == 'white' and self.white_time <= 0) or \
                     (self.turn == 'black' and self.black_time  <= 0)
         if timed_out:
-            if self.turn == 'white':
-                self.white_time = 0
-            else:
-                self.black_time = 0
+            if self.turn == 'white': self.white_time = 0
+            else:                    self.black_time  = 0
             self.handle_timeout(self.turn)
             return
         self.render_clocks()
@@ -1203,7 +1312,7 @@ class EnhancedChessApp:
             self.canvas.unbind("<ButtonRelease-1>")
 
     def is_ai_thinking(self):
-        return bool(self.ai_process and self.ai_process.is_alive())
+        return self.active_worker_name is not None
 
     def switch_turn(self):
         if not self.game_over:
@@ -1289,6 +1398,8 @@ class EnhancedChessApp:
             print(f"Opening: {format_move_san(self.board, child, move)}")
             self.board.make_move(move[0], move[1])
             self.execute_move_and_check_state(self.turn, move)
+            if self.game_over:
+                break
         self.last_clock_tick = time.time()
         self.clock_running   = False
 
