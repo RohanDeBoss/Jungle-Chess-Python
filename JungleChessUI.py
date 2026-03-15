@@ -1,4 +1,4 @@
-# JungleChessUI.py (v14.7 - Opening Book Toggle)
+# JungleChessUI.py (v14.8 - bug fixes for opening book)
 
 import tkinter as tk
 from tkinter import ttk, messagebox
@@ -1047,14 +1047,17 @@ class EnhancedChessApp:
         if self.ai_process and self.ai_process.is_alive():
             return
         self.ai_cancellation_event.clear()
-        time_left = (self.white_time if self.turn == 'white' else self.black_time) \
-                    if self.use_clock_var.get() else None
-        inc = self.increment if self.use_clock_var.get() else None
+
+        time_left = (self.white_time if self.turn == 'white' else self.black_time) if self.use_clock_var.get() else None
+        inc       = self.increment if self.use_clock_var.get() else None
+
         args = (self.board.clone(), self.turn, self.position_counts.copy(),
                 self.comm_queue, self.ai_cancellation_event,
-                bot_class, bot_name, search_depth, self.history_pointer,
-                self.game_mode.get(), time_left, inc)
-        self.ai_process      = mp.Process(target=run_ai_process, args=args, daemon=True)
+                bot_class, bot_name, search_depth, self.history_pointer, self.game_mode.get(),
+                time_left, inc, 
+                self.use_opening_book_var.get()) # <--- ADD THIS ARGUMENT HERE
+        
+        self.ai_process = mp.Process(target=run_ai_process, args=args, daemon=True)
         self.ai_process.name = bot_name
         self.ai_process.start()
         if bot_name != self.ANALYSIS_AI_NAME:

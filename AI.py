@@ -1,4 +1,4 @@
-# AI.py (v106.3 - Threefold fix, safety check added, massive d6 1000g piece value tuning!)
+# AI.py (v106.4 - Randomness fix for opening book)
 import json
 import os
 import time
@@ -45,9 +45,10 @@ ZOBRIST_TURN = None
 def initialize_zobrist_table():
     global ZOBRIST_ARRAY, ZOBRIST_TURN
     if ZOBRIST_ARRAY is not None: return
-    random.seed(42)
+    random.seed(42) # Set seed for stable Zobrist keys
     ZOBRIST_ARRAY = [[[[random.getrandbits(64) for _ in range(8)] for _ in range(8)] for _ in range(6)] for _ in range(2)]
     ZOBRIST_TURN = random.getrandbits(64)
+    random.seed() # <--- ADD THIS: Restore true randomness for move selection
 
 initialize_zobrist_table()
 
