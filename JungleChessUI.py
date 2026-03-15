@@ -1,4 +1,4 @@
-# JungleChessUI.py (v14.91 - Persistent Worker Processes + IPC Race Condition Fixes)
+# JungleChessUI.py (v15.0 - Persistent Workers + Auto Adjudicate TB Draw)
 
 import tkinter as tk
 from tkinter import ttk, messagebox
@@ -147,11 +147,13 @@ class EnhancedChessApp:
         self.ai_series_running   = False
         self.ai_series_stats     = {'game_count': 0, 'my_ai_wins': 0, 'op_ai_wins': 0, 'draws': 0}
         self.depth_stats         = {}
+        
         self.auto_save_stats_var = tk.BooleanVar(value=True)
         self.show_pv_var         = tk.BooleanVar(value=True)
         self.long_notation_var   = tk.BooleanVar(value=False)
         self.instant_move        = tk.BooleanVar(value=False)
         self.use_opening_book_var = tk.BooleanVar(value=True)
+        self.auto_adjudicate_var = tk.BooleanVar(value=True)
 
         self.current_pv_raw  = []
         self.current_pv_san  = []
@@ -356,6 +358,7 @@ class EnhancedChessApp:
         for text, var, cmd in [
             ("Use Opening Book",           self.use_opening_book_var, None),
             ("Instant Moves",              self.instant_move,         None),
+            ("Auto Adjudicate TB Draw",    self.auto_adjudicate_var,  None),
             ("Analysis Mode (H-vs-H)",     self.analysis_mode_var,    self._update_analysis_after_state_change),
             ("Auto-save Depth Stats",      self.auto_save_stats_var,  None),
             ("Show Engine Lines (PV)",     self.show_pv_var,          self._render_pv),
@@ -802,10 +805,24 @@ class EnhancedChessApp:
         if the_move:
             self.board.make_move(the_move[0], the_move[1])
             self.execute_move_and_check_state(self.turn, the_move)
+
+            # --- AUTO ADJUDICATE TB DRAW ---
+            if not self.game_over and self.auto_adjudicate_var.get() and \
+               self.game_mode.get() != GameMode.HUMAN_VS_HUMAN.value:
+                if self.last_eval_depth == "TB" and abs(self.last_eval_score) < 0.05:
+                    self.game_over = True
+                    self.game_result = ("tb draw", None)
+                    self.update_ui_after_state_change()
+                    print("Game Over! Result: TB Draw (Auto-adjudicated)")
+                    if self.game_mode.get() == GameMode.AI_VS_AI.value and self.ai_series_running:
+                        self.process_ai_series_result()
+            # -------------------------------
+
             if not self.game_over and self.game_mode.get() == GameMode.AI_VS_AI.value:
                 self.master.after(self._get_ai_move_delay(), self._make_game_ai_move)
         else:
             print("AI reported no valid move.")
+            
         self._stop_ai_process()
         self.update_bot_labels()
         self.set_interactivity(True)
@@ -1279,8 +1296,11 @@ class EnhancedChessApp:
             self.process_ai_series_result()
 
     def update_turn_label(self):
-        self.turn_label.config(text=f"GAME OVER: {self.game_result[0].upper()}"
-                               if self.game_result else f"TURN: {self.turn.upper()}")
+        if self.game_result:
+            res_text = self.game_result[0].upper().replace('_', ' ')
+            self.turn_label.config(text=f"GAME OVER: {res_text}")
+        else:
+            self.turn_label.config(text=f"TURN: {self.turn.upper()}")
 
     def update_bot_labels(self):
         mode = self.game_mode.get()
