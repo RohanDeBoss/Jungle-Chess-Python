@@ -1,30 +1,5 @@
-# GameLogic.py (v53 - Performance Optimised)
-#
-# Key changes vs v52
-# ------------------
-# 1. O(1) piece-list removal — Piece gains _list_pos (its index in
-#    white_pieces / black_pieces).  Board._list_remove() does a swap-and-pop
-#    instead of list.remove() which is O(n).  Board._list_append() keeps the
-#    index accurate on every append.  This fires on every capture, explosion,
-#    and knight-evaporation event — exactly the inner loop of the search.
-#
-# 2. type(x) is X uniformly in hot paths — isinstance() walks the MRO;
-#    type() identity is a single pointer compare.  Applied to make_move,
-#    make_move_track, unmake_move, add_piece, remove_piece, move_piece, and
-#    all piece helpers.  No subclasses exist so the semantics are identical.
-#
-# 3. Direct piece_counts[X] instead of .get(X, 0) — all piece-type keys are
-#    always present (initialised in Board.__init__), so the default-value
-#    branch in .get() is dead weight.  Removed from is_square_attacked and
-#    all other call sites.
-#
-# 4. KNIGHT_ATTACKS_FROM / ADJACENT_SQUARES_MAP / RAYS inner sequences built
-#    as tuples — CPython iterates tuples marginally faster than lists because
-#    the tuple iteration C path is tighter.  These tables are read millions of
-#    times per search with no mutations, so tuples are appropriate.
-#
-# 5. format_move_san disambiguation — O(n_pieces) piece-list scan instead of
-#    O(64) full-grid scan.  n_pieces <= 16 per side, always strictly faster.
+# GameLogic.py (v54 - Performance 2)
+
 
 # -----------------------------------------------------------------------
 # Global constants
@@ -924,11 +899,14 @@ def get_all_legal_moves(board, color):
 
 def get_all_pseudo_legal_moves(board, color):
     moves      = []
+    append     = moves.append
     piece_list = board.white_pieces if color == 'white' else board.black_pieces
     for piece in piece_list:
-        if piece.pos is not None:
-            moves.extend(
-                [(piece.pos, ep) for ep in piece.get_valid_moves(board, piece.pos)])
+        start_pos = piece.pos
+        if start_pos is None:
+            continue
+        for end_pos in piece.get_valid_moves(board, start_pos):
+            append((start_pos, end_pos))
     return moves
 
 
@@ -1079,27 +1057,50 @@ def is_discovered_slider_unlock(board, move):
 
 
 def generate_all_tactical_moves(board, color):
+    grid       = board.grid
     piece_list = board.white_pieces if color == 'white' else board.black_pieces
     for piece in piece_list:
         start_pos = piece.pos
         if start_pos is None:
             continue
         mp_type = type(piece)
+        my_color = piece.color
+        opp_color = piece.opponent_color
         for end_pos in piece.get_valid_moves(board, start_pos):
-            is_capture   = board.grid[end_pos[0]][end_pos[1]] is not None
-            is_promotion = mp_type is Pawn and end_pos[0] == piece.promo_rank
+            end_r, end_c = end_pos
+            is_capture   = grid[end_r][end_c] is not None
+            is_promotion = mp_type is Pawn and end_r == piece.promo_rank
 
             if is_capture or is_promotion:
                 yield (start_pos, end_pos)
                 continue
 
-            move = (start_pos, end_pos)
-            if mp_type is Rook and is_rook_piercing_capture(board, move):
-                yield (start_pos, end_pos)
-            elif mp_type is Knight and is_quiet_knight_evaporation(board, move):
-                yield (start_pos, end_pos)
-            elif is_passive_knight_zone_evaporation(board, move):
-                yield (start_pos, end_pos)
+            if mp_type is Rook:
+                dr = (end_r > start_pos[0]) - (start_pos[0] > end_r)
+                dc = (end_c > start_pos[1]) - (start_pos[1] > end_c)
+                cr, cc = start_pos[0] + dr, start_pos[1] + dc
+                while (cr, cc) != end_pos:
+                    target = grid[cr][cc]
+                    if target is not None and target.color != my_color:
+                        yield (start_pos, end_pos)
+                        break
+                    cr += dr
+                    cc += dc
+                continue
+
+            if mp_type is Knight:
+                for r, c in KNIGHT_ATTACKS_FROM[end_pos]:
+                    target = grid[r][c]
+                    if target is not None and target.color == opp_color:
+                        yield (start_pos, end_pos)
+                        break
+                continue
+
+            for r, c in KNIGHT_ATTACKS_FROM[end_pos]:
+                pk = grid[r][c]
+                if pk is not None and type(pk) is Knight and pk.color != my_color:
+                    yield (start_pos, end_pos)
+                    break
 
 
 def fast_approximate_material_swing(board, move, moving_piece, target_piece, piece_values):
