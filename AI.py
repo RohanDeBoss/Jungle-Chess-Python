@@ -1,4 +1,4 @@
-# AI.py (v107 - Finalised piece values, futility margin = 1000 for speed)
+# AI.py (v108.2 - I think these optimisations work?)
 import json
 import os
 import time
@@ -6,6 +6,7 @@ import random
 from collections import namedtuple
 from GameLogic import *
 from TablebaseManager import TablebaseManager
+from operator import itemgetter
 
 # --- TIME CONSTANTS ---
 TIME_BUFFER_SEC = 0.50
@@ -100,7 +101,13 @@ def incremental_hash(parent_hash, record):
     er, ec = record.end
 
     h ^= arr[c_idx][p_idx][sr][sc]
-    mp_removed = any(p is mp for p, _r, _c in record.removed_pieces)
+    
+    mp_removed = False
+    for p, _r, _c in record.removed_pieces:
+        if p is mp:
+            mp_removed = True
+            break
+            
     if not mp_removed:
         h ^= arr[c_idx][p_idx][er][ec]
 
@@ -886,7 +893,7 @@ class ChessBot:
 
             scored_moves.append((swing, move))
 
-        scored_moves.sort(key=lambda item: item[0], reverse=True)
+        scored_moves.sort(key=itemgetter(0), reverse=True)
 
         legal_moves_count = 0
         opponent_turn     = 'black' if turn == 'white' else 'white'
@@ -922,7 +929,7 @@ class ChessBot:
         is_opening = (ply <= self.OPENING_BONUS_MAX_PLY and self._is_opening_position(board))
         history_table = self.history_heuristic_table[c_idx]
 
-        for move in moves:
+        for move in moves:  # <--- Reverted enumerate
             moving_piece = board.grid[move[0][0]][move[0][1]]
             target_piece = board.grid[move[1][0]][move[1][1]]
 
@@ -944,9 +951,12 @@ class ChessBot:
                 score = history_table[move[0][0]*8+move[0][1]][move[1][0]*8+move[1][1]]
 
             if is_opening: score += self._opening_development_bonus(move, moving_piece)
+            
+            # Reverted back to the original tuple structure
             scored_moves.append((score, move, is_good_tactic, moving_piece))
 
-        scored_moves.sort(key=lambda item: item[0], reverse=True)
+        # C-optimized sorting that preserves stable order
+        scored_moves.sort(key=itemgetter(0), reverse=True)
 
         if return_meta:
             return [(item[1], (item[2], item[3])) for item in scored_moves]
