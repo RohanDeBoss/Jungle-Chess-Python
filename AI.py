@@ -217,7 +217,7 @@ class ChessBot:
 
     def __init__(self, board, color, position_counts, comm_queue, cancellation_event,
                  bot_name=None, ply_count=0, game_mode="bot", max_moves=200,
-                 time_left=None, increment=None, use_opening_book=True):
+                 time_left=None, increment=None, use_opening_book=True, use_tablebase=True):
 
         self.board = board
         self.color = color
@@ -240,6 +240,13 @@ class ChessBot:
         self.use_opening_book = use_opening_book
 
         self.tb_manager = TablebaseManager()
+
+        # --- 2. ADD THIS BLOCK ---
+        if not use_tablebase:
+            # Neuter the probe method so it does nothing and returns None,
+            # causing the engine to fall back to its own search.
+            self.tb_manager.probe = lambda b, t: None
+        # -------------------------
 
         if bot_name is None:
             self.bot_name = "OP Bot" if self.__class__.__name__ == "OpponentAI" else "AI Bot"

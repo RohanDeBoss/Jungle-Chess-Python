@@ -1,4 +1,4 @@
-# JungleChessUI.py (v15.0 - Persistent Workers + Auto Adjudicate TB Draw)
+# JungleChessUI.py (v15.1 - Persistent Workers + Tablebase Toggle)
 
 import tkinter as tk
 from tkinter import ttk, messagebox
@@ -57,6 +57,7 @@ def persistent_worker(work_queue, comm_queue, cancel_event, bot_class):
 
         try:
             try:
+                # Try with full modern signature (including use_tablebase)
                 bot = bot_class(
                     task['board'], task['color'], task['position_counts'],
                     wrapped_comm, cancel_event,
@@ -64,6 +65,7 @@ def persistent_worker(work_queue, comm_queue, cancel_event, bot_class):
                     time_left=task.get('time_left'),
                     increment=task.get('increment'),
                     use_opening_book=task.get('use_opening_book', True),
+                    use_tablebase=task.get('use_tablebase', True),
                 )
             except TypeError:
                 try:
@@ -73,13 +75,23 @@ def persistent_worker(work_queue, comm_queue, cancel_event, bot_class):
                         task['bot_name'], task['ply_count'], task['game_mode'],
                         time_left=task.get('time_left'),
                         increment=task.get('increment'),
+                        use_opening_book=task.get('use_opening_book', True),
                     )
                 except TypeError:
-                    bot = bot_class(
-                        task['board'], task['color'], task['position_counts'],
-                        wrapped_comm, cancel_event,
-                        task['bot_name'], task['ply_count'], task['game_mode'],
-                    )
+                    try:
+                        bot = bot_class(
+                            task['board'], task['color'], task['position_counts'],
+                            wrapped_comm, cancel_event,
+                            task['bot_name'], task['ply_count'], task['game_mode'],
+                            time_left=task.get('time_left'),
+                            increment=task.get('increment'),
+                        )
+                    except TypeError:
+                        bot = bot_class(
+                            task['board'], task['color'], task['position_counts'],
+                            wrapped_comm, cancel_event,
+                            task['bot_name'], task['ply_count'], task['game_mode'],
+                        )
 
             bot.search_depth = task['search_depth']
             if task['search_depth'] == 99:
@@ -148,12 +160,13 @@ class EnhancedChessApp:
         self.ai_series_stats     = {'game_count': 0, 'my_ai_wins': 0, 'op_ai_wins': 0, 'draws': 0}
         self.depth_stats         = {}
         
-        self.auto_save_stats_var = tk.BooleanVar(value=True)
-        self.show_pv_var         = tk.BooleanVar(value=True)
-        self.long_notation_var   = tk.BooleanVar(value=False)
-        self.instant_move        = tk.BooleanVar(value=False)
+        self.auto_save_stats_var  = tk.BooleanVar(value=True)
+        self.show_pv_var          = tk.BooleanVar(value=True)
+        self.long_notation_var    = tk.BooleanVar(value=False)
+        self.instant_move         = tk.BooleanVar(value=False)
         self.use_opening_book_var = tk.BooleanVar(value=True)
-        self.auto_adjudicate_var = tk.BooleanVar(value=True)
+        self.use_tablebase_var    = tk.BooleanVar(value=True)
+        self.auto_adjudicate_var  = tk.BooleanVar(value=True)
 
         self.current_pv_raw  = []
         self.current_pv_san  = []
@@ -357,6 +370,7 @@ class EnhancedChessApp:
 
         for text, var, cmd in [
             ("Use Opening Book",           self.use_opening_book_var, None),
+            ("Use Tablebase",              self.use_tablebase_var,    None),
             ("Instant Moves",              self.instant_move,         None),
             ("Auto Adjudicate TB Draw",    self.auto_adjudicate_var,  None),
             ("Analysis Mode (H-vs-H)",     self.analysis_mode_var,    self._update_analysis_after_state_change),
@@ -1172,6 +1186,7 @@ class EnhancedChessApp:
             'time_left':        time_left,
             'increment':        inc,
             'use_opening_book': self.use_opening_book_var.get(),
+            'use_tablebase':    self.use_tablebase_var.get(),
             'task_id':          self.current_task_id  # Pass it to the worker
         }
 
