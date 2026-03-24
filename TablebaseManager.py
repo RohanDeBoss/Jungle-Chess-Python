@@ -1,4 +1,4 @@
-# TablebaseManager.py (v4.2 - Memmap Optimization, Tightened Exceptions & Sorts)
+# TablebaseManager.py (v5.0 - Unified Canonical Probing)
 
 import os
 import numpy as np
@@ -15,184 +15,137 @@ class TablebaseManager:
         self.pre_load_all()
 
     def pre_load_all(self):
+        if not os.path.exists(self.tb_dir):
+            return
+            
         pieces = ['Queen', 'Rook', 'Knight', 'Bishop', 'Pawn']
         
-        # Load 3-man (5 tables)
+        # 1. Load 3-man tables
         for p in pieces:
             self.load_table(f"K_{p}_K")
             
-        # Load 4-man Same-Side (15 tables)
+        # 2. Load 4-man Same-Side tables
         from itertools import combinations_with_replacement
         for p1, p2 in combinations_with_replacement(pieces, 2):
             names = sorted([p1, p2])
             self.load_table(f"K_{names[0]}_{names[1]}_K")
             
-        # Load 4-man Cross (25 tables)
-        for w in pieces:
-            for b in pieces:
+        # 3. Load 4-man Cross tables (Canonical names only)
+        for i in range(len(pieces)):
+            for j in range(i, len(pieces)):
+                w, b = pieces[i], pieces[j]
                 self.load_table(f"K_{w}_vs_{b}_K")
 
     def load_table(self, name):
+        if name in self.tables: return True
         filename = os.path.join(self.tb_dir, f"{name}.bin")
         if os.path.exists(filename):
             try:
-                # Use zero-latency memory mapping instead of loading into RAM
                 file_size = os.path.getsize(filename)
-                
-                expected_3man_bytes = 64 * 64 * 64 * 2 * 2       # ~1 MB
-                expected_4man_bytes = 64 * 64 * 64 * 64 * 2 * 2  # ~67 MB
+                # 3-man ~1MB, 4-man ~67MB
+                expected_3man = 64 * 64 * 64 * 2 * 2
+                expected_4man = 64 * 64 * 64 * 64 * 2 * 2
 
-                if file_size == expected_3man_bytes:
+                if file_size == expected_3man:
                     self.tables[name] = np.memmap(filename, dtype=np.int16, mode='r', shape=(64, 64, 64, 2))
                     return True
-                elif file_size == expected_4man_bytes:
+                elif file_size == expected_4man:
                     self.tables[name] = np.memmap(filename, dtype=np.int16, mode='r', shape=(64, 64, 64, 64, 2))
                     return True
-                    
             except Exception as e:
                 print(f"[TablebaseManager] Failed to memmap {name}: {e}")
         return False
 
-    def _tb_score_to_ai_score(self, tb_val, attacker_color):
-        """
-        Converts a Tablebase DTM score into an absolute AI score from White's perspective.
-        In the Tablebase, a non-zero value means the attacker wins. 
-        """
-        if tb_val == 0:
-            return 0
-        
+    def _tb_score_to_ai_score(self, tb_val, is_win_for_white):
+        """Converts DTM to internal engine score from White's perspective."""
+        if tb_val == 0: return 0
         dtm = abs(int(tb_val))
-        ai_score = 1000000 - dtm
-        
-        return ai_score if attacker_color == 'white' else -ai_score
+        score = 1000000 - dtm
+        return score if is_win_for_white else -score
 
     @staticmethod
-    def _flat_idx_raw_4(i0, i1, i2, i3, i4):
+    def _flat_idx_3(i0, i1, i2, i3):
+        return (((i0 * 64 + i1) * 64 + i2) * 2 + i3)
+
+    @staticmethod
+    def _flat_idx_4(i0, i1, i2, i3, i4):
         return (((((i0 * 64 + i1) * 64 + i2) * 64 + i3) * 2) + i4)
 
-    def probe(self, board, turn):
-        white_count = len(board.white_pieces)
-        black_count = len(board.black_pieces)
-        
-        # --- 3-Man Probe ---
-        if white_count + black_count == 3:
-            if white_count == 2 and black_count == 1:
-                try:
-                    wp = next(p for p in board.white_pieces if not isinstance(p, King))
-                    wk, bk = board.white_king_pos, board.black_king_pos
-                    p_name = f"K_{wp.__class__.__name__}_K"
-                    if p_name not in self.tables: return None
-                    
-                    t_idx = 0 if turn == 'white' else 1
-                    idx = (wk[0]*8+wk[1], wp.pos[0]*8+wp.pos[1], bk[0]*8+bk[1], t_idx)
-                    score = int(self.tables[p_name][idx])
-                    return self._tb_score_to_ai_score(score, 'white')
-                except (IndexError, KeyError, StopIteration):
-                    return None
+    def probe(self, board, turn_to_move):
+        w_objs = [p for p in board.white_pieces if not isinstance(p, King)]
+        b_objs = [p for p in board.black_pieces if not isinstance(p, King)]
+        wk, bk = board.white_king_pos, board.black_king_pos
+        if not wk or not bk: return None
 
-            elif black_count == 2 and white_count == 1:
-                try:
-                    bp = next(p for p in board.black_pieces if not isinstance(p, King))
-                    bk, wk = board.black_king_pos, board.white_king_pos
-                    p_name = f"K_{bp.__class__.__name__}_K"
-                    if p_name not in self.tables: return None
-                    
-                    t_idx = 0 if turn == 'black' else 1
-                    idx = (_flip(bk)[0]*8+_flip(bk)[1], _flip(bp.pos)[0]*8+_flip(bp.pos)[1], _flip(wk)[0]*8+_flip(wk)[1], t_idx)
-                    score = int(self.tables[p_name][idx])
-                    return self._tb_score_to_ai_score(score, 'black')
-                except (IndexError, KeyError, StopIteration):
-                    return None
-                    
-        # --- 4-Man Probe ---
-        elif white_count + black_count == 4:
-            
-            # 1. 4-Man Same Side (White)
-            if white_count == 3 and black_count == 1:
-                try:
-                    w_p = [p for p in board.white_pieces if not isinstance(p, King)]
-                    
-                    # Optimized single sort
-                    if type(w_p[0]) is type(w_p[1]):
-                        w_p.sort(key=lambda p: p.pos[0]*8 + p.pos[1])
-                    else:
-                        w_p.sort(key=lambda x: type(x).__name__) 
-                    
-                    p_name = f"K_{type(w_p[0]).__name__}_{type(w_p[1]).__name__}_K"
-                    if p_name not in self.tables: return None
-                    
-                    t_idx = 0 if turn == 'white' else 1
-                    wk, bk = board.white_king_pos, board.black_king_pos
-                    
-                    idx = self._flat_idx_raw_4(wk[0]*8+wk[1], w_p[0].pos[0]*8+w_p[0].pos[1], w_p[1].pos[0]*8+w_p[1].pos[1], bk[0]*8+bk[1], t_idx)
-                    score = int(self.tables[p_name].flat[idx])
-                    return self._tb_score_to_ai_score(score, 'white')
-                except (IndexError, KeyError, StopIteration):
-                    return None
-                    
-            # 2. 4-Man Same Side (Black)
-            elif black_count == 3 and white_count == 1:
-                try:
-                    b_p = [p for p in board.black_pieces if not isinstance(p, King)]
-                    
-                    # Optimized single sort with flip
-                    if type(b_p[0]) is type(b_p[1]):
-                        b_p.sort(key=lambda p: _flip(p.pos)[0]*8 + _flip(p.pos)[1])
-                    else:
-                        b_p.sort(key=lambda x: type(x).__name__)
-                    
-                    p_name = f"K_{type(b_p[0]).__name__}_{type(b_p[1]).__name__}_K"
-                    if p_name not in self.tables: return None
-                    
-                    t_idx = 0 if turn == 'black' else 1
-                    bk, wk = board.black_king_pos, board.white_king_pos
-                    
-                    idx = self._flat_idx_raw_4(_flip(bk)[0]*8+_flip(bk)[1], _flip(b_p[0].pos)[0]*8+_flip(b_p[0].pos)[1], _flip(b_p[1].pos)[0]*8+_flip(b_p[1].pos)[1], _flip(wk)[0]*8+_flip(wk)[1], t_idx)
-                    score = int(self.tables[p_name].flat[idx])
-                    return self._tb_score_to_ai_score(score, 'black')
-                except (IndexError, KeyError, StopIteration):
-                    return None
-                    
-            # 3. 4-Man Cross Tables (White Piece vs Black Piece)
-            elif white_count == 2 and black_count == 2:
-                try:
-                    w_p = next(p for p in board.white_pieces if not isinstance(p, King))
-                    b_p = next(p for p in board.black_pieces if not isinstance(p, King))
-                    
-                    w_name = w_p.__class__.__name__
-                    b_name = b_p.__class__.__name__
-                    t_name_w = f"K_{w_name}_vs_{b_name}_K"
-                    t_name_b = f"K_{b_name}_vs_{w_name}_K"
-                    
-                    # Ensure both reciprocal tables exist so we don't hallucinate a draw
-                    if t_name_w not in self.tables or t_name_b not in self.tables:
-                        return None
-                        
-                    wk = board.white_king_pos
-                    wp = w_p.pos
-                    bk = board.black_king_pos
-                    bp = b_p.pos
-                    
-                    # Check if White is winning
-                    t_idx_w = 0 if turn == 'white' else 1
-                    idx_w = self._flat_idx_raw_4(wk[0]*8+wk[1], wp[0]*8+wp[1], bk[0]*8+bk[1], bp[0]*8+bp[1], t_idx_w)
-                    score_w = int(self.tables[t_name_w].flat[idx_w])
-                    
-                    if score_w != 0:
-                        return self._tb_score_to_ai_score(score_w, 'white')
-                        
-                    # Check if Black is winning (flip spatial coordinates and invert attacker logic)
-                    t_idx_b = 0 if turn == 'black' else 1
-                    idx_b = self._flat_idx_raw_4(_flip(bk)[0]*8+_flip(bk)[1], _flip(bp)[0]*8+_flip(bp)[1], _flip(wk)[0]*8+_flip(wk)[1], _flip(wp)[0]*8+_flip(wp)[1], t_idx_b)
-                    score_b = int(self.tables[t_name_b].flat[idx_b])
-                    
-                    if score_b != 0:
-                        return self._tb_score_to_ai_score(score_b, 'black')
-                        
-                    # If neither side wins, it is mathematically proven to be a dead draw
-                    return 0
-                    
-                except (IndexError, KeyError, StopIteration):
-                    return None
+        t_idx = 0 if turn_to_move == 'white' else 1
+        w_cnt, b_cnt = len(w_objs), len(b_objs)
+
+        # --- 3-MAN PROBE ---
+        if w_cnt == 1 and b_cnt == 0:
+            p = w_objs[0]
+            tb = f"K_{type(p).__name__}_K"
+            if tb in self.tables:
+                idx = self._flat_idx_3(wk[0]*8+wk[1], p.pos[0]*8+p.pos[1], bk[0]*8+bk[1], t_idx)
+                val = int(self.tables[tb].flat[idx])
+                is_win = (t_idx == 0 and val > 0) or (t_idx == 1 and val < 0)
+                return self._tb_score_to_ai_score(val, is_win)
+
+        elif b_cnt == 1 and w_cnt == 0:
+            p = b_objs[0]
+            tb = f"K_{type(p).__name__}_K"
+            if tb in self.tables:
+                # Flip everything to check from Black's win perspective
+                idx = self._flat_idx_3(_flip(bk)[0]*8+_flip(bk)[1], _flip(p.pos)[0]*8+_flip(p.pos)[1], _flip(wk)[0]*8+_flip(wk)[1], 1 - t_idx)
+                val = int(self.tables[tb].flat[idx])
+                # If 'Black-as-attacker' wins, it's a loss for White
+                b_wins = ((1 - t_idx) == 0 and val > 0) or ((1 - t_idx) == 1 and val < 0)
+                return self._tb_score_to_ai_score(val, not b_wins)
+
+        # --- 4-MAN SAME-SIDE PROBE ---
+        elif w_cnt == 2 and b_cnt == 0:
+            w_objs.sort(key=lambda x: (type(x).__name__, x.pos[0]*8+x.pos[1]))
+            p1, p2 = w_objs
+            tb = f"K_{type(p1).__name__}_{type(p2).__name__}_K"
+            if tb in self.tables:
+                idx = self._flat_idx_4(wk[0]*8+wk[1], p1.pos[0]*8+p1.pos[1], p2.pos[0]*8+p2.pos[1], bk[0]*8+bk[1], t_idx)
+                val = int(self.tables[tb].flat[idx])
+                is_win = (t_idx == 0 and val > 0) or (t_idx == 1 and val < 0)
+                return self._tb_score_to_ai_score(val, is_win)
+
+        elif b_cnt == 2 and w_cnt == 0:
+            # Flip to Black's perspective, then sort canonically
+            b_flipped = [(_flip(p.pos), type(p).__name__) for p in b_objs]
+            b_flipped.sort(key=lambda x: (x[1], x[0][0]*8+x[0][1]))
+            p1_pos, p1_name = b_flipped[0]
+            p2_pos, p2_name = b_flipped[1]
+            tb = f"K_{p1_name}_{p2_name}_K"
+            if tb in self.tables:
+                idx = self._flat_idx_4(_flip(bk)[0]*8+_flip(bk)[1], p1_pos[0]*8+p1_pos[1], p2_pos[0]*8+p2_pos[1], _flip(wk)[0]*8+_flip(wk)[1], 1-t_idx)
+                val = int(self.tables[tb].flat[idx])
+                b_wins = ((1-t_idx) == 0 and val > 0) or ((1-t_idx) == 1 and val < 0)
+                return self._tb_score_to_ai_score(val, not b_wins)
+
+        # --- 4-MAN CROSS PROBE ---
+        elif w_cnt == 1 and b_cnt == 1:
+            wp, bp = w_objs[0], b_objs[0]
+            wn, bn = type(wp).__name__, type(bp).__name__
+
+            if wn <= bn:
+                tb = f"K_{wn}_vs_{bn}_K"
+                if tb in self.tables:
+                    idx = self._flat_idx_4(wk[0]*8+wk[1], wp.pos[0]*8+wp.pos[1], bk[0]*8+bk[1], bp.pos[0]*8+bp.pos[1], t_idx)
+                    val = int(self.tables[tb].flat[idx])
+                    is_win = (t_idx == 0 and val > 0) or (t_idx == 1 and val < 0)
+                    return self._tb_score_to_ai_score(val, is_win)
+            else:
+                tb = f"K_{bn}_vs_{wn}_K"
+                if tb in self.tables:
+                    # Current board is White Queen vs Black Bishop, but file is K_Bishop_vs_Queen_K. 
+                    # We must flip everything so Black Bishop becomes the 'White' attacker in the file.
+                    idx = self._flat_idx_4(_flip(bk)[0]*8+_flip(bk)[1], _flip(bp.pos)[0]*8+_flip(bp.pos)[1], _flip(wk)[0]*8+_flip(wk)[1], _flip(wp.pos)[0]*8+_flip(wp.pos)[1], 1-t_idx)
+                    val = int(self.tables[tb].flat[idx])
+                    # If the Bishop side (currently Black) wins in the file, it's a loss for White
+                    b_wins = ((1-t_idx) == 0 and val > 0) or ((1-t_idx) == 1 and val < 0)
+                    return self._tb_score_to_ai_score(val, not b_wins)
 
         return None

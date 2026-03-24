@@ -1,8 +1,4 @@
-# TablebaseGenerator.py (v7.0)
-# Optimisations applied over v6.0:
-#   OPT-1: make_move_track/unmake_move in all workers (replaces clone+make_move, ~2.3x speedup)
-#   OPT-2: transitions stored as plain tuples (replaces struct pack/unpack, ~4x inner-loop speedup)
-#   OPT-3: incremental solved-count in Generator4/Generator4Vs (removes full-table scan per iteration)
+# TablebaseGenerator.py (v7.1 - DTM Fixes for Checkmates and 3-Man Transitions)
 
 import os
 import time
@@ -168,7 +164,7 @@ def _build_transition_worker(idx):
 
     if turn_is_white:
         immediate_win = False
-        promo_win_vals = []   # OPT-2: plain list → converted to tuple at return
+        promo_win_vals = []
         child_flats = []
 
         for m in moves:
@@ -177,7 +173,6 @@ def _build_transition_worker(idx):
                 if _jung_king_threatens(board, end[0], end[1], bk[0], bk[1], vacated=start):
                     continue
 
-            # OPT-1: make_move_track/unmake_move instead of clone+make_move
             record = board.make_move_track(start, end)
 
             wkp = board.white_king_pos
@@ -187,13 +182,12 @@ def _build_transition_worker(idx):
                 board.unmake_move(record)
                 continue
 
-            if not bkp:
+            if not bkp or not has_legal_moves(board, 'black'):
                 immediate_win = True
                 board.unmake_move(record)
                 continue
 
             if _W_PIECE_NAME == "Pawn":
-                # Check if pawn promoted (non-king white piece is now a Queen)
                 nk = next((x for x in board.white_pieces if not isinstance(x, King)), None)
                 if nk is not None and isinstance(nk, Queen):
                     q_idx = (wkp[0] * 8 + wkp[1], nk.pos[0] * 8 + nk.pos[1],
@@ -214,7 +208,6 @@ def _build_transition_worker(idx):
 
             board.unmake_move(record)
 
-        # OPT-2: array('H') for small DTM vals, array('I') for flat indices — compact + fast iteration
         return _flat_idx_raw(i0, i1, i2, i3), ('w', immediate_win, array('H', promo_win_vals), array('I', child_flats))
 
     # --- Black to move ---
@@ -226,7 +219,6 @@ def _build_transition_worker(idx):
         if m[1] != wk and _jung_king_threatens(board, m[1][0], m[1][1], wk[0], wk[1], vacated=m[0]):
             continue
 
-        # OPT-1: make_move_track/unmake_move instead of clone+make_move
         record = board.make_move_track(m[0], m[1])
 
         if is_in_check(board, 'black'):
@@ -241,7 +233,6 @@ def _build_transition_worker(idx):
             continue
 
         if _W_PIECE_NAME == "Pawn":
-            # If the pawn promoted, position is no longer in this 3-man table
             nk = next((x for x in board.white_pieces if not isinstance(x, King)), None)
             if nk is None or isinstance(nk, Queen):
                 has_non_losing_escape = True
@@ -260,7 +251,6 @@ def _build_transition_worker(idx):
         child_flats.append(_flat_idx_raw(c0, c1, c2, opp_turn_idx))
         board.unmake_move(record)
 
-    # OPT-2: array('I') for flat indices — compact + fast iteration
     return _flat_idx_raw(i0, i1, i2, i3), ('b', legal_moves_count, has_non_losing_escape, array('I', child_flats))
 
 
@@ -303,14 +293,22 @@ class Generator:
     def _setup_sim(self, wk, wp, bk):
         board = self.sim_board
         board.grid = [[None] * 8 for _ in range(8)]
+        
         self.wk_obj.pos = wk
         self.wp_obj.pos = wp
         self.bk_obj.pos = bk
+        
+        # --- FIX: Reset O(1) list indices ---
+        self.wk_obj._list_pos = 0
+        self.wp_obj._list_pos = 1
+        self.bk_obj._list_pos = 0
+        
         board.grid[wk[0]][wk[1]] = self.wk_obj
         board.grid[wp[0]][wp[1]] = self.wp_obj
         board.grid[bk[0]][bk[1]] = self.bk_obj
         board.white_king_pos = wk
         board.black_king_pos = bk
+        
         board.white_pieces = [self.wk_obj, self.wp_obj]
         board.black_pieces = [self.bk_obj]
         board.piece_counts = {
@@ -422,13 +420,13 @@ class Generator:
         # Retrograde iterations
         iteration = 1
         max_dtm_solved = 0
-        prev_flat = self.table.reshape(-1)   # VIEW into self.table
+        prev_flat = self.table.reshape(-1)
 
         while True:
             iter_start = time.time()
             changed = 0
             new_unsolved = []
-            snapshot = prev_flat.copy()      # COPY at start of iteration
+            snapshot = prev_flat.copy()
 
             for idx in unsolved_indices:
                 t_idx = idx[3]
@@ -440,7 +438,6 @@ class Generator:
                     _, immediate_win, promo_vals, child_vals = transition
                     if immediate_win:
                         best_win = 1
-                    # OPT-2: iterate plain tuples directly
                     for val in promo_vals:
                         if best_win == 0 or val < best_win:
                             best_win = val
@@ -469,7 +466,6 @@ class Generator:
 
                     max_win_val = 0
                     all_resolved = True
-                    # OPT-2: iterate plain tuple directly
                     for cflat in child_vals:
                         res_val = int(snapshot[cflat])
                         if res_val <= 0:
@@ -581,7 +577,7 @@ def _build_transition_worker_4(flat):
 
     if turn_is_white:
         immediate_win = False
-        known_win_vals = []   # OPT-2: plain list
+        known_win_vals = []
         child_flats = []
 
         for m in moves:
@@ -590,16 +586,16 @@ def _build_transition_worker_4(flat):
                 if _jung_king_threatens(board, end[0], end[1], bk[0], bk[1], vacated=start):
                     continue
 
-            # OPT-1: make_move_track/unmake_move
             record = board.make_move_track(start, end)
-
             wkp = board.white_king_pos
             bkp = board.black_king_pos
+            
             if wkp and bkp and _jung_king_threatens(board, wkp[0], wkp[1], bkp[0], bkp[1]):
                 board.unmake_move(record)
                 continue
 
-            if not bkp:
+            # --- BUG FIX 1 & 2: Catch checkmate before passing to 3-man logic ---
+            if not bkp or not has_legal_moves(board, 'black'):
                 immediate_win = True
                 board.unmake_move(record)
                 continue
@@ -649,19 +645,18 @@ def _build_transition_worker_4(flat):
             child_flats.append(_flat_idx_raw_4(c0, c1, c2, c3, opp_turn_idx))
             board.unmake_move(record)
 
-        # OPT-2: array types — compact storage + fast iteration
         return ('w', immediate_win, array('H', known_win_vals), array('I', child_flats))
 
     # --- Black to move ---
     legal_moves_count = 0
     has_non_losing_escape = False
+    known_3man_wins = []  # --- BUG FIX 3: Track known 3-man wins ---
     child_flats = []
 
     for m in moves:
         if m[1] != wk and _jung_king_threatens(board, m[1][0], m[1][1], wk[0], wk[1], vacated=m[0]):
             continue
 
-        # OPT-1: make_move_track/unmake_move
         record = board.make_move_track(m[0], m[1])
 
         if is_in_check(board, 'black'):
@@ -670,7 +665,7 @@ def _build_transition_worker_4(flat):
 
         legal_moves_count += 1
 
-        if not board.white_king_pos:
+        if not board.white_king_pos or len(board.white_pieces) < 2:
             has_non_losing_escape = True
             board.unmake_move(record)
             continue
@@ -692,6 +687,7 @@ def _build_transition_worker_4(flat):
                         board.unmake_move(record)
                         continue
                     else:
+                        known_3man_wins.append(val) # --- BUG FIX 3: Store the DTM ---
                         board.unmake_move(record)
                         continue
             has_non_losing_escape = True
@@ -714,8 +710,7 @@ def _build_transition_worker_4(flat):
         child_flats.append(_flat_idx_raw_4(c0, c1, c2, c3, opp_turn_idx))
         board.unmake_move(record)
 
-    # OPT-2: array types
-    return ('b', legal_moves_count, has_non_losing_escape, array('I', child_flats))
+    return ('b', legal_moves_count, has_non_losing_escape, array('H', known_3man_wins), array('I', child_flats))
 
 
 def _gen_valid_4man_indices_numpy(total_positions, p1_name, p2_name, same_piece, chunk_size=8_000_000):
@@ -730,9 +725,15 @@ def _gen_valid_4man_indices_numpy(total_positions, p1_name, p2_name, same_piece,
 
         mask = ((wk_arr != p1_arr) & (wk_arr != p2_arr) & (wk_arr != bk_arr) &
                 (p1_arr != p2_arr) & (p1_arr != bk_arr) & (p2_arr != bk_arr))
+        
         if p1_name == "Pawn": mask &= (p1_arr >= 8) & (p1_arr < 56)
         if p2_name == "Pawn": mask &= (p2_arr >= 8) & (p2_arr < 56)
         if same_piece:        mask &= (p1_arr <= p2_arr)
+
+        if p1_name == "Bishop" and p2_name == "Bishop":
+            p1_r, p1_c = p1_arr // 8, p1_arr % 8
+            p2_r, p2_c = p2_arr // 8, p2_arr % 8
+            mask &= ((p1_r + p1_c) % 2) != ((p2_r + p2_c) % 2)
 
         if not mask.any():
             continue
@@ -772,14 +773,25 @@ class Generator4:
     def _setup_sim(self, wk, p1, p2, bk):
         board = self.sim_board
         board.grid = [[None] * 8 for _ in range(8)]
-        self.wk_obj.pos = wk; self.p1_obj.pos = p1
-        self.p2_obj.pos = p2; self.bk_obj.pos = bk
+        
+        self.wk_obj.pos = wk
+        self.p1_obj.pos = p1
+        self.p2_obj.pos = p2
+        self.bk_obj.pos = bk
+        
+        # --- FIX: Reset O(1) list indices ---
+        self.wk_obj._list_pos = 0
+        self.p1_obj._list_pos = 1
+        self.p2_obj._list_pos = 2
+        self.bk_obj._list_pos = 0
+        
         board.grid[wk[0]][wk[1]] = self.wk_obj
         board.grid[p1[0]][p1[1]] = self.p1_obj
         board.grid[p2[0]][p2[1]] = self.p2_obj
         board.grid[bk[0]][bk[1]] = self.bk_obj
         board.white_king_pos = wk
         board.black_king_pos = bk
+        
         board.white_pieces = [self.wk_obj, self.p1_obj, self.p2_obj]
         board.black_pieces = [self.bk_obj]
         board.piece_counts = {
@@ -862,7 +874,7 @@ class Generator4:
         surviving_transitions = []
         pre_solved = 0
         for flat, trans in zip(unsolved_flats, transitions):
-            if (flat & 1) == 1 and trans[1] == 0:  # Black to move, no legal moves
+            if (flat & 1) == 1 and trans[1] == 0:  
                 table_flat[flat] = -1
                 pre_solved += 1
             else:
@@ -872,10 +884,8 @@ class Generator4:
         transitions = surviving_transitions
         print(f"[Stage 4] Pre-solved {pre_solved:,} positions. Remaining: {len(unsolved_flats):,}")
 
-        # Retrograde iterations
         iteration = 1
         max_dtm_solved = 0
-        # OPT-3: track solved count incrementally instead of full-table scan
         solved_count = pre_solved
         while True:
             iter_start = time.time()
@@ -887,12 +897,11 @@ class Generator4:
             for flat, transition in zip(unsolved_flats, transitions):
                 t_idx = flat & 1
 
-                if t_idx == 0:  # White to move
+                if t_idx == 0:  
                     best_win = 0
                     _, immediate_win, known_win_vals, child_vals = transition
                     if immediate_win:
                         best_win = 1
-                    # OPT-2: plain tuple iteration
                     for val in known_win_vals:
                         if best_win == 0 or val < best_win:
                             best_win = val
@@ -909,8 +918,9 @@ class Generator4:
                         new_unsolved.append(flat)
                         new_transitions.append(transition)
 
-                else:  # Black to move
-                    _, legal_moves_count, has_non_losing_escape, child_vals = transition
+                else:  
+                    # --- BUG FIX 4: Unpack the new known_3man_wins tuple element ---
+                    _, legal_moves_count, has_non_losing_escape, known_3man_wins, child_vals = transition
                     if legal_moves_count == 0:
                         table_flat[flat] = -1
                         changed += 1
@@ -922,7 +932,12 @@ class Generator4:
 
                     max_win_val = 0
                     all_resolved = True
-                    # OPT-2: plain tuple iteration
+                    
+                    # --- BUG FIX 4: Seed max_win_val with the discarded 3-man wins ---
+                    for val in known_3man_wins:
+                        if val > max_win_val:
+                            max_win_val = val
+                            
                     for cflat in child_vals:
                         res_val = int(snapshot[cflat])
                         if res_val <= 0:
@@ -940,7 +955,7 @@ class Generator4:
 
             unsolved_flats = new_unsolved
             transitions = new_transitions
-            solved_count += changed  # OPT-3: incremental count
+            solved_count += changed  
             print(f"[Iteration {iteration}] {changed:,} new | "
                   f"Total: {solved_count:,} | Remaining: {len(unsolved_flats):,} | "
                   f"Time: {time.time()-iter_start:.1f}s")
@@ -1100,7 +1115,7 @@ def _build_transition_worker_4vs(flat):
 
     if turn_is_white:
         immediate_win = False
-        known_win_vals = []   # OPT-2: plain list
+        known_win_vals = []   
         child_flats = []
 
         for start, end in moves:
@@ -1109,7 +1124,6 @@ def _build_transition_worker_4vs(flat):
                 if _jung_king_threatens(board, end[0], end[1], bk[0], bk[1], vacated=start):
                     continue
 
-            # OPT-1: make_move_track/unmake_move
             record = board.make_move_track(start, end)
 
             if not board.white_king_pos or is_in_check(board, 'white'):
@@ -1120,7 +1134,9 @@ def _build_transition_worker_4vs(flat):
                                         board.black_king_pos[0], board.black_king_pos[1]):
                     board.unmake_move(record)
                     continue
-            if not board.black_king_pos:
+                    
+            # --- BUG FIX 1 & 2: Catch checkmate before external lookup ---
+            if not board.black_king_pos or not has_legal_moves(board, 'black'):
                 immediate_win = True
                 board.unmake_move(record)
                 continue
@@ -1140,7 +1156,6 @@ def _build_transition_worker_4vs(flat):
 
             board.unmake_move(record)
 
-        # OPT-2: array types — compact storage + fast iteration
         return ('w', immediate_win, array('H', known_win_vals), array('I', child_flats))
 
     # --- Black to move ---
@@ -1155,7 +1170,6 @@ def _build_transition_worker_4vs(flat):
             if _jung_king_threatens(board, end[0], end[1], wk[0], wk[1], vacated=start):
                 continue
 
-        # OPT-1: make_move_track/unmake_move
         record = board.make_move_track(start, end)
 
         if not board.black_king_pos or is_in_check(board, 'black'):
@@ -1187,7 +1201,6 @@ def _build_transition_worker_4vs(flat):
 
         board.unmake_move(record)
 
-    # OPT-2: array types
     return ('b', legal_moves_count, has_non_losing_escape,
             array('H', known_win_vals), array('I', child_flats))
 
@@ -1234,14 +1247,25 @@ class Generator4Vs:
     def _setup_sim(self, wk, wp, bk, bp):
         board = self.sim_board
         board.grid = [[None] * 8 for _ in range(8)]
-        self.wk_obj.pos = wk; self.wp_obj.pos = wp
-        self.bk_obj.pos = bk; self.bp_obj.pos = bp
+        
+        self.wk_obj.pos = wk
+        self.wp_obj.pos = wp
+        self.bk_obj.pos = bk
+        self.bp_obj.pos = bp
+        
+        # --- FIX: Reset O(1) list indices ---
+        self.wk_obj._list_pos = 0
+        self.wp_obj._list_pos = 1
+        self.bk_obj._list_pos = 0
+        self.bp_obj._list_pos = 1
+        
         board.grid[wk[0]][wk[1]] = self.wk_obj
         board.grid[wp[0]][wp[1]] = self.wp_obj
         board.grid[bk[0]][bk[1]] = self.bk_obj
         board.grid[bp[0]][bp[1]] = self.bp_obj
         board.white_king_pos = wk
         board.black_king_pos = bk
+        
         board.white_pieces = [self.wk_obj, self.wp_obj]
         board.black_pieces = [self.bk_obj, self.bp_obj]
         board.piece_counts = {
@@ -1330,10 +1354,8 @@ class Generator4Vs:
         transitions = surviving_transitions
         print(f"[Stage 4] Pre-solved {pre_solved:,} positions. Remaining: {len(unsolved_flats):,}")
 
-        # Retrograde iterations
         iteration = 1
         max_dtm_solved = 0
-        # OPT-3: incremental solved count
         solved_count = pre_solved
         while True:
             iter_start = time.time()
@@ -1345,12 +1367,11 @@ class Generator4Vs:
             for flat, transition in zip(unsolved_flats, transitions):
                 t_idx = flat & 1
 
-                if t_idx == 0:  # White to move
+                if t_idx == 0: 
                     best_win = 0
                     _, immediate_win, known_win_vals, child_vals = transition
                     if immediate_win:
                         best_win = 1
-                    # OPT-2: plain tuple iteration
                     for val in known_win_vals:
                         if best_win == 0 or val < best_win:
                             best_win = val
@@ -1367,7 +1388,7 @@ class Generator4Vs:
                         new_unsolved.append(flat)
                         new_transitions.append(transition)
 
-                else:  # Black to move
+                else:  
                     _, legal_moves_count, has_non_losing_escape, known_win_vals, child_vals = transition
                     if legal_moves_count == 0:
                         table_flat[flat] = -1
@@ -1380,7 +1401,6 @@ class Generator4Vs:
 
                     max_win_val = 0
                     all_resolved = True
-                    # OPT-2: plain tuple iteration
                     for val in known_win_vals:
                         if val > max_win_val:
                             max_win_val = val
@@ -1401,7 +1421,7 @@ class Generator4Vs:
 
             unsolved_flats = new_unsolved
             transitions = new_transitions
-            solved_count += changed  # OPT-3: no table scan
+            solved_count += changed 
             print(f"[Iteration {iteration}] {changed:,} new | "
                   f"Total: {solved_count:,} | Remaining: {len(unsolved_flats):,} | "
                   f"Time: {time.time()-iter_start:.1f}s")
@@ -1474,7 +1494,7 @@ def profile_4man(p1_name, p2_name, sample=2000):
 
 if __name__ == "__main__":
     _install_main_interrupt_ignores()
-    print("=== Tablebase Generator (v7.0: make/unmake workers, tuple transitions, incremental count) ===")
+    print("=== Tablebase Generator (v7.1: DTM Fixes for Checkmates and 3-Man Transitions) ===")
     mode = input(
         "1. Generate 3-Man Tables\n"
         "2. Generate 4-Man Tables (K + 2 pieces vs K)\n"
