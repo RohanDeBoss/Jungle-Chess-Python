@@ -526,7 +526,7 @@ class ChessBot:
                 iter_duration     = time.time() - iter_start_time
                 knps              = (self.nodes_searched / iter_duration / 1000) if iter_duration > 0 else 0
                 eval_for_ui       = best_score_this_iter if self.color == 'white' else -best_score_this_iter
-                depth_label       = "TB" if not self.used_heuristic_eval else current_depth
+                depth_label       = "TB" if (not self.used_heuristic_eval and self.tb_hits > 0) else current_depth
 
                 self._report_log(f"  > {self.bot_name} (D{depth_label}): {self._format_move(self.board, best_move_this_iter)}, Eval={eval_for_ui/100:+.2f}, NodesTotal={total_nodes}, KNPS={knps:.1f}, TBhits={self.tb_hits}, Time={iter_duration:.2f}s")
                 self._report_eval(best_score_this_iter, depth_label)
@@ -577,7 +577,7 @@ class ChessBot:
                     iter_duration     = time.time() - iter_start_time
                     knps              = (self.nodes_searched / iter_duration / 1000) if iter_duration > 0 else 0
                     eval_for_ui       = best_score_this_iter if self.color == 'white' else -best_score_this_iter
-                    depth_label       = "TB" if not self.used_heuristic_eval else current_depth
+                    depth_label       = "TB" if (not self.used_heuristic_eval and self.tb_hits > 0) else current_depth
 
                     self._report_log(f"  > {self.bot_name} (D{depth_label}): {self._format_move(self.board, best_move_this_iter)}, Eval={eval_for_ui/100:+.2f}, NodesTotal={total_nodes}, KNPS={knps:.1f}, TBhits={self.tb_hits}, Time={iter_duration:.2f}s")
                     self._report_eval(best_score_this_iter, depth_label)
