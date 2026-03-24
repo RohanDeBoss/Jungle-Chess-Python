@@ -109,7 +109,7 @@ class OpponentAI:
 
     def __init__(self, board, color, position_counts, comm_queue, cancellation_event,
                  bot_name=None, ply_count=0, game_mode="bot", max_moves=200,
-                 time_left=None, increment=None, use_opening_book=True, use_tablebase=True):
+                 time_left=None, increment=None, use_tablebase=True):
 
         self.board = board
         self.color = color
@@ -127,9 +127,6 @@ class OpponentAI:
         self.stop_time = None
         self.time_check_mask = 2047
         # -----------------------
-
-        # --- OPENING BOOK FLAG ---
-        self.use_opening_book = use_opening_book
 
         self.tb_manager = TablebaseManager()
 
