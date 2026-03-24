@@ -1,4 +1,4 @@
-# TablebaseGenerator.py (v7.1 - DTM Fixes for Checkmates and 3-Man Transitions)
+# TablebaseGenerator.py (v8 - maybe fixed idk)
 
 import os
 import time
@@ -69,14 +69,11 @@ def _jung_king_threatens(board, r1, c1, r2, c2, vacated=None):
         return True
     return board.grid[mr][mc] is None
 
-def _load_table_file_any_dtype(filename):
+def _load_3man_table_file(filename):
     data16 = np.fromfile(filename, dtype=np.int16)
     if data16.size == EXPECTED_TABLE_ENTRIES:
         return data16.reshape((64, 64, 64, 2))
-    data8 = np.fromfile(filename, dtype=np.int8)
-    if data8.size == EXPECTED_TABLE_ENTRIES:
-        return data8.astype(np.int16).reshape((64, 64, 64, 2))
-    raise ValueError(f"Invalid tablebase file size: {filename}")
+    raise ValueError(f"Invalid 3-man tablebase file size or format (expected int16): {filename}")
 
 def _flat_idx_raw(i0, i1, i2, i3):
     return (((i0 * 64 + i1) * 64 + i2) * 2 + i3)
@@ -147,7 +144,7 @@ def _init_transition_worker(piece_name, queen_tb_file):
     _W_PIECE_CLASS = PIECE_CLASS_BY_NAME[piece_name]
     _W_QUEEN_TABLE = None
     if piece_name == "Pawn" and queen_tb_file:
-        _W_QUEEN_TABLE = _load_table_file_any_dtype(queen_tb_file)
+        _W_QUEEN_TABLE = _load_3man_table_file(queen_tb_file)
 
 def _build_transition_worker(idx):
     i0, i1, i2, i3 = idx
@@ -185,7 +182,7 @@ def _build_transition_worker(idx):
             if not bkp or not has_legal_moves(board, 'black'):
                 immediate_win = True
                 board.unmake_move(record)
-                continue
+                break
 
             if _W_PIECE_NAME == "Pawn":
                 nk = next((x for x in board.white_pieces if not isinstance(x, King)), None)
@@ -273,7 +270,7 @@ class Generator:
         if self.piece_name == "Pawn":
             if os.path.exists(self.queen_tb_file):
                 print(f"[Pawn Support] Loading Queen Tablebase for promotion lookups...")
-                self.queen_table = _load_table_file_any_dtype(self.queen_tb_file)
+                self.queen_table = _load_3man_table_file(self.queen_tb_file)
             else:
                 print(f"CRITICAL ERROR: Queen Tablebase not found! Generate Queen first.")
                 exit()
@@ -598,7 +595,7 @@ def _build_transition_worker_4(flat):
             if not bkp or not has_legal_moves(board, 'black'):
                 immediate_win = True
                 board.unmake_move(record)
-                continue
+                break  # <--- Changed from continue
 
             w_pieces = [p for p in board.white_pieces if not isinstance(p, King)]
 
@@ -990,7 +987,8 @@ _WV_PROMO_TABLES = {}
 _IN_TABLE_SENTINEL = "IN_TABLE"
 
 def _tb_file_4man_vs(w_name, b_name):
-    return os.path.join(TB_DIR, f"K_{w_name}_vs_{b_name}_K.bin")
+    names = sorted([w_name, b_name])
+    return os.path.join(TB_DIR, f"K_{names[0]}_vs_{names[1]}_K.bin")
 
 def _white_win_dtm_from_raw_tb_value(val, turn_idx):
     if val == 0:
@@ -1003,10 +1001,10 @@ def _init_transition_worker_4vs(w_name, b_name):
     _install_worker_interrupt_ignores()
     global _WV_W_NAME, _WV_B_NAME, _WV_W_CLASS, _WV_B_CLASS
     global _WV_3MAN_TABLES, _WV_PROMO_TABLES
-    _WV_W_NAME = w_name
-    _WV_B_NAME = b_name
-    _WV_W_CLASS = PIECE_CLASS_BY_NAME[w_name]
-    _WV_B_CLASS = PIECE_CLASS_BY_NAME[b_name]
+    names = sorted([w_name, b_name])
+    _WV_W_NAME, _WV_B_NAME = names[0], names[1]
+    _WV_W_CLASS = PIECE_CLASS_BY_NAME[_WV_W_NAME]
+    _WV_B_CLASS = PIECE_CLASS_BY_NAME[_WV_B_NAME]
 
     _WV_3MAN_TABLES = {}
     names_needed = {w_name, b_name}
@@ -1139,7 +1137,7 @@ def _build_transition_worker_4vs(flat):
             if not board.black_king_pos or not has_legal_moves(board, 'black'):
                 immediate_win = True
                 board.unmake_move(record)
-                continue
+                break  # <--- Changed from continue
 
             ext_dtm = _external_white_win_dtm_4vs(board, opp_turn_idx)
             if ext_dtm == _IN_TABLE_SENTINEL:
@@ -1227,10 +1225,10 @@ def _gen_valid_4man_vs_indices_numpy(total_positions, w_name, b_name, chunk_size
 
 class Generator4Vs:
     def __init__(self, w_piece_class, b_piece_class):
-        self.w_name = w_piece_class.__name__
-        self.b_name = b_piece_class.__name__
-        self.w_piece_class = w_piece_class
-        self.b_piece_class = b_piece_class
+        names = sorted([w_piece_class.__name__, b_piece_class.__name__])
+        self.w_name, self.b_name = names[0], names[1]
+        self.w_piece_class = PIECE_CLASS_BY_NAME[self.w_name]
+        self.b_piece_class = PIECE_CLASS_BY_NAME[self.b_name]
         self.filename = _tb_file_4man_vs(self.w_name, self.b_name)
         self.total_positions = 64 * 64 * 64 * 64 * 2
         self.table = np.zeros((64, 64, 64, 64, 2), dtype=np.int16)
