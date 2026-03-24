@@ -867,31 +867,27 @@ def is_in_check(board, color):
 
 
 def generate_legal_moves_generator(board, color, yield_boards=False):
-    """
-    Yields legal moves for `color`.
-
-    Uses make_move_track/unmake_move — no Board.clone() on the hot path.
-    A clone is only made when yield_boards=True AND the move is legal.
-    Piece list is snapshotted because make_move_track mutates white/black_pieces.
-    """
+    opp_color = "black" if color == "white" else "white"
     piece_list = list(board.white_pieces if color == 'white' else board.black_pieces)
     for piece in piece_list:
         start_pos = piece.pos
-        if start_pos is None:
-            continue
+        if start_pos is None: continue
         for end_pos in piece.get_valid_moves(board, start_pos):
             record   = board.make_move_track(start_pos, end_pos)
-            king_pos = board.find_king_pos(color)
-            legal    = king_pos is not None and not is_in_check(board, color)
+            
+            # --- THE FINAL GUARD ---
+            my_kp  = board.find_king_pos(color)
+            opp_kp = board.find_king_pos(opp_color)
+            
+            # Move is ONLY legal if BOTH kings survived and you aren't in check
+            legal = (my_kp is not None and opp_kp is not None and not is_in_check(board, color))
+            
             if legal and yield_boards:
                 result_board = board.clone()
             board.unmake_move(record)
             if legal:
-                if yield_boards:
-                    yield (start_pos, end_pos), result_board
-                else:
-                    yield (start_pos, end_pos)
-
+                if yield_boards: yield (start_pos, end_pos), result_board
+                else: yield (start_pos, end_pos)
 
 def get_all_legal_moves(board, color):
     return list(generate_legal_moves_generator(board, color))

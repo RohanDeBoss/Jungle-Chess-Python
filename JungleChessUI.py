@@ -350,7 +350,7 @@ class EnhancedChessApp:
                             style='Custom.TRadiobutton').pack(anchor=tk.W, pady=(2, 0))
 
         cf = ttk.Frame(parent, style='Left.TFrame')
-        cf.pack(fill=tk.X, pady=10)
+        cf.pack(fill=tk.X, pady=5)
         self.controls_frame = cf
         for txt, cmd in [("NEW GAME",        self.reset_game),
                           ("SWAP SIDES",      self.swap_sides),
@@ -360,13 +360,13 @@ class EnhancedChessApp:
                                         command=self.toggle_board_view, style='Control.TButton')
         self.flip_view_btn.pack(fill=tk.X, pady=3)
 
-        ttk.Label(cf, text="Depth:", style='SmallHeader.TLabel').pack(anchor=tk.W, pady=(10, 0))
+        ttk.Label(cf, text="Depth:", style='SmallHeader.TLabel').pack(anchor=tk.W, pady=(5, 0))
         self.bot_depth_slider = tk.Scale(cf, from_=1, to=self.slidermaxvalue,
                                          orient=tk.HORIZONTAL, bg=self.COLORS['bg_dark'],
                                          fg=self.COLORS['text_light'],
                                          highlightthickness=0, relief='flat')
         self.bot_depth_slider.set(ChessBot.search_depth)
-        self.bot_depth_slider.pack(fill=tk.X, pady=(0, 5))
+        self.bot_depth_slider.pack(fill=tk.X, pady=(0, 3))
 
         for text, var, cmd in [
             ("Use Opening Book",           self.use_opening_book_var, None),
