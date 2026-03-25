@@ -1,4 +1,4 @@
-# TablebaseGenerator.py (v11.1 - SML / Full Symmetry Compression + Stability Fixes)
+# TablebaseGenerator.py (v11.4 - Pure BFS / Full Symmetry + Detailed Logging)
 
 import os
 import time
@@ -29,7 +29,7 @@ if hasattr(signal, "SIGBREAK"):
     _CONSOLE_INTERRUPT_SIGNALS.append(signal.SIGBREAK)
 
 # ==============================================================================
-# FAST SYMMETRY MAPPINGS (Shared with TablebaseManager)
+# FAST SYMMETRY MAPPINGS
 # ==============================================================================
 SYMMETRY_MAP = [[0]*8 for _ in range(64)]
 for r in range(8):
@@ -44,12 +44,10 @@ for r in range(8):
         SYMMETRY_MAP[sq][6] = (7 - c) * 8 + r
         SYMMETRY_MAP[sq][7] = (7 - c) * 8 + (7 - r)
 
-# Pawn constraints (WK must be c <= 3)
 PAWN_VALID_T = [0 if (sq % 8) <= 3 else 1 for sq in range(64)]
 PAWN_WK_SQUARES = [r*8+c for r in range(8) for c in range(4)]
 PAWN_WK_IDX = {sq: i for i, sq in enumerate(PAWN_WK_SQUARES)}
 
-# Non-Pawn constraints (WK must be in a1-d4 triangle: c<=3, r<=c)
 NON_PAWN_WK_SQUARES = []
 for c in range(4):
     for r in range(c + 1):
@@ -104,7 +102,6 @@ def _canonical_flat_4vs(wk, wp, bk, bp, turn, has_pawn):
             if best is None or m < best: best = m
         return (((best[0] * 64 + best[1]) * 64 + best[2]) * 64 + best[3]) * 2 + turn
 
-
 # ==============================================================================
 # SHARED HELPERS
 # ==============================================================================
@@ -153,6 +150,122 @@ def _safe_record_longest_mate(table_key, max_dtm, decisive, remaining, elapsed_s
                 f.write(f"{key}\t{r[0]}\t{r[1]}\t{r[2]}\t{r[3]}\t{r[4]}\n")
     except Exception as e:
         print(f"[LongestMate] Warning: failed to update note file ({e})")
+
+def _run_bfs_retrograde(table, unsolved_flats, transitions, trans_lookup, btm_to_wtm, wtm_to_btm, candidate_states):
+    """Shared Pure BFS Retrograde Analysis logic ensuring absolute shortest mates."""
+    table_flat = table.reshape(-1)
+    pre_solved_set = set()
+    pending_work = defaultdict(list)
+
+    for flat, trans in zip(unsolved_flats, transitions):
+        t_idx = flat & 1
+        if t_idx == 0: # WTM
+            if trans[1]: # imm_win
+                table_flat[flat] = 1
+                pre_solved_set.add(flat)
+            elif len(trans[2]) > 0: # known_wins
+                pending_work[min(trans[2])].append(flat)
+        else: # BTM
+            if trans[1] == 0: # moves_count == 0
+                table_flat[flat] = -1
+                pre_solved_set.add(flat)
+            elif not trans[2]: # escape=False
+                known_wins = trans[3] if len(trans) == 5 else []
+                child_vals = trans[4] if len(trans) == 5 else trans[3]
+                if len(child_vals) == 0 and len(known_wins) > 0:
+                    pending_work[max(known_wins) + 1].append(flat)
+
+    work_set = set()
+    for flat in pre_solved_set:
+        if (flat & 1) == 0:
+            for parent in wtm_to_btm.get(flat, []):
+                if table_flat[parent] == 0: work_set.add(parent)
+        else:
+            for parent in btm_to_wtm.get(flat, []):
+                if table_flat[parent] == 0: work_set.add(parent)
+
+    iteration = 2
+    max_dtm_solved = 1 if pre_solved_set else 0
+    solved_count = len(pre_solved_set)
+    
+    print(f"[Stage 4] Terminal States Found (DTM 1): {solved_count:,}")
+    print("[Stage 5] Strict BFS Retrograde Analysis...")
+
+    while work_set or pending_work:
+        iter_start = time.time()
+        
+        if iteration in pending_work:
+            work_set.update(pending_work[iteration])
+            del pending_work[iteration]
+        
+        if not work_set:
+            iteration += 1
+            continue
+
+        changed = 0
+        next_work_set = set()
+        snapshot = table_flat.copy()
+
+        for flat in work_set:
+            if table_flat[flat] != 0: continue
+            trans = trans_lookup[flat]
+            
+            if (flat & 1) == 0: # WTM
+                best_win = None
+                for val in trans[2]:
+                    if best_win is None or val < best_win: best_win = val
+                for cflat in trans[3]:
+                    res = int(snapshot[cflat])
+                    if res < 0:
+                        val = abs(res) + 1
+                        if best_win is None or val < best_win: best_win = val
+                
+                if best_win == iteration:
+                    table_flat[flat] = iteration
+                    changed += 1
+                    for parent in wtm_to_btm.get(flat, []):
+                        if table_flat[parent] == 0: next_work_set.add(parent)
+                elif best_win is not None and best_win > iteration:
+                    pending_work[best_win].append(flat)
+
+            else: # BTM
+                escape = trans[2]
+                if escape: continue
+                known_wins = trans[3] if len(trans) == 5 else []
+                child_vals = trans[4] if len(trans) == 5 else trans[3]
+
+                max_win = 0
+                for val in known_wins:
+                    if val > max_win: max_win = val
+                
+                all_res = True
+                for cflat in child_vals:
+                    res = int(snapshot[cflat])
+                    if res <= 0: all_res = False; break
+                    if res > max_win: max_win = res
+                
+                if all_res:
+                    if max_win + 1 == iteration:
+                        table_flat[flat] = -iteration
+                        changed += 1
+                        for parent in btm_to_wtm.get(flat, []):
+                            if table_flat[parent] == 0: next_work_set.add(parent)
+                    elif max_win + 1 > iteration:
+                        pending_work[max_win + 1].append(flat)
+
+        work_set = next_work_set
+        solved_count += changed
+        
+        if changed > 0: 
+            max_dtm_solved = iteration
+            
+        pending_count = sum(len(v) for v in pending_work.values())
+        print(f"  [DTM {iteration:^2}] New: {changed:<8,} | Total Solved: {solved_count:,}/{candidate_states:,} "
+              f"| Next Q: {len(work_set):<7,} | Held Back: {pending_count:<6,} | Time: {time.time()-iter_start:.1f}s")
+
+        iteration += 1
+
+    return max_dtm_solved, solved_count
 
 # ==============================================================================
 # 3-MAN GENERATOR
@@ -280,7 +393,6 @@ class Generator:
 
         print("[Stage 1] Enumerating candidate positions...")
         raw_candidates = []
-        
         for flat in range(self.total_positions):
             rest = flat // 2
             bk_sq = rest % 64; rest //= 64
@@ -297,10 +409,7 @@ class Generator:
         stage23_start = time.time()
         unsolved_flats = array('I')
         transitions = []
-        trans_lookup = {}
-        btm_to_wtm = defaultdict(list)
-        wtm_to_btm = defaultdict(list)
-        work_set = set()
+        trans_lookup = {}; btm_to_wtm = defaultdict(list); wtm_to_btm = defaultdict(list)
 
         with ProcessPoolExecutor(max_workers=self.transition_workers,
                                  initializer=_init_transition_worker,
@@ -308,84 +417,37 @@ class Generator:
             for done, result in enumerate(ex.map(_build_transition_worker, raw_candidates, chunksize=1024), 1):
                 if result is not None:
                     flat, trans = result
-                    unsolved_flats.append(flat)
-                    transitions.append(trans)
-                    trans_lookup[flat] = trans
-                    
-                    t_idx = flat & 1
-                    if t_idx == 0:
+                    unsolved_flats.append(flat); transitions.append(trans); trans_lookup[flat] = trans
+                    if (flat & 1) == 0:
                         for cflat in trans[3]: btm_to_wtm[cflat].append(flat)
-                        if trans[1] or len(trans[2]) > 0: work_set.add(flat)
                     else:
                         if not trans[2]:
                             for cflat in trans[3]: wtm_to_btm[cflat].append(flat)
 
                 if done % 50000 == 0:
-                    speed = done / max(0.001, time.time() - stage23_start)
-                    print(f"  > {done / len(raw_candidates) * 100:.1f}% | {speed:,.0f} st/s", end='\r', flush=True)
+                    elapsed = max(0.001, time.time() - stage23_start)
+                    speed = done / elapsed
+                    eta = (len(raw_candidates) - done) / speed
+                    print(f"  > {done / len(raw_candidates) * 100:.1f}% | {speed:,.0f} st/s | ETA: {eta/60:.1f}m", end='\r', flush=True)
 
         candidate_states = len(unsolved_flats)
         print(f"\n[Stage 2 & 3] Valid states: {candidate_states:,} | Time: {time.time()-stage23_start:.1f}s")
 
-        print("[Stage 4 & 5] Retrograde Analysis...")
-        table_flat = self.table.reshape(-1)
-        
-        for flat, trans in zip(unsolved_flats, transitions):
-            if (flat & 1) == 1 and trans[1] == 0:
-                table_flat[flat] = -1
-                for parent in btm_to_wtm.get(flat, []):
-                    if table_flat[parent] == 0: work_set.add(parent)
-
-        iteration, max_dtm_solved = 1, 0
-        while work_set:
-            changed = 0
-            next_work_set = set()
-            snapshot = table_flat.copy()
-
-            for flat in work_set:
-                if table_flat[flat] != 0: continue
-                trans = trans_lookup[flat]
-
-                if (flat & 1) == 0:
-                    _, imm_win, promo_vals, child_vals = trans
-                    best_win = 1 if imm_win else 0
-                    for val in promo_vals:
-                        if best_win == 0 or val < best_win: best_win = val
-                    for cflat in child_vals:
-                        res = int(snapshot[cflat])
-                        if res < 0:
-                            val = abs(res) + 1
-                            if best_win == 0 or val < best_win: best_win = val
-                    if best_win > 0:
-                        table_flat[flat] = best_win; changed += 1
-                        for parent in wtm_to_btm.get(flat, []):
-                            if table_flat[parent] == 0: next_work_set.add(parent)
-                else:
-                    _, moves_count, escape, child_vals = trans
-                    if moves_count == 0 or escape: continue
-                    max_win = 0
-                    all_res = True
-                    for cflat in child_vals:
-                        res = int(snapshot[cflat])
-                        if res <= 0: all_res = False; break
-                        if res > max_win: max_win = res
-                    if all_res:
-                        table_flat[flat] = -(max_win + 1); changed += 1
-                        for parent in btm_to_wtm.get(flat, []):
-                            if table_flat[parent] == 0: next_work_set.add(parent)
-
-            work_set = next_work_set
-            if changed > 0: max_dtm_solved = iteration
-            iteration += 1
+        max_dtm_solved, decisive = _run_bfs_retrograde(self.table, unsolved_flats, transitions, trans_lookup, btm_to_wtm, wtm_to_btm, candidate_states)
 
         with open(self.filename, 'wb') as f:
             self.table.tofile(f)
             
         elapsed = time.time() - start_time
-        decisive = np.count_nonzero(table_flat)
         _safe_record_longest_mate(f"K_{self.piece_name}_K", max_dtm_solved, decisive, candidate_states - decisive, elapsed)
-        print(f"\nSUCCESS: Generated in {elapsed / 60:.1f} minutes.")
-
+        
+        print(f"\n--- {self.piece_name} Summary ---")
+        print(f"Valid States:  {candidate_states:,}")
+        print(f"Decisive Wins: {decisive:,}")
+        print(f"Dead Draws:    {candidate_states - decisive:,}")
+        print(f"Longest DTM:   {max_dtm_solved} plies")
+        print(f"Total Time:    {elapsed / 60:.1f} minutes")
+        print(f"SUCCESS: Generated {self.filename}.")
 
 # ==============================================================================
 # 4-MAN GENERATOR
@@ -439,7 +501,8 @@ def _build_transition_worker_4(flat):
     for p in (_W4_WK_OBJ, _W4_P1_OBJ, _W4_P2_OBJ, _W4_BK_OBJ):
         if p.pos: g[p.pos[0]][p.pos[1]] = None
     _W4_WK_OBJ.pos, _W4_P1_OBJ.pos, _W4_P2_OBJ.pos, _W4_BK_OBJ.pos = wk, p1, p2, bk
-    _W4_WK_OBJ._list_pos, _W4_P1_OBJ._list_pos, _W4_P2_OBJ._list_pos, _W4_BK_OBJ._list_pos = 0, 1, 2, 0
+    _W4_WK_OBJ._list_pos, _W4_P1_OBJ._list_pos = 0, 1
+    _W4_P2_OBJ._list_pos, _W4_BK_OBJ._list_pos = 2, 0
     g[wk[0]][wk[1]], g[p1[0]][p1[1]], g[p2[0]][p2[1]], g[bk[0]][bk[1]] = _W4_WK_OBJ, _W4_P1_OBJ, _W4_P2_OBJ, _W4_BK_OBJ
     board.white_king_pos, board.black_king_pos = wk, bk
     board.white_pieces[:] = [_W4_WK_OBJ, _W4_P1_OBJ, _W4_P2_OBJ]
@@ -520,7 +583,6 @@ def _build_transition_worker_4(flat):
             board.unmake_move(record)
         return (flat, ('b', legal_moves, escape, array('H', known_3man), array('I', child_flats)))
 
-
 def _gen_valid_4man_indices_numpy(total_positions, p1_name, p2_name, same_piece, has_pawn, chunk_size=8_000_000):
     for start in range(0, total_positions, chunk_size):
         end_c = min(start + chunk_size, total_positions)
@@ -585,7 +647,6 @@ class Generator4:
         stage23_start = time.time()
         unsolved_flats = array('I'); transitions = []
         trans_lookup = {}; btm_to_wtm = defaultdict(list); wtm_to_btm = defaultdict(list)
-        work_set = set()
 
         with ProcessPoolExecutor(max_workers=self.transition_workers,
                                  initializer=_init_transition_worker_4,
@@ -596,74 +657,34 @@ class Generator4:
                     unsolved_flats.append(flat); transitions.append(trans); trans_lookup[flat] = trans
                     if (flat & 1) == 0:
                         for cflat in trans[3]: btm_to_wtm[cflat].append(flat)
-                        if trans[1] or len(trans[2]) > 0: work_set.add(flat)
                     else:
                         if not trans[2]:
                             for cflat in trans[4]: wtm_to_btm[cflat].append(flat)
 
                 if done % 100_000 == 0:
-                    speed = done / max(0.001, time.time() - stage23_start)
-                    print(f"  > {done / len(all_flats) * 100:.1f}% | {speed:,.0f} st/s", end='\r', flush=True)
+                    elapsed = max(0.001, time.time() - stage23_start)
+                    speed = done / elapsed
+                    eta = (len(all_flats) - done) / speed
+                    print(f"  > {done / len(all_flats) * 100:.1f}% | {speed:,.0f} st/s | ETA: {eta/60:.1f}m", end='\r', flush=True)
 
         candidate_states = len(unsolved_flats)
         print(f"\n[Stage 2 & 3] Valid states: {candidate_states:,} | Time: {(time.time()-stage23_start)/60:.1f}m")
 
-        print("[Stage 4 & 5] Retrograde Analysis...")
-        table_flat = self.table.reshape(-1)
-        for flat, trans in zip(unsolved_flats, transitions):
-            if (flat & 1) == 1 and trans[1] == 0:
-                table_flat[flat] = -1
-                for parent in btm_to_wtm.get(flat, []):
-                    if table_flat[parent] == 0: work_set.add(parent)
-
-        iteration, max_dtm_solved = 1, 0
-        while work_set:
-            changed = 0; next_work_set = set(); snapshot = table_flat.copy()
-            for flat in work_set:
-                if table_flat[flat] != 0: continue
-                trans = trans_lookup[flat]
-
-                if (flat & 1) == 0: # WTM
-                    _, imm_win, known_wins, child_vals = trans
-                    best_win = 1 if imm_win else 0
-                    for val in known_wins:
-                        if best_win == 0 or val < best_win: best_win = val
-                    for cflat in child_vals:
-                        res = int(snapshot[cflat])
-                        if res < 0:
-                            val = abs(res) + 1
-                            if best_win == 0 or val < best_win: best_win = val
-                    if best_win > 0:
-                        table_flat[flat] = best_win; changed += 1
-                        for parent in wtm_to_btm.get(flat, []):
-                            if table_flat[parent] == 0: next_work_set.add(parent)
-                else: # BTM
-                    _, moves_count, escape, known_3man, child_vals = trans
-                    if escape or moves_count == 0: continue
-                    max_win = 0
-                    for val in known_3man:
-                        if val > max_win: max_win = val
-                    all_res = True
-                    for cflat in child_vals:
-                        res = int(snapshot[cflat])
-                        if res <= 0: all_res = False; break
-                        if res > max_win: max_win = res
-                    if all_res:
-                        table_flat[flat] = -(max_win + 1); changed += 1
-                        for parent in btm_to_wtm.get(flat, []):
-                            if table_flat[parent] == 0: next_work_set.add(parent)
-
-            work_set = next_work_set
-            if changed > 0: max_dtm_solved = iteration
-            iteration += 1
+        max_dtm_solved, decisive = _run_bfs_retrograde(self.table, unsolved_flats, transitions, trans_lookup, btm_to_wtm, wtm_to_btm, candidate_states)
 
         with open(self.filename, 'wb') as f:
             self.table.tofile(f)
             
         elapsed = time.time() - start_time
-        decisive = np.count_nonzero(table_flat)
         _safe_record_longest_mate(f"K_{self.p1_name}_{self.p2_name}_K", max_dtm_solved, decisive, candidate_states - decisive, elapsed)
-        print(f"\nSUCCESS: Generated in {elapsed / 60:.1f} minutes.")
+        
+        print(f"\n--- K+{self.p1_name}+{self.p2_name} Summary ---")
+        print(f"Valid States:  {candidate_states:,}")
+        print(f"Decisive Wins: {decisive:,}")
+        print(f"Dead Draws:    {candidate_states - decisive:,}")
+        print(f"Longest DTM:   {max_dtm_solved} plies")
+        print(f"Total Time:    {elapsed / 60:.1f} minutes")
+        print(f"SUCCESS: Generated {self.filename}.")
 
 # ==============================================================================
 # 4-MAN CROSS GENERATOR
@@ -896,7 +917,6 @@ class Generator4Vs:
         stage23_start = time.time()
         unsolved_flats = array('I'); transitions = []
         trans_lookup = {}; btm_to_wtm = defaultdict(list); wtm_to_btm = defaultdict(list)
-        work_set = set()
 
         with ProcessPoolExecutor(max_workers=self.transition_workers,
                                  initializer=_init_transition_worker_4vs,
@@ -907,81 +927,41 @@ class Generator4Vs:
                     unsolved_flats.append(flat); transitions.append(trans); trans_lookup[flat] = trans
                     if (flat & 1) == 0:
                         for cflat in trans[3]: btm_to_wtm[cflat].append(flat)
-                        if trans[1] or len(trans[2]) > 0: work_set.add(flat)
                     else:
                         if not trans[2]:
                             for cflat in trans[4]: wtm_to_btm[cflat].append(flat)
 
                 if done % 100_000 == 0:
-                    speed = done / max(0.001, time.time() - stage23_start)
-                    print(f"  > {done / len(all_flats) * 100:.1f}% | {speed:,.0f} st/s", end='\r', flush=True)
+                    elapsed = max(0.001, time.time() - stage23_start)
+                    speed = done / elapsed
+                    eta = (len(all_flats) - done) / speed
+                    print(f"  > {done / len(all_flats) * 100:.1f}% | {speed:,.0f} st/s | ETA: {eta/60:.1f}m", end='\r', flush=True)
 
         candidate_states = len(unsolved_flats)
         print(f"\n[Stage 2 & 3] Valid states: {candidate_states:,} | Time: {(time.time()-stage23_start)/60:.1f}m")
 
-        print("[Stage 4 & 5] Retrograde Analysis...")
-        table_flat = self.table.reshape(-1)
-        for flat, trans in zip(unsolved_flats, transitions):
-            if (flat & 1) == 1 and trans[1] == 0:
-                table_flat[flat] = -1
-                for parent in btm_to_wtm.get(flat, []):
-                    if table_flat[parent] == 0: work_set.add(parent)
-
-        iteration, max_dtm_solved = 1, 0
-        while work_set:
-            changed = 0; next_work_set = set(); snapshot = table_flat.copy()
-            for flat in work_set:
-                if table_flat[flat] != 0: continue
-                trans = trans_lookup[flat]
-
-                if (flat & 1) == 0: # WTM
-                    _, imm_win, known_wins, child_vals = trans
-                    best_win = 1 if imm_win else 0
-                    for val in known_wins:
-                        if best_win == 0 or val < best_win: best_win = val
-                    for cflat in child_vals:
-                        res = int(snapshot[cflat])
-                        if res < 0:
-                            val = abs(res) + 1
-                            if best_win == 0 or val < best_win: best_win = val
-                    if best_win > 0:
-                        table_flat[flat] = best_win; changed += 1
-                        for parent in wtm_to_btm.get(flat, []):
-                            if table_flat[parent] == 0: next_work_set.add(parent)
-                else: # BTM
-                    _, moves_count, escape, known_wins, child_vals = trans
-                    if escape or moves_count == 0: continue
-                    max_win = 0
-                    for val in known_wins:
-                        if val > max_win: max_win = val
-                    all_res = True
-                    for cflat in child_vals:
-                        res = int(snapshot[cflat])
-                        if res <= 0: all_res = False; break
-                        if res > max_win: max_win = res
-                    if all_res:
-                        table_flat[flat] = -(max_win + 1); changed += 1
-                        for parent in btm_to_wtm.get(flat, []):
-                            if table_flat[parent] == 0: next_work_set.add(parent)
-
-            work_set = next_work_set
-            if changed > 0: max_dtm_solved = iteration
-            iteration += 1
+        max_dtm_solved, decisive = _run_bfs_retrograde(self.table, unsolved_flats, transitions, trans_lookup, btm_to_wtm, wtm_to_btm, candidate_states)
 
         with open(self.filename, 'wb') as f:
             self.table.tofile(f)
             
         elapsed = time.time() - start_time
-        decisive = np.count_nonzero(table_flat)
         _safe_record_longest_mate(f"K_{self.w_name}_vs_{self.b_name}_K", max_dtm_solved, decisive, candidate_states - decisive, elapsed)
-        print(f"\nSUCCESS: Generated in {elapsed / 60:.1f} minutes.")
+        
+        print(f"\n--- K+{self.w_name} vs K+{self.b_name} Summary ---")
+        print(f"Valid States:  {candidate_states:,}")
+        print(f"Decisive Wins: {decisive:,}")
+        print(f"Dead Draws:    {candidate_states - decisive:,}")
+        print(f"Longest DTM:   {max_dtm_solved} plies")
+        print(f"Total Time:    {elapsed / 60:.1f} minutes")
+        print(f"SUCCESS: Generated {self.filename}.")
 
 # ==============================================================================
 # ENTRY POINT
 # ==============================================================================
 if __name__ == "__main__":
     _install_main_interrupt_ignores()
-    print("=== Tablebase Generator (v11.1 - SML / Symmetry Compression) ===")
+    print("=== Tablebase Generator (v11.4 - Pure BFS / Strict DTMs + Logging) ===")
 
     Q, R, B, N, P = Queen, Rook, Bishop, Knight, Pawn
 

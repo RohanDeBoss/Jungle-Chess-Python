@@ -2,7 +2,6 @@ import os
 import numpy as np
 import tkinter as tk
 from tkinter import ttk, messagebox
-from operator import itemgetter
 from GameLogic import Board, King, Queen, Rook, Bishop, Knight, Pawn, is_in_check
 
 # --- CONFIGURATION ---
@@ -17,6 +16,13 @@ UNICODE_PIECES = {
     'K': '♔', 'Q': '♕', 'R': '♖', 'B': '♗', 'N': '♘', 'P': '♙',
     'k': '♚', 'q': '♛', 'r': '♜', 'b': '♝', 'n': '♞', 'p': '♟'
 }
+
+# --- SML COMPRESSION ARRAYS ---
+PAWN_WK_SQUARES = [r*8+c for r in range(8) for c in range(4)]
+NON_PAWN_WK_SQUARES = []
+for c in range(4):
+    for r in range(c + 1):
+        NON_PAWN_WK_SQUARES.append(r * 8 + c)
 
 class TBViewerApp:
     def __init__(self, root):
@@ -98,11 +104,12 @@ class TBViewerApp:
 
     def load_file_list(self):
         if not os.path.exists(TB_DIR): os.makedirs(TB_DIR)
-        files = [f for f in os.listdir(TB_DIR) if f.endswith(".bin")]
+        files = [f for f in os.listdir(TB_DIR) if f.endswith("_sml.bin")]
         if not files: return
 
         for f in sorted(files):
-            parts = f[:-4].split('_')
+            # Remove the "_sml.bin" so the split logic works perfectly
+            parts = f.replace("_sml.bin", "").split('_')
             if len(parts) == 3: self.categorized_files["3-Man"].append(f)
             elif len(parts) == 4: self.categorized_files["4-Man Same-Side"].append(f)
             elif len(parts) == 5: self.categorized_files["4-Man Cross"].append(f)
@@ -143,7 +150,8 @@ class TBViewerApp:
         if not filename: return
         
         filepath = os.path.join(TB_DIR, filename)
-        parts = filename[:-4].split('_')
+        parts = filename.replace("_sml.bin", "").split('_')
+        has_pawn = "Pawn" in filename
 
         tb_type, w_pieces, b_pieces = 0, [], []
         if len(parts) == 3: tb_type, w_pieces = 3, [parts[1]]
@@ -169,7 +177,7 @@ class TBViewerApp:
                 for idx in indices:
                     if count >= 100: break
                     
-                    placements, turn = self.decode_placements(idx, tb_type, w_pieces, b_pieces)
+                    placements, turn = self.decode_placements(idx, tb_type, w_pieces, b_pieces, has_pawn)
                     if not placements: continue
                     
                     # --- CRITICAL FIX: Ghost State Filter ---
@@ -193,17 +201,34 @@ class TBViewerApp:
         except Exception as e:
             messagebox.showerror("Error", f"Failed to parse tablebase:\n{e}")
 
-    def decode_placements(self, flat, tb_type, w_pieces, b_pieces):
-        turn = flat % 2; rest = flat // 2
+    def decode_placements(self, flat, tb_type, w_pieces, b_pieces, has_pawn):
+        turn = flat % 2
+        rest = flat // 2
+        wk_squares = PAWN_WK_SQUARES if has_pawn else NON_PAWN_WK_SQUARES
+
         if tb_type == 3:
-            bk, p1, wk = rest % 64, (rest // 64) % 64, (rest // 4096)
+            bk = rest % 64
+            p1 = (rest // 64) % 64
+            wk_idx = rest // 4096
+            wk = wk_squares[wk_idx]
             return [('K', wk), ('k', bk), (PIECE_CHARS[w_pieces[0]], p1)], turn
+
         elif tb_type == 4:
-            bk, p2, p1, wk = rest % 64, (rest // 64) % 64, (rest // 4096) % 64, (rest // 262144)
+            bk = rest % 64
+            p2 = (rest // 64) % 64
+            p1 = (rest // 4096) % 64
+            wk_idx = rest // 262144
+            wk = wk_squares[wk_idx]
             return [('K', wk), ('k', bk), (PIECE_CHARS[w_pieces[0]], p1), (PIECE_CHARS[w_pieces[1]], p2)], turn
+
         elif tb_type == 5:
-            bp, bk, wp, wk = rest % 64, (rest // 64) % 64, (rest // 4096) % 64, (rest // 262144)
+            bp = rest % 64
+            bk = (rest // 64) % 64
+            wp = (rest // 4096) % 64
+            wk_idx = rest // 262144
+            wk = wk_squares[wk_idx]
             return [('K', wk), ('k', bk), (PIECE_CHARS[w_pieces[0]], wp), (PIECE_CHARS[b_pieces[0]].lower(), bp)], turn
+
         return None, None
 
     def build_fen(self, placements, turn):
