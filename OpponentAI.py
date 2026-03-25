@@ -1,4 +1,4 @@
-# OPAI.py (v98.94 - (Intentionally old) TB repetition fix, Shadowing Fix, Repetition Fix)
+# OPAI.py (v98.95 - (Intentionally old) Maintained parity)
 
 import time
 import random
@@ -109,7 +109,7 @@ class OpponentAI:
 
     def __init__(self, board, color, position_counts, comm_queue, cancellation_event,
                  bot_name=None, ply_count=0, game_mode="bot", max_moves=200,
-                 time_left=None, increment=None, use_tablebase=True):
+                 time_left=None, increment=None, use_tablebase=True, **kwargs): # <-- ADDED **kwargs
 
         self.board = board
         self.color = color
