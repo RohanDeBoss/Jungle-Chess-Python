@@ -2,7 +2,7 @@ This is a chess variant of mind called Jungle Chess. The rules are the same as n
 
 Objective:
 The aim of the game is to checkmate the opponent's king, just like in standard chess. You do not need to "evaporate" or "explode" the king to win, just put the opponent in a position where no matter what they do, they will lose on the next turn.
-If your opponent has no legal moves on their turn, you win immediately. In that sense, Jungle Chess behaves like a king-capture variant that ends one move before the king would actually be taken.
+If your opponent has no legal moves on their turn, you win immediately. In that sense, Jungle Chess behaves like a king-capture variant but ends one move before the king would actually be taken, so the king is not actually captured.
 
 Piece Changes:
 1. Queen:
