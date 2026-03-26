@@ -1,4 +1,4 @@
-# AI.py (v108.2 - I think these optimisations work?)
+# AI.py (v108.3 - 5man TB support)
 import json
 import os
 import time
@@ -163,6 +163,7 @@ class SearchCancelledException(Exception): pass
 
 
 class ChessBot:
+    tb_probe_limit = 5
     search_depth = 6
     MATE_SCORE = 1000000
     DRAW_SCORE = 0
@@ -463,7 +464,7 @@ class ChessBot:
             self._age_history_table()
 
             # 1. Check Tablebases
-            if len(self.board.white_pieces) + len(self.board.black_pieces) <= 4:
+            if len(self.board.white_pieces) + len(self.board.black_pieces) <= self.tb_probe_limit:
                 tb_move, tb_eval = self._get_best_tablebase_move_with_eval()
                 if self._report_root_tb_solution(tb_move, tb_eval, emit_move=True): return
 
@@ -548,7 +549,7 @@ class ChessBot:
         try:
             self._age_history_table()
             if is_insufficient_material(self.board): return
-            if len(self.board.white_pieces) + len(self.board.black_pieces) <= 4:
+            if len(self.board.white_pieces) + len(self.board.black_pieces) <= self.tb_probe_limit:
                 tb_move, tb_eval = self._get_best_tablebase_move_with_eval()
                 if self._report_root_tb_solution(tb_move, tb_eval, perfect_play=True):
                     while not self.cancellation_event.is_set(): time.sleep(0.1)
@@ -673,7 +674,7 @@ class ChessBot:
             if hash_val in search_path:
                 return self.DRAW_SCORE
 
-        if len(board.white_pieces) + len(board.black_pieces) <= 4:
+        if len(board.white_pieces) + len(board.black_pieces) <= self.tb_probe_limit:
             tb_score_absolute = self.tb_manager.probe(board, turn)
             if tb_score_absolute is not None:
                 self.tb_hits += 1
@@ -854,7 +855,7 @@ class ChessBot:
             if self.cancellation_event.is_set() or (self.stop_time and time.time() > self.stop_time):
                 raise SearchCancelledException()
 
-        if len(board.white_pieces) + len(board.black_pieces) <= 4:
+        if len(board.white_pieces) + len(board.black_pieces) <= self.tb_probe_limit:
             tb_score_absolute = self.tb_manager.probe(board, turn)
             if tb_score_absolute is not None:
                 self.tb_hits += 1
@@ -877,7 +878,7 @@ class ChessBot:
             if stand_pat >= beta: return beta
             alpha = max(alpha, stand_pat)
 
-        if ply <= 4:
+        if ply <= 4: #not tb issue
             current_margin = self.Q_MARGIN_MAX
         else:
             current_margin = max(self.Q_MARGIN_MIN, self.Q_MARGIN_MAX - (ply - 4) * 117)
@@ -1125,7 +1126,7 @@ class ChessBot:
                 penalty = int(-250 * (4 - pawn_counts[i])**2 / 16)
                 scores_mg[i] += penalty; scores_eg[i] += penalty
 
-            if piece_counts[i] == 1 and pawn_counts[i] <= 4:
+            if piece_counts[i] == 1 and pawn_counts[i] <= 4: #Not related to TB!
                 penalty = 0
                 if last_piece_type[i] is Rook:   penalty = LONE_ROOK_PENALTIES[pawn_counts[i]]
                 elif last_piece_type[i] is Bishop: penalty = LONE_BISHOP_PENALTIES[pawn_counts[i]]
