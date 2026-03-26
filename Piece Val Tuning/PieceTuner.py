@@ -1,13 +1,27 @@
-# PieceTuner.py (v2.1 - Added History Aging & Mate-Break for ID Loop)
+# PieceTuner.py (v3.1 - Subdirectory Support, 5-Man TB Adjudication, Worker Crash Fix)
 
+import sys
+import os
 import math
 import json
-import os
 import random
 import time
 import multiprocessing as mp
 from collections import defaultdict
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# PATH INJECTION (Allows running from subdirectory without moving main files)
+# ═══════════════════════════════════════════════════════════════════════════════
+TUNER_DIR = os.path.dirname(os.path.abspath(__file__))
+PARENT_DIR = os.path.abspath(os.path.join(TUNER_DIR, '..'))
+
+if PARENT_DIR not in sys.path:
+    sys.path.insert(0, PARENT_DIR)
+
+# Change working directory so AI.py finds opening_book.json and tablebases/
+os.chdir(PARENT_DIR)
+
+# Now we can safely import from the parent directory
 from GameLogic import (
     Board, Pawn, Knight, Bishop, Rook, Queen, King,
     get_all_legal_moves, is_insufficient_material, ROWS, COLS
@@ -19,21 +33,25 @@ from AI import board_hash
 # CONFIGURATION
 # ═══════════════════════════════════════════════════════════════════════════════
 
-GAMES_TO_GENERATE       = 1000   # Games to generate (or APPEND) per run
-GENERATION_DEPTH        = 6     # Search depth per move
-RANDOM_OPENING_PLIES    = 4     # Random moves before engine kicks in (diversity)
-MAX_GAME_PLIES          = 200   # Hard ply limit
-SAMPLE_EVERY_N_PLIES    = 2     # Record 1 position per N plies
-DATA_FILE               = "tuner_positions.json"
-CHECKPOINT_EVERY        = 50    # Flush partial results every N games (crash safety)
+GAMES_TO_GENERATE       = 10     # Games to generate (or APPEND) per run
+GENERATION_DEPTH        = 2      # Search depth per move
+RANDOM_OPENING_PLIES    = 4      # Random moves before engine kicks in (diversity)
+MAX_GAME_PLIES          = 200    # Hard ply limit
+SAMPLE_EVERY_N_PLIES    = 2      # Record 1 position per N plies
 
-OPENING_EVAL_THRESHOLD  = 400   # cp — discard game if post-opening eval exceeds this
-OPENING_SCREEN_DEPTH    = 7     # Depth for the opening screen check
-MAX_REGENERATION_TRIES  = 12    # Max attempts to find a balanced opening per game slot
-TB_ADJUDICATION_PIECES  = 4     # Probe TB and adjudicate if total pieces <= this
+# Data files save directly into the 'Piece Val Tuning' folder
+DATA_FILE               = os.path.join(TUNER_DIR, "tuner_positions.json")
+RESULT_FILE             = os.path.join(TUNER_DIR, "tuner_results.json")
 
-COORD_ROUNDS            = 12    # Max rounds per step size
-K_CALIBRATION_STEPS     = 40    # Golden-section steps to find optimal sigmoid K
+CHECKPOINT_EVERY        = 50     # Flush partial results every N games (crash safety)
+
+OPENING_EVAL_THRESHOLD  = 350    # cp — discard game if post-opening eval exceeds this
+OPENING_SCREEN_DEPTH    = 7      # Depth for the opening screen check
+MAX_REGENERATION_TRIES  = 15     # Max attempts to find a balanced opening per game slot
+TB_ADJUDICATION_PIECES  = 5      # Probe TB and adjudicate if total pieces <= this
+
+COORD_ROUNDS            = 15     # Max rounds per step size
+K_CALIBRATION_STEPS     = 40     # Golden-section steps to find optimal sigmoid K
 STEP_SIZES              = [50, 30, 20, 10, 5]
 
 NUM_WORKERS = max(1, (mp.cpu_count() or 2) - 1)
@@ -125,14 +143,21 @@ def fen_to_board(fen_str: str) -> tuple:
 # SELF-PLAY GAME GENERATION
 # ═══════════════════════════════════════════════════════════════════════════════
 
+# Mock classes to prevent "Daemonic Process" MP crashes on Windows
+class DummyQueue:
+    def put(self, item): pass
+
+class DummyEvent:
+    def is_set(self): return False
+    def clear(self): pass
+
 _bot_singleton = None
 
 def _get_bot() -> AI.ChessBot:
     global _bot_singleton
     if _bot_singleton is None:
-        dummy_q = mp.Queue()
-        dummy_e = mp.Event()
-        _bot_singleton = AI.ChessBot(Board(), 'white', {}, dummy_q, dummy_e, 'Tuner')
+        # Use Dummy objects instead of mp.Queue() inside workers
+        _bot_singleton = AI.ChessBot(Board(), 'white', {}, DummyQueue(), DummyEvent(), 'Tuner')
     return _bot_singleton
 
 def _play_one_game(args: tuple) -> tuple:
@@ -150,7 +175,6 @@ def _play_one_game(args: tuple) -> tuple:
             p_score, b_move = bot._run_depth_iteration(
                 d, legal_moves, root_h, b_move, prev_iter_score=p_score
             )
-            # FIX 2: Break early if we found a forced mate!
             if p_score is not None and abs(p_score) > bot.MATE_SCORE - 2000:
                 break
         return p_score, b_move
@@ -220,11 +244,11 @@ def _play_one_game(args: tuple) -> tuple:
                 tb_score_abs = bot.tb_manager.probe(board, turn)
                 if tb_score_abs is not None:
                     if tb_score_abs > bot.MATE_SCORE - 1000:
-                        outcome = 1.0 if turn == 'white' else 0.0
+                        outcome = 1.0  # White Wins
                     elif tb_score_abs < -(bot.MATE_SCORE - 1000):
-                        outcome = 0.0 if turn == 'white' else 1.0
+                        outcome = 0.0  # Black Wins
                     else:
-                        outcome = 0.5
+                        outcome = 0.5  # Draw
                     terminal = TERM_TB
                     break
 
@@ -462,7 +486,7 @@ def print_ai_dicts(mg: dict, eg: dict, header: str = "", orig_mg: dict = None, o
 
 def main():
     print("═" * 60, flush=True)
-    print(f"  Jungle Chess Piece Value Auto-Tuner  (v2.1)", flush=True)
+    print(f"  Jungle Chess Piece Value Auto-Tuner  (v3.1)", flush=True)
     print(f"  Full AI Depth {GENERATION_DEPTH}  |  "
           f"{GAMES_TO_GENERATE} games  |  {NUM_WORKERS} workers", flush=True)
     print("═" * 60, flush=True)
@@ -580,8 +604,7 @@ def main():
     print(f"{'═' * 60}", flush=True)
     print_ai_dicts(mg_best, eg_best, "Optimised values — paste into AI.py:", orig_mg, orig_eg)
 
-    result_file = "tuner_results.json"
-    with open(result_file, 'w') as f:
+    with open(RESULT_FILE, 'w') as f:
         json.dump({
             'K':                      K,
             'final_mse':              final_mse,
@@ -593,7 +616,7 @@ def main():
             'total_positions':        len(positions_data),
             'timestamp':              time.strftime('%Y-%m-%d %H:%M:%S'),
         }, f, indent=2)
-    print(f"\nResults saved to {result_file}", flush=True)
+    print(f"\nResults saved to {RESULT_FILE}", flush=True)
 
 if __name__ == '__main__':
     mp.freeze_support()

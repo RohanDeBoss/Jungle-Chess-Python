@@ -1,28 +1,30 @@
-# Tests.py (v4 - Fixed and expanded test for better checking)
+# Tests.py (v4.1 - fixed new directory)
 
+import sys
+import os
+
+# --- PATH INJECTION (MUST BE AT THE VERY TOP) ---
+# Get the directory where this script is located
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+# Get the parent directory (the main project folder)
+PARENT_DIR = os.path.abspath(os.path.join(SCRIPT_DIR, '..'))
+# Add the parent directory to the Python path
+if PARENT_DIR not in sys.path:
+    sys.path.insert(0, PARENT_DIR)
+
+# Change CWD so that sub-imports (like tablebase loader) work correctly
+os.chdir(PARENT_DIR)
+
+# --- NOW YOU CAN IMPORT YOUR MODULES ---
 import argparse
 from dataclasses import dataclass
-
-from GameLogic import (
-    Board,
-    Bishop,
-    DIRECTIONS,
-    King,
-    Knight,
-    Pawn,
-    Queen,
-    Rook,
-    format_move_san,
-    get_all_legal_moves,
-    has_legal_moves,
-    is_in_check,
-    is_passive_knight_zone_evaporation,
-    fast_approximate_material_swing
-)
-from AI import ChessBot, MG_PIECE_VALUES, TTEntry, TT_FLAG_EXACT, TT_FLAG_LOWERBOUND
+from GameLogic import *
+from AI import ChessBot, MG_PIECE_VALUES, TT_FLAG_EXACT, TT_FLAG_LOWERBOUND
 from OpponentAI import OpponentAI
 from TablebaseManager import TablebaseManager
 
+# Change CWD so that sub-imports (like tablebase loader) work correctly
+os.chdir(PARENT_DIR)
 
 PIECE_CLASS_BY_NAME = {
     "Queen": Queen,
@@ -772,10 +774,10 @@ def case_regression_promotion_knight_zone():
     swing = fast_approximate_material_swing(board, move, moving_piece, target_piece, MG_PIECE_VALUES)
     
     # Expected: 
-    # Pawn value (100) -> Queen value (850) = +750 gain
-    # Queen lands in knight zone -> Evaporates = -850 loss
+    # Pawn value (100) -> Queen value (1400) = +1300 gain
+    # Queen lands in knight zone -> Evaporates = -1400 loss
     # Net swing = -100.
-    # If the bug is present, it subtracts Pawn (-100) instead, giving +650.
+    # If the bug is present, it subtracts Pawn (-100) instead, giving +1200.
     details = position_details(board, "Pawn promoting into Knight evaporation zone")
     details.append(f"Move: {square_name(move[0])}-{square_name(move[1])}=Q")
     details.append(f"Material Swing calculated: {swing}")

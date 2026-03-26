@@ -1,4 +1,13 @@
-# TablebaseManager.py (v7.0 - 5-Man Ready)
+# TablebaseManager.py (v7.1 - 5-Man Promo Fixes)
+#
+# Changes from v7.0:
+#   FIX-1: _canonical_tuple_5 now takes p1n, p2n, p3n (piece name strings) and uses the same
+#           3-element bubble sort as TablebaseGenerator v12.1 _canonical_flat_5. v7.0 did
+#           sorted([sq0, sq1, sq2]) unconditionally, which mixed different-type pieces across
+#           dimension slots and produced wrong lookups for any mixed-piece 5-man same-side table.
+#   FIX-2: _canonical_tuple_5vs now takes wp1n, wp2n and only swaps same-type white pieces,
+#           matching _canonical_flat_5vs in the generator exactly.
+#   FIX-3: probe() 5-man sections updated to pass piece names into both canonical functions.
 
 import os
 import numpy as np
@@ -36,6 +45,9 @@ for sq in range(64):
     for t in range(8):
         if SYMMETRY_MAP[sq][t] in NON_PAWN_WK_IDX:
             NON_PAWN_VALID_TS[sq].append(t)
+
+# Canonical order must match _PIECE_CANONICAL_ORDER in TablebaseGenerator
+_PIECE_NAME_ORDER = {"Bishop": 0, "Knight": 1, "Pawn": 2, "Queen": 3, "Rook": 4}
 
 
 class TablebaseManager:
@@ -83,15 +95,10 @@ class TablebaseManager:
                 wk_size = 32 if has_pawn else 10
 
                 parts = name.split('_')
-                # num_pieces = number of non-king pieces total
-                # parts layout: K [pieces...] (vs [pieces...]) K sml
-                # subtract 3 for the two K tokens and sml, minus 1 more if vs present
                 num_pieces = len(parts) - 3
                 if 'vs' in parts:
                     num_pieces -= 1
 
-                # Shape: [wk_size, 64, 64, ...(num_pieces+1 times total for pieces+bk), 2]
-                # FIX: was (num_pieces - 1), correct is (num_pieces + 1)
                 shape = tuple([wk_size] + [64] * (num_pieces + 1) + [2])
                 self.tables[name] = np.memmap(filename, dtype=np.int16, mode='r', shape=shape)
                 return True
@@ -145,36 +152,50 @@ class TablebaseManager:
             return (best[0], best[1], best[2], best[3], turn)
 
     @staticmethod
-    def _canonical_tuple_5(wk, p1, p2, p3, bk, turn, has_pawn):
-        # NOTE: p1/p2/p3 must already be in canonical type order (matching the generator).
-        # Within same-type groups, pieces are sorted by square.
-        # This method mirrors _canonical_tuple_4 extended to 3 pieces.
-        # Update the same_piece logic when the 5-man generator is written.
+    def _canonical_tuple_5(wk, p1, p2, p3, bk, turn, has_pawn, p1n, p2n, p3n):
+        """
+        FIX (v7.1): Now takes piece name strings p1n/p2n/p3n and uses a 3-element bubble
+        sort that ONLY swaps pieces of the EXACT SAME TYPE. This matches the generator's
+        _canonical_flat_5 exactly. v7.0 sorted all three squares unconditionally, which
+        broke lookups for any table where the three pieces are not all the same type.
+        """
         if has_pawn:
             t = PAWN_VALID_T[wk]
-            m_p = sorted([SYMMETRY_MAP[p1][t], SYMMETRY_MAP[p2][t], SYMMETRY_MAP[p3][t]])
-            return (PAWN_WK_IDX[SYMMETRY_MAP[wk][t]], m_p[0], m_p[1], m_p[2], SYMMETRY_MAP[bk][t], turn)
+            m1, m2, m3 = SYMMETRY_MAP[p1][t], SYMMETRY_MAP[p2][t], SYMMETRY_MAP[p3][t]
+            if p1n == p2n and m1 > m2: m1, m2 = m2, m1
+            if p2n == p3n and m2 > m3: m2, m3 = m3, m2
+            if p1n == p2n and m1 > m2: m1, m2 = m2, m1
+            return (PAWN_WK_IDX[SYMMETRY_MAP[wk][t]], m1, m2, m3, SYMMETRY_MAP[bk][t], turn)
         else:
             best = None
             for t in NON_PAWN_VALID_TS[wk]:
-                m_p = sorted([SYMMETRY_MAP[p1][t], SYMMETRY_MAP[p2][t], SYMMETRY_MAP[p3][t]])
-                m = (NON_PAWN_WK_IDX[SYMMETRY_MAP[wk][t]], m_p[0], m_p[1], m_p[2], SYMMETRY_MAP[bk][t])
+                m1, m2, m3 = SYMMETRY_MAP[p1][t], SYMMETRY_MAP[p2][t], SYMMETRY_MAP[p3][t]
+                if p1n == p2n and m1 > m2: m1, m2 = m2, m1
+                if p2n == p3n and m2 > m3: m2, m3 = m3, m2
+                if p1n == p2n and m1 > m2: m1, m2 = m2, m1
+                m = (NON_PAWN_WK_IDX[SYMMETRY_MAP[wk][t]], m1, m2, m3, SYMMETRY_MAP[bk][t])
                 if best is None or m < best: best = m
             return (best[0], best[1], best[2], best[3], best[4], turn)
 
     @staticmethod
-    def _canonical_tuple_5vs(wk, wp1, wp2, bk, bp, turn, has_pawn):
-        # NOTE: wp1/wp2 must already be in canonical type order (matching the generator).
-        # Update when the 5-man generator is written.
+    def _canonical_tuple_5vs(wk, wp1, wp2, bk, bp, turn, has_pawn, wp1n, wp2n):
+        """
+        FIX (v7.1): Now takes white piece name strings wp1n/wp2n and only swaps same-type
+        white pieces, matching _canonical_flat_5vs in the generator exactly.
+        v7.0 sorted both white piece squares unconditionally, which broke lookups when the
+        two white pieces are different types (e.g. K+Queen+Rook vs K+Knight).
+        """
         if has_pawn:
             t = PAWN_VALID_T[wk]
-            m_wp = sorted([SYMMETRY_MAP[wp1][t], SYMMETRY_MAP[wp2][t]])
-            return (PAWN_WK_IDX[SYMMETRY_MAP[wk][t]], m_wp[0], m_wp[1], SYMMETRY_MAP[bk][t], SYMMETRY_MAP[bp][t], turn)
+            m1, m2 = SYMMETRY_MAP[wp1][t], SYMMETRY_MAP[wp2][t]
+            if wp1n == wp2n and m1 > m2: m1, m2 = m2, m1
+            return (PAWN_WK_IDX[SYMMETRY_MAP[wk][t]], m1, m2, SYMMETRY_MAP[bk][t], SYMMETRY_MAP[bp][t], turn)
         else:
             best = None
             for t in NON_PAWN_VALID_TS[wk]:
-                m_wp = sorted([SYMMETRY_MAP[wp1][t], SYMMETRY_MAP[wp2][t]])
-                m = (NON_PAWN_WK_IDX[SYMMETRY_MAP[wk][t]], m_wp[0], m_wp[1], SYMMETRY_MAP[bk][t], SYMMETRY_MAP[bp][t])
+                m1, m2 = SYMMETRY_MAP[wp1][t], SYMMETRY_MAP[wp2][t]
+                if wp1n == wp2n and m1 > m2: m1, m2 = m2, m1
+                m = (NON_PAWN_WK_IDX[SYMMETRY_MAP[wk][t]], m1, m2, SYMMETRY_MAP[bk][t], SYMMETRY_MAP[bp][t])
                 if best is None or m < best: best = m
             return (best[0], best[1], best[2], best[3], best[4], turn)
 
@@ -265,47 +286,67 @@ class TablebaseManager:
 
         # --- 5-MAN SAME-SIDE ---
         elif w_cnt == 3 and b_cnt == 0:
-            names = sorted([type(p).__name__ for p in w_objs])
-            tb = f"K_{names[0]}_{names[1]}_{names[2]}_K_sml"
+            # Sort by (_PIECE_NAME_ORDER, square) to match generator canonical ordering
+            pairs = sorted([(type(p).__name__, p.pos[0]*8+p.pos[1]) for p in w_objs],
+                           key=lambda x: (_PIECE_NAME_ORDER.get(x[0], 99), x[1]))
+            (n1, p1_sq), (n2, p2_sq), (n3, p3_sq) = pairs[0], pairs[1], pairs[2]
+            tb = f"K_{n1}_{n2}_{n3}_K_sml"
             if tb in self.tables:
-                # Sort pieces by (name, square) to match generator canonical ordering
-                pairs = sorted(zip([type(p).__name__ for p in w_objs],
-                                   [p.pos[0]*8+p.pos[1] for p in w_objs]))
-                p_sqs = [sq for _, sq in pairs]
-                idx = self._canonical_tuple_5(wk, p_sqs[0], p_sqs[1], p_sqs[2], bk, t_idx, "Pawn" in tb)
+                # FIX: pass piece names so bubble sort only swaps same-type pieces
+                idx = self._canonical_tuple_5(wk, p1_sq, p2_sq, p3_sq, bk, t_idx, "Pawn" in tb, n1, n2, n3)
                 val = int(self.tables[tb][idx])
                 is_win = (t_idx == 0 and val > 0) or (t_idx == 1 and val < 0)
                 return self._tb_score_to_ai_score(val, is_win)
 
         elif b_cnt == 3 and w_cnt == 0:
-            names = sorted([type(p).__name__ for p in b_objs])
-            tb = f"K_{names[0]}_{names[1]}_{names[2]}_K_sml"
+            pairs = sorted([(type(p).__name__, _flip(p.pos)[0]*8+_flip(p.pos)[1]) for p in b_objs],
+                           key=lambda x: (_PIECE_NAME_ORDER.get(x[0], 99), x[1]))
+            (n1, p1_sq), (n2, p2_sq), (n3, p3_sq) = pairs[0], pairs[1], pairs[2]
+            tb = f"K_{n1}_{n2}_{n3}_K_sml"
             if tb in self.tables:
-                pairs = sorted(zip([type(p).__name__ for p in b_objs],
-                                   [_flip(p.pos)[0]*8+_flip(p.pos)[1] for p in b_objs]))
-                p_sqs = [sq for _, sq in pairs]
                 bk_f = _flip(board.black_king_pos); wk_f = _flip(board.white_king_pos)
                 bk_sq, wk_sq = bk_f[0]*8+bk_f[1], wk_f[0]*8+wk_f[1]
-                idx = self._canonical_tuple_5(bk_sq, p_sqs[0], p_sqs[1], p_sqs[2], wk_sq, 1 - t_idx, "Pawn" in tb)
+                # FIX: pass piece names so bubble sort only swaps same-type pieces
+                idx = self._canonical_tuple_5(bk_sq, p1_sq, p2_sq, p3_sq, wk_sq, 1 - t_idx, "Pawn" in tb, n1, n2, n3)
                 val = int(self.tables[tb][idx])
                 b_wins = ((1 - t_idx) == 0 and val > 0) or ((1 - t_idx) == 1 and val < 0)
                 return self._tb_score_to_ai_score(val, not b_wins)
-
+            
         # --- 5-MAN CROSS (2 white vs 1 black) ---
         elif w_cnt == 2 and b_cnt == 1:
-            w_names = sorted([type(p).__name__ for p in w_objs])
-            b_name  = type(b_objs[0]).__name__
-            tb = f"K_{w_names[0]}_{w_names[1]}_vs_{b_name}_K_sml"
+            w_pairs = sorted([(type(p).__name__, p.pos[0]*8+p.pos[1]) for p in w_objs],
+                             key=lambda x: (_PIECE_NAME_ORDER.get(x[0], 99), x[1]))
+            (wn1, wp1_sq), (wn2, wp2_sq) = w_pairs[0], w_pairs[1]
+            bn = type(b_objs[0]).__name__
+            bp_sq = b_objs[0].pos[0]*8 + b_objs[0].pos[1]
+            
+            tb = f"K_{wn1}_{wn2}_vs_{bn}_K_sml"
             if tb in self.tables:
-                # Sort white pieces by (name, square) to match generator canonical ordering
-                pairs = sorted(zip([type(p).__name__ for p in w_objs],
-                                   [p.pos[0]*8+p.pos[1] for p in w_objs]))
-                w_sqs = [sq for _, sq in pairs]
-                bp_sq = b_objs[0].pos[0]*8 + b_objs[0].pos[1]
-                idx = self._canonical_tuple_5vs(wk, w_sqs[0], w_sqs[1], bk, bp_sq, t_idx, "Pawn" in tb)
+                idx = self._canonical_tuple_5vs(wk_sq, wp1_sq, wp2_sq, bk_sq, bp_sq, t_idx, "Pawn" in tb, wn1, wn2)
                 val = int(self.tables[tb][idx])
                 is_win = (t_idx == 0 and val > 0) or (t_idx == 1 and val < 0)
                 return self._tb_score_to_ai_score(val, is_win)
-            # Note: 1 white vs 2 black requires flip — omitted until those tables are generated
-
+            
+        # --- 5-MAN CROSS (1 white vs 2 black) ---
+        elif w_cnt == 1 and b_cnt == 2:
+            # Sort black pieces by (_PIECE_NAME_ORDER, flipped square)
+            b_pairs = sorted([(type(p).__name__, _flip(p.pos)[0]*8+_flip(p.pos)[1]) for p in b_objs],
+                             key=lambda x: (_PIECE_NAME_ORDER.get(x[0], 99), x[1]))
+            (bn1, bp1_sq), (bn2, bp2_sq) = b_pairs[0], b_pairs[1]
+            wn = type(w_objs[0]).__name__
+            wp_sq = _flip(w_objs[0].pos)[0]*8 + _flip(w_objs[0].pos)[1]
+            
+            tb = f"K_{bn1}_{bn2}_vs_{wn}_K_sml"
+            if tb in self.tables:
+                bk_f = _flip(board.black_king_pos)
+                wk_f = _flip(board.white_king_pos)
+                
+                # Flipped probe: pass t_idx inverted (1 - t_idx), and pass Black's pieces as the "White" parameters
+                idx = self._canonical_tuple_5vs(bk_f[0]*8+bk_f[1], bp1_sq, bp2_sq, wk_f[0]*8+wk_f[1], wp_sq, 1 - t_idx, "Pawn" in tb, bn1, bn2)
+                val = int(self.tables[tb][idx])
+                
+                # Invert the win condition since we flipped the board
+                b_wins = ((1 - t_idx) == 0 and val > 0) or ((1 - t_idx) == 1 and val < 0)
+                return self._tb_score_to_ai_score(val, not b_wins)
+                
         return None
