@@ -1,4 +1,4 @@
-# AI.py (v108.4 - 5man TB support + fixed pure tb useage in search)
+# AI.py (v108.4 - 5man TB support + fixed pure tb usage in search)
 import json
 import os
 import time
@@ -146,11 +146,16 @@ def board_to_fen(board, turn):
     return fen + (' w' if turn == 'white' else ' b')
 
 OPENING_BOOK = {}
+import glob
 try:
-    if os.path.exists("opening_book.json"):
-        with open("opening_book.json", "r") as f:
+    # Find any file that starts with "opening_book"
+    book_files = glob.glob("opening_book*")
+    
+    if book_files:
+        book_filename = book_files[0] # Grab the first match
+        with open(book_filename, "r") as f:
             OPENING_BOOK = json.load(f)
-        print(f"Loaded Opening Book with {len(OPENING_BOOK)} positions.")
+        print(f"Loaded Opening Book with {len(OPENING_BOOK)} positions from {book_filename}.")
 except Exception as e:
     print(f"Opening book not found or invalid: {e}")
 # --------------------------
@@ -463,6 +468,34 @@ class ChessBot:
     def make_move(self):
         try:
             self._age_history_table()
+
+            # --- 0. Check Opening Book ---
+            if self.use_opening_book and OPENING_BOOK:
+                fen = board_to_fen(self.board, self.color)
+                if fen in OPENING_BOOK:
+                    book_moves = OPENING_BOOK[fen]
+                    if book_moves:
+                        import random
+                        chosen = random.choice(book_moves)
+                        
+                        # Handle potential weighted dictionary formats just in case
+                        if isinstance(chosen, dict) and "move" in chosen:
+                            chosen = chosen["move"]
+                        
+                        # Convert JSON lists [[r1, c1], [r2, c2]] back to tuples ((r1, c1), (r2, c2))
+                        book_move = ((chosen[0][0], chosen[0][1]), (chosen[1][0], chosen[1][1]))
+                        
+                        # Verify the move is valid before playing it
+                        if book_move in get_all_legal_moves(self.board, self.color):
+                            self._report_log(f"  > {self.bot_name} (Book): {self._format_move(self.board, book_move)}")
+                            self._report_eval(0, "Book")
+                            move_num = (self.ply_count // 2) + 1
+                            prefix = f"{move_num}. " if self.color == 'white' else f"{move_num}... "
+                            pv_str = prefix + self._format_move(self.board, book_move)
+                            self.comm_queue.put(('pv', 0, "Book", [pv_str], [book_move]))
+                            self._report_move(book_move)
+                            return
+            # -----------------------------
 
             # 1. Check Tablebases at Root
             piece_count = len(self.board.white_pieces) + len(self.board.black_pieces)

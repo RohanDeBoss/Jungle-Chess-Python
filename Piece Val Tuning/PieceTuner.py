@@ -33,8 +33,8 @@ from AI import board_hash
 # CONFIGURATION
 # ═══════════════════════════════════════════════════════════════════════════════
 
-GAMES_TO_GENERATE       = 10     # Games to generate (or APPEND) per run
-GENERATION_DEPTH        = 2      # Search depth per move
+GAMES_TO_GENERATE       = 1000     # Games to generate (or APPEND) per run
+GENERATION_DEPTH        = 6      # Search depth per move
 RANDOM_OPENING_PLIES    = 4      # Random moves before engine kicks in (diversity)
 MAX_GAME_PLIES          = 200    # Hard ply limit
 SAMPLE_EVERY_N_PLIES    = 2      # Record 1 position per N plies
@@ -45,7 +45,7 @@ RESULT_FILE             = os.path.join(TUNER_DIR, "tuner_results.json")
 
 CHECKPOINT_EVERY        = 50     # Flush partial results every N games (crash safety)
 
-OPENING_EVAL_THRESHOLD  = 350    # cp — discard game if post-opening eval exceeds this
+OPENING_EVAL_THRESHOLD  = 300    # cp — discard game if post-opening eval exceeds this
 OPENING_SCREEN_DEPTH    = 7      # Depth for the opening screen check
 MAX_REGENERATION_TRIES  = 15     # Max attempts to find a balanced opening per game slot
 TB_ADJUDICATION_PIECES  = 5      # Probe TB and adjudicate if total pieces <= this

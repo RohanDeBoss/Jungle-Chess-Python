@@ -1,4 +1,4 @@
-# JungleChessUI.py (v15.1 - Persistent Workers + Tablebase Toggle)
+# JungleChessUI.py (v15.2 - Arrows & Highlights Integration)
 
 import tkinter as tk
 from tkinter import ttk, messagebox
@@ -146,6 +146,12 @@ class EnhancedChessApp:
         self.dragging     = False
         self.drag_piece_ghost = None
         self.drag_start   = None
+        self.is_interactive = True
+
+        # --- DRAWING / ARROWS STATE ---
+        self.custom_arrows      = set()
+        self.custom_highlights  = set()
+        self.rc_start_pos       = None
 
         self.full_history         = []
         self.history_pointer      = -1
@@ -338,6 +344,20 @@ class EnhancedChessApp:
 
         self.main_frame.bind("<Configure>",   self.handle_main_resize)
         self.center_panel.bind("<Configure>", self.handle_board_resize)
+        
+        # --- PERMANENT CANVAS EVENT BINDINGS ---
+        self.canvas.bind("<Button-1>",        self.on_drag_start)
+        self.canvas.bind("<B1-Motion>",       self.on_drag_motion)
+        self.canvas.bind("<ButtonRelease-1>", self.on_drag_end)
+        
+        self.canvas.bind("<Button-3>",        self.on_right_click_start)
+        self.canvas.bind("<B3-Motion>",       self.on_right_click_drag)
+        self.canvas.bind("<ButtonRelease-3>", self.on_right_click_end)
+        
+        # Mac OS fallback for right-click support
+        self.canvas.bind("<Button-2>",        self.on_right_click_start)
+        self.canvas.bind("<B2-Motion>",       self.on_right_click_drag)
+        self.canvas.bind("<ButtonRelease-2>", self.on_right_click_end)
 
     def _build_control_widgets(self, parent):
         gf = ttk.Frame(parent, style='Left.TFrame')
@@ -591,6 +611,9 @@ class EnhancedChessApp:
         self.draw_eval_bar(0)
         self.current_pv_raw  = []
         self.last_pv_message = None
+        self.custom_arrows.clear()
+        self.custom_highlights.clear()
+        self.rc_start_pos = None
         if hasattr(self, 'pv_text'):
             self.pv_text.config(state=tk.NORMAL)
             self.pv_text.delete(1.0, tk.END)
@@ -842,18 +865,39 @@ class EnhancedChessApp:
         self.set_interactivity(True)
 
     def on_drag_start(self, event):
-        if self.game_over:
+        cleared_custom = False
+        if self.custom_arrows or self.custom_highlights:
+            self.custom_arrows.clear()
+            self.custom_highlights.clear()
+            cleared_custom = True
+
+        if not getattr(self, 'is_interactive', True) or self.game_over:
+            if cleared_custom:
+                self.draw_board()
             return
+
         if self.is_ai_thinking() and not self.analysis_thinking:
+            if cleared_custom:
+                self.draw_board()
             return
+
         r, c = self.canvas_to_board(event.x, event.y)
         if r == -1 or not self.board.grid[r][c]:
+            if cleared_custom:
+                self.draw_board()
             return
+
         piece = self.board.grid[r][c]
         if piece.color != self.turn:
+            if cleared_custom:
+                self.draw_board()
             return
+            
         if self.game_mode.get() == GameMode.HUMAN_VS_BOT.value and self.turn != self.human_color:
+            if cleared_custom:
+                self.draw_board()
             return
+
         self.selected  = (r, c)
         self.drag_start = (r, c)
         self.dragging  = True
@@ -867,10 +911,15 @@ class EnhancedChessApp:
         self.canvas.tag_raise("drag_ghost")
 
     def on_drag_motion(self, event):
+        if not getattr(self, 'is_interactive', True):
+            return
         if self.dragging:
             self.canvas.coords(self.drag_piece_ghost, event.x, event.y)
 
     def on_drag_end(self, event):
+        if not getattr(self, 'is_interactive', True):
+            return
+            
         is_analysis = self.is_ai_thinking() and self.analysis_thinking
         if self.is_ai_thinking() and not is_analysis:
             self.valid_moves = []
@@ -880,6 +929,7 @@ class EnhancedChessApp:
             self.valid_moves = []
             self.draw_board()
             return
+            
         self.dragging = False
         self.canvas.delete("drag_ghost")
         row, col = self.canvas_to_board(event.x, event.y)
@@ -887,6 +937,7 @@ class EnhancedChessApp:
             self.update_ui_after_state_change()
             self.set_interactivity(True)
             return
+            
         start_pos, end_pos = self.drag_start, (row, col)
         if (start_pos, end_pos) in self.valid_moves:
             self.board.make_move(start_pos, end_pos)
@@ -900,10 +951,87 @@ class EnhancedChessApp:
                     return
                 elif mode == GameMode.HUMAN_VS_HUMAN.value:
                     self._update_analysis_after_state_change()
+                    
         self.drag_start = None
         self.update_ui_after_state_change()
         self.set_interactivity(True)
 
+    # ------------------------------------------------------------------ Right-Click Drawings
+    def on_right_click_start(self, event):
+        r, c = self.canvas_to_board(event.x, event.y)
+        if r != -1:
+            self.rc_start_pos = (r, c)
+            
+    def on_right_click_drag(self, event):
+        if not getattr(self, 'rc_start_pos', None):
+            return
+            
+        self.canvas.delete("rc_ghost")
+        r, c = self.canvas_to_board(event.x, event.y)
+        if r == -1: 
+            return
+            
+        if (r, c) != self.rc_start_pos:
+            self._draw_arrow(self.rc_start_pos[0], self.rc_start_pos[1], r, c, tags="rc_ghost")
+
+    def on_right_click_end(self, event):
+        if not getattr(self, 'rc_start_pos', None): 
+            return
+            
+        self.canvas.delete("rc_ghost")
+        r, c = self.canvas_to_board(event.x, event.y)
+        if r != -1:
+            if (r, c) == self.rc_start_pos:
+                if (r, c) in self.custom_highlights:
+                    self.custom_highlights.remove((r, c))
+                else:
+                    self.custom_highlights.add((r, c))
+            else:
+                arrow = (self.rc_start_pos, (r, c))
+                if arrow in self.custom_arrows:
+                    self.custom_arrows.remove(arrow)
+                else:
+                    self.custom_arrows.add(arrow)
+                    
+        self.rc_start_pos = None
+        self.draw_board()
+
+    def _draw_highlight(self, r, c, tags):
+        x, y = self.board_to_canvas(r, c)
+        # Semi-transparent red highlight with slightly darker solid border
+        self.canvas.create_rectangle(
+            x, y, x + self.square_size, y + self.square_size,
+            fill="#ff4444", stipple="gray50", outline="#cc0000", width=2, tags=tags)
+
+    def _draw_arrow(self, r1, c1, r2, c2, tags):
+        x1, y1 = self.board_to_canvas(r1, c1)
+        x2, y2 = self.board_to_canvas(r2, c2)
+        cx1, cy1 = x1 + self.square_size // 2, y1 + self.square_size // 2
+        cx2, cy2 = x2 + self.square_size // 2, y2 + self.square_size // 2
+        
+        d = math.hypot(cx2 - cx1, cy2 - cy1)
+        if d == 0: 
+            return
+            
+        # Add gaps from exact center so it respects the piece location nicely
+        gap = self.square_size * 0.3
+        
+        if d > gap * 2:
+            theta = math.atan2(cy2 - cy1, cx2 - cx1)
+            start_x = cx1 + math.cos(theta) * gap
+            start_y = cy1 + math.sin(theta) * gap
+            end_x = cx2 - math.cos(theta) * gap
+            end_y = cy2 - math.sin(theta) * gap
+            
+            aw = max(3, self.square_size // 7)
+            
+            self.canvas.create_line(
+                start_x, start_y, end_x, end_y, 
+                arrow=tk.LAST, fill="#ffaa00", width=aw,
+                arrowshape=(aw * 2.5, aw * 3, aw * 1.2), 
+                capstyle=tk.ROUND, joinstyle=tk.ROUND, tags=tags)
+
+    # ------------------------------------------------------------------ resets and modes
     def reset_game(self):
         if self.game_mode.get() != GameMode.AI_VS_AI.value:
             self.ai_series_running = False
@@ -961,6 +1089,8 @@ class EnhancedChessApp:
         self.selected                  = None
         self.valid_moves               = []
         self.valid_moves_for_highlight = []
+        self.custom_arrows.clear()
+        self.custom_highlights.clear()
         self.update_turn_label()
         self.update_game_info_label()
         self.update_bot_labels()
@@ -1023,8 +1153,10 @@ class EnhancedChessApp:
     def draw_board(self):
         if not self.board_image:
             return
+            
         self.canvas.itemconfig(self.board_image_id, image=self.board_image)
-        self.canvas.delete("highlight", "piece", "check_highlight", "border_highlight")
+        self.canvas.delete("highlight", "piece", "check_highlight", "border_highlight", "custom_highlight", "custom_arrow")
+        
         mode = self.game_mode.get()
         warn = (mode == GameMode.HUMAN_VS_BOT.value and self.board_orientation != self.human_color) or \
                (mode != GameMode.HUMAN_VS_BOT.value and self.board_orientation == "black")
@@ -1032,12 +1164,17 @@ class EnhancedChessApp:
             w, h = COLS * self.square_size, ROWS * self.square_size
             self.canvas.create_rectangle(2, 2, w - 2, h - 2, outline=self.COLORS['warning'],
                                          width=4, tags="border_highlight")
+                                         
         for r_m, c_m in getattr(self, 'valid_moves_for_highlight', []):
             x1, y1 = self.board_to_canvas(r_m, c_m)
             rd      = self.square_size // 5
             cx, cy  = x1 + self.square_size // 2, y1 + self.square_size // 2
             self.canvas.create_oval(cx - rd, cy - rd, cx + rd, cy + rd,
                                     fill="#1E90FF", outline="", tags="highlight")
+                                    
+        for r, c in self.custom_highlights:
+            self._draw_highlight(r, c, tags="custom_highlight")
+                                    
         for r in range(ROWS):
             for c in range(COLS):
                 piece = self.board.grid[r][c]
@@ -1053,6 +1190,7 @@ class EnhancedChessApp:
                         self.canvas.create_rectangle(
                             x1, y1, x1 + self.square_size, y1 + self.square_size,
                             outline=clr, width=4, tags="check_highlight")
+                            
                 if (r, c) != self.drag_start:
                     x, y  = self.board_to_canvas(r, c)
                     cx    = x + self.square_size // 2
@@ -1064,6 +1202,11 @@ class EnhancedChessApp:
                     self.canvas.create_text(cx, cy, text=sym, font=font,
                                             fill="#000000" if piece.color == "black" else "#FFFFFF",
                                             tags="piece")
+                                            
+        # Draw custom arrows over pieces
+        for (r1, c1), (r2, c2) in self.custom_arrows:
+            self._draw_arrow(r1, c1, r2, c2, tags="custom_arrow")
+            
         self._position_side_labels()
 
     def _position_side_labels(self):
@@ -1337,14 +1480,7 @@ class EnhancedChessApp:
         self._position_side_labels()
 
     def set_interactivity(self, on):
-        if on:
-            self.canvas.bind("<Button-1>",        self.on_drag_start)
-            self.canvas.bind("<B1-Motion>",       self.on_drag_motion)
-            self.canvas.bind("<ButtonRelease-1>", self.on_drag_end)
-        else:
-            self.canvas.unbind("<Button-1>")
-            self.canvas.unbind("<B1-Motion>")
-            self.canvas.unbind("<ButtonRelease-1>")
+        self.is_interactive = on
 
     def is_ai_thinking(self):
         return self.active_worker_name is not None

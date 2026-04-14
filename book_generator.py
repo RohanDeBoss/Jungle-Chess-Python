@@ -13,10 +13,10 @@ from AI import board_hash
 # CONFIGURATION
 # ═══════════════════════════════════════════════════════════════════════════════
 
-BOOK_FILE        = "opening_book_depth9.json"
-BOOK_PLY_DEPTH   = 4    # 4 plies = 2 full turns (White, Black, White, Black)
+BOOK_FILE        = "opening_book_6-3-5-300.json"
+BOOK_PLY_DEPTH   = 6    # 4 plies = 2 full turns (White, Black, White, Black)
 BRANCHING_FACTOR = 3    # Top 3 responses is the gold standard for books
-SEARCH_DEPTH     = 9    # Deep Pro-Level Calculation
+SEARCH_DEPTH     = 5    # Deep Pro-Level Calculation
 EVAL_TOLERANCE   = 250  # Discard alternative moves if they are 2.5 pawns worse
 
 # ═══════════════════════════════════════════════════════════════════════════════
