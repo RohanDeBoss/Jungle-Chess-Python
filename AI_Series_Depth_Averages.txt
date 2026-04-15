@@ -1,21 +1,24 @@
 === AI vs OP Series Depth Stats ===
-Games: 27  Score: AI Bot 14-10 OP Bot (Draws: 3)
+Games: 300  Score: AI Bot 137-119 OP Bot (Draws: 44)
 
 --- Global ---
-  D1   Avg:0.024s  Max:0.930s  N:2065
-  D2   Avg:0.157s  Max:2.910s  N:2043
-  D3   Avg:0.489s  Max:15.420s  N:2034
-  DTB  Avg:0.004s  Max:0.010s  N:5
+  D1   Avg:0.023s  Max:2.250s  N:18245
+  D2   Avg:0.109s  Max:3.710s  N:17955
+  D3   Avg:0.342s  Max:8.690s  N:17804
+  D4   Avg:0.721s  Max:16.120s  N:17751
+  DTB  Avg:0.001s  Max:0.010s  N:116
 
 --- AI Bot ---
-  D1   Avg:0.019s  Max:0.320s  N:1033
-  D2   Avg:0.152s  Max:2.130s  N:1021
-  D3   Avg:0.510s  Max:15.420s  N:1015
-  DTB  Avg:0.010s  Max:0.010s  N:2
+  D1   Avg:0.021s  Max:2.250s  N:9122
+  D2   Avg:0.093s  Max:3.120s  N:8981
+  D3   Avg:0.297s  Max:6.750s  N:8908
+  D4   Avg:0.653s  Max:15.960s  N:8870
+  DTB  Avg:0.000s  Max:0.000s  N:43
 
 --- OP Bot ---
-  D1   Avg:0.030s  Max:0.930s  N:1032
-  D2   Avg:0.162s  Max:2.910s  N:1022
-  D3   Avg:0.467s  Max:8.340s  N:1019
-  DTB  Avg:0.000s  Max:0.000s  N:3
+  D1   Avg:0.026s  Max:1.600s  N:9123
+  D2   Avg:0.125s  Max:3.710s  N:8974
+  D3   Avg:0.387s  Max:8.690s  N:8896
+  D4   Avg:0.789s  Max:16.120s  N:8881
+  DTB  Avg:0.001s  Max:0.010s  N:73
 

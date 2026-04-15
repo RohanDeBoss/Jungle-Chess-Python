@@ -1,4 +1,4 @@
-# AI.py (v108.5 - Reverted to 108.3 with new changes for speed)
+# AI.py (v108.6 - Tactics and sacficies fix, search anyway if tactical)
 import json
 import time
 import random
@@ -898,8 +898,9 @@ class ChessBot:
             target_piece = board.grid[r2][c2]
             swing = fast_approximate_material_swing(board, move, moving_piece, target_piece, ORDERING_VALUES)
 
-            if not is_in_check_flag and swing < 0:
-                continue
+            # In Jungle Chess, detonations often result in negative immediate 
+            # material swings, but they are highly forcing. We MUST NOT prune them just for being < 0.
+            # Delta pruning (current_margin) will safely catch truly terrible moves (like QxP hitting nothing else).
             if not is_in_check_flag and (stand_pat + swing + current_margin < alpha):
                 continue
 
@@ -949,12 +950,18 @@ class ChessBot:
             swing = fast_approximate_material_swing(board, move, moving_piece, target_piece, ORDERING_VALUES)
             is_capture_or_promo = (target_piece is not None or
                                    (type(moving_piece) is Pawn and (r2 == 0 or r2 == ROWS - 1)))
-            is_good_tactic = (swing > 0) or (swing == 0 and is_capture_or_promo)
+            
+            # In Jungle Chess, volatile moves (explosions, evaporations, piercings) 
+            # are ALWAYS critical tactics, even if the net material swing is negative.
+            is_good_tactic = is_capture_or_promo or (swing != 0)
 
             if move == hash_move:
                 score = self.BONUS_PV_MOVE
-            elif swing != 0 or is_capture_or_promo:
-                score = self.BONUS_CAPTURE + swing if swing >= 0 else self.BAD_TACTIC_PENALTY + swing
+            elif is_good_tactic:
+                # Keeps all tactical moves ranked cleanly above quiet moves.
+                # A negative swing (like -400) scores 7,999,600, sorting just below positive swings,
+                # ensuring the engine investigates the explosion before looking at quiet positional moves.
+                score = self.BONUS_CAPTURE + swing
             elif move in killers:
                 score = 4_000_000 if move == killers[0] else 3_000_000
             elif move == counter_move:
