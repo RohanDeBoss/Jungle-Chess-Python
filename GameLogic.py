@@ -1,4 +1,4 @@
-# GameLogic.py (v54 - Performance 2)
+# GameLogic.py (v54.1 - Optimised fams for speed)
 
 
 # -----------------------------------------------------------------------
@@ -1104,20 +1104,20 @@ def fast_approximate_material_swing(board, move, moving_piece, target_piece, pie
     my_type = type(moving_piece)
 
     if target_piece is not None:
-        swing += piece_values.get(type(target_piece), 0)
+        swing += piece_values[type(target_piece)]
 
     if my_type is Pawn and move[1][0] == moving_piece.promo_rank:
-        swing += piece_values.get(Queen, 0) - piece_values.get(Pawn, 0)
+        swing += piece_values[Queen] - piece_values[Pawn]
 
     if my_type is Queen and target_piece is not None:
-        swing -= piece_values.get(Queen, 0)
+        swing -= piece_values[Queen]
         for r, c in ADJACENT_SQUARES_MAP[move[1]]:
             adj = board.grid[r][c]
             if adj and adj.color != moving_piece.color:
-                swing += piece_values.get(type(adj), 0)
+                swing += piece_values[type(adj)]
         return swing
 
-    pierced_knights = []
+    pierced_knights =[]
     if my_type is Rook:
         start, end = move
         dr = (end[0] > start[0]) - (start[0] > end[0])
@@ -1126,7 +1126,7 @@ def fast_approximate_material_swing(board, move, moving_piece, target_piece, pie
         while (cr, cc) != end:
             target = board.grid[cr][cc]
             if target and target.color != moving_piece.color:
-                swing += piece_values.get(type(target), 0)
+                swing += piece_values[type(target)]
                 if type(target) is Knight:
                     pierced_knights.append((cr, cc))
             cr += dr
@@ -1136,9 +1136,9 @@ def fast_approximate_material_swing(board, move, moving_piece, target_piece, pie
         captures, passive_losses = board._get_knight_aoe_outcome(
             move[1], moving_piece.color, moving_piece)
         for piece in captures:
-            swing += piece_values.get(type(piece), 0)
+            swing += piece_values[type(piece)]
         for piece in passive_losses:
-            swing -= piece_values.get(type(piece), 0)
+            swing -= piece_values[type(piece)]
         return swing
 
     for r, c in KNIGHT_ATTACKS_FROM[move[1]]:
@@ -1148,7 +1148,7 @@ def fast_approximate_material_swing(board, move, moving_piece, target_piece, pie
                 and (r, c) not in pierced_knights):
             evap_type = (Queen if (my_type is Pawn and move[1][0] == moving_piece.promo_rank)
                          else my_type)
-            swing -= piece_values.get(evap_type, 0)
+            swing -= piece_values[evap_type]
             break
 
     return swing

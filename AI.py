@@ -1,4 +1,4 @@
-# AI.py (v108.6 - Tactics and sacficies fix, search anyway if tactical)
+# AI.py (v109)
 import json
 import time
 import random
@@ -174,7 +174,7 @@ class ChessBot:
     Q_MARGIN_MAX = 950
     Q_MARGIN_MIN = 250
 
-    LMR_DEPTH_THRESHOLD = 3
+    LMR_DEPTH_THRESHOLD = 4
     LMR_MOVE_COUNT_THRESHOLD = 4
     LMR_REDUCTION = 1
     NMP_MIN_DEPTH = 3
@@ -199,10 +199,10 @@ class ChessBot:
     OPENING_PAWN_CENTER_WEIGHT = 10
     OPENING_CENTER_PAWN_BONUS = 28
     OPENING_CENTRAL_FILES = (COLS // 2 - 1, COLS // 2)
-    ASP_WINDOW_INIT = 150
+    ASP_WINDOW_INIT = 250
     ASP_MAX_RETRIES = 3
 
-    MAX_EXTENSION_DEPTH = 14  # absolute ply ceiling including check extensions
+    MAX_EXTENSION_DEPTH = 12  # absolute ply ceiling including check extensions
 
     EVAL_PAWN_PHALANX_BONUS = 5
     EVAL_ROOK_ALIGNMENT_BONUS = 15
@@ -217,6 +217,7 @@ class ChessBot:
     EVAL_PASSED_PAWN_PER_RANK = 12
     LONE_ROOK_PENALTIES = (550, 200, 150, 80, 40)
     LONE_BISHOP_PENALTIES = (650, 250, 170, 100, 50)
+    EVAL_PAWN_VULNERABILITY_EG = 15
 
     def __init__(self, board, color, position_counts, comm_queue, cancellation_event,
                  bot_name=None, ply_count=0, game_mode="bot", max_moves=200,
@@ -236,7 +237,13 @@ class ChessBot:
         self.time_left = time_left
         self.increment = increment
         self.stop_time = None
-        self.time_check_mask = 2047
+        
+        # Always calculate a sensible mask, even if not using time controls.
+        if time_left:
+             allocated = (self.time_left / 30.0) + (self.increment * 0.8)
+             self.time_check_mask = self._calc_time_check_mask(allocated)
+        else:
+             self.time_check_mask = 511 # A reasonable default for pondering/fixed-depth
         # -----------------------
 
         # --- OPENING BOOK FLAG ---
@@ -280,12 +287,12 @@ class ChessBot:
     def _report_move(self, move):     self.comm_queue.put(('move', move))
 
     def _calc_time_check_mask(self, allocated):
-        if allocated <= 0.15: return 31
-        if allocated <= 0.30: return 63
-        if allocated <= 0.60: return 127
-        if allocated <= 1.20: return 255
-        if allocated <= 2.50: return 511
-        return 2047
+        if allocated <= 0.15: return 15
+        if allocated <= 0.30: return 31
+        if allocated <= 0.60: return 63
+        if allocated <= 1.20: return 127
+        if allocated <= 2.50: return 255
+        return 511
 
     def _format_move(self, board_before, move):
         if not move: return "None"
@@ -504,11 +511,10 @@ class ChessBot:
                 allocated = min(allocated, max_alloc)
                 allocated = min(max_alloc, max(MIN_MOVE_TIME, allocated))
                 self.stop_time = time.time() + allocated
-                self.time_check_mask = self._calc_time_check_mask(allocated)
                 target_depth = 100
             else:
                 self.stop_time = None
-                self.time_check_mask = 2047
+                # self.time_check_mask is now set in __init__
                 target_depth = self.search_depth
 
             for current_depth in range(1, target_depth + 1):
@@ -782,16 +788,27 @@ class ChessBot:
                 if not is_good_tactic: quiet_moves_tried.append(move)
 
                 if futility_prune and not is_good_tactic and legal_moves_count > 1:
-                    board.unmake_move(record)
-                    continue
+                    # SAFETY GUARD: Never prune a quiet move that delivers check.
+                    # Thanks to the highly optimized is_square_attacked in GameLogic,
+                    # this check is now fast enough to run here without tanking NPS.
+                    if not is_in_check(board, opponent_turn):
+                        board.unmake_move(record)
+                        continue
 
                 reduction = 0
                 if (depth >= self.LMR_DEPTH_THRESHOLD and
                         legal_moves_count > self.LMR_MOVE_COUNT_THRESHOLD and
                         not is_in_check_flag and not is_good_tactic):
+                    # Base reduction
                     reduction = self.LMR_REDUCTION
-                    if history_table[f_sq][t_sq] < 0: reduction += 1
-                    if depth >= 8: reduction += 1
+                    # Scale reduction dynamically based on depth and how "late" the move is
+                    if depth >= 6 and legal_moves_count >= 6:
+                        reduction += 1
+                    if depth >= 9:
+                        reduction += 1
+                    # Penalize moves with terrible history
+                    if history_table[f_sq][t_sq] < 0: 
+                        reduction += 1
 
                 search_depth_child = max(0, depth - 1 - reduction)
                 if reduction > 0 and search_depth_child == 0:
@@ -1034,6 +1051,7 @@ class ChessBot:
         PASSED_PAWN_PER_RANK     = self.EVAL_PASSED_PAWN_PER_RANK
         LONE_ROOK_PENALTIES      = self.LONE_ROOK_PENALTIES
         LONE_BISHOP_PENALTIES    = self.LONE_BISHOP_PENALTIES
+        PAWN_VULN_EG             = self.EVAL_PAWN_VULNERABILITY_EG
 
         king_zone_attacks = [0, 0]
 
@@ -1154,6 +1172,14 @@ class ChessBot:
             if rook_counts[i] > 0:
                 bonus = rook_counts[i] * total_pawns_on_board * ROOK_PAWN_SCALING
                 scores_mg[i] += bonus; scores_eg[i] += bonus
+
+            # --- JUNGLE CHESS HEURISTIC: Pawn Vulnerability ---
+            # Pawns lose value in the endgame if the opponent has Rooks (pierce) or Knights (evaporate)
+            # because they can be safely destroyed even if defended by other pieces.
+            enemy_killers = rook_counts[1 - i] + knight_counts[1 - i]
+            if enemy_killers > 0:
+                vuln_penalty = pawn_counts[i] * enemy_killers * PAWN_VULN_EG
+                scores_eg[i] -= vuln_penalty
 
         if king_pos[0] and king_pos[1]:
             dist = abs(king_pos[0][0] - king_pos[1][0]) + abs(king_pos[0][1] - king_pos[1][1])
