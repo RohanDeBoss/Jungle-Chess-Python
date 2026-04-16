@@ -1,4 +1,4 @@
-# AI.py (v109)
+# AI.py (v109.01 - Improved incremental efficiency)
 import json
 import time
 import random
@@ -101,19 +101,16 @@ def incremental_hash(parent_hash, record):
 
     h ^= arr[c_idx][p_idx][sr][sc]
     
-    mp_removed = False
-    for p, _r, _c in record.removed_pieces:
-        if p is mp:
-            mp_removed = True
-            break
-            
-    if not mp_removed:
-        h ^= arr[c_idx][p_idx][er][ec]
-
+    mp_survived = True
     for piece, r, c in record.removed_pieces:
-        if piece is not mp:
+        if piece is mp:
+            mp_survived = False
+        else:
             pc_idx = 0 if piece.color == 'white' else 1
             h ^= arr[pc_idx][idx[type(piece)]][r][c]
+
+    if mp_survived:
+        h ^= arr[c_idx][p_idx][er][ec]
 
     for piece, r, c in record.added_pieces:
         pc_idx = 0 if piece.color == 'white' else 1

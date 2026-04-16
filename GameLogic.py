@@ -1,4 +1,4 @@
-# GameLogic.py (v55 - Optimised w. yeild and reduce redundant calculations)
+# GameLogic.py (v55.11 - More micro optimisations, reroll randomness)
 
 
 # -----------------------------------------------------------------------
@@ -460,35 +460,36 @@ class Board:
         # ── 6. Knight AOE ──
         grid = self.grid
         if mp_type is Knight:
-            knight_instance = grid[end[0]][end[1]]
-            if knight_instance is not None:
-                captured_ev, passive_losses, enemy_knights = \
-                    self._collect_knight_evaporation(end, mc, knight_instance)
-                delayed = set(enemy_knights)
-                done    = set()
-                for piece in captured_ev + passive_losses:
-                    if (piece is None or piece is knight_instance
-                            or piece in delayed or piece in done
-                            or piece.pos is None):
-                        continue
-                    removed.append((piece, piece.pos[0], piece.pos[1]))
-                    self.remove_piece(piece.pos[0], piece.pos[1])
-                    done.add(piece)
-                for ek in enemy_knights:
-                    if ek.pos is not None:
-                        removed.append((ek, ek.pos[0], ek.pos[1]))
-                        self.remove_piece(ek.pos[0], ek.pos[1])
-                if knight_instance in passive_losses and knight_instance.pos is not None:
-                    removed.append((knight_instance, end[0], end[1]))
-                    self.remove_piece(end[0], end[1])
+            enemy_knight_coords =[]
+            
+            # Step 6a: Identify enemy knights in blast radius
+            for r, c in KNIGHT_ATTACKS_FROM[end]:
+                target = grid[r][c]
+                if target is not None and target.color != mc:
+                    if type(target) is Knight:
+                        enemy_knight_coords.append((r, c))
+            
+            # Step 6b: Enemy knights counter-evaporate
+            for ek_r, ek_c in enemy_knight_coords:
+                for r, c in KNIGHT_ATTACKS_FROM[(ek_r, ek_c)]:
+                    target = grid[r][c]
+                    if target is not None and target.color == mc:
+                        removed.append((target, r, c))
+                        self.remove_piece(r, c)
+            
+            # Step 6c: The moving knight evaporates targets
+            for r, c in KNIGHT_ATTACKS_FROM[end]:
+                target = grid[r][c]
+                if target is not None and target.color != mc:
+                    removed.append((target, r, c))
+                    self.remove_piece(r, c)
         else:
             # Passive evaporation check
             victim = grid[end[0]][end[1]]
             if victim is not None:
                 for r, c in KNIGHT_ATTACKS_FROM[end]:
                     killer = grid[r][c]
-                    if (killer is not None and type(killer) is Knight
-                            and killer.color != victim.color):
+                    if killer is not None and type(killer) is Knight and killer.color != mc:
                         removed.append((victim, end[0], end[1]))
                         self.remove_piece(end[0], end[1])
                         break
@@ -731,15 +732,12 @@ def _bishop_attacks_square(board, start, target, bishop_color):
 def is_square_attacked(board, r, c, attacking_color):
     grid            = board.grid
     defending_color = 'black' if attacking_color == 'white' else 'white'
+    attacking_pieces = board.white_pieces if attacking_color == 'white' else board.black_pieces
     attacker_counts = board.piece_counts[attacking_color]
 
-    # Direct [X] access — all keys always present; avoids .get() overhead
-    non_king_pieces = (
-        attacker_counts[Pawn]   + attacker_counts[Knight] +
-        attacker_counts[Bishop] + attacker_counts[Rook]   +
-        attacker_counts[Queen]
-    )
-    if non_king_pieces == 0:
+    # O(1) length check bypassing 5 dictionary lookups. 
+    # Perfectly handles search states where the King might be temporarily dead.
+    if len(attacking_pieces) == attacker_counts[King]:
         enemy_king_pos = board.find_king_pos(attacking_color)
         if enemy_king_pos:
             kr, kc         = enemy_king_pos
@@ -752,8 +750,6 @@ def is_square_attacked(board, r, c, attacking_color):
                 if grid[kr + dr // 2][kc + dc // 2] is None:
                     return True
         return False
-
-    attacking_pieces = board.white_pieces if attacking_color == 'white' else board.black_pieces
 
     # ── Knight check: reverse lookup — O(8 direct + 8×8 two-hop) ──
     if attacker_counts[Knight] > 0:
