@@ -1,4 +1,4 @@
-# AI.py (v109.2 - Order moves speedup)
+# AI.py (v109.01 - Improved incremental efficiency)
 import json
 import time
 import random
@@ -960,20 +960,14 @@ class ChessBot:
             (r1, c1), (r2, c2) = move
             moving_piece = board.grid[r1][c1]
             target_piece = board.grid[r2][c2]
-            m_type = type(moving_piece)
 
+            swing = fast_approximate_material_swing(board, move, moving_piece, target_piece, ORDERING_VALUES)
             is_capture_or_promo = (target_piece is not None or
-                                   (m_type is Pawn and (r2 == 0 or r2 == ROWS - 1)))
+                                   (type(moving_piece) is Pawn and (r2 == 0 or r2 == ROWS - 1)))
             
-            # FAST-PATH: If the move is a quiet step by a King, Queen, Bishop, or Pawn, 
-            # its material swing is mathematically guaranteed to be 0. Skip the function entirely.
-            if not is_capture_or_promo and m_type is not Knight and m_type is not Rook:
-                swing = 0
-            else:
-                swing = fast_approximate_material_swing(board, move, moving_piece, target_piece, ORDERING_VALUES)
-            
-            # Strict definition to allow LMR to efficiently trim the fat deep in the tree
-            is_good_tactic = (swing > 0) or (swing == 0 and is_capture_or_promo)
+            # In Jungle Chess, volatile moves (explosions, evaporations, piercings) 
+            # are ALWAYS critical tactics, even if the net material swing is negative.
+            is_good_tactic = is_capture_or_promo or (swing != 0)
 
             if move == hash_move:
                 score = self.BONUS_PV_MOVE
