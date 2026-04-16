@@ -1,4 +1,4 @@
-# GameLogic.py (v54.1 - Optimised fams for speed)
+# GameLogic.py (v55 - Optimised w. yeild and reduce redundant calculations)
 
 
 # -----------------------------------------------------------------------
@@ -99,47 +99,42 @@ class King(Piece):
     def symbol(self): return "♔" if self.color == "white" else "♚"
 
     def get_valid_moves(self, board, pos):
-        moves = []
         r_start, c_start = pos
         for dr, dc in DIRECTIONS['king']:
             r1, c1 = r_start + dr, c_start + dc
             if 0 <= r1 < ROWS and 0 <= c1 < COLS:
                 target = board.grid[r1][c1]
                 if target is None or target.color == self.opponent_color:
-                    moves.append((r1, c1))
+                    yield (r1, c1)
                     if target is None:
                         r2, c2 = r1 + dr, c1 + dc
                         if 0 <= r2 < ROWS and 0 <= c2 < COLS:
                             t2 = board.grid[r2][c2]
                             if t2 is None or t2.color == self.opponent_color:
-                                moves.append((r2, c2))
-        return moves
+                                yield (r2, c2)
 
 
 class Queen(Piece):
     def symbol(self): return "♕" if self.color == "white" else "♛"
 
     def get_valid_moves(self, board, pos):
-        moves       = []
         grid        = board.grid
         start_index = pos[0] * COLS + pos[1]
         for i in range(8):
             for r, c in RAYS[start_index][i]:
                 target = grid[r][c]
                 if target is None:
-                    moves.append((r, c))
+                    yield (r, c)
                 else:
                     if target.color != self.color:
-                        moves.append((r, c))
+                        yield (r, c)
                     break
-        return moves
 
 
 class Rook(Piece):
     def symbol(self): return "♖" if self.color == "white" else "♜"
 
     def get_valid_moves(self, board, pos):
-        moves       = []
         grid        = board.grid
         start_index = pos[0] * COLS + pos[1]
         for i in range(4):
@@ -147,8 +142,7 @@ class Rook(Piece):
                 target = grid[r][c]
                 if target and target.color == self.color:
                     break
-                moves.append((r, c))
-        return moves
+                yield (r, c)
 
 
 class Bishop(Piece):
@@ -184,15 +178,18 @@ class Bishop(Piece):
                 moves.add((cr, cc))
                 cd = d2 if cd == d1 else d1
 
-        return list(moves)
+        for m in moves:
+            yield m
 
 
 class Knight(Piece):
     def symbol(self): return "♘" if self.color == "white" else "♞"
 
     def get_valid_moves(self, board, pos):
-        return [(r, c) for r, c in KNIGHT_ATTACKS_FROM[pos]
-                if board.grid[r][c] is None]
+        grid = board.grid
+        for r, c in KNIGHT_ATTACKS_FROM[pos]:
+            if grid[r][c] is None:
+                yield (r, c)
 
 
 class Pawn(Piece):
@@ -205,7 +202,6 @@ class Pawn(Piece):
     def symbol(self): return "♙" if self.color == "white" else "♟"
 
     def get_valid_moves(self, board, pos):
-        moves     = []
         r, c      = pos
         direction = self.direction
         grid      = board.grid
@@ -214,22 +210,21 @@ class Pawn(Piece):
         if 0 <= one_r < ROWS:
             target1 = grid[one_r][c]
             if target1 is None or target1.color == self.opponent_color:
-                moves.append((one_r, c))
+                yield (one_r, c)
                 if r == self.starting_row and target1 is None:
                     two_r   = r + (2 * direction)
                     target2 = grid[two_r][c]
                     if target2 is None or target2.color == self.opponent_color:
-                        moves.append((two_r, c))
+                        yield (two_r, c)
 
         if c > 0:
             target = grid[r][c - 1]
             if target and target.color == self.opponent_color:
-                moves.append((r, c - 1))
+                yield (r, c - 1)
         if c < COLS - 1:
             target = grid[r][c + 1]
             if target and target.color == self.opponent_color:
-                moves.append((r, c + 1))
-        return moves
+                yield (r, c + 1)
 
 
 # -----------------------------------------------------------------------
@@ -1102,6 +1097,7 @@ def generate_all_tactical_moves(board, color):
 def fast_approximate_material_swing(board, move, moving_piece, target_piece, piece_values):
     swing   = 0
     my_type = type(moving_piece)
+    my_color = moving_piece.color
 
     if target_piece is not None:
         swing += piece_values[type(target_piece)]
@@ -1113,11 +1109,11 @@ def fast_approximate_material_swing(board, move, moving_piece, target_piece, pie
         swing -= piece_values[Queen]
         for r, c in ADJACENT_SQUARES_MAP[move[1]]:
             adj = board.grid[r][c]
-            if adj and adj.color != moving_piece.color:
+            if adj and adj.color != my_color:
                 swing += piece_values[type(adj)]
         return swing
 
-    pierced_knights =[]
+    pierced_knights = []
     if my_type is Rook:
         start, end = move
         dr = (end[0] > start[0]) - (start[0] > end[0])
@@ -1125,7 +1121,7 @@ def fast_approximate_material_swing(board, move, moving_piece, target_piece, pie
         cr, cc = start[0] + dr, start[1] + dc
         while (cr, cc) != end:
             target = board.grid[cr][cc]
-            if target and target.color != moving_piece.color:
+            if target and target.color != my_color:
                 swing += piece_values[type(target)]
                 if type(target) is Knight:
                     pierced_knights.append((cr, cc))
@@ -1133,18 +1129,29 @@ def fast_approximate_material_swing(board, move, moving_piece, target_piece, pie
             cc += dc
 
     if my_type is Knight:
-        captures, passive_losses = board._get_knight_aoe_outcome(
-            move[1], moving_piece.color, moving_piece)
-        for piece in captures:
-            swing += piece_values[type(piece)]
-        for piece in passive_losses:
-            swing -= piece_values[type(piece)]
+        seen_passive = set()
+        for r, c in KNIGHT_ATTACKS_FROM[move[1]]:
+            target = board.grid[r][c]
+            if target and target.color != my_color:
+                swing += piece_values[type(target)]
+                if type(target) is Knight:
+                    # Enemy knight passively evaporates us and potentially our allies
+                    for pr, pc in KNIGHT_ATTACKS_FROM[(r, c)]:
+                        if (pr, pc) == move[1]:
+                            if Knight not in seen_passive: 
+                                swing -= piece_values[Knight]
+                                seen_passive.add(Knight)
+                        else:
+                            ptarget = board.grid[pr][pc]
+                            if ptarget and ptarget.color == my_color and ptarget not in seen_passive:
+                                swing -= piece_values[type(ptarget)]
+                                seen_passive.add(ptarget)
         return swing
 
     for r, c in KNIGHT_ATTACKS_FROM[move[1]]:
         pk = board.grid[r][c]
         if (pk and type(pk) is Knight
-                and pk.color != moving_piece.color
+                and pk.color != my_color
                 and (r, c) not in pierced_knights):
             evap_type = (Queen if (my_type is Pawn and move[1][0] == moving_piece.promo_rank)
                          else my_type)
@@ -1152,7 +1159,6 @@ def fast_approximate_material_swing(board, move, moving_piece, target_piece, pie
             break
 
     return swing
-
 
 def format_move(move):
     if not move:
