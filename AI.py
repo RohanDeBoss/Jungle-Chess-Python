@@ -1,7 +1,9 @@
-# AI.py (v109.1 - lmr threshold = 3)
+# AI.py (v109.2 - integration fixes)
 import json
+import os
 import time
 import random
+import glob
 from collections import namedtuple
 from GameLogic import *
 from TablebaseManager import TablebaseManager
@@ -141,17 +143,39 @@ def board_to_fen(board, turn):
             fen += '/'
     return fen + (' w' if turn == 'white' else ' b')
 
-import glob
 OPENING_BOOK = {}
-try:
-    book_files = glob.glob("opening_book*")
-    if book_files:
-        book_filename = book_files[0]
-        with open(book_filename, "r") as f:
+
+
+def _find_opening_book_files():
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    patterns = (
+        os.path.join(base_dir, "opening books", "opening_book*.json"),
+        os.path.join(base_dir, "opening_book*.json"),
+    )
+    seen = set()
+    matches = []
+    for pattern in patterns:
+        for path in glob.glob(pattern):
+            norm = os.path.normcase(os.path.abspath(path))
+            if norm in seen:
+                continue
+            seen.add(norm)
+            matches.append(path)
+    return sorted(
+        matches,
+        key=lambda path: (os.path.getmtime(path), os.path.basename(path)),
+        reverse=True,
+    )
+
+
+for _book_filename in _find_opening_book_files():
+    try:
+        with open(_book_filename, "r", encoding="utf-8") as f:
             OPENING_BOOK = json.load(f)
-        print(f"Loaded Opening Book with {len(OPENING_BOOK)} positions from {book_filename}.")
-except Exception as e:
-    print(f"Opening book not found or invalid: {e}")
+        print(f"Loaded Opening Book with {len(OPENING_BOOK)} positions from {_book_filename}.")
+        break
+    except Exception as e:
+        print(f"Opening book not found or invalid at {_book_filename}: {e}")
 # --------------------------
 
 # --- SEARCH STRUCTURES ---

@@ -26,15 +26,14 @@ _CLASS_TO_FEN_CHAR = {Pawn:'P', Knight:'N', Bishop:'B', Rook:'R', Queen:'Q', Kin
 # Persistent worker — runs in a subprocess, imports happen ONCE at startup.
 # ---------------------------------------------------------------------------
 class TaskQueueWrapper:
-    """Intercepts messages from the bot to attach the current task_id to moves."""
+    """Intercepts worker messages and tags them with the current task_id."""
     def __init__(self, real_queue, task_id):
         self.real_queue = real_queue
         self.task_id = task_id
 
     def put(self, item):
-        # Attach the task_id only to 'move' messages
-        if isinstance(item, tuple) and item[0] == 'move':
-            self.real_queue.put(('move', item[1], self.task_id))
+        if isinstance(item, tuple) and item and item[0] in {'move', 'log', 'eval', 'pv'}:
+            self.real_queue.put(item + (self.task_id,))
         else:
             self.real_queue.put(item)
 
@@ -135,6 +134,7 @@ class EnhancedChessApp:
         self.analysis_thinking  = False
         self.main_worker        = None   
         self.op_worker          = None
+        self._shutting_down     = False
 
         # --- BOARD / GAME STATE ---
         self.board        = Board()
@@ -225,13 +225,74 @@ class EnhancedChessApp:
         self.op_worker.start()
 
     def _on_close(self):
-        """Gracefully shut down workers before destroying the window."""
+        """Shut down workers and queues so window close can't hang the process."""
+        if self._shutting_down:
+            return
+        self._shutting_down = True
+        self.clock_running = False
+
         try:
-            self.main_work_queue.put(None)
-            self.op_work_queue.put(None)
+            self._stop_ai_process(drain_queue=False, invalidate_task=True)
+        except Exception:
+            pass
+
+        for event in (self.main_cancel_event, self.op_cancel_event):
+            try:
+                event.set()
+            except Exception:
+                pass
+
+        for queue in (self.main_work_queue, self.op_work_queue):
+            try:
+                queue.put_nowait(None)
+            except Exception:
+                try:
+                    queue.put(None, timeout=0.1)
+                except Exception:
+                    pass
+
+        for worker in (self.main_worker, self.op_worker):
+            if worker is None:
+                continue
+            try:
+                worker.join(timeout=0.4)
+            except Exception:
+                pass
+            if worker.is_alive():
+                try:
+                    worker.terminate()
+                except Exception:
+                    pass
+                try:
+                    worker.join(timeout=0.4)
+                except Exception:
+                    pass
+
+        for queue in (self.comm_queue, self.main_work_queue, self.op_work_queue):
+            try:
+                queue.close()
+            except Exception:
+                pass
+            try:
+                queue.cancel_join_thread()
+            except Exception:
+                pass
+
+        try:
+            self.master.quit()
         except Exception:
             pass
         self.master.destroy()
+
+    def _message_task_id(self, msg):
+        if not isinstance(msg, tuple) or not msg:
+            return None
+        bare_lengths = {'log': 2, 'eval': 3, 'pv': 5, 'move': 2}
+        bare_len = bare_lengths.get(msg[0])
+        if bare_len is None or len(msg) != bare_len + 1:
+            return None
+        task_id = msg[-1]
+        return task_id if isinstance(task_id, int) else None
 
     # ------------------------------------------------------------------ helpers
     def _format_san_display(self, s):
@@ -1248,10 +1309,15 @@ class EnhancedChessApp:
 
     # ------------------------------------------------------------------ comm queue / PV
     def process_comm_queue(self):
+        if self._shutting_down:
+            return
         try:
             while not self.comm_queue.empty():
                 msg  = self.comm_queue.get_nowait()
                 kind = msg[0]
+                msg_task_id = self._message_task_id(msg)
+                if msg_task_id is not None and msg_task_id != self.current_task_id:
+                    continue
                 if kind == 'log':
                     print(msg[1])
                     if self.auto_save_stats_var.get() and self.game_mode.get() == GameMode.AI_VS_AI.value:
@@ -1267,8 +1333,6 @@ class EnhancedChessApp:
                     self.last_pv_message = msg
                     self._render_pv()
                 elif kind == 'move':
-                    msg_task_id = msg[2] if len(msg) > 2 else -1
-                    
                     # Only accept the move if it matches the current generation ID
                     if self.active_worker_name is not None and msg_task_id == self.current_task_id:
                         self.active_worker_name = None
@@ -1277,7 +1341,11 @@ class EnhancedChessApp:
         except Exception:
             pass
         finally:
-            self.master.after(20, self.process_comm_queue)
+            if not self._shutting_down:
+                try:
+                    self.master.after(20, self.process_comm_queue)
+                except Exception:
+                    pass
 
     def _render_pv(self):
         if not getattr(self, 'show_pv_var', None) or not self.show_pv_var.get():
@@ -1346,30 +1414,35 @@ class EnhancedChessApp:
             self.set_interactivity(False)
         self.update_bot_labels()
 
-    def _stop_ai_process(self):
+    def _stop_ai_process(self, drain_queue=True, invalidate_task=True):
         """Cancel the current task (worker stays alive)."""
         if self.active_worker_name == 'main':
             self.main_cancel_event.set()
         elif self.active_worker_name == 'op':
             self.op_cancel_event.set()
 
+        if invalidate_task:
+            self.current_task_id += 1
+
         self.active_worker_name = None
         self.analysis_thinking  = False
 
         # Drain any messages already in the queue from the cancelled task.
-        while not self.comm_queue.empty():
-            try:
-                self.comm_queue.get_nowait()
-            except Exception:
-                break
+        if drain_queue:
+            while not self.comm_queue.empty():
+                try:
+                    self.comm_queue.get_nowait()
+                except Exception:
+                    break
 
-        if self.game_mode.get() == GameMode.HUMAN_VS_HUMAN.value and not self.analysis_mode_var.get():
+        if not self._shutting_down and self.game_mode.get() == GameMode.HUMAN_VS_HUMAN.value and not self.analysis_mode_var.get():
             self.last_eval_score, self.last_eval_depth = 0.0, None
             self.draw_eval_bar(0)
             self.eval_score_label.config(text="Even")
 
-        self.set_interactivity(True)
-        self.update_bot_labels()
+        if not self._shutting_down:
+            self.set_interactivity(True)
+            self.update_bot_labels()
 
     def _update_analysis_after_state_change(self):
         self._stop_ai_process()

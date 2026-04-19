@@ -319,6 +319,8 @@ class TablebaseManager:
             (wn1, wp1_sq), (wn2, wp2_sq) = w_pairs[0], w_pairs[1]
             bn = type(b_objs[0]).__name__
             bp_sq = b_objs[0].pos[0]*8 + b_objs[0].pos[1]
+            wk_sq = wk
+            bk_sq = bk
             
             tb = f"K_{wn1}_{wn2}_vs_{bn}_K_sml"
             if tb in self.tables:

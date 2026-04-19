@@ -9,6 +9,13 @@ TB_DIR = "tablebases"
 SQUARE_SIZE = 60
 BOARD_COLOR_1 = "#D2B48C"
 BOARD_COLOR_2 = "#8B5A2B"
+CATEGORY_ORDER = (
+    "3-Man",
+    "4-Man Same-Side",
+    "4-Man Cross",
+    "5-Man Same-Side",
+    "5-Man Cross",
+)
 
 PIECE_CLASSES = {'K': King, 'Q': Queen, 'R': Rook, 'B': Bishop, 'N': Knight, 'P': Pawn}
 PIECE_CHARS = {'King': 'K', 'Queen': 'Q', 'Rook': 'R', 'Bishop': 'B', 'Knight': 'N', 'Pawn': 'P'}
@@ -24,6 +31,42 @@ for c in range(4):
     for r in range(c + 1):
         NON_PAWN_WK_SQUARES.append(r * 8 + c)
 
+
+def parse_tablebase_filename(filename):
+    stem = filename[:-8] if filename.endswith("_sml.bin") else filename
+    parts = stem.split('_')
+    if len(parts) < 3 or parts[0] != 'K' or parts[-1] != 'K':
+        return None
+
+    if 'vs' in parts:
+        vs_idx = parts.index('vs')
+        white_pieces = parts[1:vs_idx]
+        black_pieces = parts[vs_idx + 1:-1]
+        if len(white_pieces) == 1 and len(black_pieces) == 1:
+            category = "4-Man Cross"
+        elif len(white_pieces) == 2 and len(black_pieces) == 1:
+            category = "5-Man Cross"
+        else:
+            return None
+    else:
+        white_pieces = parts[1:-1]
+        black_pieces = []
+        if len(white_pieces) == 1:
+            category = "3-Man"
+        elif len(white_pieces) == 2:
+            category = "4-Man Same-Side"
+        elif len(white_pieces) == 3:
+            category = "5-Man Same-Side"
+        else:
+            return None
+
+    return {
+        "filename": filename,
+        "category": category,
+        "white_pieces": white_pieces,
+        "black_pieces": black_pieces,
+    }
+
 class TBViewerApp:
     def __init__(self, root):
         self.root = root
@@ -33,7 +76,7 @@ class TBViewerApp:
 
         self.fens = []
         self.current_fens = []
-        self.categorized_files = {"3-Man": [], "4-Man Same-Side": [], "4-Man Cross": []}
+        self.categorized_files = {category: [] for category in CATEGORY_ORDER}
         
         self.setup_styles()
         self.build_ui()
@@ -108,13 +151,13 @@ class TBViewerApp:
         if not files: return
 
         for f in sorted(files):
-            # Remove the "_sml.bin" so the split logic works perfectly
-            parts = f.replace("_sml.bin", "").split('_')
-            if len(parts) == 3: self.categorized_files["3-Man"].append(f)
-            elif len(parts) == 4: self.categorized_files["4-Man Same-Side"].append(f)
-            elif len(parts) == 5: self.categorized_files["4-Man Cross"].append(f)
+            metadata = parse_tablebase_filename(f)
+            if metadata is None:
+                continue
+            self.categorized_files[metadata["category"]].append(f)
         
-        self.category_combo['values'] = list(self.categorized_files.keys())
+        available_categories = [category for category in CATEGORY_ORDER if self.categorized_files[category]]
+        self.category_combo['values'] = available_categories
         if self.category_combo['values']:
             self.category_combo.current(0)
             self.on_select_category(None)
@@ -150,13 +193,11 @@ class TBViewerApp:
         if not filename: return
         
         filepath = os.path.join(TB_DIR, filename)
-        parts = filename.replace("_sml.bin", "").split('_')
+        metadata = parse_tablebase_filename(filename)
+        if metadata is None:
+            messagebox.showerror("Error", f"Could not parse tablebase name:\n{filename}")
+            return
         has_pawn = "Pawn" in filename
-
-        tb_type, w_pieces, b_pieces = 0, [], []
-        if len(parts) == 3: tb_type, w_pieces = 3, [parts[1]]
-        elif len(parts) == 4: tb_type, w_pieces = 4, [parts[1], parts[2]]
-        elif len(parts) == 5: tb_type, w_pieces, b_pieces = 5, [parts[1]], [parts[3]]
 
         try:
             data = np.memmap(filepath, dtype=np.int16, mode='r')
@@ -177,7 +218,7 @@ class TBViewerApp:
                 for idx in indices:
                     if count >= 100: break
                     
-                    placements, turn = self.decode_placements(idx, tb_type, w_pieces, b_pieces, has_pawn)
+                    placements, turn = self.decode_placements(idx, metadata, has_pawn)
                     if not placements: continue
                     
                     # --- CRITICAL FIX: Ghost State Filter ---
@@ -201,33 +242,66 @@ class TBViewerApp:
         except Exception as e:
             messagebox.showerror("Error", f"Failed to parse tablebase:\n{e}")
 
-    def decode_placements(self, flat, tb_type, w_pieces, b_pieces, has_pawn):
+    def decode_placements(self, flat, metadata, has_pawn):
         turn = flat % 2
         rest = flat // 2
         wk_squares = PAWN_WK_SQUARES if has_pawn else NON_PAWN_WK_SQUARES
+        white_pieces = metadata["white_pieces"]
+        black_pieces = metadata["black_pieces"]
+        category = metadata["category"]
 
-        if tb_type == 3:
+        if category == "3-Man":
             bk = rest % 64
             p1 = (rest // 64) % 64
             wk_idx = rest // 4096
             wk = wk_squares[wk_idx]
-            return [('K', wk), ('k', bk), (PIECE_CHARS[w_pieces[0]], p1)], turn
+            return [('K', wk), ('k', bk), (PIECE_CHARS[white_pieces[0]], p1)], turn
 
-        elif tb_type == 4:
+        elif category == "4-Man Same-Side":
             bk = rest % 64
             p2 = (rest // 64) % 64
             p1 = (rest // 4096) % 64
             wk_idx = rest // 262144
             wk = wk_squares[wk_idx]
-            return [('K', wk), ('k', bk), (PIECE_CHARS[w_pieces[0]], p1), (PIECE_CHARS[w_pieces[1]], p2)], turn
+            return [('K', wk), ('k', bk), (PIECE_CHARS[white_pieces[0]], p1), (PIECE_CHARS[white_pieces[1]], p2)], turn
 
-        elif tb_type == 5:
+        elif category == "4-Man Cross":
             bp = rest % 64
             bk = (rest // 64) % 64
             wp = (rest // 4096) % 64
             wk_idx = rest // 262144
             wk = wk_squares[wk_idx]
-            return [('K', wk), ('k', bk), (PIECE_CHARS[w_pieces[0]], wp), (PIECE_CHARS[b_pieces[0]].lower(), bp)], turn
+            return [('K', wk), ('k', bk), (PIECE_CHARS[white_pieces[0]], wp), (PIECE_CHARS[black_pieces[0]].lower(), bp)], turn
+
+        elif category == "5-Man Same-Side":
+            bk = rest % 64
+            p3 = (rest // 64) % 64
+            p2 = (rest // 4096) % 64
+            p1 = (rest // 262144) % 64
+            wk_idx = rest // 16777216
+            wk = wk_squares[wk_idx]
+            return [
+                ('K', wk),
+                ('k', bk),
+                (PIECE_CHARS[white_pieces[0]], p1),
+                (PIECE_CHARS[white_pieces[1]], p2),
+                (PIECE_CHARS[white_pieces[2]], p3),
+            ], turn
+
+        elif category == "5-Man Cross":
+            bp = rest % 64
+            bk = (rest // 64) % 64
+            wp2 = (rest // 4096) % 64
+            wp1 = (rest // 262144) % 64
+            wk_idx = rest // 16777216
+            wk = wk_squares[wk_idx]
+            return [
+                ('K', wk),
+                ('k', bk),
+                (PIECE_CHARS[white_pieces[0]], wp1),
+                (PIECE_CHARS[white_pieces[1]], wp2),
+                (PIECE_CHARS[black_pieces[0]].lower(), bp),
+            ], turn
 
         return None, None
 

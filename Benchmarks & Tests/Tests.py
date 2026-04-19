@@ -923,6 +923,29 @@ def case_tb_inventory():
     return details
 
 
+def case_regression_tb_5man_cross_probe():
+    import numpy as np
+
+    board = make_board([
+        ("white", King, (7, 4)),
+        ("white", Queen, (6, 4)),
+        ("white", Rook, (6, 5)),
+        ("black", King, (0, 4)),
+        ("black", Knight, (1, 4)),
+    ])
+    manager = TablebaseManager()
+    table_name = "K_Queen_Rook_vs_Knight_K_sml"
+    manager.tables[table_name] = np.zeros((10, 64, 64, 64, 64, 2), dtype=np.int16)
+
+    result = manager.probe(board, "white")
+    details = [
+        "Mocked a 5-man cross table lookup for K+Q+R vs K+N.",
+        f"Probe result: {result}",
+    ]
+    expect(result == 0, f"Regression detected: expected mocked 5-man cross probe to return 0, got {result}")
+    return details
+
+
 CASES = [
     TestCaseSpec(
         "move_tracking_edge_cases",
@@ -965,7 +988,13 @@ CASES = [
         "tablebase",
         "Report which tablebase files are currently loaded before running the mapping checks.",
         case_tb_inventory,
-    )
+    ),
+    TestCaseSpec(
+        "regression_tb_5man_cross_probe",
+        "tablebase",
+        "Verify 5-man cross probes do not crash when a matching table is available.",
+        case_regression_tb_5man_cross_probe,
+    ),
 ]
 
 def select_cases(args):
