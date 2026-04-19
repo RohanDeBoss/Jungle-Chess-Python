@@ -1,4 +1,4 @@
-# OPAI.py (v108.7 - New heuristics, and optimised time management, increased asp window to 250)
+# OPAI.py (v109.01 - Improved incremental efficiency, still lmr threshold = 4)
 import json
 import time
 import random
@@ -101,19 +101,16 @@ def incremental_hash(parent_hash, record):
 
     h ^= arr[c_idx][p_idx][sr][sc]
     
-    mp_removed = False
-    for p, _r, _c in record.removed_pieces:
-        if p is mp:
-            mp_removed = True
-            break
-            
-    if not mp_removed:
-        h ^= arr[c_idx][p_idx][er][ec]
-
+    mp_survived = True
     for piece, r, c in record.removed_pieces:
-        if piece is not mp:
+        if piece is mp:
+            mp_survived = False
+        else:
             pc_idx = 0 if piece.color == 'white' else 1
             h ^= arr[pc_idx][idx[type(piece)]][r][c]
+
+    if mp_survived:
+        h ^= arr[c_idx][p_idx][er][ec]
 
     for piece, r, c in record.added_pieces:
         pc_idx = 0 if piece.color == 'white' else 1
@@ -174,7 +171,7 @@ class OpponentAI:
     Q_MARGIN_MAX = 950
     Q_MARGIN_MIN = 250
 
-    LMR_DEPTH_THRESHOLD = 3
+    LMR_DEPTH_THRESHOLD = 4
     LMR_MOVE_COUNT_THRESHOLD = 4
     LMR_REDUCTION = 1
     NMP_MIN_DEPTH = 3
@@ -788,16 +785,27 @@ class OpponentAI:
                 if not is_good_tactic: quiet_moves_tried.append(move)
 
                 if futility_prune and not is_good_tactic and legal_moves_count > 1:
-                    board.unmake_move(record)
-                    continue
+                    # SAFETY GUARD: Never prune a quiet move that delivers check.
+                    # Thanks to the highly optimized is_square_attacked in GameLogic,
+                    # this check is now fast enough to run here without tanking NPS.
+                    if not is_in_check(board, opponent_turn):
+                        board.unmake_move(record)
+                        continue
 
                 reduction = 0
                 if (depth >= self.LMR_DEPTH_THRESHOLD and
                         legal_moves_count > self.LMR_MOVE_COUNT_THRESHOLD and
                         not is_in_check_flag and not is_good_tactic):
+                    # Base reduction
                     reduction = self.LMR_REDUCTION
-                    if history_table[f_sq][t_sq] < 0: reduction += 1
-                    if depth >= 8: reduction += 1
+                    # Scale reduction dynamically based on depth and how "late" the move is
+                    if depth >= 6 and legal_moves_count >= 6:
+                        reduction += 1
+                    if depth >= 9:
+                        reduction += 1
+                    # Penalize moves with terrible history
+                    if history_table[f_sq][t_sq] < 0: 
+                        reduction += 1
 
                 search_depth_child = max(0, depth - 1 - reduction)
                 if reduction > 0 and search_depth_child == 0:

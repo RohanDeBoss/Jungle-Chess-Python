@@ -1,4 +1,4 @@
-# AI.py (v109.01 - Improved incremental efficiency)
+# AI.py (v109.1 - lmr threshold = 3)
 import json
 import time
 import random
@@ -171,7 +171,7 @@ class ChessBot:
     Q_MARGIN_MAX = 950
     Q_MARGIN_MIN = 250
 
-    LMR_DEPTH_THRESHOLD = 4
+    LMR_DEPTH_THRESHOLD = 3
     LMR_MOVE_COUNT_THRESHOLD = 4
     LMR_REDUCTION = 1
     NMP_MIN_DEPTH = 3
