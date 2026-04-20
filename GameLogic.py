@@ -870,8 +870,9 @@ def generate_legal_moves_generator(board, color, yield_boards=False):
             my_kp  = board.find_king_pos(color)
             opp_kp = board.find_king_pos(opp_color)
             
-            # Move is ONLY legal if BOTH kings survived and you aren't in check
-            legal = (my_kp is not None and opp_kp is not None and not is_in_check(board, color))
+            # Move is legal as long as YOUR king survives and isn't in check. 
+            # (Allowing opp_kp to be None lets the root engine execute the killing blow if presented)
+            legal = (my_kp is not None and not is_in_check(board, color))
             
             if legal and yield_boards:
                 result_board = board.clone()

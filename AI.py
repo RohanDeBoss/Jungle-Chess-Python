@@ -1,4 +1,4 @@
-# AI.py (v110 - safer lmr less reduction for knights and queens)
+# AI.py (v111 - Jungle Heuristics and casualty mapping + passed pawn fix)
 import json
 import os
 import time
@@ -212,6 +212,7 @@ class ChessBot:
     BONUS_CAPTURE = 8_000_000
     BONUS_KILLER_1 = 4_000_000
     BONUS_KILLER_2 = 3_000_000
+    BONUS_CONTINUATION = 2_500_000
     BAD_TACTIC_PENALTY = -2_000_000
     OPENING_TOTAL_PIECE_THRESHOLD = 23
     OPENING_BONUS_MAX_PLY = 1
@@ -239,6 +240,10 @@ class ChessBot:
     LONE_ROOK_PENALTIES = (550, 200, 150, 80, 40)
     LONE_BISHOP_PENALTIES = (650, 250, 170, 100, 50)
     EVAL_PAWN_VULNERABILITY_EG = 15
+
+    EVAL_MOBILITY_ROOK   = 4
+    EVAL_MOBILITY_BISHOP = 3
+    EVAL_MOBILITY_QUEEN  = 2
 
     def __init__(self, board, color, position_counts, comm_queue, cancellation_event,
                  bot_name=None, ply_count=0, game_mode="bot", max_moves=200,
@@ -294,6 +299,8 @@ class ChessBot:
         self.killer_moves = [[None, None] for _ in range(max(200, self.max_moves))]
         self.history_heuristic_table = [[[0 for _ in range(64)] for _ in range(64)] for _ in range(2)]
         self.counter_moves = [[[None for _ in range(64)] for _ in range(64)] for _ in range(2)]
+        # [color][prev_piece_type][prev_to_sq][my_piece_type][my_to_sq]
+        self.continuation_history = [[[[[0] * 64 for _ in range(6)] for _ in range(64)] for _ in range(6)] for _ in range(2)]
 
     def _store_tt(self, hash_val, score, depth, flag, move):
         existing = self.tt.get(hash_val)
@@ -811,7 +818,7 @@ class ChessBot:
                 c_move = None
 
             ordered_entries = self.order_moves(board, pseudo_moves, ply, hash_move, turn,
-                                            return_meta=True, counter_move=c_move)
+                                            return_meta=True, counter_move=c_move, prev_move=prev_move)
             best_move_for_node = None
             legal_moves_count  = 0
             quiet_moves_tried  = []
@@ -905,6 +912,18 @@ class ChessBot:
                             
                             # Gravity update for the successful move
                             ht[f_sq][t_sq] += bonus - (ht[f_sq][t_sq] * bonus) // 2_000_000
+                            
+                            # --- NEW: Update Continuation History ---
+                            if prev_move:
+                                pr, pc = prev_move[1]
+                                prev_piece = board.grid[pr][pc]
+                                if prev_piece:
+                                    prev_pt_idx = PIECE_TYPE_IDX[type(prev_piece)]
+                                    prev_to_sq  = pr * 8 + pc
+                                    mp_idx      = PIECE_TYPE_IDX[type(moving_piece)]
+                                    
+                                    ch_table = self.continuation_history[c_idx][prev_pt_idx][prev_to_sq][mp_idx]
+                                    ch_table[t_sq] += bonus - (ch_table[t_sq] * bonus) // 64_000
                             
                             # Gravity penalty for the failed quiet moves
                             for f_move in quiet_moves_tried:
@@ -1016,7 +1035,7 @@ class ChessBot:
 
         return alpha
 
-    def order_moves(self, board, moves, ply, hash_move, turn, return_meta=False, counter_move=None):
+    def order_moves(self, board, moves, ply, hash_move, turn, return_meta=False, counter_move=None, prev_move=None):
         if not moves: return []
         scored_moves = []
         killers   = self.killer_moves[ply] if ply < len(self.killer_moves) else [None, None]
@@ -1049,7 +1068,22 @@ class ChessBot:
             elif move == counter_move:
                 score = 2_000_000
             else:
-                score = history_table[r1 * 8 + c1][r2 * 8 + c2]
+                score = 0
+                if prev_move:
+                    pr, pc = prev_move[1]
+                    prev_piece = board.grid[pr][pc] 
+                    if prev_piece:
+                        prev_pt_idx = PIECE_TYPE_IDX[type(prev_piece)]
+                        prev_to_sq  = pr * 8 + pc
+                        mp_idx      = PIECE_TYPE_IDX[type(moving_piece)]
+                        to_sq       = r2 * 8 + c2
+                        
+                        ch_score = self.continuation_history[c_idx][prev_pt_idx][prev_to_sq][mp_idx][to_sq]
+                        if ch_score > 1000:
+                            score = self.BONUS_CONTINUATION + ch_score
+                
+                if score == 0:
+                    score = history_table[r1 * 8 + c1][r2 * 8 + c2]
 
             if is_opening: 
                 score += self._opening_development_bonus(move, moving_piece)
@@ -1164,15 +1198,22 @@ class ChessBot:
 
                     is_passed = True
                     if is_white:
-                        # White pawn is passed if no black pawn is strictly ahead (row < r)
                         for pc in (c - 1, c, c + 1):
-                            if 0 <= pc < COLS and black_pawn_files[pc] and black_pawn_min_row[pc] < r:
-                                is_passed = False; break
+                            if 0 <= pc < COLS and black_pawn_files[pc]:
+                                # Same file: enemy pawn must be strictly ahead (< r)
+                                if pc == c and black_pawn_min_row[pc] < r:
+                                    is_passed = False; break
+                                # Adjacent file: enemy pawn can capture sideways if on the same rank (<= r)
+                                elif pc != c and black_pawn_min_row[pc] <= r:
+                                    is_passed = False; break
                     else:
-                        # Black pawn is passed if no white pawn is strictly ahead (row > r)
                         for pc in (c - 1, c, c + 1):
-                            if 0 <= pc < COLS and white_pawn_files[pc] and white_pawn_max_row[pc] > r:
-                                is_passed = False; break
+                            if 0 <= pc < COLS and white_pawn_files[pc]:
+                                if pc == c and white_pawn_max_row[pc] > r:
+                                    is_passed = False; break
+                                elif pc != c and white_pawn_max_row[pc] >= r:
+                                    is_passed = False; break
+                                    
                     if is_passed:
                         advance = max(0, (6 - r) if is_white else (r - 1))
                         scores_eg[color_idx] += advance * PASSED_PAWN_PER_RANK
@@ -1184,6 +1225,34 @@ class ChessBot:
                     if not my_pawn_files[c]:
                         scores_mg[color_idx] += ROOK_OPEN_FILE_BONUS_MG
                         scores_eg[color_idx] += ROOK_OPEN_FILE_BONUS_EG
+
+                    # --- JUNGLE-NATIVE MOBILITY (Piercing) ---
+                    mobility = 0
+                    start_idx = r * COLS + c
+                    for i in range(4): # Orthogonal rays
+                        for cr, cc in RAYS[start_idx][i]:
+                            target = grid[cr][cc]
+                            if target is not None:
+                                if target.color == my_color_name:
+                                    break # Blocked by friendly piece
+                            mobility += 1
+                    scores_mg[color_idx] += mobility * self.EVAL_MOBILITY_ROOK
+                    scores_eg[color_idx] += mobility * self.EVAL_MOBILITY_ROOK
+
+                elif ptype is Bishop:
+                    # --- JUNGLE-NATIVE MOBILITY (Sliding) ---
+                    mobility = 0
+                    start_idx = r * COLS + c
+                    for i in range(4, 8): # Diagonal rays
+                        for cr, cc in RAYS[start_idx][i]:
+                            target = grid[cr][cc]
+                            if target is not None:
+                                if target.color != my_color_name:
+                                    mobility += 1 # Count the capture square
+                                break # Stop at any piece
+                            mobility += 1
+                    scores_mg[color_idx] += mobility * self.EVAL_MOBILITY_BISHOP
+                    scores_eg[color_idx] += mobility * self.EVAL_MOBILITY_BISHOP
 
                 elif ptype is Knight:
                     for ar, ac in KNIGHT_ATTACKS_FROM[(r, c)]:
@@ -1199,6 +1268,20 @@ class ChessBot:
                 elif ptype is Queen:
                     if enemy_king and (abs(r - enemy_king[0]) + abs(c - enemy_king[1]) <= 3):
                         king_zone_attacks[1 - color_idx] += 2
+                        
+                    # --- JUNGLE-NATIVE MOBILITY (Sliding) ---
+                    mobility = 0
+                    start_idx = r * COLS + c
+                    for i in range(8): # All 8 rays
+                        for cr, cc in RAYS[start_idx][i]:
+                            target = grid[cr][cc]
+                            if target is not None:
+                                if target.color != my_color_name:
+                                    mobility += 1 # Count the capture square
+                                break # Stop at any piece (capturing explodes her)
+                            mobility += 1
+                    scores_mg[color_idx] += mobility * self.EVAL_MOBILITY_QUEEN
+                    scores_eg[color_idx] += mobility * self.EVAL_MOBILITY_QUEEN
 
         phase     = min(256, (phase_material_score * 256) // INITIAL_PHASE_MATERIAL) if INITIAL_PHASE_MATERIAL > 0 else 0
         inv_phase = 256 - phase
