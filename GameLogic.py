@@ -1,4 +1,4 @@
-# GameLogic.py (v55.11 - More micro optimisations, reroll randomness)
+# GameLogic.py (v55.2 - Bug fixes to rook and knight moves which would be evaporated)
 
 
 # -----------------------------------------------------------------------
@@ -969,6 +969,8 @@ def generate_all_tactical_moves(board, color):
                 yield (start_pos, end_pos)
                 continue
 
+            yielded = False
+
             if mp_type is Rook:
                 dr = (end_r > start_pos[0]) - (start_pos[0] > end_r)
                 dc = (end_c > start_pos[1]) - (start_pos[1] > end_c)
@@ -977,24 +979,25 @@ def generate_all_tactical_moves(board, color):
                     target = grid[cr][cc]
                     if target is not None and target.color != my_color:
                         yield (start_pos, end_pos)
+                        yielded = True
                         break
                     cr += dr
                     cc += dc
-                continue
 
-            if mp_type is Knight:
+            elif mp_type is Knight:
                 for r, c in KNIGHT_ATTACKS_FROM[end_pos]:
                     target = grid[r][c]
                     if target is not None and target.color == opp_color:
                         yield (start_pos, end_pos)
+                        yielded = True
                         break
-                continue
 
-            for r, c in KNIGHT_ATTACKS_FROM[end_pos]:
-                pk = grid[r][c]
-                if pk is not None and type(pk) is Knight and pk.color != my_color:
-                    yield (start_pos, end_pos)
-                    break
+            if not yielded:
+                for r, c in KNIGHT_ATTACKS_FROM[end_pos]:
+                    pk = grid[r][c]
+                    if pk is not None and type(pk) is Knight and pk.color != my_color:
+                        yield (start_pos, end_pos)
+                        break
 
 
 def fast_approximate_material_swing(board, move, moving_piece, target_piece, piece_values):
