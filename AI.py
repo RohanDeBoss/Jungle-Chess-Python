@@ -1,4 +1,4 @@
-# AI.py (v111 - Jungle Heuristics and casualty mapping + passed pawn fix)
+# AI.py (v111.2 - Jungle Heuristics and casualty mapping and smart queen pruning and speed)
 import json
 import os
 import time
@@ -868,8 +868,23 @@ class ChessBot:
                         reduction -= 1
                         
                     # 3. JUNGLE HEURISTIC: Protect volatile quiet pieces
-                    if type(moving_piece) in (Queen, Knight):
+                    if type(moving_piece) is Knight:
                         reduction -= 1
+                    elif type(moving_piece) is Queen:
+                        # Fast ray-cast from the Queen's new square. 
+                        attacks_enemy = False
+                        grid_ref = board.grid
+                        for ray in RAYS[t_sq]:
+                            for cr, cc in ray:
+                                target = grid_ref[cr][cc]
+                                if target is not None:
+                                    if target.color == opponent_turn:
+                                        attacks_enemy = True
+                                    break
+                            if attacks_enemy:
+                                break
+                        if attacks_enemy:
+                            reduction -= 1
                         
                     # 4. History influence (only reward good moves, don't punish bad ones as hard)
                     if history_table[f_sq][t_sq] > 250_000:
@@ -1228,9 +1243,9 @@ class ChessBot:
 
                     # --- JUNGLE-NATIVE MOBILITY (Piercing) ---
                     mobility = 0
-                    start_idx = r * COLS + c
-                    for i in range(4): # Orthogonal rays
-                        for cr, cc in RAYS[start_idx][i]:
+                    start_idx = r * 8 + c
+                    for ray in RAYS[start_idx][:4]: # Orthogonal rays
+                        for cr, cc in ray:
                             target = grid[cr][cc]
                             if target is not None:
                                 if target.color == my_color_name:
@@ -1242,9 +1257,9 @@ class ChessBot:
                 elif ptype is Bishop:
                     # --- JUNGLE-NATIVE MOBILITY (Sliding) ---
                     mobility = 0
-                    start_idx = r * COLS + c
-                    for i in range(4, 8): # Diagonal rays
-                        for cr, cc in RAYS[start_idx][i]:
+                    start_idx = r * 8 + c
+                    for ray in RAYS[start_idx][4:]: # Diagonal rays
+                        for cr, cc in ray:
                             target = grid[cr][cc]
                             if target is not None:
                                 if target.color != my_color_name:
@@ -1271,9 +1286,9 @@ class ChessBot:
                         
                     # --- JUNGLE-NATIVE MOBILITY (Sliding) ---
                     mobility = 0
-                    start_idx = r * COLS + c
-                    for i in range(8): # All 8 rays
-                        for cr, cc in RAYS[start_idx][i]:
+                    start_idx = r * 8 + c
+                    for ray in RAYS[start_idx]: # All 8 rays
+                        for cr, cc in ray:
                             target = grid[cr][cc]
                             if target is not None:
                                 if target.color != my_color_name:
