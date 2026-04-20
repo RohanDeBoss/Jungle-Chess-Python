@@ -70,10 +70,17 @@ class TablebaseManager:
             names = sorted([p1, p2])
             self.load_table(f"K_{names[0]}_{names[1]}_K_sml")
 
-        # 4-Man cross
-        for i in range(len(pieces)):
-            for j in range(i, len(pieces)):
-                self.load_table(f"K_{pieces[i]}_vs_{pieces[j]}_K_sml")
+        # 4-Man cross — build alphabetically-sorted keys and avoid duplicates.
+        # The generator writes files with alphabetically-ordered piece names,
+        # so we must match that ordering when attempting to load tables.
+        seen_vs = set()
+        for p1 in pieces:
+            for p2 in pieces:
+                names = sorted([p1, p2])
+                key = f"K_{names[0]}_vs_{names[1]}_K_sml"
+                if key not in seen_vs:
+                    seen_vs.add(key)
+                    self.load_table(key)
 
         # 5-Man same-side
         for p1, p2, p3 in combinations_with_replacement(pieces, 3):

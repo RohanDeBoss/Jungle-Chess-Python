@@ -1,4 +1,4 @@
-# AI.py (v109.2 - integration fixes)
+# AI.py (v109.3 - integration fixes and tb fixes)
 import json
 import os
 import time
@@ -555,17 +555,32 @@ class ChessBot:
                 total_nodes      += self.nodes_searched
                 iter_duration     = time.time() - iter_start_time
                 knps              = (self.nodes_searched / iter_duration / 1000) if iter_duration > 0 else 0
-                eval_for_ui       = best_score_this_iter if self.color == 'white' else -best_score_this_iter
-                depth_label       = "TB" if (not self.used_heuristic_eval and self.tb_hits > 0) else current_depth
+                # Prefer reporting a root tablebase evaluation if available —
+                # this ensures TB-drawn positions are shown as TB and can be
+                # auto-adjudicated by the UI. Fall back to heuristic reporting
+                # when no root TB exists.
+                root_tb_val = None
+                if len(self.board.white_pieces) + len(self.board.black_pieces) <= self.tb_probe_limit:
+                    root_tb_val = self.tb_manager.probe(self.board, self.color)
 
+                if root_tb_val is not None:
+                    # Root is in a tablebase — report TB as authoritative
+                    self.tb_hits += 1
+                    depth_label = "TB"
+                    report_score = root_tb_val
+                else:
+                    depth_label = "TB" if (not self.used_heuristic_eval and self.tb_hits > 0) else current_depth
+                    report_score = best_score_this_iter
+
+                eval_for_ui = report_score if self.color == 'white' else -report_score
                 self._report_log(f"  > {self.bot_name} (D{depth_label}): {self._format_move(self.board, best_move_this_iter)}, Eval={eval_for_ui/100:+.2f}, NodesTotal={total_nodes}, KNPS={knps:.1f}, TBhits={self.tb_hits}, Time={iter_duration:.2f}s")
-                self._report_eval(best_score_this_iter, depth_label)
+                self._report_eval(report_score, depth_label)
 
-                ui_eval       = best_score_this_iter if self.color == 'white' else -best_score_this_iter
+                ui_eval        = report_score if self.color == 'white' else -report_score
                 pv_str, pv_raw = self._get_pv_data(current_depth, best_move_this_iter)
                 self.comm_queue.put(('pv', ui_eval, depth_label, pv_str, pv_raw))
 
-                if best_score_this_iter > self.MATE_SCORE - 2000: break
+                if report_score > self.MATE_SCORE - 2000: break
 
             self._report_move(best_move_overall)
         except SearchCancelledException:
@@ -606,13 +621,28 @@ class ChessBot:
                     total_nodes      += self.nodes_searched
                     iter_duration     = time.time() - iter_start_time
                     knps              = (self.nodes_searched / iter_duration / 1000) if iter_duration > 0 else 0
-                    eval_for_ui       = best_score_this_iter if self.color == 'white' else -best_score_this_iter
-                    depth_label       = "TB" if (not self.used_heuristic_eval and self.tb_hits > 0) else current_depth
+                    # Prefer reporting a root tablebase evaluation if available —
+                    # this ensures TB-drawn positions are shown as TB and can be
+                    # auto-adjudicated by the UI. Fall back to heuristic reporting
+                    # when no root TB exists.
+                    root_tb_val = None
+                    if len(self.board.white_pieces) + len(self.board.black_pieces) <= self.tb_probe_limit:
+                        root_tb_val = self.tb_manager.probe(self.board, self.color)
 
+                    if root_tb_val is not None:
+                        # Root is in a tablebase — report TB as authoritative
+                        self.tb_hits += 1
+                        depth_label = "TB"
+                        report_score = root_tb_val
+                    else:
+                        depth_label = "TB" if (not self.used_heuristic_eval and self.tb_hits > 0) else current_depth
+                        report_score = best_score_this_iter
+
+                    eval_for_ui = report_score if self.color == 'white' else -report_score
                     self._report_log(f"  > {self.bot_name} (D{depth_label}): {self._format_move(self.board, best_move_this_iter)}, Eval={eval_for_ui/100:+.2f}, NodesTotal={total_nodes}, KNPS={knps:.1f}, TBhits={self.tb_hits}, Time={iter_duration:.2f}s")
-                    self._report_eval(best_score_this_iter, depth_label)
+                    self._report_eval(report_score, depth_label)
 
-                    ui_eval        = best_score_this_iter if self.color == 'white' else -best_score_this_iter
+                    ui_eval        = report_score if self.color == 'white' else -report_score
                     pv_str, pv_raw = self._get_pv_data(current_depth, best_move_this_iter)
                     self.comm_queue.put(('pv', ui_eval, depth_label, pv_str, pv_raw))
 
