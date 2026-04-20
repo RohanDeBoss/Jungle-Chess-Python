@@ -1,4 +1,4 @@
-# AI.py (v109.3 - integration fixes and tb fixes)
+# AI.py (v110 - safer lmr less reduction for knights and queens)
 import json
 import os
 import time
@@ -791,6 +791,7 @@ class ChessBot:
                                             null_hash, None, extensions)
                         if score >= beta: return beta
 
+            # --- FORWARD FUTILITY PRUNING (Original Conservative Version) ---
             futility_prune = False
             if (self.USE_FUTILITY_PRUNING and depth == 1 and not is_in_check_flag and
                     abs(alpha) < self.MATE_SCORE - 1000):
@@ -846,29 +847,36 @@ class ChessBot:
                         board.unmake_move(record)
                         continue
 
+                # --- CALIBRATED LATE MOVE REDUCTION ---
                 reduction = 0
                 if (depth >= self.LMR_DEPTH_THRESHOLD and
                         legal_moves_count > self.LMR_MOVE_COUNT_THRESHOLD and
                         not is_in_check_flag and not is_good_tactic):
-                    # Base reduction
-                    reduction = self.LMR_REDUCTION
-                    # Scale reduction dynamically based on depth and how "late" the move is
-                    if depth >= 6 and legal_moves_count >= 6:
-                        reduction += 1
-                    if depth >= 9:
-                        reduction += 1
-                    # Penalize moves with terrible history
-                    if history_table[f_sq][t_sq] < 0: 
-                        reduction += 1
+                    
+                    # 1. Base reduction with much gentler scaling
+                    reduction = 1 + (depth // 7) + (legal_moves_count // 12)
+                    
+                    # 2. Protect likely refutations
+                    if (ply < len(self.killer_moves) and move in self.killer_moves[ply]) or move == c_move:
+                        reduction -= 1
+                        
+                    # 3. JUNGLE HEURISTIC: Protect volatile quiet pieces
+                    if type(moving_piece) in (Queen, Knight):
+                        reduction -= 1
+                        
+                    # 4. History influence (only reward good moves, don't punish bad ones as hard)
+                    if history_table[f_sq][t_sq] > 250_000:
+                        reduction -= 1
+                        
+                    # 5. Safety Clamp
+                    reduction = max(0, min(reduction, depth - 2))
 
-                search_depth_child = max(0, depth - 1 - reduction)
-                if reduction > 0 and search_depth_child == 0:
-                    search_depth_child = 1
+                search_depth_child = depth - 1 - reduction
 
                 if legal_moves_count == 1:
                     score = -self.negamax(board, search_depth_child, -beta, -alpha,
                                         opponent_turn, ply + 1, search_path, child_hash, move, extensions)
-                else:
+                else: # Principal Variation Search (PVS)
                     score = -self.negamax(board, search_depth_child, -(alpha + 1), -alpha,
                                         opponent_turn, ply + 1, search_path, child_hash, move, extensions)
                     if alpha < score < beta:
@@ -888,17 +896,23 @@ class ChessBot:
                         if prev_move:
                             (pr1, pc1), (pr2, pc2) = prev_move
                             self.counter_moves[0 if turn == 'white' else 1][pr1 * 8 + pc1][pr2 * 8 + pc2] = move
+                        
+                        # --- CALIBRATED HISTORY UPDATES ---
                         if moving_piece:
                             c_idx = 0 if turn == 'white' else 1
                             bonus = depth * depth
                             ht    = self.history_heuristic_table[c_idx]
-                            ht[f_sq][t_sq] = min(2_000_000, ht[f_sq][t_sq] + bonus)
+                            
+                            # Gravity update for the successful move
+                            ht[f_sq][t_sq] += bonus - (ht[f_sq][t_sq] * bonus) // 2_000_000
+                            
+                            # Gravity penalty for the failed quiet moves
                             for f_move in quiet_moves_tried:
                                 if f_move != move:
                                     (fr1, fc1), (fr2, fc2) = f_move
                                     ff = fr1 * 8 + fc1
                                     ft = fr2 * 8 + fc2
-                                    ht[ff][ft] = max(-2_000_000, ht[ff][ft] - bonus)
+                                    ht[ff][ft] -= bonus + (ht[ff][ft] * bonus) // 2_000_000
 
                     sto = beta
                     if sto >  self.MATE_SCORE - 1000: sto = beta + ply

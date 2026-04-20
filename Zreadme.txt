@@ -30,7 +30,7 @@ Piece Changes:
    o If two knights try to evaporate each other, both knights are removed, but the other pieces affected by their evaporation are still removed first.
 
 5. Pawn:
-   o Moves forward one square at a time (or two squares on its first move).
+   o Moves forward one square at a time (or two squares from the second rank unless there is a piece directly infront of it).
    o Captures forward or sideways (but not diagonally). Can capture forward two squares on their first move if there's an enemy piece there, and there is not blocking piece directly in front of it.
    o Pawns promote to a queen on the last rank (non optional).
    o Does not have en-passant.
