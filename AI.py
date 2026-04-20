@@ -1,4 +1,4 @@
-# AI.py (v111.2 - Jungle Heuristics and casualty mapping and smart queen pruning and speed)
+# AI.py (v111.3 - Move ordering recapture type bonus heuristic)
 import json
 import os
 import time
@@ -1062,10 +1062,11 @@ class ChessBot:
             (r1, c1), (r2, c2) = move
             moving_piece = board.grid[r1][c1]
             target_piece = board.grid[r2][c2]
+            ptype = type(moving_piece)
 
             swing = fast_approximate_material_swing(board, move, moving_piece, target_piece, ORDERING_VALUES)
             is_capture_or_promo = (target_piece is not None or
-                                   (type(moving_piece) is Pawn and (r2 == 0 or r2 == ROWS - 1)))
+                                   (ptype is Pawn and (r2 == 0 or r2 == ROWS - 1)))
             
             # In Jungle Chess, volatile moves (explosions, evaporations, piercings) 
             # are ALWAYS critical tactics, even if the net material swing is negative.
@@ -1074,10 +1075,13 @@ class ChessBot:
             if move == hash_move:
                 score = self.BONUS_PV_MOVE
             elif is_good_tactic:
-                # Keeps all tactical moves ranked cleanly above quiet moves.
-                # A negative swing (like -400) scores 7,999,600, sorting just below positive swings,
-                # ensuring the engine investigates the explosion before looking at quiet positional moves.
-                score = self.BONUS_CAPTURE + swing
+                # --- JUNGLE HEURISTIC: The "Chaos" Tie-Breaker ---
+                chaos_bonus = 0
+                if ptype is Queen: chaos_bonus = 30
+                elif ptype is Knight: chaos_bonus = 20
+                elif ptype is Rook: chaos_bonus = 10
+                
+                score = self.BONUS_CAPTURE + (swing * 100) + chaos_bonus
             elif move in killers:
                 score = 4_000_000 if move == killers[0] else 3_000_000
             elif move == counter_move:

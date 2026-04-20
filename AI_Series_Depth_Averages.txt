@@ -1,16 +1,16 @@
 === AI vs OP Series Depth Stats ===
-Games: 13  Score: AI Bot 8-4 OP Bot (Draws: 1)
+Games: 19  Score: AI Bot 10-8 OP Bot (Draws: 1)
 
 --- Global ---
-  D1   Avg:0.031s  Max:0.890s  N:656
-  D2   Avg:0.130s  Max:1.130s  N:636
-  D3   Avg:0.255s  Max:1.160s  N:569
-  D4   Avg:0.237s  Max:1.020s  N:361
-  D5   Avg:0.270s  Max:0.900s  N:152
-  D6   Avg:0.216s  Max:0.530s  N:40
-  D7   Avg:0.059s  Max:0.220s  N:11
-  D8   Avg:0.051s  Max:0.100s  N:9
-  D9   Avg:0.111s  Max:0.520s  N:8
+  D1   Avg:0.027s  Max:0.890s  N:1055
+  D2   Avg:0.132s  Max:1.220s  N:1027
+  D3   Avg:0.260s  Max:1.160s  N:910
+  D4   Avg:0.251s  Max:1.060s  N:557
+  D5   Avg:0.264s  Max:0.900s  N:221
+  D6   Avg:0.223s  Max:0.610s  N:50
+  D7   Avg:0.077s  Max:0.270s  N:12
+  D8   Avg:0.046s  Max:0.100s  N:10
+  D9   Avg:0.100s  Max:0.520s  N:9
   D10  Avg:0.083s  Max:0.130s  N:6
   D11  Avg:0.090s  Max:0.200s  N:6
   D12  Avg:0.068s  Max:0.140s  N:5
@@ -22,15 +22,15 @@ Games: 13  Score: AI Bot 8-4 OP Bot (Draws: 1)
   DTB  Avg:0.000s  Max:0.000s  N:198
 
 --- AI Bot ---
-  D1   Avg:0.031s  Max:0.890s  N:329
-  D2   Avg:0.139s  Max:1.130s  N:317
-  D3   Avg:0.264s  Max:0.940s  N:277
-  D4   Avg:0.292s  Max:1.020s  N:150
-  D5   Avg:0.210s  Max:0.560s  N:57
-  D6   Avg:0.201s  Max:0.390s  N:16
-  D7   Avg:0.075s  Max:0.220s  N:6
-  D8   Avg:0.056s  Max:0.100s  N:5
-  D9   Avg:0.182s  Max:0.520s  N:4
+  D1   Avg:0.026s  Max:0.890s  N:528
+  D2   Avg:0.136s  Max:1.220s  N:513
+  D3   Avg:0.260s  Max:1.020s  N:449
+  D4   Avg:0.265s  Max:1.060s  N:264
+  D5   Avg:0.232s  Max:0.830s  N:94
+  D6   Avg:0.204s  Max:0.440s  N:24
+  D7   Avg:0.103s  Max:0.270s  N:7
+  D8   Avg:0.047s  Max:0.100s  N:6
+  D9   Avg:0.148s  Max:0.520s  N:5
   D10  Avg:0.097s  Max:0.110s  N:3
   D11  Avg:0.157s  Max:0.200s  N:3
   D12  Avg:0.045s  Max:0.070s  N:2
@@ -38,12 +38,12 @@ Games: 13  Score: AI Bot 8-4 OP Bot (Draws: 1)
   D14  Avg:0.160s  Max:0.160s  N:1
 
 --- OP Bot ---
-  D1   Avg:0.031s  Max:0.860s  N:327
-  D2   Avg:0.121s  Max:1.060s  N:319
-  D3   Avg:0.246s  Max:1.160s  N:292
-  D4   Avg:0.198s  Max:1.020s  N:211
-  D5   Avg:0.306s  Max:0.900s  N:95
-  D6   Avg:0.226s  Max:0.530s  N:24
+  D1   Avg:0.028s  Max:0.860s  N:527
+  D2   Avg:0.128s  Max:1.060s  N:514
+  D3   Avg:0.260s  Max:1.160s  N:461
+  D4   Avg:0.238s  Max:1.020s  N:293
+  D5   Avg:0.288s  Max:0.900s  N:127
+  D6   Avg:0.240s  Max:0.610s  N:26
   D7   Avg:0.040s  Max:0.110s  N:5
   D8   Avg:0.045s  Max:0.070s  N:4
   D9   Avg:0.040s  Max:0.070s  N:4
