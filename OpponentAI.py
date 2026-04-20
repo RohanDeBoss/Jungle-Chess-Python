@@ -1,4 +1,4 @@
-# OPAI.py (v109.03 - integration fixes)
+# OPAI.py (v109.3 - integration fixes and tb fixes)
 import json
 import os
 import time
@@ -195,7 +195,7 @@ class OpponentAI:
     Q_MARGIN_MAX = 950
     Q_MARGIN_MIN = 250
 
-    LMR_DEPTH_THRESHOLD = 4
+    LMR_DEPTH_THRESHOLD = 3
     LMR_MOVE_COUNT_THRESHOLD = 4
     LMR_REDUCTION = 1
     NMP_MIN_DEPTH = 3
@@ -576,7 +576,7 @@ class OpponentAI:
                 self._report_log(f"  > {self.bot_name} (D{depth_label}): {self._format_move(self.board, best_move_this_iter)}, Eval={eval_for_ui/100:+.2f}, NodesTotal={total_nodes}, KNPS={knps:.1f}, TBhits={self.tb_hits}, Time={iter_duration:.2f}s")
                 self._report_eval(report_score, depth_label)
 
-                ui_eval       = report_score if self.color == 'white' else -report_score
+                ui_eval        = report_score if self.color == 'white' else -report_score
                 pv_str, pv_raw = self._get_pv_data(current_depth, best_move_this_iter)
                 self.comm_queue.put(('pv', ui_eval, depth_label, pv_str, pv_raw))
 
