@@ -880,6 +880,7 @@ def generate_legal_moves_generator(board, color, yield_boards=False):
                 if yield_boards: yield (start_pos, end_pos), result_board
                 else: yield (start_pos, end_pos)
 
+
 def get_all_legal_moves(board, color):
     return list(generate_legal_moves_generator(board, color))
 
@@ -947,100 +948,6 @@ def calculate_material_swing(board, move, tapered_vals_by_type):
 def is_draw(board, turn_to_move, position_counts, ply_count, max_moves):
     state, _ = get_game_state(board, turn_to_move, position_counts, ply_count, max_moves)
     return state in ("insufficient_material", "repetition", "move_limit")
-
-
-def is_rook_piercing_capture(board, move):
-    start, end   = move
-    moving_piece = board.grid[start[0]][start[1]]
-    if not isinstance(moving_piece, Rook):
-        return False
-    if board.grid[end[0]][end[1]] is not None:
-        return False
-    dr = (end[0] > start[0]) - (start[0] > end[0])
-    dc = (end[1] > start[1]) - (start[1] > end[1])
-    cr, cc = start[0] + dr, start[1] + dc
-    while (cr, cc) != end:
-        target = board.grid[cr][cc]
-        if target and target.color != moving_piece.color:
-            return True
-        cr += dr
-        cc += dc
-    return False
-
-
-def is_quiet_knight_evaporation(board, move):
-    start_pos, end_pos = move
-    moving_piece = board.grid[start_pos[0]][start_pos[1]]
-    if not isinstance(moving_piece, Knight) or board.grid[end_pos[0]][end_pos[1]] is not None:
-        return False
-    for r, c in KNIGHT_ATTACKS_FROM[end_pos]:
-        target = board.grid[r][c]
-        if target and target.color == moving_piece.opponent_color:
-            return True
-    return False
-
-
-def is_passive_knight_zone_evaporation(board, move):
-    start_pos, end_pos = move
-    moving_piece = board.grid[start_pos[0]][start_pos[1]]
-    if moving_piece is None or isinstance(moving_piece, Knight):
-        return False
-    for r, c in KNIGHT_ATTACKS_FROM[end_pos]:
-        pk = board.grid[r][c]
-        if pk and isinstance(pk, Knight) and pk.color != moving_piece.color:
-            return True
-    return False
-
-
-def _first_piece_in_direction(board, start, dr, dc):
-    r, c = start[0] + dr, start[1] + dc
-    while 0 <= r < ROWS and 0 <= c < COLS:
-        piece = board.grid[r][c]
-        if piece is not None:
-            return piece, (r, c)
-        r += dr
-        c += dc
-    return None, None
-
-
-def _is_between(a, b, x):
-    dr = (b[0] > a[0]) - (b[0] < a[0])
-    dc = (b[1] > a[1]) - (b[1] < a[1])
-    r, c = a[0] + dr, a[1] + dc
-    while (r, c) != b:
-        if (r, c) == x:
-            return True
-        r += dr
-        c += dc
-    return False
-
-
-def is_discovered_slider_unlock(board, move):
-    start_pos, end_pos = move
-    moving_piece = board.grid[start_pos[0]][start_pos[1]]
-    if moving_piece is None or isinstance(moving_piece, Knight):
-        return False
-
-    my_color  = moving_piece.color
-    opp_color = moving_piece.opponent_color
-
-    for dr, dc in DIRECTIONS['queen']:
-        p_plus,  pos_plus  = _first_piece_in_direction(board, start_pos,  dr,  dc)
-        p_minus, pos_minus = _first_piece_in_direction(board, start_pos, -dr, -dc)
-        if p_plus is None or p_minus is None:
-            continue
-        for slider, slider_pos, target, target_pos in (
-                (p_plus,  pos_plus,  p_minus, pos_minus),
-                (p_minus, pos_minus, p_plus,  pos_plus)):
-            if slider.color != my_color or target.color != opp_color:
-                continue
-            if not (isinstance(slider, Queen) or
-                    (isinstance(slider, Rook) and (dr == 0 or dc == 0))):
-                continue
-            if _is_between(slider_pos, target_pos, end_pos):
-                continue
-            return True
-    return False
 
 
 def generate_all_tactical_moves(board, color):
@@ -1155,6 +1062,7 @@ def fast_approximate_material_swing(board, move, moving_piece, target_piece, pie
             break
 
     return swing
+
 
 def format_move(move):
     if not move:
