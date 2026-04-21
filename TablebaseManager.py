@@ -1,4 +1,4 @@
-# TablebaseManager.py (v7.2 - XSML & Int8 fixes)
+# TablebaseManager.py (v7.3 - XSML & Int8 fixes + same-color bishop blindspot fix for custom fens)
 #
 # Changes from v7.1:
 #   FIX-1: Updated all tablebase lookups to search for "_xsml" instead of "_sml"
@@ -205,6 +205,23 @@ class TablebaseManager:
         w_objs = [p for p in board.white_pieces if not isinstance(p, King)]
         b_objs = [p for p in board.black_pieces if not isinstance(p, King)]
         if not board.white_king_pos or not board.black_king_pos: return None
+
+        # ══════════════════════════════════════════════════════════════════
+        # BUG FIX: Same-Color Bishop Blindspot
+        # The generator skipped same-color bishop endgames to save space. 
+        # If we detect them, return None so the AI uses heuristic search instead 
+        # of reading the uninitialized '0' as a false draw.
+        # ══════════════════════════════════════════════════════════════════
+        for objs in (w_objs, b_objs):
+            bishops = [p for p in objs if type(p).__name__ == "Bishop"]
+            if len(bishops) >= 2:
+                # Check if ANY two bishops on the same team share a color complex
+                for i in range(len(bishops)):
+                    for j in range(i + 1, len(bishops)):
+                        sq1, sq2 = bishops[i].pos, bishops[j].pos
+                        if ((sq1[0] + sq1[1]) % 2) == ((sq2[0] + sq2[1]) % 2):
+                            return None 
+        # ══════════════════════════════════════════════════════════════════
 
         wk = board.white_king_pos[0] * 8 + board.white_king_pos[1]
         bk = board.black_king_pos[0] * 8 + board.black_king_pos[1]
