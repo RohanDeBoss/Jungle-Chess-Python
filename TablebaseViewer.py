@@ -1,3 +1,5 @@
+# TablebaseViewer.py (v1.1 - Updated to match new int-8 standard)
+
 import os
 import numpy as np
 import tkinter as tk
@@ -33,7 +35,7 @@ for c in range(4):
 
 
 def parse_tablebase_filename(filename):
-    stem = filename[:-8] if filename.endswith("_sml.bin") else filename
+    stem = filename[:-9] if filename.endswith("_xsml.bin") else filename
     parts = stem.split('_')
     if len(parts) < 3 or parts[0] != 'K' or parts[-1] != 'K':
         return None
@@ -147,7 +149,7 @@ class TBViewerApp:
 
     def load_file_list(self):
         if not os.path.exists(TB_DIR): os.makedirs(TB_DIR)
-        files = [f for f in os.listdir(TB_DIR) if f.endswith("_sml.bin")]
+        files = [f for f in os.listdir(TB_DIR) if f.endswith("_xsml.bin")]
         if not files: return
 
         for f in sorted(files):
@@ -200,7 +202,7 @@ class TBViewerApp:
         has_pawn = "Pawn" in filename
 
         try:
-            data = np.memmap(filepath, dtype=np.int16, mode='r')
+            data = np.memmap(filepath, dtype=np.int8, mode='r')
             data_flat = data.reshape(-1)
             abs_data = np.abs(data_flat)
             

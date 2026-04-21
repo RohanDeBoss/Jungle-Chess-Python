@@ -1,13 +1,8 @@
-# TablebaseManager.py (v7.1 - 5-Man Promo Fixes)
+# TablebaseManager.py (v7.2 - XSML & Int8 fixes)
 #
-# Changes from v7.0:
-#   FIX-1: _canonical_tuple_5 now takes p1n, p2n, p3n (piece name strings) and uses the same
-#           3-element bubble sort as TablebaseGenerator v12.1 _canonical_flat_5. v7.0 did
-#           sorted([sq0, sq1, sq2]) unconditionally, which mixed different-type pieces across
-#           dimension slots and produced wrong lookups for any mixed-piece 5-man same-side table.
-#   FIX-2: _canonical_tuple_5vs now takes wp1n, wp2n and only swaps same-type white pieces,
-#           matching _canonical_flat_5vs in the generator exactly.
-#   FIX-3: probe() 5-man sections updated to pass piece names into both canonical functions.
+# Changes from v7.1:
+#   FIX-1: Updated all tablebase lookups to search for "_xsml" instead of "_sml"
+#   FIX-2: Changed np.memmap dtype from np.int16 to np.int8 to correctly parse the 1-byte arrays
 
 import os
 import numpy as np
@@ -63,12 +58,12 @@ class TablebaseManager:
 
         # 3-Man
         for p in pieces:
-            self.load_table(f"K_{p}_K_sml")
+            self.load_table(f"K_{p}_K_xsml")
 
         # 4-Man same-side
         for p1, p2 in combinations_with_replacement(pieces, 2):
             names = sorted([p1, p2])
-            self.load_table(f"K_{names[0]}_{names[1]}_K_sml")
+            self.load_table(f"K_{names[0]}_{names[1]}_K_xsml")
 
         # 4-Man cross — build alphabetically-sorted keys and avoid duplicates.
         # The generator writes files with alphabetically-ordered piece names,
@@ -77,7 +72,7 @@ class TablebaseManager:
         for p1 in pieces:
             for p2 in pieces:
                 names = sorted([p1, p2])
-                key = f"K_{names[0]}_vs_{names[1]}_K_sml"
+                key = f"K_{names[0]}_vs_{names[1]}_K_xsml"
                 if key not in seen_vs:
                     seen_vs.add(key)
                     self.load_table(key)
@@ -85,13 +80,13 @@ class TablebaseManager:
         # 5-Man same-side
         for p1, p2, p3 in combinations_with_replacement(pieces, 3):
             names = sorted([p1, p2, p3])
-            self.load_table(f"K_{names[0]}_{names[1]}_{names[2]}_K_sml")
+            self.load_table(f"K_{names[0]}_{names[1]}_{names[2]}_K_xsml")
 
         # 5-Man cross (2 white vs 1 black)
         for p1, p2 in combinations_with_replacement(pieces, 2):
             names_w = sorted([p1, p2])
             for p3 in pieces:
-                self.load_table(f"K_{names_w[0]}_{names_w[1]}_vs_{p3}_K_sml")
+                self.load_table(f"K_{names_w[0]}_{names_w[1]}_vs_{p3}_K_xsml")
 
     def load_table(self, name):
         if name in self.tables: return True
@@ -107,7 +102,7 @@ class TablebaseManager:
                     num_pieces -= 1
 
                 shape = tuple([wk_size] + [64] * (num_pieces + 1) + [2])
-                self.tables[name] = np.memmap(filename, dtype=np.int16, mode='r', shape=shape)
+                self.tables[name] = np.memmap(filename, dtype=np.int8, mode='r', shape=shape)
                 return True
             except Exception as e:
                 print(f"[TablebaseManager] Failed to memmap {name}: {e}")
@@ -219,7 +214,7 @@ class TablebaseManager:
         # --- 3-MAN ---
         if w_cnt == 1 and b_cnt == 0:
             p = w_objs[0]
-            tb = f"K_{type(p).__name__}_K_sml"
+            tb = f"K_{type(p).__name__}_K_xsml"
             if tb in self.tables:
                 p_sq = p.pos[0] * 8 + p.pos[1]
                 idx = self._canonical_tuple_3(wk, p_sq, bk, t_idx, type(p).__name__ == "Pawn")
@@ -229,7 +224,7 @@ class TablebaseManager:
 
         elif b_cnt == 1 and w_cnt == 0:
             p = b_objs[0]
-            tb = f"K_{type(p).__name__}_K_sml"
+            tb = f"K_{type(p).__name__}_K_xsml"
             if tb in self.tables:
                 bk_f = _flip(board.black_king_pos)
                 p_f  = _flip(p.pos)
@@ -246,7 +241,7 @@ class TablebaseManager:
             p1_sq = w_objs[0].pos[0]*8 + w_objs[0].pos[1]
             p2_sq = w_objs[1].pos[0]*8 + w_objs[1].pos[1]
             if n1 > n2: n1, n2, p1_sq, p2_sq = n2, n1, p2_sq, p1_sq
-            tb = f"K_{n1}_{n2}_K_sml"
+            tb = f"K_{n1}_{n2}_K_xsml"
             if tb in self.tables:
                 idx = self._canonical_tuple_4(wk, p1_sq, p2_sq, bk, t_idx, "Pawn" in tb, n1 == n2)
                 val = int(self.tables[tb][idx])
@@ -258,7 +253,7 @@ class TablebaseManager:
             p1_f = _flip(b_objs[0].pos); p2_f = _flip(b_objs[1].pos)
             p1_sq, p2_sq = p1_f[0]*8+p1_f[1], p2_f[0]*8+p2_f[1]
             if n1 > n2: n1, n2, p1_sq, p2_sq = n2, n1, p2_sq, p1_sq
-            tb = f"K_{n1}_{n2}_K_sml"
+            tb = f"K_{n1}_{n2}_K_xsml"
             if tb in self.tables:
                 bk_f = _flip(board.black_king_pos); wk_f = _flip(board.white_king_pos)
                 bk_sq, wk_sq = bk_f[0]*8+bk_f[1], wk_f[0]*8+wk_f[1]
@@ -273,14 +268,14 @@ class TablebaseManager:
             wp_sq = w_objs[0].pos[0]*8 + w_objs[0].pos[1]
             bp_sq = b_objs[0].pos[0]*8 + b_objs[0].pos[1]
             if wn <= bn:
-                tb = f"K_{wn}_vs_{bn}_K_sml"
+                tb = f"K_{wn}_vs_{bn}_K_xsml"
                 if tb in self.tables:
                     idx = self._canonical_tuple_4vs(wk, wp_sq, bk, bp_sq, t_idx, "Pawn" in tb)
                     val = int(self.tables[tb][idx])
                     is_win = (t_idx == 0 and val > 0) or (t_idx == 1 and val < 0)
                     return self._tb_score_to_ai_score(val, is_win)
             else:
-                tb = f"K_{bn}_vs_{wn}_K_sml"
+                tb = f"K_{bn}_vs_{wn}_K_xsml"
                 if tb in self.tables:
                     bk_f = _flip(board.black_king_pos); bp_f = _flip(b_objs[0].pos)
                     wk_f = _flip(board.white_king_pos); wp_f = _flip(w_objs[0].pos)
@@ -297,7 +292,7 @@ class TablebaseManager:
             pairs = sorted([(type(p).__name__, p.pos[0]*8+p.pos[1]) for p in w_objs],
                            key=lambda x: (_PIECE_NAME_ORDER.get(x[0], 99), x[1]))
             (n1, p1_sq), (n2, p2_sq), (n3, p3_sq) = pairs[0], pairs[1], pairs[2]
-            tb = f"K_{n1}_{n2}_{n3}_K_sml"
+            tb = f"K_{n1}_{n2}_{n3}_K_xsml"
             if tb in self.tables:
                 # FIX: pass piece names so bubble sort only swaps same-type pieces
                 idx = self._canonical_tuple_5(wk, p1_sq, p2_sq, p3_sq, bk, t_idx, "Pawn" in tb, n1, n2, n3)
@@ -309,7 +304,7 @@ class TablebaseManager:
             pairs = sorted([(type(p).__name__, _flip(p.pos)[0]*8+_flip(p.pos)[1]) for p in b_objs],
                            key=lambda x: (_PIECE_NAME_ORDER.get(x[0], 99), x[1]))
             (n1, p1_sq), (n2, p2_sq), (n3, p3_sq) = pairs[0], pairs[1], pairs[2]
-            tb = f"K_{n1}_{n2}_{n3}_K_sml"
+            tb = f"K_{n1}_{n2}_{n3}_K_xsml"
             if tb in self.tables:
                 bk_f = _flip(board.black_king_pos); wk_f = _flip(board.white_king_pos)
                 bk_sq, wk_sq = bk_f[0]*8+bk_f[1], wk_f[0]*8+wk_f[1]
@@ -329,7 +324,7 @@ class TablebaseManager:
             wk_sq = wk
             bk_sq = bk
             
-            tb = f"K_{wn1}_{wn2}_vs_{bn}_K_sml"
+            tb = f"K_{wn1}_{wn2}_vs_{bn}_K_xsml"
             if tb in self.tables:
                 idx = self._canonical_tuple_5vs(wk_sq, wp1_sq, wp2_sq, bk_sq, bp_sq, t_idx, "Pawn" in tb, wn1, wn2)
                 val = int(self.tables[tb][idx])
@@ -345,7 +340,7 @@ class TablebaseManager:
             wn = type(w_objs[0]).__name__
             wp_sq = _flip(w_objs[0].pos)[0]*8 + _flip(w_objs[0].pos)[1]
             
-            tb = f"K_{bn1}_{bn2}_vs_{wn}_K_sml"
+            tb = f"K_{bn1}_{bn2}_vs_{wn}_K_xsml"
             if tb in self.tables:
                 bk_f = _flip(board.black_king_pos)
                 wk_f = _flip(board.white_king_pos)
