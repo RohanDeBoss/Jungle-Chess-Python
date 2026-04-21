@@ -1,4 +1,4 @@
-# PieceTuner.py (v3.1 - Subdirectory Support, 5-Man TB Adjudication, Worker Crash Fix)
+# PieceTuner.py (v3.2 - Compatible with AI v111.3)
 
 import sys
 import os
@@ -157,7 +157,7 @@ def _get_bot() -> AI.ChessBot:
     global _bot_singleton
     if _bot_singleton is None:
         # Use Dummy objects instead of mp.Queue() inside workers
-        _bot_singleton = AI.ChessBot(Board(), 'white', {}, DummyQueue(), DummyEvent(), 'Tuner')
+        _bot_singleton = AI.ChessBot(Board(), 'white', {}, DummyQueue(), DummyEvent(), bot_name='Tuner', ply_count=0, use_opening_book=False, use_tablebase=True)
     return _bot_singleton
 
 def _play_one_game(args: tuple) -> tuple:
@@ -213,6 +213,7 @@ def _play_one_game(args: tuple) -> tuple:
         bot.color           = turn
         bot.opponent_color  = 'black' if turn == 'white' else 'white'
         bot.position_counts = dict(position_count)
+        bot.ply_count       = plies
         root_hash = board_hash(board, turn)
 
         screen_score, _ = _search_with_id(OPENING_SCREEN_DEPTH, legal, root_hash)
@@ -259,6 +260,7 @@ def _play_one_game(args: tuple) -> tuple:
             bot.color           = turn
             bot.opponent_color  = 'black' if turn == 'white' else 'white'
             bot.position_counts = dict(position_count)
+            bot.ply_count       = plies
             root_hash = board_hash(board, turn)
 
             _, best_move = _search_with_id(gen_depth, legal, root_hash)

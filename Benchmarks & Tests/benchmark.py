@@ -1,4 +1,4 @@
-# Benchmark.py (v5.0 - High Performance / Real-World Path)
+# Benchmark.py (v5.1 - Bug fixes to match new search structure)
 
 import time
 import os
@@ -73,7 +73,7 @@ def run_benchmark():
     # CREATE ONE PERSISTENT BOT (Reuses Transposition Table for efficiency)
     # We set use_tablebase=False to test raw calculation speed.
     dummy_board = Board()
-    bot = ChessBot(dummy_board, 'white', {}, DummyQueue(), DummyEvent(), use_tablebase=False)
+    bot = ChessBot(dummy_board, 'white', {}, DummyQueue(), DummyEvent(), bot_name='Bench', ply_count=0, use_opening_book=False, use_tablebase=False)
 
     pass_metrics = []
     for run in range(1, NUM_RUNS + 1):
@@ -88,6 +88,7 @@ def run_benchmark():
             bot.color = turn
             bot.opponent_color = 'black' if turn == 'white' else 'white'
             bot.position_counts = {board_hash(board, turn): 1}
+            bot.ply_count = 0
             
             root_moves = get_all_legal_moves(board, turn)
             best_move = root_moves[0]

@@ -1,4 +1,4 @@
-# BookGenerator_Pro.py (v3.0 - Level-Synchronous Position Parallelism)
+# book_generator.py (v3.1 - Compatible with AI v111.3)
 
 import os
 import json
@@ -58,7 +58,7 @@ def evaluate_position(board_data, turn, ply, branch_factor, search_depth, eval_t
     fen = board_to_fen(board, turn)
     
     # Initialize a silent bot
-    bot = AI.ChessBot(board, turn, {}, mp.Queue(), mp.Event(), 'Worker')
+    bot = AI.ChessBot(board, turn, {}, mp.Queue(), mp.Event(), bot_name='Worker', ply_count=ply, use_opening_book=False, use_tablebase=False)
     bot._report_log = lambda msg: None
     bot._report_eval = lambda s, d: None
     bot._report_move = lambda m: None
@@ -186,7 +186,7 @@ def generate_book():
                         elif ch.isdigit():
                             c += int(ch)
                         else:
-                            from JungleChessUI import _FEN_CHAR_TO_CLASS
+                            _FEN_CHAR_TO_CLASS = {'p': Pawn, 'n': Knight, 'b': Bishop, 'r': Rook, 'q': Queen, 'k': King}
                             pc = _FEN_CHAR_TO_CLASS[ch.lower()]
                             board.add_piece(pc("white" if ch.isupper() else "black"), r, c)
                             c += 1
