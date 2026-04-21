@@ -1,9 +1,9 @@
-# TablebaseGenerator.py (v13.0 - The Ultimate 5-Man Generator)
+# TablebaseGenerator.py (v13.1 - 5-Man Generator complete + int-8 with overflow warning system)
 #
 # Features:
 # - 3-Man, 4-Man, and 5-Man Tablebase generation (Same-Side and Cross).
 # - Strict DTM BFS Retrograde Analysis.
-# - SML Compression (Symmetry & Memory Layering).
+# - XSML Compression (Symmetry & Memory Layering) w. int 8 compression.
 # - 'is_possible' Filter: Skips impossible board states (e.g., 3 Knights).
 # - Bishop Parity Filter: Skips states with 2 same-color Bishops on the same square color.
 # - Dynamic Promotion Routing: Correctly maps 5-man pawns promoting into 5-man Queen tables.
@@ -22,7 +22,7 @@ from collections import defaultdict
 TB_DIR = "tablebases"
 os.makedirs(TB_DIR, exist_ok=True)
 
-LONGEST_MATES_NOTE_FILE = os.path.join(TB_DIR, "new_longest_mates_sml.tsv")
+LONGEST_MATES_NOTE_FILE = os.path.join(TB_DIR, "longest_mates_xsml.tsv")
 LONGEST_MATE_KEY_PREFIX = "regen_"
 
 # Leave a couple of threads free so your PC doesn't freeze during generation
@@ -173,43 +173,79 @@ def _install_worker_interrupt_ignores():
         except Exception: pass
 
 def _load_3man_table_file(filename):
-    data16 = np.fromfile(filename, dtype=np.int16)
+    data8 = np.fromfile(filename, dtype=np.int8)
     has_pawn = "Pawn" in os.path.basename(filename)
-    return data16.reshape((32 if has_pawn else 10, 64, 64, 2))
+    return data8.reshape((32 if has_pawn else 10, 64, 64, 2))
 
 def _load_4man_table_file(filename):
-    data16 = np.fromfile(filename, dtype=np.int16)
+    data8 = np.fromfile(filename, dtype=np.int8)
     has_pawn = "Pawn" in os.path.basename(filename)
-    return data16.reshape((32 if has_pawn else 10, 64, 64, 64, 2))
+    return data8.reshape((32 if has_pawn else 10, 64, 64, 64, 2))
 
 def _load_5man_table_file(filename):
-    data16 = np.fromfile(filename, dtype=np.int16)
+    data8 = np.fromfile(filename, dtype=np.int8)
     has_pawn = "Pawn" in os.path.basename(filename)
-    return data16.reshape((32 if has_pawn else 10, 64, 64, 64, 64, 2))
+    return data8.reshape((32 if has_pawn else 10, 64, 64, 64, 64, 2))
 
 def _flip(pos):
     return (7 - pos[0], pos[1])
 
 def _safe_record_longest_mate(table_key, max_dtm, decisive, remaining, elapsed_seconds):
+    """Updates the log file with a pretty-printed, aligned table."""
     try:
         records = {}
+        # 1. Read existing data to preserve other records
         if os.path.exists(LONGEST_MATES_NOTE_FILE):
             with open(LONGEST_MATES_NOTE_FILE, "r", encoding="utf-8") as f:
                 for raw in f:
                     line = raw.strip()
-                    if not line or line.startswith("#"): continue
-                    parts = line.split("\t")
+                    # Skip headers and dividers
+                    if not line or any(line.startswith(x) for x in ("#", "Table", "---")):
+                        continue
+                    # Parse the fixed-width line (splitting on 2+ spaces or tabs)
+                    import re
+                    parts = re.split(r'\s{2,}|\t', line)
                     if len(parts) >= 6:
+                        # Strip commas from numbers so we can process them
+                        parts[2] = parts[2].replace(',', '')
+                        parts[3] = parts[3].replace(',', '')
                         records[parts[0]] = parts[1:6]
+
+        # 2. Add or update the current table record
         records[f"{LONGEST_MATE_KEY_PREFIX}{table_key}"] = [
-            str(int(max_dtm)), str(int(decisive)), str(int(remaining)),
-            f"{elapsed_seconds / 60.0:.1f}", time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime())
+            str(int(max_dtm)), 
+            str(int(decisive)), 
+            str(int(remaining)),
+            f"{elapsed_seconds / 60.0:.1f}", 
+            time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime())
         ]
+
+        # 3. Define column widths for the pretty table
+        w_table = 35
+        w_dtm   = 6
+        w_wins  = 14
+        w_draws = 14
+        w_time  = 10
+        w_utc   = 20
+
+        # 4. Write the aligned table
         with open(LONGEST_MATES_NOTE_FILE, "w", encoding="utf-8") as f:
-            f.write("# table_key\tmax_dtm\tdecisive\tremaining\telapsed_min\tupdated_utc\n")
+            # Header
+            header = (f"{'Table':<{w_table}}  {'DTM':>{w_dtm}}  {'Decisive':>{w_wins}}  "
+                      f"{'Drawn':>{w_draws}}  {'Min':>{w_time}}  {'Updated (UTC)':<{w_utc}}")
+            f.write(header + "\n")
+            f.write("-" * len(header) + "\n")
+
+            # Rows
             for key in sorted(records.keys()):
                 r = records[key]
-                f.write(f"{key}\t{r[0]}\t{r[1]}\t{r[2]}\t{r[3]}\t{r[4]}\n")
+                # Format numbers with commas for readability
+                wins_fmt = f"{int(r[1]):,}"
+                draws_fmt = f"{int(r[2]):,}"
+                
+                f.write(f"{key:<{w_table}}  {r[0]:>{w_dtm}}  {wins_fmt:>{w_wins}}  "
+                        f"{draws_fmt:>{w_draws}}  {r[3]:>{w_time}}  {r[4]:<{w_utc}}\n")
+                
     except Exception as e:
         print(f"[LongestMate] Warning: failed to update note file ({e})")
 
@@ -249,8 +285,19 @@ def _run_bfs_retrograde(table, unsolved_flats, transitions, trans_lookup, btm_to
     print(f"[Stage 4] Terminal States Found (DTM 1): {solved_count:,}", flush=True)
     print("[Stage 5] Strict BFS Retrograde Analysis...", flush=True)
 
+    warning_triggered = False
     while work_set or pending_work:
         iter_start = time.time()
+
+        if not warning_triggered and iteration >= 120:
+            print("\n" + "="*70)
+            print(f"[!!!] CRITICAL DTM WARNING: Ply count has reached {iteration}.")
+            print("      Data type 'int8' is at risk of overflowing (max is 127).")
+            print("      If this continues, the generated tablebase will be corrupted.")
+            print("      It is recommended to stop generation (Ctrl+C) and switch")
+            print("      this specific generator class to use 'np.int16'.")
+            print("="*70 + "\n", flush=True)
+            warning_triggered = True
 
         if iteration in pending_work:
             work_set.update(pending_work.pop(iteration))
@@ -402,17 +449,17 @@ class Generator:
     def __init__(self, piece_class):
         self.piece_name = piece_class.__name__
         self.has_pawn = (self.piece_name == "Pawn")
-        self.filename = os.path.join(TB_DIR, f"K_{self.piece_name}_K_sml.bin")
-        self.queen_tb_file = os.path.join(TB_DIR, "K_Queen_K_sml.bin")
+        self.filename = os.path.join(TB_DIR, f"K_{self.piece_name}_K_xsml.bin")
+        self.queen_tb_file = os.path.join(TB_DIR, "K_Queen_K_xsml.bin")
         self.wk_size = 32 if self.has_pawn else 10
         self.total_positions = self.wk_size * 64 * 64 * 2
-        self.table = np.zeros((self.wk_size, 64, 64, 2), dtype=np.int16)
+        self.table = np.zeros((self.wk_size, 64, 64, 2), dtype=np.int8)
         self.transition_workers = min(8, max(1, (os.cpu_count() or 2) - TB_THREADS_SUBTRACT))
 
     def generate(self):
         if os.path.exists(self.filename): return
         start_time = time.time()
-        print(f"\n{'='*60}\n GENERATING: K+{self.piece_name} vs K (SML)\n{'='*60}")
+        print(f"\n{'='*60}\n GENERATING: K+{self.piece_name} vs K (XSML)\n{'='*60}")
         raw_candidates = []
         for flat in range(self.total_positions):
             rest = flat // 2
@@ -462,7 +509,7 @@ def _init_transition_worker_4(p1_name, p2_name, promo_tb_file):
     _W4_SAME_PIECE = (p1_name == p2_name)
     _W4_3MAN_TABLES, _W4_PROMO_TABLE = {}, None
     for name in PIECE_CLASS_BY_NAME:
-        path = os.path.join(TB_DIR, f"K_{name}_K_sml.bin")
+        path = os.path.join(TB_DIR, f"K_{name}_K_xsml.bin")
         if os.path.exists(path): _W4_3MAN_TABLES[name] = _load_3man_table_file(path)
     if promo_tb_file and os.path.exists(promo_tb_file):
         _W4_PROMO_TABLE = _load_4man_table_file(promo_tb_file)
@@ -582,21 +629,21 @@ class Generator4:
         self.p1_name, self.p2_name = names[0], names[1]
         self.same_piece = (self.p1_name == self.p2_name)
         self.has_pawn   = (self.p1_name == "Pawn" or self.p2_name == "Pawn")
-        self.filename   = os.path.join(TB_DIR, f"K_{self.p1_name}_{self.p2_name}_K_sml.bin")
+        self.filename   = os.path.join(TB_DIR, f"K_{self.p1_name}_{self.p2_name}_K_xsml.bin")
         self.wk_size = 32 if self.has_pawn else 10
         self.total_positions = self.wk_size * 64 * 64 * 64 * 2
-        self.table = np.zeros((self.wk_size, 64, 64, 64, 2), dtype=np.int16)
+        self.table = np.zeros((self.wk_size, 64, 64, 64, 2), dtype=np.int8)
         self.promo_tb_file = None
         if self.has_pawn:
             other   = self.p2_name if self.p1_name == "Pawn" else self.p1_name
             p_names = sorted(["Pawn", "Queen"]) if self.same_piece else sorted(["Queen", other])
-            self.promo_tb_file = os.path.join(TB_DIR, f"K_{p_names[0]}_{p_names[1]}_K_sml.bin")
+            self.promo_tb_file = os.path.join(TB_DIR, f"K_{p_names[0]}_{p_names[1]}_K_xsml.bin")
         self.transition_workers = max(1, (os.cpu_count() or 2) - TB_THREADS_SUBTRACT)
 
     def generate(self):
         if os.path.exists(self.filename): return
         start_time = time.time()
-        print(f"\n{'='*60}\n GENERATING: K+{self.p1_name}+{self.p2_name} vs K (SML)\n{'='*60}", flush=True)
+        print(f"\n{'='*60}\n GENERATING: K+{self.p1_name}+{self.p2_name} vs K (XSML)\n{'='*60}", flush=True)
         all_flats = array('I')
         for chunk in _gen_valid_4man_indices_numpy(self.total_positions, self.p1_name, self.p2_name, self.same_piece, self.has_pawn):
             all_flats.extend(chunk)
@@ -645,7 +692,7 @@ def _init_transition_worker_4vs(w_name, b_name):
     names_needed = {w_name, b_name}
     if _W4V_HAS_PAWN: names_needed.add("Queen")
     for name in names_needed:
-        path = os.path.join(TB_DIR, f"K_{name}_K_sml.bin")
+        path = os.path.join(TB_DIR, f"K_{name}_K_xsml.bin")
         if os.path.exists(path): _W4V_3MAN_TABLES[name] = _load_3man_table_file(path)
 
     promo_targets = set()
@@ -653,7 +700,7 @@ def _init_transition_worker_4vs(w_name, b_name):
     if b_name == "Pawn": promo_targets.add((w_name, "Queen"))
     for key in promo_targets:
         sk = tuple(sorted(key))
-        path = os.path.join(TB_DIR, f"K_{sk[0]}_vs_{sk[1]}_K_sml.bin")
+        path = os.path.join(TB_DIR, f"K_{sk[0]}_vs_{sk[1]}_K_xsml.bin")
         if os.path.exists(path):
             _W4V_PROMO_TABLES[sk] = _load_4man_table_file(path)
 
@@ -812,16 +859,16 @@ class Generator4Vs:
         names = sorted([w_piece_class.__name__, b_piece_class.__name__])
         self.w_name, self.b_name = names[0], names[1]
         self.has_pawn = ("Pawn" in {self.w_name, self.b_name})
-        self.filename  = os.path.join(TB_DIR, f"K_{self.w_name}_vs_{self.b_name}_K_sml.bin")
+        self.filename  = os.path.join(TB_DIR, f"K_{self.w_name}_vs_{self.b_name}_K_xsml.bin")
         self.wk_size   = 32 if self.has_pawn else 10
         self.total_positions = self.wk_size * 64 * 64 * 64 * 2
-        self.table     = np.zeros((self.wk_size, 64, 64, 64, 2), dtype=np.int16)
+        self.table     = np.zeros((self.wk_size, 64, 64, 64, 2), dtype=np.int8)
         self.transition_workers = max(1, (os.cpu_count() or 2) - TB_THREADS_SUBTRACT)
 
     def generate(self):
         if os.path.exists(self.filename): return
         start_time = time.time()
-        print(f"\n{'='*60}\n GENERATING: K+{self.w_name} vs K+{self.b_name} (SML)\n{'='*60}", flush=True)
+        print(f"\n{'='*60}\n GENERATING: K+{self.w_name} vs K+{self.b_name} (XSML)\n{'='*60}", flush=True)
         all_flats = array('I')
         for chunk in _gen_valid_4man_vs_indices_numpy(self.total_positions, self.w_name, self.b_name, self.has_pawn):
             all_flats.extend(chunk)
@@ -867,7 +914,7 @@ def _init_transition_worker_5(p1_name, p2_name, p3_name):
     _W5_3MAN_TABLES.clear(); _W5_4MAN_TABLES.clear(); _W5_PROMO_TABLES.clear()
 
     for name in PIECE_CLASS_BY_NAME:
-        path = os.path.join(TB_DIR, f"K_{name}_K_sml.bin")
+        path = os.path.join(TB_DIR, f"K_{name}_K_xsml.bin")
         if os.path.exists(path): _W5_3MAN_TABLES[name] = _load_3man_table_file(path)
 
     pieces = sorted(PIECE_CLASS_BY_NAME.keys())
@@ -877,7 +924,7 @@ def _init_transition_worker_5(p1_name, p2_name, p3_name):
             key = tuple(sorted([n1, n2]))
             if key in seen: continue
             seen.add(key)
-            path = os.path.join(TB_DIR, f"K_{key[0]}_{key[1]}_K_sml.bin")
+            path = os.path.join(TB_DIR, f"K_{key[0]}_{key[1]}_K_xsml.bin")
             if os.path.exists(path):
                 _W5_4MAN_TABLES[f"{key[0]}_{key[1]}"] = _load_4man_table_file(path)
 
@@ -888,7 +935,7 @@ def _init_transition_worker_5(p1_name, p2_name, p3_name):
             promo_names = names.copy()
             promo_names[idx] = "Queen"
             promo_names.sort(key=lambda n: (_PIECE_CANONICAL_ORDER.get(PIECE_CLASS_BY_NAME[n], 99), n))
-            tb_name = f"K_{promo_names[0]}_{promo_names[1]}_{promo_names[2]}_K_sml.bin"
+            tb_name = f"K_{promo_names[0]}_{promo_names[1]}_{promo_names[2]}_K_xsml.bin"
             path = os.path.join(TB_DIR, tb_name)
             if os.path.exists(path):
                 _W5_PROMO_TABLES[tuple(promo_names)] = _load_5man_table_file(path)
@@ -1075,16 +1122,16 @@ class Generator5:
                     key=lambda c: (_PIECE_CANONICAL_ORDER.get(c, 99), c.__name__))
         self.p1_name = ps[0].__name__; self.p2_name = ps[1].__name__; self.p3_name = ps[2].__name__
         self.has_pawn = ("Pawn" in {self.p1_name, self.p2_name, self.p3_name})
-        self.filename  = os.path.join(TB_DIR, f"K_{self.p1_name}_{self.p2_name}_{self.p3_name}_K_sml.bin")
+        self.filename  = os.path.join(TB_DIR, f"K_{self.p1_name}_{self.p2_name}_{self.p3_name}_K_xsml.bin")
         self.wk_size   = 32 if self.has_pawn else 10
         self.total_positions = self.wk_size * 64 * 64 * 64 * 64 * 2
-        self.table     = np.zeros((self.wk_size, 64, 64, 64, 64, 2), dtype=np.int16)
+        self.table     = np.zeros((self.wk_size, 64, 64, 64, 64, 2), dtype=np.int8)
         self.transition_workers = max(1, (os.cpu_count() or 2) - TB_THREADS_SUBTRACT)
 
     def generate(self):
         if os.path.exists(self.filename): return
         start_time = time.time()
-        sz_mb = self.wk_size * 64**4 * 2 * 2 / 1024**2
+        sz_mb = self.wk_size * 64**4 * 2 * 1 / 1024**2
         print(f"\n{'='*60}\n GENERATING: K+{self.p1_name}+{self.p2_name}+{self.p3_name} vs K", flush=True)
         print(f" Estimated file size: {sz_mb:.0f} MB\n{'='*60}", flush=True)
 
@@ -1134,7 +1181,7 @@ def _init_transition_worker_5vs(w1_name, w2_name, b_name):
     _W5V_3MAN_TABLES.clear(); _W5V_4MAN_TABLES.clear(); _W5V_4VS_TABLES.clear(); _W5V_PROMO_TABLES.clear()
 
     for name in PIECE_CLASS_BY_NAME:
-        path = os.path.join(TB_DIR, f"K_{name}_K_sml.bin")
+        path = os.path.join(TB_DIR, f"K_{name}_K_xsml.bin")
         if os.path.exists(path): _W5V_3MAN_TABLES[name] = _load_3man_table_file(path)
 
     pieces = sorted(PIECE_CLASS_BY_NAME.keys()); seen4 = set()
@@ -1143,7 +1190,7 @@ def _init_transition_worker_5vs(w1_name, w2_name, b_name):
             key = tuple(sorted([n1, n2]))
             if key in seen4: continue
             seen4.add(key)
-            path = os.path.join(TB_DIR, f"K_{key[0]}_{key[1]}_K_sml.bin")
+            path = os.path.join(TB_DIR, f"K_{key[0]}_{key[1]}_K_xsml.bin")
             if os.path.exists(path): _W5V_4MAN_TABLES[f"{key[0]}_{key[1]}"] = _load_4man_table_file(path)
 
     seen4v = set()
@@ -1152,7 +1199,7 @@ def _init_transition_worker_5vs(w1_name, w2_name, b_name):
             key = tuple(sorted([wn, bn]))
             if key in seen4v: continue
             seen4v.add(key)
-            path = os.path.join(TB_DIR, f"K_{key[0]}_vs_{key[1]}_K_sml.bin")
+            path = os.path.join(TB_DIR, f"K_{key[0]}_vs_{key[1]}_K_xsml.bin")
             if os.path.exists(path): _W5V_4VS_TABLES[f"{key[0]}_vs_{key[1]}"] = _load_4man_table_file(path)
 
     if _W5V_HAS_PAWN:
@@ -1160,13 +1207,13 @@ def _init_transition_worker_5vs(w1_name, w2_name, b_name):
             w_names = [w1_name, w2_name]
             w_names[w_names.index("Pawn")] = "Queen"
             w_names.sort(key=lambda n: (_PIECE_CANONICAL_ORDER.get(PIECE_CLASS_BY_NAME[n],99), n))
-            tb_name = f"K_{w_names[0]}_{w_names[1]}_vs_{b_name}_K_sml.bin"
+            tb_name = f"K_{w_names[0]}_{w_names[1]}_vs_{b_name}_K_xsml.bin"
             path = os.path.join(TB_DIR, tb_name)
             if os.path.exists(path):
                 _W5V_PROMO_TABLES[("w", tuple(w_names), b_name)] = _load_5man_table_file(path)
 
         if b_name == "Pawn":
-            tb_name = f"K_{w1_name}_{w2_name}_vs_Queen_K_sml.bin"
+            tb_name = f"K_{w1_name}_{w2_name}_vs_Queen_K_xsml.bin"
             path = os.path.join(TB_DIR, tb_name)
             if os.path.exists(path):
                 _W5V_PROMO_TABLES[("b", (w1_name, w2_name), "Queen")] = _load_5man_table_file(path)
@@ -1368,10 +1415,10 @@ class Generator5Vs:
         self.b_name = b_class.__name__
         self.same_wp  = (self.w1_name == self.w2_name)
         self.has_pawn = ("Pawn" in {self.w1_name, self.w2_name, self.b_name})
-        self.filename  = os.path.join(TB_DIR, f"K_{self.w1_name}_{self.w2_name}_vs_{self.b_name}_K_sml.bin")
+        self.filename  = os.path.join(TB_DIR, f"K_{self.w1_name}_{self.w2_name}_vs_{self.b_name}_K_xsml.bin")
         self.wk_size   = 32 if self.has_pawn else 10
         self.total_positions = self.wk_size * 64 * 64 * 64 * 64 * 2
-        self.table     = np.zeros((self.wk_size, 64, 64, 64, 64, 2), dtype=np.int16)
+        self.table     = np.zeros((self.wk_size, 64, 64, 64, 64, 2), dtype=np.int8)
         self.transition_workers = max(1, (os.cpu_count() or 2) - TB_THREADS_SUBTRACT)
 
     def generate(self):
