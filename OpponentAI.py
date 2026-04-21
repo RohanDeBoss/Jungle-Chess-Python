@@ -1,4 +1,4 @@
-# OPAI.py (v109.3 - integration fixes and tb fixes)
+# OPAI.py (v111.3 - Move ordering recapture type bonus heuristic)
 import json
 import os
 import time
@@ -212,6 +212,7 @@ class OpponentAI:
     BONUS_CAPTURE = 8_000_000
     BONUS_KILLER_1 = 4_000_000
     BONUS_KILLER_2 = 3_000_000
+    BONUS_CONTINUATION = 2_500_000
     BAD_TACTIC_PENALTY = -2_000_000
     OPENING_TOTAL_PIECE_THRESHOLD = 23
     OPENING_BONUS_MAX_PLY = 1
@@ -239,6 +240,10 @@ class OpponentAI:
     LONE_ROOK_PENALTIES = (550, 200, 150, 80, 40)
     LONE_BISHOP_PENALTIES = (650, 250, 170, 100, 50)
     EVAL_PAWN_VULNERABILITY_EG = 15
+
+    EVAL_MOBILITY_ROOK   = 4
+    EVAL_MOBILITY_BISHOP = 3
+    EVAL_MOBILITY_QUEEN  = 2
 
     def __init__(self, board, color, position_counts, comm_queue, cancellation_event,
                  bot_name=None, ply_count=0, game_mode="bot", max_moves=200,
@@ -294,6 +299,8 @@ class OpponentAI:
         self.killer_moves = [[None, None] for _ in range(max(200, self.max_moves))]
         self.history_heuristic_table = [[[0 for _ in range(64)] for _ in range(64)] for _ in range(2)]
         self.counter_moves = [[[None for _ in range(64)] for _ in range(64)] for _ in range(2)]
+        # [color][prev_piece_type][prev_to_sq][my_piece_type][my_to_sq]
+        self.continuation_history = [[[[[0] * 64 for _ in range(6)] for _ in range(64)] for _ in range(6)] for _ in range(2)]
 
     def _store_tt(self, hash_val, score, depth, flag, move):
         existing = self.tt.get(hash_val)
@@ -791,6 +798,7 @@ class OpponentAI:
                                             null_hash, None, extensions)
                         if score >= beta: return beta
 
+            # --- FORWARD FUTILITY PRUNING (Original Conservative Version) ---
             futility_prune = False
             if (self.USE_FUTILITY_PRUNING and depth == 1 and not is_in_check_flag and
                     abs(alpha) < self.MATE_SCORE - 1000):
@@ -810,7 +818,7 @@ class OpponentAI:
                 c_move = None
 
             ordered_entries = self.order_moves(board, pseudo_moves, ply, hash_move, turn,
-                                            return_meta=True, counter_move=c_move)
+                                            return_meta=True, counter_move=c_move, prev_move=prev_move)
             best_move_for_node = None
             legal_moves_count  = 0
             quiet_moves_tried  = []
@@ -846,29 +854,51 @@ class OpponentAI:
                         board.unmake_move(record)
                         continue
 
+                # --- CALIBRATED LATE MOVE REDUCTION ---
                 reduction = 0
                 if (depth >= self.LMR_DEPTH_THRESHOLD and
                         legal_moves_count > self.LMR_MOVE_COUNT_THRESHOLD and
                         not is_in_check_flag and not is_good_tactic):
-                    # Base reduction
-                    reduction = self.LMR_REDUCTION
-                    # Scale reduction dynamically based on depth and how "late" the move is
-                    if depth >= 6 and legal_moves_count >= 6:
-                        reduction += 1
-                    if depth >= 9:
-                        reduction += 1
-                    # Penalize moves with terrible history
-                    if history_table[f_sq][t_sq] < 0: 
-                        reduction += 1
+                    
+                    # 1. Base reduction with much gentler scaling
+                    reduction = 1 + (depth // 7) + (legal_moves_count // 12)
+                    
+                    # 2. Protect likely refutations
+                    if (ply < len(self.killer_moves) and move in self.killer_moves[ply]) or move == c_move:
+                        reduction -= 1
+                        
+                    # 3. JUNGLE HEURISTIC: Protect volatile quiet pieces
+                    if type(moving_piece) is Knight:
+                        reduction -= 1
+                    elif type(moving_piece) is Queen:
+                        # Fast ray-cast from the Queen's new square. 
+                        attacks_enemy = False
+                        grid_ref = board.grid
+                        for ray in RAYS[t_sq]:
+                            for cr, cc in ray:
+                                target = grid_ref[cr][cc]
+                                if target is not None:
+                                    if target.color == opponent_turn:
+                                        attacks_enemy = True
+                                    break
+                            if attacks_enemy:
+                                break
+                        if attacks_enemy:
+                            reduction -= 1
+                        
+                    # 4. History influence (only reward good moves, don't punish bad ones as hard)
+                    if history_table[f_sq][t_sq] > 250_000:
+                        reduction -= 1
+                        
+                    # 5. Safety Clamp
+                    reduction = max(0, min(reduction, depth - 2))
 
-                search_depth_child = max(0, depth - 1 - reduction)
-                if reduction > 0 and search_depth_child == 0:
-                    search_depth_child = 1
+                search_depth_child = depth - 1 - reduction
 
                 if legal_moves_count == 1:
                     score = -self.negamax(board, search_depth_child, -beta, -alpha,
                                         opponent_turn, ply + 1, search_path, child_hash, move, extensions)
-                else:
+                else: # Principal Variation Search (PVS)
                     score = -self.negamax(board, search_depth_child, -(alpha + 1), -alpha,
                                         opponent_turn, ply + 1, search_path, child_hash, move, extensions)
                     if alpha < score < beta:
@@ -888,17 +918,35 @@ class OpponentAI:
                         if prev_move:
                             (pr1, pc1), (pr2, pc2) = prev_move
                             self.counter_moves[0 if turn == 'white' else 1][pr1 * 8 + pc1][pr2 * 8 + pc2] = move
+                        
+                        # --- CALIBRATED HISTORY UPDATES ---
                         if moving_piece:
                             c_idx = 0 if turn == 'white' else 1
                             bonus = depth * depth
                             ht    = self.history_heuristic_table[c_idx]
-                            ht[f_sq][t_sq] = min(2_000_000, ht[f_sq][t_sq] + bonus)
+                            
+                            # Gravity update for the successful move
+                            ht[f_sq][t_sq] += bonus - (ht[f_sq][t_sq] * bonus) // 2_000_000
+                            
+                            # --- NEW: Update Continuation History ---
+                            if prev_move:
+                                pr, pc = prev_move[1]
+                                prev_piece = board.grid[pr][pc]
+                                if prev_piece:
+                                    prev_pt_idx = PIECE_TYPE_IDX[type(prev_piece)]
+                                    prev_to_sq  = pr * 8 + pc
+                                    mp_idx      = PIECE_TYPE_IDX[type(moving_piece)]
+                                    
+                                    ch_table = self.continuation_history[c_idx][prev_pt_idx][prev_to_sq][mp_idx]
+                                    ch_table[t_sq] += bonus - (ch_table[t_sq] * bonus) // 64_000
+                            
+                            # Gravity penalty for the failed quiet moves
                             for f_move in quiet_moves_tried:
                                 if f_move != move:
                                     (fr1, fc1), (fr2, fc2) = f_move
                                     ff = fr1 * 8 + fc1
                                     ft = fr2 * 8 + fc2
-                                    ht[ff][ft] = max(-2_000_000, ht[ff][ft] - bonus)
+                                    ht[ff][ft] -= bonus + (ht[ff][ft] * bonus) // 2_000_000
 
                     sto = beta
                     if sto >  self.MATE_SCORE - 1000: sto = beta + ply
@@ -1002,7 +1050,7 @@ class OpponentAI:
 
         return alpha
 
-    def order_moves(self, board, moves, ply, hash_move, turn, return_meta=False, counter_move=None):
+    def order_moves(self, board, moves, ply, hash_move, turn, return_meta=False, counter_move=None, prev_move=None):
         if not moves: return []
         scored_moves = []
         killers   = self.killer_moves[ply] if ply < len(self.killer_moves) else [None, None]
@@ -1014,10 +1062,11 @@ class OpponentAI:
             (r1, c1), (r2, c2) = move
             moving_piece = board.grid[r1][c1]
             target_piece = board.grid[r2][c2]
+            ptype = type(moving_piece)
 
             swing = fast_approximate_material_swing(board, move, moving_piece, target_piece, ORDERING_VALUES)
             is_capture_or_promo = (target_piece is not None or
-                                   (type(moving_piece) is Pawn and (r2 == 0 or r2 == ROWS - 1)))
+                                   (ptype is Pawn and (r2 == 0 or r2 == ROWS - 1)))
             
             # In Jungle Chess, volatile moves (explosions, evaporations, piercings) 
             # are ALWAYS critical tactics, even if the net material swing is negative.
@@ -1026,16 +1075,34 @@ class OpponentAI:
             if move == hash_move:
                 score = self.BONUS_PV_MOVE
             elif is_good_tactic:
-                # Keeps all tactical moves ranked cleanly above quiet moves.
-                # A negative swing (like -400) scores 7,999,600, sorting just below positive swings,
-                # ensuring the engine investigates the explosion before looking at quiet positional moves.
-                score = self.BONUS_CAPTURE + swing
+                # --- JUNGLE HEURISTIC: The "Chaos" Tie-Breaker ---
+                chaos_bonus = 0
+                if ptype is Queen: chaos_bonus = 30
+                elif ptype is Knight: chaos_bonus = 20
+                elif ptype is Rook: chaos_bonus = 10
+                
+                score = self.BONUS_CAPTURE + (swing * 100) + chaos_bonus
             elif move in killers:
                 score = 4_000_000 if move == killers[0] else 3_000_000
             elif move == counter_move:
                 score = 2_000_000
             else:
-                score = history_table[r1 * 8 + c1][r2 * 8 + c2]
+                score = 0
+                if prev_move:
+                    pr, pc = prev_move[1]
+                    prev_piece = board.grid[pr][pc] 
+                    if prev_piece:
+                        prev_pt_idx = PIECE_TYPE_IDX[type(prev_piece)]
+                        prev_to_sq  = pr * 8 + pc
+                        mp_idx      = PIECE_TYPE_IDX[type(moving_piece)]
+                        to_sq       = r2 * 8 + c2
+                        
+                        ch_score = self.continuation_history[c_idx][prev_pt_idx][prev_to_sq][mp_idx][to_sq]
+                        if ch_score > 1000:
+                            score = self.BONUS_CONTINUATION + ch_score
+                
+                if score == 0:
+                    score = history_table[r1 * 8 + c1][r2 * 8 + c2]
 
             if is_opening: 
                 score += self._opening_development_bonus(move, moving_piece)
@@ -1150,15 +1217,22 @@ class OpponentAI:
 
                     is_passed = True
                     if is_white:
-                        # White pawn is passed if no black pawn is strictly ahead (row < r)
                         for pc in (c - 1, c, c + 1):
-                            if 0 <= pc < COLS and black_pawn_files[pc] and black_pawn_min_row[pc] < r:
-                                is_passed = False; break
+                            if 0 <= pc < COLS and black_pawn_files[pc]:
+                                # Same file: enemy pawn must be strictly ahead (< r)
+                                if pc == c and black_pawn_min_row[pc] < r:
+                                    is_passed = False; break
+                                # Adjacent file: enemy pawn can capture sideways if on the same rank (<= r)
+                                elif pc != c and black_pawn_min_row[pc] <= r:
+                                    is_passed = False; break
                     else:
-                        # Black pawn is passed if no white pawn is strictly ahead (row > r)
                         for pc in (c - 1, c, c + 1):
-                            if 0 <= pc < COLS and white_pawn_files[pc] and white_pawn_max_row[pc] > r:
-                                is_passed = False; break
+                            if 0 <= pc < COLS and white_pawn_files[pc]:
+                                if pc == c and white_pawn_max_row[pc] > r:
+                                    is_passed = False; break
+                                elif pc != c and white_pawn_max_row[pc] >= r:
+                                    is_passed = False; break
+                                    
                     if is_passed:
                         advance = max(0, (6 - r) if is_white else (r - 1))
                         scores_eg[color_idx] += advance * PASSED_PAWN_PER_RANK
@@ -1170,6 +1244,34 @@ class OpponentAI:
                     if not my_pawn_files[c]:
                         scores_mg[color_idx] += ROOK_OPEN_FILE_BONUS_MG
                         scores_eg[color_idx] += ROOK_OPEN_FILE_BONUS_EG
+
+                    # --- JUNGLE-NATIVE MOBILITY (Piercing) ---
+                    mobility = 0
+                    start_idx = r * 8 + c
+                    for ray in RAYS[start_idx][:4]: # Orthogonal rays
+                        for cr, cc in ray:
+                            target = grid[cr][cc]
+                            if target is not None:
+                                if target.color == my_color_name:
+                                    break # Blocked by friendly piece
+                            mobility += 1
+                    scores_mg[color_idx] += mobility * self.EVAL_MOBILITY_ROOK
+                    scores_eg[color_idx] += mobility * self.EVAL_MOBILITY_ROOK
+
+                elif ptype is Bishop:
+                    # --- JUNGLE-NATIVE MOBILITY (Sliding) ---
+                    mobility = 0
+                    start_idx = r * 8 + c
+                    for ray in RAYS[start_idx][4:]: # Diagonal rays
+                        for cr, cc in ray:
+                            target = grid[cr][cc]
+                            if target is not None:
+                                if target.color != my_color_name:
+                                    mobility += 1 # Count the capture square
+                                break # Stop at any piece
+                            mobility += 1
+                    scores_mg[color_idx] += mobility * self.EVAL_MOBILITY_BISHOP
+                    scores_eg[color_idx] += mobility * self.EVAL_MOBILITY_BISHOP
 
                 elif ptype is Knight:
                     for ar, ac in KNIGHT_ATTACKS_FROM[(r, c)]:
@@ -1185,6 +1287,20 @@ class OpponentAI:
                 elif ptype is Queen:
                     if enemy_king and (abs(r - enemy_king[0]) + abs(c - enemy_king[1]) <= 3):
                         king_zone_attacks[1 - color_idx] += 2
+                        
+                    # --- JUNGLE-NATIVE MOBILITY (Sliding) ---
+                    mobility = 0
+                    start_idx = r * 8 + c
+                    for ray in RAYS[start_idx]: # All 8 rays
+                        for cr, cc in ray:
+                            target = grid[cr][cc]
+                            if target is not None:
+                                if target.color != my_color_name:
+                                    mobility += 1 # Count the capture square
+                                break # Stop at any piece (capturing explodes her)
+                            mobility += 1
+                    scores_mg[color_idx] += mobility * self.EVAL_MOBILITY_QUEEN
+                    scores_eg[color_idx] += mobility * self.EVAL_MOBILITY_QUEEN
 
         phase     = min(256, (phase_material_score * 256) // INITIAL_PHASE_MATERIAL) if INITIAL_PHASE_MATERIAL > 0 else 0
         inv_phase = 256 - phase
