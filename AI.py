@@ -167,7 +167,7 @@ def _find_opening_book_files():
         reverse=True,
     )
 
-#m
+
 for _book_filename in _find_opening_book_files():
     try:
         with open(_book_filename, "r", encoding="utf-8") as f:
