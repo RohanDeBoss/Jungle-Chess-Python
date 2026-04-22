@@ -2,7 +2,7 @@ JUNGLE CHESS - OFFICIAL RULES
 
 OBJECTIVE:
 The aim of the game is to checkmate the opponent's king, just like in standard chess. You do not need to "evaporate" or "explode" the king to win, just put the opponent in a position where no matter what they do, they will lose on the next turn.
-
+This means that, unlike normal chess, a 'stalemate' position is actually a win.
 If your opponent has no legal moves on their turn, you win immediately. In that sense, Jungle Chess behaves like a king-capture variant but ends one move before the king would actually be taken, so the king is not actually captured.
 
 
