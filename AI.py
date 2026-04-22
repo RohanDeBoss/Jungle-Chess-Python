@@ -167,12 +167,12 @@ def _find_opening_book_files():
         reverse=True,
     )
 
-
+#m
 for _book_filename in _find_opening_book_files():
     try:
         with open(_book_filename, "r", encoding="utf-8") as f:
             OPENING_BOOK = json.load(f)
-        print(f"Loaded Opening Book with {len(OPENING_BOOK)} positions from {_book_filename}.")
+        # print(f"Loaded Opening Book with {len(OPENING_BOOK)} positions from {_book_filename}.")
         break
     except Exception as e:
         print(f"Opening book not found or invalid at {_book_filename}: {e}")
