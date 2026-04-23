@@ -1,4 +1,4 @@
-# TablebaseGenerator.py (v17.0 - Unified 16-bit Tablebase Generator)
+# TablebaseGenerator.py (v17.1 - Unified 16-bit Tablebase Generator. fix: renamed the helper families so 4-man-vs uses its own functions)
 #
 # Features:
 # - External Disk Binning: Zero RAM, zero disk-thrashing O(N log N) graph sort.
@@ -301,7 +301,10 @@ def _build_csr_from_disk(unsolved_flats_np, edges_file, prefix):
             os.remove(bin_path)
             
     np.cumsum(head, out=head)
-    edges_out = np.memmap(edges_out_file, dtype=np.uint32, mode='r')
+    if os.path.getsize(edges_out_file) == 0:
+        edges_out = np.empty(0, dtype=np.uint32)
+    else:
+        edges_out = np.memmap(edges_out_file, dtype=np.uint32, mode='r')
     
     return head, edges_out, edges_out_file
 
@@ -826,7 +829,7 @@ def _init_transition_worker_4vs(w_name, b_name):
     pc = _W4V_BOARD.piece_counts; pc['white'][King] = pc['black'][King] = 1
     pc['white'][type(_W4V_WP_OBJ)] += 1; pc['black'][type(_W4V_BP_OBJ)] += 1
 
-def _white_win_dtm_3man(piece_name, wk, p, bk, turn_idx, is_white_piece):
+def _w4v_white_win_dtm_3man(piece_name, wk, p, bk, turn_idx, is_white_piece):
     tb = _W4V_3MAN_TABLES.get(piece_name)
     if tb is None: return None
     if is_white_piece:
@@ -839,7 +842,7 @@ def _white_win_dtm_3man(piece_name, wk, p, bk, turn_idx, is_white_piece):
         if val == 0: return None
         return None if ((t2==0 and val>0) or (t2==1 and val<0)) else abs(val)
 
-def _white_win_dtm_promo_vs(w_name, b_name, wk, wp, bk, bp, turn_idx):
+def _w4v_white_win_dtm_promo_vs(w_name, b_name, wk, wp, bk, bp, turn_idx):
     key = tuple(sorted((w_name, b_name))); tb = _W4V_PROMO_TABLES.get(key)
     if tb is None: return None
     hp = ("Pawn" in {w_name, b_name})
@@ -853,16 +856,16 @@ def _white_win_dtm_promo_vs(w_name, b_name, wk, wp, bk, bp, turn_idx):
         q_idx = _canonical_flat_4vs(wk[0]*8+wk[1], wp[0]*8+wp[1], bk[0]*8+bk[1], bp[0]*8+bp[1], turn_idx, hp)
         val = int(tb.flat[q_idx]); return None if val == 0 else (abs(val) if ((turn_idx==0 and val>0) or (turn_idx==1 and val<0)) else None)
 
-def _ext_white_win_4vs(child, turn_idx):
+def _w4v_ext_white_win_4vs(child, turn_idx):
     w_nk = [p for p in child.white_pieces if not isinstance(p, King)]
     b_nk = [p for p in child.black_pieces if not isinstance(p, King)]
     wkp, bkp = child.white_king_pos, child.black_king_pos
     if len(w_nk)==1 and len(b_nk)==1:
         wn, bn = type(w_nk[0]).__name__, type(b_nk[0]).__name__
         if wn==_W4V_W_NAME and bn==_W4V_B_NAME: return _IN_TABLE_SENTINEL
-        return _white_win_dtm_promo_vs(wn, bn, wkp, w_nk[0].pos, bkp, b_nk[0].pos, turn_idx)
-    if len(w_nk)==1 and len(b_nk)==0: return _white_win_dtm_3man(type(w_nk[0]).__name__, wkp, w_nk[0].pos, bkp, turn_idx, True)
-    if len(w_nk)==0 and len(b_nk)==1: return _white_win_dtm_3man(type(b_nk[0]).__name__, wkp, b_nk[0].pos, bkp, turn_idx, False)
+        return _w4v_white_win_dtm_promo_vs(wn, bn, wkp, w_nk[0].pos, bkp, b_nk[0].pos, turn_idx)
+    if len(w_nk)==1 and len(b_nk)==0: return _w4v_white_win_dtm_3man(type(w_nk[0]).__name__, wkp, w_nk[0].pos, bkp, turn_idx, True)
+    if len(w_nk)==0 and len(b_nk)==1: return _w4v_white_win_dtm_3man(type(b_nk[0]).__name__, wkp, b_nk[0].pos, bkp, turn_idx, False)
     if len(w_nk)==0 and len(b_nk)==0:
         if not bkp: return 1
         if turn_idx==1 and not has_legal_moves(child, 'black'): return 1
@@ -893,7 +896,7 @@ def _build_transition_worker_4vs(flat):
                 board.unmake_move(record); continue
             if not has_legal_moves(board, 'black'):
                 immediate_win = True; board.unmake_move(record); break
-            ext = _ext_white_win_4vs(board, opp_turn_idx)
+            ext = _w4v_ext_white_win_4vs(board, opp_turn_idx)
             if ext == _IN_TABLE_SENTINEL:
                 w_p = next((p for p in board.white_pieces if not isinstance(p, King)), None)
                 b_p = next((p for p in board.black_pieces if not isinstance(p, King)), None)
@@ -910,7 +913,7 @@ def _build_transition_worker_4vs(flat):
                 board.unmake_move(record); continue
             legal_moves += 1
             if not has_legal_moves(board, 'white'): escape = True; board.unmake_move(record); continue
-            ext = _ext_white_win_4vs(board, opp_turn_idx)
+            ext = _w4v_ext_white_win_4vs(board, opp_turn_idx)
             if ext == _IN_TABLE_SENTINEL:
                 w_p = next((p for p in board.white_pieces if not isinstance(p, King)), None)
                 b_p = next((p for p in board.black_pieces if not isinstance(p, King)), None)
@@ -1203,7 +1206,7 @@ class Generator5:
         if os.path.exists(self.filename): return
         self.table = np.zeros((self.wk_size, 64, 64, 64, 64, 2), dtype=TB_DTYPE)
         start_time = time.time()
-        sz_mb = self.wk_size * 64**4 * 2 * 1 / 1024**2
+        sz_mb = self.wk_size * 64**4 * 2 * 2 / 1024**2
         print(f"\n{'='*60}\n GENERATING: K+{self.p1_name}+{self.p2_name}+{self.p3_name} vs K (TB16)", flush=True)
         print(f" Estimated file size: {sz_mb:.0f} MB\n{'='*60}", flush=True)
         s1 = time.time(); print(f"[Stage 1] Enumerating candidates...", flush=True)
@@ -1336,49 +1339,6 @@ def _init_transition_worker_5vs(w1_name, w2_name, b_name):
     _W5V_BK_OBJ = King('black'); _W5V_BP_OBJ = PIECE_CLASS_BY_NAME[b_name]('black')
     pc = _W5V_BOARD.piece_counts; pc['white'][King] = pc['black'][King] = 1
     pc['white'][type(_W5V_WP1_OBJ)] += 1; pc['white'][type(_W5V_WP2_OBJ)] += 1; pc['black'][type(_W5V_BP_OBJ)] += 1
-
-def _white_win_dtm_3man(piece_name, wk, p, bk, turn_idx, is_white_piece):
-    tb = _W5V_3MAN_TABLES.get(piece_name)
-    if tb is None: return None
-    if is_white_piece:
-        q_idx = _canonical_flat_3(wk[0]*8+wk[1], p[0]*8+p[1], bk[0]*8+bk[1], turn_idx, piece_name=="Pawn")
-        val = int(tb.flat[q_idx]); return None if val == 0 else (abs(val) if ((turn_idx==0 and val>0) or (turn_idx==1 and val<0)) else None)
-    else:
-        t2 = 1 - turn_idx; atk_k, atk_p, def_k = _flip(bk), _flip(p), _flip(wk)
-        q_idx = _canonical_flat_3(atk_k[0]*8+atk_k[1], atk_p[0]*8+atk_p[1], def_k[0]*8+def_k[1], t2, piece_name=="Pawn")
-        val = int(tb.flat[q_idx])
-        if val == 0: return None
-        return None if ((t2==0 and val>0) or (t2==1 and val<0)) else abs(val)
-
-def _white_win_dtm_promo_vs(w_name, b_name, wk, wp, bk, bp, turn_idx):
-    key = tuple(sorted((w_name, b_name))); tb = _W5V_PROMO_TABLES.get(key)
-    if tb is None: return None
-    hp = ("Pawn" in {w_name, b_name})
-    if w_name > b_name:
-        t2 = 1 - turn_idx; bk_f,bp_f,wk_f,wp_f = _flip(bk),_flip(bp),_flip(wk),_flip(wp)
-        q_idx = _canonical_flat_4vs(bk_f[0]*8+bk_f[1], bp_f[0]*8+bp_f[1], wk_f[0]*8+wk_f[1], wp_f[0]*8+wp_f[1], t2, hp)
-        val = int(tb.flat[q_idx])
-        if val == 0: return None
-        return None if ((t2==0 and val>0) or (t2==1 and val<0)) else abs(val)
-    else:
-        q_idx = _canonical_flat_4vs(wk[0]*8+wk[1], wp[0]*8+wp[1], bk[0]*8+bk[1], bp[0]*8+bp[1], turn_idx, hp)
-        val = int(tb.flat[q_idx]); return None if val == 0 else (abs(val) if ((turn_idx==0 and val>0) or (turn_idx==1 and val<0)) else None)
-
-def _ext_white_win_4vs(child, turn_idx):
-    w_nk = [p for p in child.white_pieces if not isinstance(p, King)]
-    b_nk = [p for p in child.black_pieces if not isinstance(p, King)]
-    wkp, bkp = child.white_king_pos, child.black_king_pos
-    if len(w_nk)==1 and len(b_nk)==1:
-        wn, bn = type(w_nk[0]).__name__, type(b_nk[0]).__name__
-        if wn==_W5V_W1_NAME and bn==_W5V_B_NAME: return _IN_TABLE_SENTINEL
-        return _white_win_dtm_promo_vs(wn, bn, wkp, w_nk[0].pos, bkp, b_nk[0].pos, turn_idx)
-    if len(w_nk)==1 and len(b_nk)==0: return _white_win_dtm_3man(type(w_nk[0]).__name__, wkp, w_nk[0].pos, bkp, turn_idx, True)
-    if len(w_nk)==0 and len(b_nk)==1: return _white_win_dtm_3man(type(b_nk[0]).__name__, wkp, b_nk[0].pos, bkp, turn_idx, False)
-    if len(w_nk)==0 and len(b_nk)==0:
-        if not bkp: return 1
-        if turn_idx==1 and not has_legal_moves(child, 'black'): return 1
-        return None
-    return None
 
 def _w5v_ext_dtm(board, turn_idx):
     w_nk = [p for p in board.white_pieces if not isinstance(p, King)]
@@ -1514,7 +1474,7 @@ class Generator5Vs:
         if os.path.exists(self.filename): return
         self.table = np.zeros((self.wk_size, 64, 64, 64, 64, 2), dtype=TB_DTYPE)
         start_time = time.time()
-        sz_mb = self.wk_size * 64**4 * 2 * 1 / 1024**2
+        sz_mb = self.wk_size * 64**4 * 2 * 2 / 1024**2
         print(f"\n{'='*60}\n GENERATING: K+{self.w1_name}+{self.w2_name} vs K+{self.b_name} (TB16)", flush=True)
         print(f" Estimated file size: {sz_mb:.0f} MB\n{'='*60}", flush=True)
         s1 = time.time(); print(f"[Stage 1] Enumerating candidates...", flush=True)

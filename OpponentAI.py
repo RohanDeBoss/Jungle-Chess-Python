@@ -1,4 +1,4 @@
-# OPAI.py (v111.3 - Move ordering recapture type bonus heuristic)
+# OPAI.py (v111.4 - Now works with new tbs)
 import json
 import os
 import time
