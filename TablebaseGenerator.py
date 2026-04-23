@@ -1,18 +1,5 @@
-# TablebaseGenerator.py (v13.3 - tuple IPC, low-RAM 5-man chunksize fix)
-#
-# Changes from v13.2:
-#   FIX-1:  Generator5 BTM reverse link: trans[3] -> trans[4] for wtm_to_btm
-#   FIX-2:  Generator5Vs sz_mb formula: *2 -> *1 (int8 = 1 byte)
-#   FIX-3:  Worker IPC payloads: array('H'/'I') -> tuple() to prevent Windows
-#            MemoryError on pickle serialization. Tuples serialize flawlessly
-#            and reduce peak IPC buffer pressure.
-#   FIX-4:  Generator5 / Generator5Vs chunksize 2048 -> 256 to reduce peak
-#            IPC buffer memory on low-RAM (8-16 GB) machines.
-#   NEW-1:  Progress feedback in all generator map loops
-#   NEW-2:  Per-stage timing after each stage
-#   NEW-3:  Running elapsed time in all progress lines
-#   NEW-4:  Total time per generator
-#   NEW-5:  Overall run time at end of __main__
+# TablebaseGenerator.py (v13.31 - tuple IPC, low-RAM 5-man chunksize fix, removed dead code)
+
 
 import os
 import time
@@ -402,7 +389,7 @@ def _build_transition_worker(flat):
                 escape = True; board.unmake_move(record); continue
             if _W_HAS_PAWN:
                 nk = next((x for x in board.white_pieces if not isinstance(x, King)), None)
-                if nk is None or isinstance(nk, Queen): escape = True; board.unmake_move(record); continue
+                if nk is None: escape = True; board.unmake_move(record); continue
             p = next((x for x in board.white_pieces if not isinstance(x, King)), None)
             if p is None: escape = True; board.unmake_move(record); continue
             wkp, bkp = board.white_king_pos, board.black_king_pos
