@@ -1,4 +1,4 @@
-# GameLogic.py (v55.2 - Bug fixes to rook and knight moves which would be evaporated)
+# GameLogic.py (v57 - Precomputed bishop zigzag ray, Removed repeated king lookups in the hottest path by using cached king positions)
 
 
 # -----------------------------------------------------------------------
@@ -43,10 +43,12 @@ ADJACENT_SQUARES_MAP = {
 
 # RAYS[sq_index][direction_index] — inner sequences are tuples (read-only)
 RAYS = [[None] * 8 for _ in range(64)]
+BISHOP_ZIGZAG_RAYS = [None] * 64
 
 def _init_rays():
     dy_dx = [(-1, 0), (1, 0), (0, 1), (0, -1), (-1, 1), (-1, -1), (1, 1), (1, -1)]
     tmp = [[[] for _ in range(8)] for _ in range(64)]
+    zigzag_tmp = [[[] for _ in range(len(BISHOP_ZIGZAG_DIRS))] for _ in range(64)]
     for r in range(ROWS):
         for c in range(COLS):
             idx = r * COLS + c
@@ -56,8 +58,18 @@ def _init_rays():
                     tmp[idx][i].append((cr, cc))
                     cr += dr
                     cc += dc
+            for i, (d1, d2) in enumerate(BISHOP_ZIGZAG_DIRS):
+                cr, cc, cd = r, c, d1
+                while True:
+                    cr += cd[0]
+                    cc += cd[1]
+                    if not (0 <= cr < ROWS and 0 <= cc < COLS):
+                        break
+                    zigzag_tmp[idx][i].append((cr, cc))
+                    cd = d2 if cd == d1 else d1
     for sq in range(64):
         RAYS[sq] = tuple(tuple(ray) for ray in tmp[sq])
+        BISHOP_ZIGZAG_RAYS[sq] = tuple(tuple(ray) for ray in zigzag_tmp[sq])
 
 _init_rays()
 
@@ -163,20 +175,14 @@ class Bishop(Piece):
                     break
                 moves.add((r, c))
 
-        for d1, d2 in BISHOP_ZIGZAG_DIRS:
-            cr, cc, cd = r_start, c_start, d1
-            while True:
-                cr += cd[0]
-                cc += cd[1]
-                if not (0 <= cr < ROWS and 0 <= cc < COLS):
-                    break
-                target = grid[cr][cc]
+        for ray in BISHOP_ZIGZAG_RAYS[start_index]:
+            for r, c in ray:
+                target = grid[r][c]
                 if target:
                     if target.color != self.color:
-                        moves.add((cr, cc))
+                        moves.add((r, c))
                     break
-                moves.add((cr, cc))
-                cd = d2 if cd == d1 else d1
+                moves.add((r, c))
 
         for m in moves:
             yield m
@@ -700,32 +706,28 @@ class Board:
 # -----------------------------------------------------------------------
 # Global game logic
 # -----------------------------------------------------------------------
-def _bishop_attacks_square(board, start, target, bishop_color):
-    tr, tc = target
-    for dr, dc in DIRECTIONS['bishop']:
-        r, c = start[0] + dr, start[1] + dc
-        while 0 <= r < ROWS and 0 <= c < COLS:
-            piece = board.grid[r][c]
+def _bishop_attacks_square(board, start, tr, tc, bishop_color):
+    if ((start[0] + start[1] - tr - tc) & 1) != 0:
+        return False
+
+    grid = board.grid
+    start_index = start[0] * COLS + start[1]
+
+    for ray in RAYS[start_index][4:]:
+        for r, c in ray:
+            piece = grid[r][c]
             if r == tr and c == tc:
                 return (piece is None) or (piece.color != bishop_color)
             if piece is not None:
                 break
-            r += dr
-            c += dc
 
-    for d1, d2 in BISHOP_ZIGZAG_DIRS:
-        cr, cc, cd = start[0], start[1], d1
-        while True:
-            cr += cd[0]
-            cc += cd[1]
-            if not (0 <= cr < ROWS and 0 <= cc < COLS):
-                break
-            piece = board.grid[cr][cc]
-            if cr == tr and cc == tc:
+    for ray in BISHOP_ZIGZAG_RAYS[start_index]:
+        for r, c in ray:
+            piece = grid[r][c]
+            if r == tr and c == tc:
                 return (piece is None) or (piece.color != bishop_color)
             if piece is not None:
                 break
-            cd = d2 if cd == d1 else d1
     return False
 
 
@@ -734,13 +736,13 @@ def is_square_attacked(board, r, c, attacking_color):
     defending_color = 'black' if attacking_color == 'white' else 'white'
     attacking_pieces = board.white_pieces if attacking_color == 'white' else board.black_pieces
     attacker_counts = board.piece_counts[attacking_color]
+    attacking_king_pos = board.white_king_pos if attacking_color == 'white' else board.black_king_pos
 
     # O(1) length check bypassing 5 dictionary lookups. 
     # Perfectly handles search states where the King might be temporarily dead.
     if len(attacking_pieces) == attacker_counts[King]:
-        enemy_king_pos = board.find_king_pos(attacking_color)
-        if enemy_king_pos:
-            kr, kc         = enemy_king_pos
+        if attacking_king_pos:
+            kr, kc         = attacking_king_pos
             dr, dc         = r - kr, c - kc
             abs_dr, abs_dc = abs(dr), abs(dc)
             m_dist         = max(abs_dr, abs_dc)
@@ -827,9 +829,8 @@ def is_square_attacked(board, r, c, attacking_color):
                 return True
 
     # ── Enemy king check ──
-    enemy_king_pos = board.find_king_pos(attacking_color)
-    if enemy_king_pos:
-        kr, kc         = enemy_king_pos
+    if attacking_king_pos:
+        kr, kc         = attacking_king_pos
         dr, dc         = r - kr, c - kc
         abs_dr, abs_dc = abs(dr), abs(dc)
         m_dist         = max(abs_dr, abs_dc)
@@ -841,16 +842,18 @@ def is_square_attacked(board, r, c, attacking_color):
 
     # ── Bishop zigzag check ──
     if attacker_counts[Bishop] > 0:
+        target_parity = (r + c) & 1
         for piece in attacking_pieces:
-            if type(piece) is Bishop and piece.pos:
-                if _bishop_attacks_square(board, piece.pos, (r, c), attacking_color):
+            pos = piece.pos
+            if type(piece) is Bishop and pos and ((pos[0] + pos[1]) & 1) == target_parity:
+                if _bishop_attacks_square(board, pos, r, c, attacking_color):
                     return True
 
     return False
 
 
 def is_in_check(board, color):
-    king_pos = board.find_king_pos(color)
+    king_pos = board.white_king_pos if color == 'white' else board.black_king_pos
     if not king_pos:
         return True
     opponent_color = "black" if color == "white" else "white"
@@ -865,14 +868,9 @@ def generate_legal_moves_generator(board, color, yield_boards=False):
         if start_pos is None: continue
         for end_pos in piece.get_valid_moves(board, start_pos):
             record   = board.make_move_track(start_pos, end_pos)
-            
-            # --- THE FINAL GUARD ---
-            my_kp  = board.find_king_pos(color)
-            opp_kp = board.find_king_pos(opp_color)
-            
-            # Move is legal as long as YOUR king survives and isn't in check. 
-            # (Allowing opp_kp to be None lets the root engine execute the killing blow if presented)
-            legal = (my_kp is not None and not is_in_check(board, color))
+
+            my_kp = board.white_king_pos if color == 'white' else board.black_king_pos
+            legal = (my_kp is not None and not is_square_attacked(board, my_kp[0], my_kp[1], opp_color))
             
             if legal and yield_boards:
                 result_board = board.clone()
