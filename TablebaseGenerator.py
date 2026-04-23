@@ -1,12 +1,12 @@
-# TablebaseGenerator.py (v13.71 - Topologically Sorted CSR Retrograde BFS)
+# TablebaseGenerator.py (v17.0 - Unified 16-bit Tablebase Generator)
 #
 # Features:
-# - Pure Numpy CSR (Compressed Sparse Row) graph building.
-# - 100% zero-dictionary architecture to keep peak RAM under 16GB.
+# - External Disk Binning: Zero RAM, zero disk-thrashing O(N log N) graph sort.
+# - Out-of-Core Memmap Streaming: Solves 16GB graphs using OS Page Caching.
+# - Bidirectional Topological Out-Degree BFS Retrograde Analysis.
+# - Unified 16-bit table storage and loading across the entire pipeline.
+# - Standardized 5-element Tuple IPC for all processes.
 # - Mathematical Topological Sorting for flawless Pawn Promotion routing.
-# - O(log N) binary searching for parent-child relationship mapping.
-# - Strict DTM BFS Retrograde Analysis.
-# - SML Compression (Symmetry & Memory Layering).
 
 import os
 import time
@@ -16,12 +16,14 @@ from itertools import combinations_with_replacement
 import numpy as np
 from GameLogic import *
 from array import array
-from collections import defaultdict
 
 TB_DIR = "tablebases"
 os.makedirs(TB_DIR, exist_ok=True)
 
-LONGEST_MATES_NOTE_FILE = os.path.join(TB_DIR, "longest_mates_xsml.tsv")
+TB_SUFFIX = "_tb16.bin"
+TB_DTYPE = np.int16
+MAX_DTM = 32766
+LONGEST_MATES_NOTE_FILE = os.path.join(TB_DIR, "longest_mates_tb16.tsv")
 LONGEST_MATE_KEY_PREFIX = "regen_"
 TB_THREADS_SUBTRACT = 2
 _IN_TABLE_SENTINEL = "IN_TABLE"
@@ -175,19 +177,19 @@ def _install_worker_interrupt_ignores():
         except Exception: pass
 
 def _load_3man_table_file(filename):
-    data8 = np.fromfile(filename, dtype=np.int8)
+    data = np.fromfile(filename, dtype=TB_DTYPE)
     has_pawn = "Pawn" in os.path.basename(filename)
-    return data8.reshape((32 if has_pawn else 10, 64, 64, 2))
+    return data.reshape((32 if has_pawn else 10, 64, 64, 2))
 
 def _load_4man_table_file(filename):
-    data8 = np.fromfile(filename, dtype=np.int8)
+    data = np.fromfile(filename, dtype=TB_DTYPE)
     has_pawn = "Pawn" in os.path.basename(filename)
-    return data8.reshape((32 if has_pawn else 10, 64, 64, 64, 2))
+    return data.reshape((32 if has_pawn else 10, 64, 64, 64, 2))
 
 def _load_5man_table_file(filename):
-    data8 = np.fromfile(filename, dtype=np.int8)
+    data = np.fromfile(filename, dtype=TB_DTYPE)
     has_pawn = "Pawn" in os.path.basename(filename)
-    return data8.reshape((32 if has_pawn else 10, 64, 64, 64, 64, 2))
+    return data.reshape((32 if has_pawn else 10, 64, 64, 64, 64, 2))
 
 def _flip(pos):
     return (7 - pos[0], pos[1])
@@ -221,165 +223,191 @@ def _safe_record_longest_mate(table_key, max_dtm, decisive, remaining, elapsed_s
     except Exception as e:
         print(f"[LongestMate] Warning: failed to update note file ({e})")
 
+def _write_dense_table(filename, total_positions, solved_flats_np, solved_values):
+    dense_table = np.zeros(total_positions, dtype=TB_DTYPE)
+    dense_table[solved_flats_np] = solved_values
+    with open(filename, 'wb') as f:
+        dense_table.tofile(f)
+
+def _make_temp_graph_paths(output_filename):
+    base_name = os.path.basename(output_filename).replace(TB_SUFFIX, "")
+    run_prefix = f"{base_name}_{os.getpid()}_{time.time_ns()}"
+    tmp_b2w = os.path.join(TB_DIR, f"{run_prefix}_tmp_b2w.bin")
+    tmp_w2b = os.path.join(TB_DIR, f"{run_prefix}_tmp_w2b.bin")
+    return run_prefix, tmp_b2w, tmp_w2b
+
 # ==============================================================================
-# ZERO-DICTIONARY GRAPH BUILDER & BFS
+# DISK-BACKED ZERO-RAM CSR BUILDER & FLAT BFS
 # ==============================================================================
 
-def _build_flat_reverse_graph(unsolved_flats_np, b2w_c, b2w_p, w2b_c, w2b_p):
+def _build_csr_from_disk(unsolved_flats_np, edges_file, prefix):
+    """
+    Reads a temporary binary file containing (cflat, parent_idx) uint32 pairs.
+    Splits into bins, sorts in-memory sequentially, and writes to memmap.
+    Keeps RAM footprint < 2GB even for 16GB edge files.
+    """
     num_states = len(unsolved_flats_np)
+    num_bins = 64
+    bin_files = [open(os.path.join(TB_DIR, f"{prefix}_bin_{b}.bin"), "wb") for b in range(num_bins)]
     
-    b2w_c_np = np.array(b2w_c, dtype=np.uint32)
-    w2b_c_np = np.array(w2b_c, dtype=np.uint32)
-    
-    idx_b2w = np.searchsorted(unsolved_flats_np, b2w_c_np)
-    valid_b2w = (idx_b2w < num_states) & (unsolved_flats_np[np.minimum(idx_b2w, num_states-1)] == b2w_c_np)
-    
-    idx_w2b = np.searchsorted(unsolved_flats_np, w2b_c_np)
-    valid_w2b = (idx_w2b < num_states) & (unsolved_flats_np[np.minimum(idx_w2b, num_states-1)] == w2b_c_np)
-
-    idx_b2w = idx_b2w[valid_b2w]
-    p_b2w = np.array(b2w_p, dtype=np.uint32)[valid_b2w]
-    
-    idx_w2b = idx_w2b[valid_w2b]
-    p_w2b = np.array(w2b_p, dtype=np.uint32)[valid_w2b]
-
-    b2w_head = np.zeros(num_states + 1, dtype=np.uint32)
-    np.add.at(b2w_head, idx_b2w + 1, 1)
-    np.cumsum(b2w_head, out=b2w_head)
-    sort_idx = np.argsort(idx_b2w)
-    b2w_edges = p_b2w[sort_idx]
-
-    w2b_head = np.zeros(num_states + 1, dtype=np.uint32)
-    np.add.at(w2b_head, idx_w2b + 1, 1)
-    np.cumsum(w2b_head, out=w2b_head)
-    sort_idx = np.argsort(idx_w2b)
-    w2b_edges = p_w2b[sort_idx]
-
-    return b2w_edges, b2w_head, w2b_edges, w2b_head
-
-def _run_bfs_retrograde(table, unsolved_flats_np, transitions,
-                        b2w_edges, b2w_head, w2b_edges, w2b_head,
-                        candidate_states, start_time):
-    table_flat = table.reshape(-1)
-    pre_solved_set = set()
-    pending_work = defaultdict(list)
-
-    for idx, trans in enumerate(transitions):
-        flat = unsolved_flats_np[idx]
-        t_idx = flat & 1
-        if t_idx == 0:  # WTM
-            if trans[1]:
-                table_flat[flat] = 1; pre_solved_set.add(idx)
-            elif len(trans[2]) > 0:
-                pending_work[min(trans[2])].append(idx)
-        else:  # BTM
-            if trans[1] == 0:
-                table_flat[flat] = -1; pre_solved_set.add(idx)
-            elif not trans[2]:
-                known_wins = trans[3] if len(trans) == 5 else ()
-                child_vals  = trans[4] if len(trans) == 5 else trans[3]
-                if len(child_vals) == 0 and len(known_wins) > 0:
-                    pending_work[max(known_wins) + 1].append(idx)
-
-    work_set = set()
-    for idx in pre_solved_set:
-        flat = unsolved_flats_np[idx]
-        if flat & 1 == 1: # BTM (children are WTM)
-            start_edge, end_edge = b2w_head[idx], b2w_head[idx+1]
-            parents = b2w_edges[start_edge:end_edge]
-        else: # WTM
-            start_edge, end_edge = w2b_head[idx], w2b_head[idx+1]
-            parents = w2b_edges[start_edge:end_edge]
+    chunk_size = 10_000_000 
+    with open(edges_file, "rb") as f:
+        while True:
+            buf = f.read(chunk_size * 8)
+            if not buf: break
+            data = np.frombuffer(buf, dtype=np.uint32).reshape(-1, 2)
+            cflats = data[:, 0]
+            parents = data[:, 1]
             
-        for p_idx in parents:
-            p_flat = unsolved_flats_np[p_idx]
-            if table_flat[p_flat] == 0: work_set.add(p_idx)
+            idxs = np.searchsorted(unsolved_flats_np, cflats)
+            valid = (idxs < num_states) & (unsolved_flats_np[np.minimum(idxs, num_states-1)] == cflats)
+            
+            v_idx = idxs[valid]
+            v_par = parents[valid]
+            
+            if len(v_idx) == 0: continue
+            
+            bin_assignments = (v_idx.astype(np.uint64) * num_bins) // num_states
+            
+            for b in range(num_bins):
+                mask = (bin_assignments == b)
+                if mask.any():
+                    arr = np.empty((np.count_nonzero(mask), 2), dtype=np.uint32)
+                    arr[:, 0] = v_idx[mask]
+                    arr[:, 1] = v_par[mask]
+                    bin_files[b].write(arr.tobytes())
+                    
+    for f in bin_files: f.close()
+    
+    head = np.zeros(num_states + 1, dtype=np.uint32)
+    edges_out_file = os.path.join(TB_DIR, f"{prefix}_edges.bin")
+    
+    with open(edges_out_file, "wb") as f_out:
+        for b in range(num_bins):
+            bin_path = os.path.join(TB_DIR, f"{prefix}_bin_{b}.bin")
+            data = np.fromfile(bin_path, dtype=np.uint32).reshape(-1, 2)
+            if len(data) > 0:
+                v_idx = data[:, 0]
+                v_par = data[:, 1]
+                
+                sort_i = np.argsort(v_idx)
+                v_idx = v_idx[sort_i]
+                v_par = v_par[sort_i]
+                
+                unique_idx, counts = np.unique(v_idx, return_counts=True)
+                head[unique_idx + 1] = counts
+                
+                f_out.write(v_par.tobytes())
+            os.remove(bin_path)
+            
+    np.cumsum(head, out=head)
+    edges_out = np.memmap(edges_out_file, dtype=np.uint32, mode='r')
+    
+    return head, edges_out, edges_out_file
 
-    iteration = 2
-    max_dtm_solved = 1 if pre_solved_set else 0
-    solved_count = len(pre_solved_set)
-    bfs_start = time.time()
+def _run_flat_bfs(unsolved_flats_np, init_table_np, init_out_degree_np,
+                  wtm_promo_wins_idx, wtm_promo_wins_val,
+                  btm_promo_losses_idx, btm_promo_losses_val,
+                  b2w_head, b2w_edges, w2b_head, w2b_edges,
+                  start_time):
+                  
+    num_states = len(unsolved_flats_np)
+    local_table = init_table_np.astype(TB_DTYPE)
+    out_degree = init_out_degree_np.copy()
+    max_child_dtm = np.zeros(num_states, dtype=np.uint16)
+    
+    queues = [array('I') for _ in range(MAX_DTM + 2)]
 
-    print(f"[Stage 3] BFS start | Terminal (DTM 1): {solved_count:,} | "
-          f"Elapsed so far: {_fmt_elapsed(bfs_start - start_time)}", flush=True)
+    def _queue_forced_win(state_idx, dtm_value):
+        dtm_int = int(dtm_value)
+        if dtm_int > MAX_DTM:
+            raise OverflowError(f"16-bit DTM overflow: {dtm_int}")
+        local_table[state_idx] = dtm_int
+        queues[dtm_int].append(int(state_idx))
 
-    warning_triggered = False
-    while work_set or pending_work:
-        iter_start = time.time()
+    def _queue_forced_loss(state_idx, dtm_value):
+        dtm_int = int(dtm_value)
+        if dtm_int > MAX_DTM:
+            raise OverflowError(f"16-bit DTM overflow: {dtm_int}")
+        local_table[state_idx] = -dtm_int
+        queues[dtm_int].append(int(state_idx))
+    
+    solved_idxs = np.where(local_table != 0)[0]
+    solved_count = len(solved_idxs)
+    for idx in solved_idxs:
+        queues[1].append(idx)
+        
+    for i in range(len(wtm_promo_wins_idx)):
+        idx = wtm_promo_wins_idx[i]
+        val = wtm_promo_wins_val[i]
+        if local_table[idx] == 0:
+            _queue_forced_win(idx, val)
+            
+    for i in range(len(btm_promo_losses_idx)):
+        idx = btm_promo_losses_idx[i]
+        val = btm_promo_losses_val[i]
+        if local_table[idx] == 0 and out_degree[idx] != 65535:
+            if val > max_child_dtm[idx]:
+                max_child_dtm[idx] = val
+            out_degree[idx] -= 1
+            if out_degree[idx] == 0:
+                dtm = int(max_child_dtm[idx]) + 1
+                _queue_forced_loss(idx, dtm)
+                solved_count += 1
+            
+    max_dtm_solved = 1 if solved_count > 0 else 0
+    
+    print(f"[Stage 3] BFS start (16-bit) | Terminal (DTM 1): {solved_count:,} | "
+          f"Elapsed so far: {_fmt_elapsed(time.time() - start_time)}", flush=True)
 
-        if not warning_triggered and iteration >= 120:
-            print("\n" + "="*70)
-            print(f"[!!!] CRITICAL DTM WARNING: Ply count has reached {iteration}.")
-            print("      Data type 'int8' is at risk of overflowing (max is 127).")
-            print("      Recommended: stop (Ctrl+C) and switch to np.int16.")
-            print("="*70 + "\n", flush=True)
-            warning_triggered = True
+    for dtm in range(1, MAX_DTM + 1):
+        q = queues[dtm]
+        if not q: continue
+        max_dtm_solved = dtm
+        
+        q_arr = np.frombuffer(q, dtype=np.uint32)
+        changed = 0
+        
+        for idx in q_arr:
+            t_idx = unsolved_flats_np[idx] & 1
+            
+            if local_table[idx] == 0:
+                local_table[idx] = dtm if t_idx == 0 else -dtm
+                changed += 1
+            elif abs(local_table[idx]) != dtm:
+                continue 
+                
+            if t_idx == 1: 
+                start_e, end_e = b2w_head[idx], b2w_head[idx+1]
+                for p_idx in b2w_edges[start_e:end_e]:
+                    if local_table[p_idx] == 0:
+                        _queue_forced_win(p_idx, dtm + 1)
+                        changed += 1
+                        
+            else: 
+                start_e, end_e = w2b_head[idx], w2b_head[idx+1]
+                for p_idx in w2b_edges[start_e:end_e]:
+                    if out_degree[p_idx] == 65535: continue
+                    if max_child_dtm[p_idx] < dtm:
+                        max_child_dtm[p_idx] = dtm
+                    out_degree[p_idx] -= 1
+                    if out_degree[p_idx] == 0:
+                        p_dtm = int(max_child_dtm[p_idx]) + 1
+                        _queue_forced_loss(p_idx, p_dtm)
+                        changed += 1
+                        
+        if changed > 0:
+            solved_count = np.count_nonzero(local_table)
+            
+        pending_count = sum(len(queues[i]) for i in range(dtm + 1, MAX_DTM + 1))
+        
+        if dtm == MAX_DTM and pending_count > 0:
+            raise OverflowError("16-bit DTM overflowed the supported tablebase range.")
 
-        if iteration in pending_work:
-            work_set.update(pending_work.pop(iteration))
-        if not work_set:
-            iteration += 1; continue
+        print(f"  [DTM {dtm:^3}] Solved: {solved_count:,}/{num_states:,} "
+              f"| Next Q: {len(queues[dtm+1]):<6,} | Held: {pending_count:<6,} ", flush=True)
 
-        changed = 0; next_work_set = set()
-        snapshot = table_flat.copy()
-
-        for idx in work_set:
-            flat = unsolved_flats_np[idx]
-            if table_flat[flat] != 0: continue
-            trans = transitions[idx]
-
-            if (flat & 1) == 0:  # WTM
-                _, imm_win, known_wins, child_vals = trans[0], trans[1], trans[2], trans[3]
-                best_win = None
-                for val in known_wins:
-                    if best_win is None or val < best_win: best_win = val
-                for cflat in child_vals:
-                    res = int(snapshot[cflat])
-                    if res < 0:
-                        val = abs(res) + 1
-                        if best_win is None or val < best_win: best_win = val
-                if best_win == iteration:
-                    table_flat[flat] = iteration; changed += 1
-                    start_edge, end_edge = w2b_head[idx], w2b_head[idx+1]
-                    for p_idx in w2b_edges[start_edge:end_edge]:
-                        if table_flat[unsolved_flats_np[p_idx]] == 0: next_work_set.add(p_idx)
-                elif best_win is not None and best_win > iteration:
-                    pending_work[best_win].append(idx)
-
-            else:  # BTM
-                escape = trans[2]
-                if escape: continue
-                known_wins = trans[3] if len(trans) == 5 else ()
-                child_vals  = trans[4] if len(trans) == 5 else trans[3]
-                max_win = 0
-                for val in known_wins:
-                    if val > max_win: max_win = val
-                all_res = True
-                for cflat in child_vals:
-                    res = int(snapshot[cflat])
-                    if res <= 0: all_res = False; break
-                    if res > max_win: max_win = res
-                if all_res:
-                    if max_win + 1 == iteration:
-                        table_flat[flat] = -iteration; changed += 1
-                        start_edge, end_edge = b2w_head[idx], b2w_head[idx+1]
-                        for p_idx in b2w_edges[start_edge:end_edge]:
-                            if table_flat[unsolved_flats_np[p_idx]] == 0: next_work_set.add(p_idx)
-                    elif max_win + 1 > iteration:
-                        pending_work[max_win + 1].append(idx)
-
-        work_set = next_work_set
-        solved_count += changed
-        if changed > 0: max_dtm_solved = iteration
-        pending_count = sum(len(v) for v in pending_work.values())
-        print(f"  [DTM {iteration:^3}] New: {changed:<8,} | Total: {solved_count:,}/{candidate_states:,} "
-              f"| Next Q: {len(work_set):<7,} | Held: {pending_count:<6,} "
-              f"| Iter: {time.time()-iter_start:.1f}s", flush=True)
-        iteration += 1
-
-    bfs_elapsed = time.time() - bfs_start
-    print(f"[Stage 3] BFS complete | {_fmt_elapsed(bfs_elapsed)} | max_dtm={max_dtm_solved}", flush=True)
-    return max_dtm_solved, solved_count
+    return local_table, max_dtm_solved, solved_count
 
 # ==============================================================================
 # 3-MAN GENERATOR
@@ -447,13 +475,14 @@ def _build_transition_worker(flat):
             wkp, bkp = board.white_king_pos, board.black_king_pos
             child_flats.append(_canonical_flat_3(wkp[0]*8+wkp[1], p.pos[0]*8+p.pos[1], bkp[0]*8+bkp[1], opp_turn_idx, _W_HAS_PAWN))
             board.unmake_move(record)
-        return (flat, ('b', legal_moves, escape, tuple(child_flats)))
+        return (flat, ('b', legal_moves, escape, (), tuple(child_flats)))
 
 class Generator:
     def __init__(self, piece_class):
         self.piece_name = piece_class.__name__; self.has_pawn = (self.piece_name == "Pawn")
-        self.filename = os.path.join(TB_DIR, f"K_{self.piece_name}_K_xsml.bin")
-        self.queen_tb_file = os.path.join(TB_DIR, "K_Queen_K_xsml.bin")
+        base_name = f"K_{self.piece_name}_K"
+        self.filename = os.path.join(TB_DIR, f"{base_name}{TB_SUFFIX}")
+        self.queen_tb_file = os.path.join(TB_DIR, f"K_Queen_K{TB_SUFFIX}")
         self.wk_size = 32 if self.has_pawn else 10
         self.total_positions = self.wk_size * 64 * 64 * 2
         self.table = None
@@ -461,9 +490,9 @@ class Generator:
 
     def generate(self):
         if os.path.exists(self.filename): return
-        self.table = np.zeros((self.wk_size, 64, 64, 2), dtype=np.int8)
+        self.table = np.zeros((self.wk_size, 64, 64, 2), dtype=TB_DTYPE)
         start_time = time.time()
-        print(f"\n{'='*60}\n GENERATING: K+{self.piece_name} vs K (XSML)\n{'='*60}")
+        print(f"\n{'='*60}\n GENERATING: K+{self.piece_name} vs K (TB16)\n{'='*60}")
         s1 = time.time(); print(f"[Stage 1] Enumerating candidates...", flush=True)
         raw_candidates = []
         for flat in range(self.total_positions):
@@ -475,44 +504,80 @@ class Generator:
         total = len(raw_candidates)
         print(f"[Stage 1] Done: {total:,} candidates | {_fmt_elapsed(time.time()-s1)}", flush=True)
         
-        s2 = time.time(); print(f"[Stage 2] Building transition cache ({total:,} states)...", flush=True)
-        unsolved_flats = array('I'); transitions = []
-        b2w_c = array('I'); b2w_p = array('I'); w2b_c = array('I'); w2b_p = array('I')
+        s2 = time.time(); print(f"[Stage 2] Building flat disk cache ({total:,} states)...", flush=True)
+        unsolved_flats = array('I')
+        init_table = array('h'); init_out_degree = array('H')
+        wtm_promo_idx = array('I'); wtm_promo_val = array('H')
+        btm_promo_idx = array('I'); btm_promo_val = array('H')
+        
+        run_prefix, tmp_b2w, tmp_w2b = _make_temp_graph_paths(self.filename)
+        f_b2w = open(tmp_b2w, "wb")
+        f_w2b = open(tmp_w2b, "wb")
+        
         with ProcessPoolExecutor(max_workers=self.transition_workers, initializer=_init_transition_worker,
                                  initargs=(self.piece_name, self.queen_tb_file)) as ex:
             for done, result in enumerate(ex.map(_build_transition_worker, raw_candidates, chunksize=1024), 1):
                 if result is not None:
                     flat, trans = result
                     i = len(unsolved_flats)
-                    unsolved_flats.append(flat); transitions.append(trans)
+                    unsolved_flats.append(flat)
                     if (flat & 1) == 0:
-                        for cflat in trans[3]: b2w_c.append(cflat); b2w_p.append(i)
+                        if trans[1]: init_table.append(1); init_out_degree.append(0)
+                        else:
+                            init_table.append(0); init_out_degree.append(len(trans[3]))
+                            if trans[2]: wtm_promo_idx.append(i); wtm_promo_val.append(min(trans[2]))
+                        if trans[3]:
+                            arr = np.empty((len(trans[3]), 2), dtype=np.uint32)
+                            arr[:, 0] = trans[3]; arr[:, 1] = i
+                            f_b2w.write(arr.tobytes())
                     else:
-                        if not trans[2]:
-                            for cflat in trans[3]: w2b_c.append(cflat); w2b_p.append(i)
+                        if trans[1] == 0: init_table.append(-1); init_out_degree.append(0)
+                        elif trans[2]: init_table.append(0); init_out_degree.append(65535)
+                        else:
+                            promo_losses, children = trans[3], trans[4]
+                            init_table.append(0); init_out_degree.append(len(children) + len(promo_losses))
+                            for p_val in promo_losses: btm_promo_idx.append(i); btm_promo_val.append(p_val)
+                            if children:
+                                arr = np.empty((len(children), 2), dtype=np.uint32)
+                                arr[:, 0] = children; arr[:, 1] = i
+                                f_w2b.write(arr.tobytes())
                 if done % 10_000 == 0:
                     elapsed = time.time() - start_time; speed = done / max(0.001, time.time() - s2)
                     print(f"  > {done/total*100:.1f}% ({done:,}/{total:,}) | {speed:,.0f} st/s | Elapsed: {_fmt_elapsed(elapsed)}", end='\r', flush=True)
         
+        f_b2w.close(); f_w2b.close()
         print(); s2e = time.time() - s2
         print(f"[Stage 2] Cache built: {len(unsolved_flats):,} valid states | {_fmt_elapsed(s2e)} ({total/max(0.001,s2e):,.0f} st/s avg)", flush=True)
         
-        s3 = time.time(); print(f"[Stage 2b] Flattening reverse graph...", flush=True)
+        s3 = time.time(); print(f"[Stage 2b] Flattening reverse graph via Disk CSR...", flush=True)
         unsolved_flats_np = np.array(unsolved_flats, dtype=np.uint32)
-        b2w_edges, b2w_head, w2b_edges, w2b_head = _build_flat_reverse_graph(
-            unsolved_flats_np, b2w_c, b2w_p, w2b_c, w2b_p)
-        del b2w_c, b2w_p, w2b_c, w2b_p
-        print(f"[Stage 2b] Done: {len(b2w_edges):,} b2w edges, {len(w2b_edges):,} w2b edges | {_fmt_elapsed(time.time()-s3)}", flush=True)
+        b2w_head, b2w_edges, b2w_file = _build_csr_from_disk(unsolved_flats_np, tmp_b2w, f"{run_prefix}_b2w")
+        w2b_head, w2b_edges, w2b_file = _build_csr_from_disk(unsolved_flats_np, tmp_w2b, f"{run_prefix}_w2b")
+        print(f"[Stage 2b] Done | {_fmt_elapsed(time.time()-s3)}", flush=True)
         
-        candidate_states = len(unsolved_flats_np)
-        max_dtm, decisive = _run_bfs_retrograde(self.table, unsolved_flats_np, transitions, 
-                                                b2w_edges, b2w_head, w2b_edges, w2b_head, 
-                                                candidate_states, start_time)
-        with open(self.filename, 'wb') as f: self.table.tofile(f)
-        self.table = None
-        elapsed = time.time() - start_time
-        _safe_record_longest_mate(f"K_{self.piece_name}_K", max_dtm, decisive, candidate_states - decisive, elapsed)
-        print(f"SUCCESS: {self.filename} | Total time: {_fmt_elapsed(elapsed)}", flush=True)
+        try:
+            table_flat, max_dtm, decisive = _run_flat_bfs(
+                unsolved_flats_np, np.array(init_table, dtype=TB_DTYPE), np.array(init_out_degree, dtype=np.uint16),
+                np.array(wtm_promo_idx, dtype=np.uint32), np.array(wtm_promo_val, dtype=np.uint16),
+                np.array(btm_promo_idx, dtype=np.uint32), np.array(btm_promo_val, dtype=np.uint16),
+                b2w_head, b2w_edges, w2b_head, w2b_edges, start_time)
+
+            _write_dense_table(self.filename, self.total_positions, unsolved_flats_np, table_flat)
+                
+            elapsed = time.time() - start_time
+            tb_key = os.path.basename(self.filename).replace(TB_SUFFIX, '')
+            _safe_record_longest_mate(tb_key, max_dtm, decisive, len(unsolved_flats_np) - decisive, elapsed)
+            print(f"SUCCESS: {self.filename} | Total time: {_fmt_elapsed(elapsed)}", flush=True)
+
+        finally:
+            if hasattr(b2w_edges, '_mmap'): b2w_edges._mmap.close()
+            if hasattr(w2b_edges, '_mmap'): w2b_edges._mmap.close()
+            del b2w_edges; del w2b_edges
+            try:
+                os.remove(tmp_b2w); os.remove(tmp_w2b)
+                os.remove(b2w_file); os.remove(w2b_file)
+            except Exception as e:
+                print(f"  [Warning] Temporary file cleanup failed: {e}")
 
 # ==============================================================================
 # 4-MAN GENERATOR
@@ -529,7 +594,7 @@ def _init_transition_worker_4(p1_name, p2_name, promo_tb_file):
     _W4_HAS_PAWN = (p1_name == "Pawn" or p2_name == "Pawn"); _W4_SAME_PIECE = (p1_name == p2_name)
     _W4_3MAN_TABLES, _W4_PROMO_TABLE = {}, None
     for name in PIECE_CLASS_BY_NAME:
-        path = os.path.join(TB_DIR, f"K_{name}_K_xsml.bin")
+        path = os.path.join(TB_DIR, f"K_{name}_K{TB_SUFFIX}")
         if os.path.exists(path): _W4_3MAN_TABLES[name] = _load_3man_table_file(path)
     if promo_tb_file and os.path.exists(promo_tb_file): _W4_PROMO_TABLE = _load_4man_table_file(promo_tb_file)
     _W4_BOARD = Board(setup=False)
@@ -632,7 +697,8 @@ class Generator4:
         self.p1_name, self.p2_name = names[0], names[1]
         self.same_piece = (self.p1_name == self.p2_name)
         self.has_pawn   = (self.p1_name == "Pawn" or self.p2_name == "Pawn")
-        self.filename   = os.path.join(TB_DIR, f"K_{self.p1_name}_{self.p2_name}_K_xsml.bin")
+        base_name = f"K_{self.p1_name}_{self.p2_name}_K"
+        self.filename = os.path.join(TB_DIR, f"{base_name}{TB_SUFFIX}")
         self.wk_size = 32 if self.has_pawn else 10
         self.total_positions = self.wk_size * 64 * 64 * 64 * 2
         self.table = None
@@ -640,14 +706,14 @@ class Generator4:
         if self.has_pawn:
             other = self.p2_name if self.p1_name == "Pawn" else self.p1_name
             p_names = sorted(["Pawn", "Queen"]) if self.same_piece else sorted(["Queen", other])
-            self.promo_tb_file = os.path.join(TB_DIR, f"K_{p_names[0]}_{p_names[1]}_K_xsml.bin")
+            self.promo_tb_file = os.path.join(TB_DIR, f"K_{p_names[0]}_{p_names[1]}_K{TB_SUFFIX}")
         self.transition_workers = max(1, (os.cpu_count() or 2) - TB_THREADS_SUBTRACT)
 
     def generate(self):
         if os.path.exists(self.filename): return
-        self.table = np.zeros((self.wk_size, 64, 64, 64, 2), dtype=np.int8)
+        self.table = np.zeros((self.wk_size, 64, 64, 64, 2), dtype=TB_DTYPE)
         start_time = time.time()
-        print(f"\n{'='*60}\n GENERATING: K+{self.p1_name}+{self.p2_name} vs K (XSML)\n{'='*60}", flush=True)
+        print(f"\n{'='*60}\n GENERATING: K+{self.p1_name}+{self.p2_name} vs K (TB16)\n{'='*60}", flush=True)
         s1 = time.time(); print(f"[Stage 1] Enumerating candidates...", flush=True)
         all_flats = array('I')
         for chunk in _gen_valid_4man_indices_numpy(self.total_positions, self.p1_name, self.p2_name, self.same_piece, self.has_pawn):
@@ -655,44 +721,80 @@ class Generator4:
         total = len(all_flats)
         print(f"[Stage 1] Done: {total:,} candidates | {_fmt_elapsed(time.time()-s1)}", flush=True)
         
-        s2 = time.time(); print(f"[Stage 2] Building transition cache ({total:,} states)...", flush=True)
-        unsolved_flats = array('I'); transitions = []
-        b2w_c = array('I'); b2w_p = array('I'); w2b_c = array('I'); w2b_p = array('I')
+        s2 = time.time(); print(f"[Stage 2] Building flat disk cache ({total:,} states)...", flush=True)
+        unsolved_flats = array('I')
+        init_table = array('h'); init_out_degree = array('H')
+        wtm_promo_idx = array('I'); wtm_promo_val = array('H')
+        btm_promo_idx = array('I'); btm_promo_val = array('H')
+        
+        run_prefix, tmp_b2w, tmp_w2b = _make_temp_graph_paths(self.filename)
+        f_b2w = open(tmp_b2w, "wb")
+        f_w2b = open(tmp_w2b, "wb")
+        
         with ProcessPoolExecutor(max_workers=self.transition_workers, initializer=_init_transition_worker_4,
                                  initargs=(self.p1_name, self.p2_name, self.promo_tb_file)) as ex:
             for done, result in enumerate(ex.map(_build_transition_worker_4, all_flats, chunksize=4096), 1):
                 if result is not None:
                     flat, trans = result
                     i = len(unsolved_flats)
-                    unsolved_flats.append(flat); transitions.append(trans)
+                    unsolved_flats.append(flat)
                     if (flat & 1) == 0:
-                        for cflat in trans[3]: b2w_c.append(cflat); b2w_p.append(i)
+                        if trans[1]: init_table.append(1); init_out_degree.append(0)
+                        else:
+                            init_table.append(0); init_out_degree.append(len(trans[3]))
+                            if trans[2]: wtm_promo_idx.append(i); wtm_promo_val.append(min(trans[2]))
+                        if trans[3]:
+                            arr = np.empty((len(trans[3]), 2), dtype=np.uint32)
+                            arr[:, 0] = trans[3]; arr[:, 1] = i
+                            f_b2w.write(arr.tobytes())
                     else:
-                        if not trans[2]:
-                            for cflat in trans[4]: w2b_c.append(cflat); w2b_p.append(i)
+                        if trans[1] == 0: init_table.append(-1); init_out_degree.append(0)
+                        elif trans[2]: init_table.append(0); init_out_degree.append(65535)
+                        else:
+                            promo_losses, children = trans[3], trans[4]
+                            init_table.append(0); init_out_degree.append(len(children) + len(promo_losses))
+                            for p_val in promo_losses: btm_promo_idx.append(i); btm_promo_val.append(p_val)
+                            if children:
+                                arr = np.empty((len(children), 2), dtype=np.uint32)
+                                arr[:, 0] = children; arr[:, 1] = i
+                                f_w2b.write(arr.tobytes())
                 if done % 50_000 == 0:
                     elapsed = time.time() - start_time; speed = done / max(0.001, time.time() - s2)
                     print(f"  > {done/total*100:.1f}% ({done:,}/{total:,}) | {speed:,.0f} st/s | Elapsed: {_fmt_elapsed(elapsed)}", end='\r', flush=True)
         
+        f_b2w.close(); f_w2b.close()
         print(); s2e = time.time() - s2
         print(f"[Stage 2] Cache built: {len(unsolved_flats):,} valid states | {_fmt_elapsed(s2e)} ({total/max(0.001,s2e):,.0f} st/s avg)", flush=True)
         
-        s3 = time.time(); print(f"[Stage 2b] Flattening reverse graph...", flush=True)
+        s3 = time.time(); print(f"[Stage 2b] Flattening reverse graph via Disk CSR...", flush=True)
         unsolved_flats_np = np.array(unsolved_flats, dtype=np.uint32)
-        b2w_edges, b2w_head, w2b_edges, w2b_head = _build_flat_reverse_graph(
-            unsolved_flats_np, b2w_c, b2w_p, w2b_c, w2b_p)
-        del b2w_c, b2w_p, w2b_c, w2b_p
-        print(f"[Stage 2b] Done: {len(b2w_edges):,} b2w edges, {len(w2b_edges):,} w2b edges | {_fmt_elapsed(time.time()-s3)}", flush=True)
+        b2w_head, b2w_edges, b2w_file = _build_csr_from_disk(unsolved_flats_np, tmp_b2w, f"{run_prefix}_b2w")
+        w2b_head, w2b_edges, w2b_file = _build_csr_from_disk(unsolved_flats_np, tmp_w2b, f"{run_prefix}_w2b")
+        print(f"[Stage 2b] Done | {_fmt_elapsed(time.time()-s3)}", flush=True)
         
-        candidate_states = len(unsolved_flats_np)
-        max_dtm, decisive = _run_bfs_retrograde(self.table, unsolved_flats_np, transitions, 
-                                                b2w_edges, b2w_head, w2b_edges, w2b_head, 
-                                                candidate_states, start_time)
-        with open(self.filename, 'wb') as f: self.table.tofile(f)
-        self.table = None
-        elapsed = time.time() - start_time
-        _safe_record_longest_mate(f"K_{self.p1_name}_{self.p2_name}_K", max_dtm, decisive, candidate_states - decisive, elapsed)
-        print(f"SUCCESS: {self.filename} | Total time: {_fmt_elapsed(elapsed)}", flush=True)
+        try:
+            table_flat, max_dtm, decisive = _run_flat_bfs(
+                unsolved_flats_np, np.array(init_table, dtype=TB_DTYPE), np.array(init_out_degree, dtype=np.uint16),
+                np.array(wtm_promo_idx, dtype=np.uint32), np.array(wtm_promo_val, dtype=np.uint16),
+                np.array(btm_promo_idx, dtype=np.uint32), np.array(btm_promo_val, dtype=np.uint16),
+                b2w_head, b2w_edges, w2b_head, w2b_edges, start_time)
+
+            _write_dense_table(self.filename, self.total_positions, unsolved_flats_np, table_flat)
+                
+            elapsed = time.time() - start_time
+            tb_key = os.path.basename(self.filename).replace(TB_SUFFIX, '')
+            _safe_record_longest_mate(tb_key, max_dtm, decisive, len(unsolved_flats_np) - decisive, elapsed)
+            print(f"SUCCESS: {self.filename} | Total time: {_fmt_elapsed(elapsed)}", flush=True)
+
+        finally:
+            if hasattr(b2w_edges, '_mmap'): b2w_edges._mmap.close()
+            if hasattr(w2b_edges, '_mmap'): w2b_edges._mmap.close()
+            del b2w_edges; del w2b_edges
+            try:
+                os.remove(tmp_b2w); os.remove(tmp_w2b)
+                os.remove(b2w_file); os.remove(w2b_file)
+            except Exception as e:
+                print(f"  [Warning] Temporary file cleanup failed: {e}")
 
 # ==============================================================================
 # 4-MAN CROSS GENERATOR
@@ -710,13 +812,13 @@ def _init_transition_worker_4vs(w_name, b_name):
     names_needed = {w_name, b_name}
     if _W4V_HAS_PAWN: names_needed.add("Queen")
     for name in names_needed:
-        path = os.path.join(TB_DIR, f"K_{name}_K_xsml.bin")
+        path = os.path.join(TB_DIR, f"K_{name}_K{TB_SUFFIX}")
         if os.path.exists(path): _W4V_3MAN_TABLES[name] = _load_3man_table_file(path)
     promo_targets = set()
     if w_name == "Pawn": promo_targets.add(("Queen", b_name))
     if b_name == "Pawn": promo_targets.add((w_name, "Queen"))
     for key in promo_targets:
-        sk = tuple(sorted(key)); path = os.path.join(TB_DIR, f"K_{sk[0]}_vs_{sk[1]}_K_xsml.bin")
+        sk = tuple(sorted(key)); path = os.path.join(TB_DIR, f"K_{sk[0]}_vs_{sk[1]}_K{TB_SUFFIX}")
         if os.path.exists(path): _W4V_PROMO_TABLES[sk] = _load_4man_table_file(path)
     _W4V_BOARD = Board(setup=False)
     _W4V_WK_OBJ, _W4V_WP_OBJ = King('white'), PIECE_CLASS_BY_NAME[_W4V_W_NAME]('white')
@@ -839,7 +941,8 @@ class Generator4Vs:
         names = sorted([w_piece_class.__name__, b_piece_class.__name__])
         self.w_name, self.b_name = names[0], names[1]
         self.has_pawn = ("Pawn" in {self.w_name, self.b_name})
-        self.filename  = os.path.join(TB_DIR, f"K_{self.w_name}_vs_{self.b_name}_K_xsml.bin")
+        base_name = f"K_{self.w_name}_vs_{self.b_name}_K"
+        self.filename = os.path.join(TB_DIR, f"{base_name}{TB_SUFFIX}")
         self.wk_size   = 32 if self.has_pawn else 10
         self.total_positions = self.wk_size * 64 * 64 * 64 * 2
         self.table     = None
@@ -847,9 +950,9 @@ class Generator4Vs:
 
     def generate(self):
         if os.path.exists(self.filename): return
-        self.table = np.zeros((self.wk_size, 64, 64, 64, 2), dtype=np.int8)
+        self.table = np.zeros((self.wk_size, 64, 64, 64, 2), dtype=TB_DTYPE)
         start_time = time.time()
-        print(f"\n{'='*60}\n GENERATING: K+{self.w_name} vs K+{self.b_name} (XSML)\n{'='*60}", flush=True)
+        print(f"\n{'='*60}\n GENERATING: K+{self.w_name} vs K+{self.b_name} (TB16)\n{'='*60}", flush=True)
         s1 = time.time(); print(f"[Stage 1] Enumerating candidates...", flush=True)
         all_flats = array('I')
         for chunk in _gen_valid_4man_vs_indices_numpy(self.total_positions, self.w_name, self.b_name, self.has_pawn):
@@ -857,44 +960,80 @@ class Generator4Vs:
         total = len(all_flats)
         print(f"[Stage 1] Done: {total:,} candidates | {_fmt_elapsed(time.time()-s1)}", flush=True)
         
-        s2 = time.time(); print(f"[Stage 2] Building transition cache ({total:,} states)...", flush=True)
-        unsolved_flats = array('I'); transitions = []
-        b2w_c = array('I'); b2w_p = array('I'); w2b_c = array('I'); w2b_p = array('I')
+        s2 = time.time(); print(f"[Stage 2] Building flat disk cache ({total:,} states)...", flush=True)
+        unsolved_flats = array('I')
+        init_table = array('h'); init_out_degree = array('H')
+        wtm_promo_idx = array('I'); wtm_promo_val = array('H')
+        btm_promo_idx = array('I'); btm_promo_val = array('H')
+        
+        run_prefix, tmp_b2w, tmp_w2b = _make_temp_graph_paths(self.filename)
+        f_b2w = open(tmp_b2w, "wb")
+        f_w2b = open(tmp_w2b, "wb")
+        
         with ProcessPoolExecutor(max_workers=self.transition_workers, initializer=_init_transition_worker_4vs,
                                  initargs=(self.w_name, self.b_name)) as ex:
             for done, result in enumerate(ex.map(_build_transition_worker_4vs, all_flats, chunksize=4096), 1):
                 if result is not None:
                     flat, trans = result
                     i = len(unsolved_flats)
-                    unsolved_flats.append(flat); transitions.append(trans)
+                    unsolved_flats.append(flat)
                     if (flat & 1) == 0:
-                        for cflat in trans[3]: b2w_c.append(cflat); b2w_p.append(i)
+                        if trans[1]: init_table.append(1); init_out_degree.append(0)
+                        else:
+                            init_table.append(0); init_out_degree.append(len(trans[3]))
+                            if trans[2]: wtm_promo_idx.append(i); wtm_promo_val.append(min(trans[2]))
+                        if trans[3]:
+                            arr = np.empty((len(trans[3]), 2), dtype=np.uint32)
+                            arr[:, 0] = trans[3]; arr[:, 1] = i
+                            f_b2w.write(arr.tobytes())
                     else:
-                        if not trans[2]:
-                            for cflat in trans[4]: w2b_c.append(cflat); w2b_p.append(i)
+                        if trans[1] == 0: init_table.append(-1); init_out_degree.append(0)
+                        elif trans[2]: init_table.append(0); init_out_degree.append(65535)
+                        else:
+                            promo_losses, children = trans[3], trans[4]
+                            init_table.append(0); init_out_degree.append(len(children) + len(promo_losses))
+                            for p_val in promo_losses: btm_promo_idx.append(i); btm_promo_val.append(p_val)
+                            if children:
+                                arr = np.empty((len(children), 2), dtype=np.uint32)
+                                arr[:, 0] = children; arr[:, 1] = i
+                                f_w2b.write(arr.tobytes())
                 if done % 50_000 == 0:
                     elapsed = time.time() - start_time; speed = done / max(0.001, time.time() - s2)
                     print(f"  > {done/total*100:.1f}% ({done:,}/{total:,}) | {speed:,.0f} st/s | Elapsed: {_fmt_elapsed(elapsed)}", end='\r', flush=True)
         
+        f_b2w.close(); f_w2b.close()
         print(); s2e = time.time() - s2
         print(f"[Stage 2] Cache built: {len(unsolved_flats):,} valid states | {_fmt_elapsed(s2e)} ({total/max(0.001,s2e):,.0f} st/s avg)", flush=True)
         
-        s3 = time.time(); print(f"[Stage 2b] Flattening reverse graph...", flush=True)
+        s3 = time.time(); print(f"[Stage 2b] Flattening reverse graph via Disk CSR...", flush=True)
         unsolved_flats_np = np.array(unsolved_flats, dtype=np.uint32)
-        b2w_edges, b2w_head, w2b_edges, w2b_head = _build_flat_reverse_graph(
-            unsolved_flats_np, b2w_c, b2w_p, w2b_c, w2b_p)
-        del b2w_c, b2w_p, w2b_c, w2b_p
-        print(f"[Stage 2b] Done: {len(b2w_edges):,} b2w edges, {len(w2b_edges):,} w2b edges | {_fmt_elapsed(time.time()-s3)}", flush=True)
+        b2w_head, b2w_edges, b2w_file = _build_csr_from_disk(unsolved_flats_np, tmp_b2w, f"{run_prefix}_b2w")
+        w2b_head, w2b_edges, w2b_file = _build_csr_from_disk(unsolved_flats_np, tmp_w2b, f"{run_prefix}_w2b")
+        print(f"[Stage 2b] Done | {_fmt_elapsed(time.time()-s3)}", flush=True)
         
-        candidate_states = len(unsolved_flats_np)
-        max_dtm, decisive = _run_bfs_retrograde(self.table, unsolved_flats_np, transitions, 
-                                                b2w_edges, b2w_head, w2b_edges, w2b_head, 
-                                                candidate_states, start_time)
-        with open(self.filename, 'wb') as f: self.table.tofile(f)
-        self.table = None
-        elapsed = time.time() - start_time
-        _safe_record_longest_mate(f"K_{self.w_name}_vs_{self.b_name}_K", max_dtm, decisive, candidate_states - decisive, elapsed)
-        print(f"SUCCESS: {self.filename} | Total time: {_fmt_elapsed(elapsed)}", flush=True)
+        try:
+            table_flat, max_dtm, decisive = _run_flat_bfs(
+                unsolved_flats_np, np.array(init_table, dtype=TB_DTYPE), np.array(init_out_degree, dtype=np.uint16),
+                np.array(wtm_promo_idx, dtype=np.uint32), np.array(wtm_promo_val, dtype=np.uint16),
+                np.array(btm_promo_idx, dtype=np.uint32), np.array(btm_promo_val, dtype=np.uint16),
+                b2w_head, b2w_edges, w2b_head, w2b_edges, start_time)
+
+            _write_dense_table(self.filename, self.total_positions, unsolved_flats_np, table_flat)
+                
+            elapsed = time.time() - start_time
+            tb_key = os.path.basename(self.filename).replace(TB_SUFFIX, '')
+            _safe_record_longest_mate(tb_key, max_dtm, decisive, len(unsolved_flats_np) - decisive, elapsed)
+            print(f"SUCCESS: {self.filename} | Total time: {_fmt_elapsed(elapsed)}", flush=True)
+
+        finally:
+            if hasattr(b2w_edges, '_mmap'): b2w_edges._mmap.close()
+            if hasattr(w2b_edges, '_mmap'): w2b_edges._mmap.close()
+            del b2w_edges; del w2b_edges
+            try:
+                os.remove(tmp_b2w); os.remove(tmp_w2b)
+                os.remove(b2w_file); os.remove(w2b_file)
+            except Exception as e:
+                print(f"  [Warning] Temporary file cleanup failed: {e}")
 
 # ==============================================================================
 # 5-MAN SAME-SIDE GENERATOR
@@ -912,7 +1051,7 @@ def _init_transition_worker_5(p1_name, p2_name, p3_name):
     _W5_HAS_PAWN = ("Pawn" in {p1_name, p2_name, p3_name})
     _W5_3MAN_TABLES.clear(); _W5_4MAN_TABLES.clear(); _W5_PROMO_TABLES.clear()
     for name in PIECE_CLASS_BY_NAME:
-        path = os.path.join(TB_DIR, f"K_{name}_K_xsml.bin")
+        path = os.path.join(TB_DIR, f"K_{name}_K{TB_SUFFIX}")
         if os.path.exists(path): _W5_3MAN_TABLES[name] = _load_3man_table_file(path)
     pieces = sorted(PIECE_CLASS_BY_NAME.keys()); seen = set()
     for n1 in pieces:
@@ -920,14 +1059,14 @@ def _init_transition_worker_5(p1_name, p2_name, p3_name):
             key = tuple(sorted([n1, n2]))
             if key in seen: continue
             seen.add(key)
-            path = os.path.join(TB_DIR, f"K_{key[0]}_{key[1]}_K_xsml.bin")
+            path = os.path.join(TB_DIR, f"K_{key[0]}_{key[1]}_K{TB_SUFFIX}")
             if os.path.exists(path): _W5_4MAN_TABLES[f"{key[0]}_{key[1]}"] = _load_4man_table_file(path)
     if _W5_HAS_PAWN:
         names = [p1_name, p2_name, p3_name]
         if "Pawn" in names:
             idx = names.index("Pawn"); promo_names = names.copy(); promo_names[idx] = "Queen"
             promo_names.sort(key=lambda n: (_PIECE_CANONICAL_ORDER.get(PIECE_CLASS_BY_NAME[n], 99), n))
-            tb_name = f"K_{promo_names[0]}_{promo_names[1]}_{promo_names[2]}_K_xsml.bin"
+            tb_name = f"K_{promo_names[0]}_{promo_names[1]}_{promo_names[2]}_K{TB_SUFFIX}"
             path = os.path.join(TB_DIR, tb_name)
             if os.path.exists(path): _W5_PROMO_TABLES[tuple(promo_names)] = _load_5man_table_file(path)
     _W5_BOARD = Board(setup=False)
@@ -1002,7 +1141,6 @@ def _build_transition_worker_5(flat):
                 ext = _w5_ext_dtm(board, opp_turn_idx)
                 if ext is not None and ext > 0: known_wins.append(ext + 1)
             board.unmake_move(record)
-        # FIX-3: tuple instead of array for IPC
         return (flat, ('w', immediate_win, tuple(known_wins), tuple(child_flats)))
     else:
         legal_moves, escape, known_wins, child_flats = 0, False, [], []
@@ -1025,7 +1163,6 @@ def _build_transition_worker_5(flat):
                 if ext is not None and ext > 0: known_wins.append(ext)
                 else: escape = True
             board.unmake_move(record)
-        # FIX-3: tuple instead of array for IPC
         return (flat, ('b', legal_moves, escape, tuple(known_wins), tuple(child_flats)))
 
 def _gen_valid_5same_indices_numpy(total, p1n, p2n, p3n, has_pawn, chunk_size=2_000_000):
@@ -1055,7 +1192,8 @@ class Generator5:
         ps = sorted([p1_class, p2_class, p3_class], key=lambda c: (_PIECE_CANONICAL_ORDER.get(c, 99), c.__name__))
         self.p1_name = ps[0].__name__; self.p2_name = ps[1].__name__; self.p3_name = ps[2].__name__
         self.has_pawn = ("Pawn" in {self.p1_name, self.p2_name, self.p3_name})
-        self.filename  = os.path.join(TB_DIR, f"K_{self.p1_name}_{self.p2_name}_{self.p3_name}_K_xsml.bin")
+        base_name = f"K_{self.p1_name}_{self.p2_name}_{self.p3_name}_K"
+        self.filename = os.path.join(TB_DIR, f"{base_name}{TB_SUFFIX}")
         self.wk_size = 32 if self.has_pawn else 10
         self.total_positions = self.wk_size * 64 * 64 * 64 * 64 * 2
         self.table = None
@@ -1063,10 +1201,10 @@ class Generator5:
 
     def generate(self):
         if os.path.exists(self.filename): return
-        self.table = np.zeros((self.wk_size, 64, 64, 64, 64, 2), dtype=np.int8)
+        self.table = np.zeros((self.wk_size, 64, 64, 64, 64, 2), dtype=TB_DTYPE)
         start_time = time.time()
         sz_mb = self.wk_size * 64**4 * 2 * 1 / 1024**2
-        print(f"\n{'='*60}\n GENERATING: K+{self.p1_name}+{self.p2_name}+{self.p3_name} vs K (XSML)", flush=True)
+        print(f"\n{'='*60}\n GENERATING: K+{self.p1_name}+{self.p2_name}+{self.p3_name} vs K (TB16)", flush=True)
         print(f" Estimated file size: {sz_mb:.0f} MB\n{'='*60}", flush=True)
         s1 = time.time(); print(f"[Stage 1] Enumerating candidates...", flush=True)
         all_flats = array('I')
@@ -1075,46 +1213,80 @@ class Generator5:
         total = len(all_flats)
         print(f"[Stage 1] Done: {total:,} candidates | {_fmt_elapsed(time.time()-s1)}", flush=True)
         
-        s2 = time.time(); print(f"[Stage 2] Building transition cache ({total:,} states)...", flush=True)
-        unsolved_flats = array('I'); transitions = []
-        b2w_c = array('I'); b2w_p = array('I'); w2b_c = array('I'); w2b_p = array('I')
+        s2 = time.time(); print(f"[Stage 2] Building flat disk cache ({total:,} states)...", flush=True)
+        unsolved_flats = array('I')
+        init_table = array('h'); init_out_degree = array('H')
+        wtm_promo_idx = array('I'); wtm_promo_val = array('H')
+        btm_promo_idx = array('I'); btm_promo_val = array('H')
+        
+        run_prefix, tmp_b2w, tmp_w2b = _make_temp_graph_paths(self.filename)
+        f_b2w = open(tmp_b2w, "wb")
+        f_w2b = open(tmp_w2b, "wb")
         
         with ProcessPoolExecutor(max_workers=self.transition_workers, initializer=_init_transition_worker_5,
                                  initargs=(self.p1_name, self.p2_name, self.p3_name)) as ex:
-            # FIX-4: chunksize reduced to 256 for 5-man low-RAM machines
             for done, result in enumerate(ex.map(_build_transition_worker_5, all_flats, chunksize=256), 1):
                 if result is not None:
                     flat, trans = result
                     i = len(unsolved_flats)
-                    unsolved_flats.append(flat); transitions.append(trans)
+                    unsolved_flats.append(flat)
                     if (flat & 1) == 0:
-                        for cflat in trans[3]: b2w_c.append(cflat); b2w_p.append(i)
+                        if trans[1]: init_table.append(1); init_out_degree.append(0)
+                        else:
+                            init_table.append(0); init_out_degree.append(len(trans[3]))
+                            if trans[2]: wtm_promo_idx.append(i); wtm_promo_val.append(min(trans[2]))
+                        if trans[3]:
+                            arr = np.empty((len(trans[3]), 2), dtype=np.uint32)
+                            arr[:, 0] = trans[3]; arr[:, 1] = i
+                            f_b2w.write(arr.tobytes())
                     else:
-                        if not trans[2]:
-                            for cflat in trans[4]: w2b_c.append(cflat); w2b_p.append(i)
+                        if trans[1] == 0: init_table.append(-1); init_out_degree.append(0)
+                        elif trans[2]: init_table.append(0); init_out_degree.append(65535)
+                        else:
+                            promo_losses, children = trans[3], trans[4]
+                            init_table.append(0); init_out_degree.append(len(children) + len(promo_losses))
+                            for p_val in promo_losses: btm_promo_idx.append(i); btm_promo_val.append(p_val)
+                            if children:
+                                arr = np.empty((len(children), 2), dtype=np.uint32)
+                                arr[:, 0] = children; arr[:, 1] = i
+                                f_w2b.write(arr.tobytes())
                 if done % 100_000 == 0:
                     elapsed = time.time() - start_time; speed = done / max(0.001, time.time() - s2)
                     print(f"  > {done/total*100:.1f}% ({done:,}/{total:,}) | {speed:,.0f} st/s | Elapsed: {_fmt_elapsed(elapsed)}", end='\r', flush=True)
         
+        f_b2w.close(); f_w2b.close()
         print(); s2e = time.time() - s2
         print(f"[Stage 2] Cache built: {len(unsolved_flats):,} valid states | {_fmt_elapsed(s2e)} ({total/max(0.001,s2e):,.0f} st/s avg)", flush=True)
         
-        s3 = time.time(); print(f"[Stage 2b] Flattening reverse graph...", flush=True)
+        s3 = time.time(); print(f"[Stage 2b] Flattening reverse graph via Disk CSR...", flush=True)
         unsolved_flats_np = np.array(unsolved_flats, dtype=np.uint32)
-        b2w_edges, b2w_head, w2b_edges, w2b_head = _build_flat_reverse_graph(
-            unsolved_flats_np, b2w_c, b2w_p, w2b_c, w2b_p)
-        del b2w_c, b2w_p, w2b_c, w2b_p 
-        print(f"[Stage 2b] Done: {len(b2w_edges):,} b2w edges, {len(w2b_edges):,} w2b edges | {_fmt_elapsed(time.time()-s3)}", flush=True)
+        b2w_head, b2w_edges, b2w_file = _build_csr_from_disk(unsolved_flats_np, tmp_b2w, f"{run_prefix}_b2w")
+        w2b_head, w2b_edges, w2b_file = _build_csr_from_disk(unsolved_flats_np, tmp_w2b, f"{run_prefix}_w2b")
+        print(f"[Stage 2b] Done | {_fmt_elapsed(time.time()-s3)}", flush=True)
         
-        candidate_states = len(unsolved_flats_np)
-        max_dtm, decisive = _run_bfs_retrograde(self.table, unsolved_flats_np, transitions, 
-                                                b2w_edges, b2w_head, w2b_edges, w2b_head, 
-                                                candidate_states, start_time)
-        with open(self.filename, 'wb') as f: self.table.tofile(f)
-        self.table = None
-        elapsed = time.time() - start_time
-        _safe_record_longest_mate(f"K_{self.p1_name}_{self.p2_name}_{self.p3_name}_K", max_dtm, decisive, candidate_states - decisive, elapsed)
-        print(f"SUCCESS: {self.filename} | Total time: {_fmt_elapsed(elapsed)}", flush=True)
+        try:
+            table_flat, max_dtm, decisive = _run_flat_bfs(
+                unsolved_flats_np, np.array(init_table, dtype=TB_DTYPE), np.array(init_out_degree, dtype=np.uint16),
+                np.array(wtm_promo_idx, dtype=np.uint32), np.array(wtm_promo_val, dtype=np.uint16),
+                np.array(btm_promo_idx, dtype=np.uint32), np.array(btm_promo_val, dtype=np.uint16),
+                b2w_head, b2w_edges, w2b_head, w2b_edges, start_time)
+
+            _write_dense_table(self.filename, self.total_positions, unsolved_flats_np, table_flat)
+                
+            elapsed = time.time() - start_time
+            tb_key = os.path.basename(self.filename).replace(TB_SUFFIX, '')
+            _safe_record_longest_mate(tb_key, max_dtm, decisive, len(unsolved_flats_np) - decisive, elapsed)
+            print(f"SUCCESS: {self.filename} | Total time: {_fmt_elapsed(elapsed)}", flush=True)
+
+        finally:
+            if hasattr(b2w_edges, '_mmap'): b2w_edges._mmap.close()
+            if hasattr(w2b_edges, '_mmap'): w2b_edges._mmap.close()
+            del b2w_edges; del w2b_edges
+            try:
+                os.remove(tmp_b2w); os.remove(tmp_w2b)
+                os.remove(b2w_file); os.remove(w2b_file)
+            except Exception as e:
+                print(f"  [Warning] Temporary file cleanup failed: {e}")
 
 # ==============================================================================
 # 5-MAN CROSS GENERATOR
@@ -1122,7 +1294,6 @@ class Generator5:
 _W5V_HAS_PAWN = False; _W5V_W1_NAME = None; _W5V_W2_NAME = None; _W5V_B_NAME = None
 _W5V_3MAN_TABLES = {}; _W5V_4MAN_TABLES = {}; _W5V_4VS_TABLES = {}; _W5V_PROMO_TABLES = {}
 _W5V_BOARD = None; _W5V_WK_OBJ = None; _W5V_WP1_OBJ = None; _W5V_WP2_OBJ = None; _W5V_BK_OBJ = None; _W5V_BP_OBJ = None
-_IN_TABLE_SENTINEL = "IN_TABLE"
 
 def _init_transition_worker_5vs(w1_name, w2_name, b_name):
     _install_worker_interrupt_ignores()
@@ -1133,31 +1304,31 @@ def _init_transition_worker_5vs(w1_name, w2_name, b_name):
     _W5V_HAS_PAWN = ("Pawn" in {w1_name, w2_name, b_name})
     _W5V_3MAN_TABLES.clear(); _W5V_4MAN_TABLES.clear(); _W5V_4VS_TABLES.clear(); _W5V_PROMO_TABLES.clear()
     for name in PIECE_CLASS_BY_NAME:
-        path = os.path.join(TB_DIR, f"K_{name}_K_xsml.bin")
+        path = os.path.join(TB_DIR, f"K_{name}_K{TB_SUFFIX}")
         if os.path.exists(path): _W5V_3MAN_TABLES[name] = _load_3man_table_file(path)
     pieces = sorted(PIECE_CLASS_BY_NAME.keys()); seen4 = set()
     for n1 in pieces:
         for n2 in pieces:
             key = tuple(sorted([n1, n2]))
             if key in seen4: continue; seen4.add(key)
-            path = os.path.join(TB_DIR, f"K_{key[0]}_{key[1]}_K_xsml.bin")
+            path = os.path.join(TB_DIR, f"K_{key[0]}_{key[1]}_K{TB_SUFFIX}")
             if os.path.exists(path): _W5V_4MAN_TABLES[f"{key[0]}_{key[1]}"] = _load_4man_table_file(path)
     seen4v = set()
     for wn in pieces:
         for bn in pieces:
             key = tuple(sorted([wn, bn]))
             if key in seen4v: continue; seen4v.add(key)
-            path = os.path.join(TB_DIR, f"K_{key[0]}_vs_{key[1]}_K_xsml.bin")
+            path = os.path.join(TB_DIR, f"K_{key[0]}_vs_{key[1]}_K{TB_SUFFIX}")
             if os.path.exists(path): _W5V_4VS_TABLES[f"{key[0]}_vs_{key[1]}"] = _load_4man_table_file(path)
     if _W5V_HAS_PAWN:
         if "Pawn" in [w1_name, w2_name]:
             w_names = [w1_name, w2_name]; w_names[w_names.index("Pawn")] = "Queen"
             w_names.sort(key=lambda n: (_PIECE_CANONICAL_ORDER.get(PIECE_CLASS_BY_NAME[n],99), n))
-            tb_name = f"K_{w_names[0]}_{w_names[1]}_vs_{b_name}_K_xsml.bin"
+            tb_name = f"K_{w_names[0]}_{w_names[1]}_vs_{b_name}_K{TB_SUFFIX}"
             path = os.path.join(TB_DIR, tb_name)
             if os.path.exists(path): _W5V_PROMO_TABLES[("w", tuple(w_names), b_name)] = _load_5man_table_file(path)
         if b_name == "Pawn":
-            tb_name = f"K_{w1_name}_{w2_name}_vs_Queen_K_xsml.bin"
+            tb_name = f"K_{w1_name}_{w2_name}_vs_Queen_K{TB_SUFFIX}"
             path = os.path.join(TB_DIR, tb_name)
             if os.path.exists(path): _W5V_PROMO_TABLES[("b", (w1_name, w2_name), "Queen")] = _load_5man_table_file(path)
     _W5V_BOARD = Board(setup=False)
@@ -1165,6 +1336,49 @@ def _init_transition_worker_5vs(w1_name, w2_name, b_name):
     _W5V_BK_OBJ = King('black'); _W5V_BP_OBJ = PIECE_CLASS_BY_NAME[b_name]('black')
     pc = _W5V_BOARD.piece_counts; pc['white'][King] = pc['black'][King] = 1
     pc['white'][type(_W5V_WP1_OBJ)] += 1; pc['white'][type(_W5V_WP2_OBJ)] += 1; pc['black'][type(_W5V_BP_OBJ)] += 1
+
+def _white_win_dtm_3man(piece_name, wk, p, bk, turn_idx, is_white_piece):
+    tb = _W5V_3MAN_TABLES.get(piece_name)
+    if tb is None: return None
+    if is_white_piece:
+        q_idx = _canonical_flat_3(wk[0]*8+wk[1], p[0]*8+p[1], bk[0]*8+bk[1], turn_idx, piece_name=="Pawn")
+        val = int(tb.flat[q_idx]); return None if val == 0 else (abs(val) if ((turn_idx==0 and val>0) or (turn_idx==1 and val<0)) else None)
+    else:
+        t2 = 1 - turn_idx; atk_k, atk_p, def_k = _flip(bk), _flip(p), _flip(wk)
+        q_idx = _canonical_flat_3(atk_k[0]*8+atk_k[1], atk_p[0]*8+atk_p[1], def_k[0]*8+def_k[1], t2, piece_name=="Pawn")
+        val = int(tb.flat[q_idx])
+        if val == 0: return None
+        return None if ((t2==0 and val>0) or (t2==1 and val<0)) else abs(val)
+
+def _white_win_dtm_promo_vs(w_name, b_name, wk, wp, bk, bp, turn_idx):
+    key = tuple(sorted((w_name, b_name))); tb = _W5V_PROMO_TABLES.get(key)
+    if tb is None: return None
+    hp = ("Pawn" in {w_name, b_name})
+    if w_name > b_name:
+        t2 = 1 - turn_idx; bk_f,bp_f,wk_f,wp_f = _flip(bk),_flip(bp),_flip(wk),_flip(wp)
+        q_idx = _canonical_flat_4vs(bk_f[0]*8+bk_f[1], bp_f[0]*8+bp_f[1], wk_f[0]*8+wk_f[1], wp_f[0]*8+wp_f[1], t2, hp)
+        val = int(tb.flat[q_idx])
+        if val == 0: return None
+        return None if ((t2==0 and val>0) or (t2==1 and val<0)) else abs(val)
+    else:
+        q_idx = _canonical_flat_4vs(wk[0]*8+wk[1], wp[0]*8+wp[1], bk[0]*8+bk[1], bp[0]*8+bp[1], turn_idx, hp)
+        val = int(tb.flat[q_idx]); return None if val == 0 else (abs(val) if ((turn_idx==0 and val>0) or (turn_idx==1 and val<0)) else None)
+
+def _ext_white_win_4vs(child, turn_idx):
+    w_nk = [p for p in child.white_pieces if not isinstance(p, King)]
+    b_nk = [p for p in child.black_pieces if not isinstance(p, King)]
+    wkp, bkp = child.white_king_pos, child.black_king_pos
+    if len(w_nk)==1 and len(b_nk)==1:
+        wn, bn = type(w_nk[0]).__name__, type(b_nk[0]).__name__
+        if wn==_W5V_W1_NAME and bn==_W5V_B_NAME: return _IN_TABLE_SENTINEL
+        return _white_win_dtm_promo_vs(wn, bn, wkp, w_nk[0].pos, bkp, b_nk[0].pos, turn_idx)
+    if len(w_nk)==1 and len(b_nk)==0: return _white_win_dtm_3man(type(w_nk[0]).__name__, wkp, w_nk[0].pos, bkp, turn_idx, True)
+    if len(w_nk)==0 and len(b_nk)==1: return _white_win_dtm_3man(type(b_nk[0]).__name__, wkp, b_nk[0].pos, bkp, turn_idx, False)
+    if len(w_nk)==0 and len(b_nk)==0:
+        if not bkp: return 1
+        if turn_idx==1 and not has_legal_moves(child, 'black'): return 1
+        return None
+    return None
 
 def _w5v_ext_dtm(board, turn_idx):
     w_nk = [p for p in board.white_pieces if not isinstance(p, King)]
@@ -1245,7 +1459,6 @@ def _build_transition_worker_5vs(flat):
                 child_flats.append(_canonical_flat_5vs(board.white_king_pos[0]*8+board.white_king_pos[1], ws[0].pos[0]*8+ws[0].pos[1], ws[1].pos[0]*8+ws[1].pos[1], board.black_king_pos[0]*8+board.black_king_pos[1], b_nk[0].pos[0]*8+b_nk[0].pos[1], opp_turn_idx, _W5V_HAS_PAWN, type(ws[0]).__name__, type(ws[1]).__name__))
             elif ext is not None and ext > 0: known_wins.append(ext + 1)
             board.unmake_move(record)
-        # FIX-3: tuple instead of array for IPC
         return (flat, ('w', immediate_win, tuple(known_wins), tuple(child_flats)))
     else:
         legal_moves, escape, known_wins, child_flats = 0, False, [], []
@@ -1255,9 +1468,7 @@ def _build_transition_worker_5vs(flat):
                 board.unmake_move(record); continue
             legal_moves += 1
             if not has_legal_moves(board, 'white'): escape = True; board.unmake_move(record); continue
-            
-            ext = _w5v_ext_dtm(board, opp_turn_idx)  # <--- FIXED
-            
+            ext = _w5v_ext_dtm(board, opp_turn_idx)
             if ext == _IN_TABLE_SENTINEL:
                 w_nk = [p for p in board.white_pieces if not isinstance(p, King)]
                 b_nk = [p for p in board.black_pieces if not isinstance(p, King)]
@@ -1266,7 +1477,6 @@ def _build_transition_worker_5vs(flat):
             elif ext is not None and ext > 0: known_wins.append(ext)
             else: escape = True
             board.unmake_move(record)
-        # FIX-3: tuple instead of array for IPC
         return (flat, ('b', legal_moves, escape, tuple(known_wins), tuple(child_flats)))
 
 def _gen_valid_5vs_indices_numpy(total, w1n, w2n, bn, has_pawn, same_wp, chunk_size=2_000_000):
@@ -1293,7 +1503,8 @@ class Generator5Vs:
         self.w1_name, self.w2_name = ws[0].__name__, ws[1].__name__; self.b_name = b_class.__name__
         self.same_wp = (self.w1_name == self.w2_name)
         self.has_pawn = ("Pawn" in {self.w1_name, self.w2_name, self.b_name})
-        self.filename = os.path.join(TB_DIR, f"K_{self.w1_name}_{self.w2_name}_vs_{self.b_name}_K_xsml.bin")
+        base_name = f"K_{self.w1_name}_{self.w2_name}_vs_{self.b_name}_K"
+        self.filename = os.path.join(TB_DIR, f"{base_name}{TB_SUFFIX}")
         self.wk_size = 32 if self.has_pawn else 10
         self.total_positions = self.wk_size * 64 * 64 * 64 * 64 * 2
         self.table = None
@@ -1301,10 +1512,10 @@ class Generator5Vs:
 
     def generate(self):
         if os.path.exists(self.filename): return
-        self.table = np.zeros((self.wk_size, 64, 64, 64, 64, 2), dtype=np.int8)
+        self.table = np.zeros((self.wk_size, 64, 64, 64, 64, 2), dtype=TB_DTYPE)
         start_time = time.time()
-        sz_mb = self.wk_size * 64**4 * 2 * 1 / 1024**2  # FIX-2: int8 = 1 byte
-        print(f"\n{'='*60}\n GENERATING: K+{self.w1_name}+{self.w2_name} vs K+{self.b_name} (XSML)", flush=True)
+        sz_mb = self.wk_size * 64**4 * 2 * 1 / 1024**2
+        print(f"\n{'='*60}\n GENERATING: K+{self.w1_name}+{self.w2_name} vs K+{self.b_name} (TB16)", flush=True)
         print(f" Estimated file size: {sz_mb:.0f} MB\n{'='*60}", flush=True)
         s1 = time.time(); print(f"[Stage 1] Enumerating candidates...", flush=True)
         all_flats = array('I')
@@ -1313,54 +1524,86 @@ class Generator5Vs:
         total = len(all_flats)
         print(f"[Stage 1] Done: {total:,} candidates | {_fmt_elapsed(time.time()-s1)}", flush=True)
         
-        s2 = time.time(); print(f"[Stage 2] Building transition cache ({total:,} states)...", flush=True)
-        unsolved_flats = array('I'); transitions = []
-        b2w_c = array('I'); b2w_p = array('I'); w2b_c = array('I'); w2b_p = array('I')
+        s2 = time.time(); print(f"[Stage 2] Building flat disk cache ({total:,} states)...", flush=True)
+        unsolved_flats = array('I')
+        init_table = array('h'); init_out_degree = array('H')
+        wtm_promo_idx = array('I'); wtm_promo_val = array('H')
+        btm_promo_idx = array('I'); btm_promo_val = array('H')
+        
+        run_prefix, tmp_b2w, tmp_w2b = _make_temp_graph_paths(self.filename)
+        f_b2w = open(tmp_b2w, "wb")
+        f_w2b = open(tmp_w2b, "wb")
         
         with ProcessPoolExecutor(max_workers=self.transition_workers, initializer=_init_transition_worker_5vs,
                                  initargs=(self.w1_name, self.w2_name, self.b_name)) as ex:
-            # FIX-4: chunksize reduced from 2048 to 256 for low-RAM machines
             for done, result in enumerate(ex.map(_build_transition_worker_5vs, all_flats, chunksize=256), 1):
                 if result is not None:
                     flat, trans = result
                     i = len(unsolved_flats)
-                    unsolved_flats.append(flat); transitions.append(trans)
+                    unsolved_flats.append(flat)
                     if (flat & 1) == 0:
-                        for cflat in trans[3]: b2w_c.append(cflat); b2w_p.append(i)
+                        if trans[1]: init_table.append(1); init_out_degree.append(0)
+                        else:
+                            init_table.append(0); init_out_degree.append(len(trans[3]))
+                            if trans[2]: wtm_promo_idx.append(i); wtm_promo_val.append(min(trans[2]))
+                        if trans[3]:
+                            arr = np.empty((len(trans[3]), 2), dtype=np.uint32)
+                            arr[:, 0] = trans[3]; arr[:, 1] = i
+                            f_b2w.write(arr.tobytes())
                     else:
-                        if not trans[2]:
-                            for cflat in trans[4]: w2b_c.append(cflat); w2b_p.append(i)
+                        if trans[1] == 0: init_table.append(-1); init_out_degree.append(0)
+                        elif trans[2]: init_table.append(0); init_out_degree.append(65535)
+                        else:
+                            promo_losses, children = trans[3], trans[4]
+                            init_table.append(0); init_out_degree.append(len(children) + len(promo_losses))
+                            for p_val in promo_losses: btm_promo_idx.append(i); btm_promo_val.append(p_val)
+                            if children:
+                                arr = np.empty((len(children), 2), dtype=np.uint32)
+                                arr[:, 0] = children; arr[:, 1] = i
+                                f_w2b.write(arr.tobytes())
                 if done % 100_000 == 0:
                     elapsed = time.time() - start_time; speed = done / max(0.001, time.time() - s2)
                     print(f"  > {done/total*100:.1f}% ({done:,}/{total:,}) | {speed:,.0f} st/s | Elapsed: {_fmt_elapsed(elapsed)}", end='\r', flush=True)
         
+        f_b2w.close(); f_w2b.close()
         print(); s2e = time.time() - s2
         print(f"[Stage 2] Cache built: {len(unsolved_flats):,} valid states | {_fmt_elapsed(s2e)} ({total/max(0.001,s2e):,.0f} st/s avg)", flush=True)
         
-        s3 = time.time(); print(f"[Stage 2b] Flattening reverse graph...", flush=True)
+        s3 = time.time(); print(f"[Stage 2b] Flattening reverse graph via Disk CSR...", flush=True)
         unsolved_flats_np = np.array(unsolved_flats, dtype=np.uint32)
-        b2w_edges, b2w_head, w2b_edges, w2b_head = _build_flat_reverse_graph(
-            unsolved_flats_np, b2w_c, b2w_p, w2b_c, w2b_p)
-        del b2w_c, b2w_p, w2b_c, w2b_p 
-        print(f"[Stage 2b] Done: {len(b2w_edges):,} b2w edges, {len(w2b_edges):,} w2b edges | {_fmt_elapsed(time.time()-s3)}", flush=True)
+        b2w_head, b2w_edges, b2w_file = _build_csr_from_disk(unsolved_flats_np, tmp_b2w, f"{run_prefix}_b2w")
+        w2b_head, w2b_edges, w2b_file = _build_csr_from_disk(unsolved_flats_np, tmp_w2b, f"{run_prefix}_w2b")
+        print(f"[Stage 2b] Done | {_fmt_elapsed(time.time()-s3)}", flush=True)
         
-        candidate_states = len(unsolved_flats_np)
-        max_dtm, decisive = _run_bfs_retrograde(self.table, unsolved_flats_np, transitions, 
-                                                b2w_edges, b2w_head, w2b_edges, w2b_head, 
-                                                candidate_states, start_time)
-        with open(self.filename, 'wb') as f: self.table.tofile(f)
-        self.table = None
-        elapsed = time.time() - start_time
-        _safe_record_longest_mate(f"K_{self.w1_name}_{self.w2_name}_vs_{self.b_name}_K", max_dtm, decisive, candidate_states - decisive, elapsed)
-        print(f"SUCCESS: {self.filename} | Total time: {_fmt_elapsed(elapsed)}", flush=True)
+        try:
+            table_flat, max_dtm, decisive = _run_flat_bfs(
+                unsolved_flats_np, np.array(init_table, dtype=TB_DTYPE), np.array(init_out_degree, dtype=np.uint16),
+                np.array(wtm_promo_idx, dtype=np.uint32), np.array(wtm_promo_val, dtype=np.uint16),
+                np.array(btm_promo_idx, dtype=np.uint32), np.array(btm_promo_val, dtype=np.uint16),
+                b2w_head, b2w_edges, w2b_head, w2b_edges, start_time)
 
+            _write_dense_table(self.filename, self.total_positions, unsolved_flats_np, table_flat)
+                
+            elapsed = time.time() - start_time
+            tb_key = os.path.basename(self.filename).replace(TB_SUFFIX, '')
+            _safe_record_longest_mate(tb_key, max_dtm, decisive, len(unsolved_flats_np) - decisive, elapsed)
+            print(f"SUCCESS: {self.filename} | Total time: {_fmt_elapsed(elapsed)}", flush=True)
+
+        finally:
+            if hasattr(b2w_edges, '_mmap'): b2w_edges._mmap.close()
+            if hasattr(w2b_edges, '_mmap'): w2b_edges._mmap.close()
+            del b2w_edges; del w2b_edges
+            try:
+                os.remove(tmp_b2w); os.remove(tmp_w2b)
+                os.remove(b2w_file); os.remove(w2b_file)
+            except Exception as e:
+                print(f"  [Warning] Temporary file cleanup failed: {e}")
 
 # ==============================================================================
 # ENTRY POINT
 # ==============================================================================
 
 def is_possible(pieces):
-    """Filters out impossible piece combinations (e.g. 3 Knights)"""
     counts = {Queen: 0, Rook: 0, Bishop: 0, Knight: 0, Pawn: 0}
     for p in pieces: counts[p] += 1
     if counts[Rook] > 2 or counts[Bishop] > 2 or counts[Knight] > 2: return False
@@ -1369,10 +1612,9 @@ def is_possible(pieces):
 if __name__ == "__main__":
     _install_main_interrupt_ignores()
     overall_start = time.time()
-    print("=== Tablebase Generator (v13.7 - Topologically Sorted CSR Retrograde BFS) ===")
+    print("=== Tablebase Generator (v17.0 - Unified 16-bit Retrograde BFS) ===")
 
     all_pieces = [Queen, Rook, Bishop, Knight, Pawn]
-
     all_gens = []
 
     # --- TIER 1 & 2: 3-Man ---

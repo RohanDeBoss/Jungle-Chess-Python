@@ -1,0 +1,2261 @@
+{
+  "old_dir": "old tablebases",
+  "new_dir": "tablebases",
+  "old_suffix": "_xsml.bin",
+  "new_suffix": "_tb16.bin",
+  "common_table_count": 14,
+  "common_tables": [
+    "K_Bishop_Bishop_K",
+    "K_Bishop_K",
+    "K_Bishop_Knight_K",
+    "K_Bishop_Queen_K",
+    "K_Bishop_Rook_K",
+    "K_Knight_K",
+    "K_Knight_Knight_K",
+    "K_Knight_Queen_K",
+    "K_Knight_Rook_K",
+    "K_Queen_K",
+    "K_Queen_Queen_K",
+    "K_Queen_Rook_K",
+    "K_Rook_K",
+    "K_Rook_Rook_K"
+  ],
+  "old_only_tables": [
+    "K_Bishop_Pawn_K",
+    "K_Bishop_vs_Bishop_K",
+    "K_Bishop_vs_Knight_K",
+    "K_Bishop_vs_Pawn_K",
+    "K_Bishop_vs_Queen_K",
+    "K_Bishop_vs_Rook_K",
+    "K_Knight_Pawn_K",
+    "K_Knight_vs_Knight_K",
+    "K_Knight_vs_Pawn_K",
+    "K_Knight_vs_Queen_K",
+    "K_Knight_vs_Rook_K",
+    "K_Pawn_Rook_K",
+    "K_Pawn_vs_Pawn_K",
+    "K_Pawn_vs_Queen_K",
+    "K_Pawn_vs_Rook_K",
+    "K_Queen_Queen_Queen_K",
+    "K_Queen_vs_Queen_K",
+    "K_Queen_vs_Rook_K",
+    "K_Rook_vs_Rook_K"
+  ],
+  "new_only_tables": [
+    "K_Pawn_K"
+  ],
+  "longest_mate_comparison": {
+    "shared_note_entries": 14,
+    "metadata_match_count": 0,
+    "metadata_mismatches": [
+      {
+        "table": "K_Bishop_Bishop_K",
+        "old": {
+          "dtm": 10,
+          "decisive": 482043,
+          "drawn": 149635,
+          "minutes": 1.3,
+          "updated_utc": "2026-04-23 09:49:38"
+        },
+        "new": {
+          "dtm": 9,
+          "decisive": 482043,
+          "drawn": 149635,
+          "minutes": 1.7,
+          "updated_utc": "2026-04-23 14:10:38"
+        }
+      },
+      {
+        "table": "K_Bishop_K",
+        "old": {
+          "dtm": 9,
+          "decisive": 1017,
+          "drawn": 51229,
+          "minutes": 0.1,
+          "updated_utc": "2026-04-23 10:58:18"
+        },
+        "new": {
+          "dtm": 8,
+          "decisive": 1017,
+          "drawn": 51229,
+          "minutes": 0.1,
+          "updated_utc": "2026-04-23 13:35:11"
+        }
+      },
+      {
+        "table": "K_Bishop_Knight_K",
+        "old": {
+          "dtm": 32,
+          "decisive": 2569194,
+          "drawn": 204657,
+          "minutes": 13.4,
+          "updated_utc": "2026-04-21 08:18:24"
+        },
+        "new": {
+          "dtm": 19,
+          "decisive": 2569194,
+          "drawn": 204657,
+          "minutes": 5.5,
+          "updated_utc": "2026-04-23 14:16:09"
+        }
+      },
+      {
+        "table": "K_Bishop_Queen_K",
+        "old": {
+          "dtm": 20,
+          "decisive": 2555655,
+          "drawn": 198088,
+          "minutes": 19.6,
+          "updated_utc": "2026-04-21 07:14:40"
+        },
+        "new": {
+          "dtm": 13,
+          "decisive": 2555655,
+          "drawn": 198088,
+          "minutes": 7.9,
+          "updated_utc": "2026-04-23 13:51:45"
+        }
+      },
+      {
+        "table": "K_Bishop_Rook_K",
+        "old": {
+          "dtm": 22,
+          "decisive": 2509802,
+          "drawn": 427644,
+          "minutes": 18.3,
+          "updated_utc": "2026-04-21 07:49:00"
+        },
+        "new": {
+          "dtm": 21,
+          "decisive": 2509802,
+          "drawn": 427644,
+          "minutes": 7.0,
+          "updated_utc": "2026-04-23 14:05:26"
+        }
+      },
+      {
+        "table": "K_Knight_K",
+        "old": {
+          "dtm": 32,
+          "decisive": 44142,
+          "drawn": 8443,
+          "minutes": 0.1,
+          "updated_utc": "2026-04-21 06:36:15"
+        },
+        "new": {
+          "dtm": 31,
+          "decisive": 44142,
+          "drawn": 8443,
+          "minutes": 0.0,
+          "updated_utc": "2026-04-23 13:35:22"
+        }
+      },
+      {
+        "table": "K_Knight_Knight_K",
+        "old": {
+          "dtm": 32,
+          "decisive": 1387352,
+          "drawn": 6490,
+          "minutes": 2.8,
+          "updated_utc": "2026-04-21 08:21:15"
+        },
+        "new": {
+          "dtm": 21,
+          "decisive": 1387352,
+          "drawn": 6490,
+          "minutes": 1.3,
+          "updated_utc": "2026-04-23 14:17:28"
+        }
+      },
+      {
+        "table": "K_Knight_Queen_K",
+        "old": {
+          "dtm": 32,
+          "decisive": 2770151,
+          "drawn": 6490,
+          "minutes": 11.3,
+          "updated_utc": "2026-04-21 07:26:01"
+        },
+        "new": {
+          "dtm": 11,
+          "decisive": 2770151,
+          "drawn": 6490,
+          "minutes": 4.4,
+          "updated_utc": "2026-04-23 13:56:12"
+        }
+      },
+      {
+        "table": "K_Knight_Rook_K",
+        "old": {
+          "dtm": 32,
+          "decisive": 2694827,
+          "drawn": 249777,
+          "minutes": 11.7,
+          "updated_utc": "2026-04-21 08:00:52"
+        },
+        "new": {
+          "dtm": 27,
+          "decisive": 2694827,
+          "drawn": 249777,
+          "minutes": 3.5,
+          "updated_utc": "2026-04-23 14:08:58"
+        }
+      },
+      {
+        "table": "K_Queen_K",
+        "old": {
+          "dtm": 20,
+          "decisive": 46917,
+          "drawn": 5186,
+          "minutes": 0.2,
+          "updated_utc": "2026-04-21 06:35:40"
+        },
+        "new": {
+          "dtm": 19,
+          "decisive": 46917,
+          "drawn": 5186,
+          "minutes": 0.0,
+          "updated_utc": "2026-04-23 13:30:40"
+        }
+      },
+      {
+        "table": "K_Queen_Queen_K",
+        "old": {
+          "dtm": 20,
+          "decisive": 1366504,
+          "drawn": 0,
+          "minutes": 5.4,
+          "updated_utc": "2026-04-21 06:42:00"
+        },
+        "new": {
+          "dtm": 9,
+          "decisive": 1366504,
+          "drawn": 0,
+          "minutes": 3.0,
+          "updated_utc": "2026-04-23 13:38:22"
+        }
+      },
+      {
+        "table": "K_Queen_Rook_K",
+        "old": {
+          "dtm": 20,
+          "decisive": 2667075,
+          "drawn": 243748,
+          "minutes": 13.0,
+          "updated_utc": "2026-04-21 06:55:02"
+        },
+        "new": {
+          "dtm": 13,
+          "decisive": 2667075,
+          "drawn": 243748,
+          "minutes": 5.5,
+          "updated_utc": "2026-04-23 13:43:50"
+        }
+      },
+      {
+        "table": "K_Rook_K",
+        "old": {
+          "dtm": 15,
+          "decisive": 986,
+          "drawn": 55475,
+          "minutes": 0.2,
+          "updated_utc": "2026-04-21 06:35:51"
+        },
+        "new": {
+          "dtm": 14,
+          "decisive": 986,
+          "drawn": 55475,
+          "minutes": 0.0,
+          "updated_utc": "2026-04-23 13:35:07"
+        }
+      },
+      {
+        "table": "K_Rook_Rook_K",
+        "old": {
+          "dtm": 22,
+          "decisive": 1327485,
+          "drawn": 228113,
+          "minutes": 4.7,
+          "updated_utc": "2026-04-21 07:30:43"
+        },
+        "new": {
+          "dtm": 21,
+          "decisive": 1327485,
+          "drawn": 228113,
+          "minutes": 2.2,
+          "updated_utc": "2026-04-23 13:58:24"
+        }
+      }
+    ],
+    "old_only_note_entries": [
+      "K_Bishop_Pawn_K",
+      "K_Bishop_vs_Bishop_K",
+      "K_Bishop_vs_Knight_K",
+      "K_Bishop_vs_Pawn_K",
+      "K_Bishop_vs_Queen_K",
+      "K_Bishop_vs_Rook_K",
+      "K_Knight_Pawn_K",
+      "K_Knight_vs_Knight_K",
+      "K_Knight_vs_Pawn_K",
+      "K_Knight_vs_Queen_K",
+      "K_Knight_vs_Rook_K",
+      "K_Pawn_Pawn_K",
+      "K_Pawn_Queen_K",
+      "K_Pawn_Rook_K",
+      "K_Pawn_vs_Pawn_K",
+      "K_Pawn_vs_Queen_K",
+      "K_Pawn_vs_Rook_K",
+      "K_Queen_Queen_Queen_K",
+      "K_Queen_vs_Queen_K",
+      "K_Queen_vs_Rook_K",
+      "K_Rook_vs_Rook_K"
+    ],
+    "new_only_note_entries": []
+  },
+  "table_comparisons": [
+    {
+      "table": "K_Bishop_Bishop_K",
+      "state_count": 5242880,
+      "identical": true,
+      "mismatch_count": 0,
+      "max_abs_diff": 0,
+      "old_actual": {
+        "max_abs_value": 10,
+        "decisive_entries": 482043,
+        "zero_entries_total": 4760837
+      },
+      "new_actual": {
+        "max_abs_value": 10,
+        "decisive_entries": 482043,
+        "zero_entries_total": 4760837
+      },
+      "mismatch_examples": [],
+      "metadata": {
+        "category": "4-Man Same-Side",
+        "shape": [
+          10,
+          64,
+          64,
+          64,
+          2
+        ],
+        "has_pawn": false
+      },
+      "old_note": {
+        "dtm": 10,
+        "decisive": 482043,
+        "drawn": 149635,
+        "minutes": 1.3,
+        "updated_utc": "2026-04-23 09:49:38"
+      },
+      "new_note": {
+        "dtm": 9,
+        "decisive": 482043,
+        "drawn": 149635,
+        "minutes": 1.7,
+        "updated_utc": "2026-04-23 14:10:38"
+      },
+      "old_note_matches_actual": true,
+      "new_note_matches_actual": false,
+      "sample_probe_checks": [
+        {
+          "flat_index": 28414,
+          "turn": "white",
+          "fen": "K2B4/8/8/5B2/8/8/8/7k w - - 0 1",
+          "old_table_value": 1,
+          "new_table_value": 1,
+          "old_probe_score": 999999,
+          "new_probe_score": 999999,
+          "probe_match": true
+        },
+        {
+          "flat_index": 1302227,
+          "turn": "black",
+          "fen": "8/1K6/8/6B1/8/1k6/8/5B2 b - - 0 1",
+          "old_table_value": -4,
+          "new_table_value": -4,
+          "old_probe_score": 999996,
+          "new_probe_score": 999996,
+          "probe_match": true
+        },
+        {
+          "flat_index": 4915074,
+          "turn": "white",
+          "fen": "1k6/8/7B/3K4/8/8/8/7B w - - 0 1",
+          "old_table_value": 1,
+          "new_table_value": 1,
+          "old_probe_score": 999999,
+          "new_probe_score": 999999,
+          "probe_match": true
+        },
+        {
+          "flat_index": 3355965,
+          "turn": "black",
+          "fen": "3K4/8/8/1B4k1/8/2B5/8/8 b - - 0 1",
+          "old_table_value": -4,
+          "new_table_value": -4,
+          "old_probe_score": 999996,
+          "new_probe_score": 999996,
+          "probe_match": true
+        },
+        {
+          "flat_index": 4197992,
+          "turn": "white",
+          "fen": "B7/8/3K4/4B3/8/8/4k3/8 w - - 0 1",
+          "old_table_value": 5,
+          "new_table_value": 5,
+          "old_probe_score": 999995,
+          "new_probe_score": 999995,
+          "probe_match": true
+        },
+        {
+          "flat_index": 67540,
+          "turn": "white",
+          "fen": "K7/B6B/8/8/8/2k5/8/8 w - - 0 1",
+          "old_table_value": 7,
+          "new_table_value": 7,
+          "old_probe_score": 999993,
+          "new_probe_score": 999993,
+          "probe_match": true
+        }
+      ],
+      "sample_probe_mismatch_count": 0
+    },
+    {
+      "table": "K_Bishop_K",
+      "state_count": 81920,
+      "identical": true,
+      "mismatch_count": 0,
+      "max_abs_diff": 0,
+      "old_actual": {
+        "max_abs_value": 9,
+        "decisive_entries": 1017,
+        "zero_entries_total": 80903
+      },
+      "new_actual": {
+        "max_abs_value": 9,
+        "decisive_entries": 1017,
+        "zero_entries_total": 80903
+      },
+      "mismatch_examples": [],
+      "metadata": {
+        "category": "3-Man",
+        "shape": [
+          10,
+          64,
+          64,
+          2
+        ],
+        "has_pawn": false
+      },
+      "old_note": {
+        "dtm": 9,
+        "decisive": 1017,
+        "drawn": 51229,
+        "minutes": 0.1,
+        "updated_utc": "2026-04-23 10:58:18"
+      },
+      "new_note": {
+        "dtm": 8,
+        "decisive": 1017,
+        "drawn": 51229,
+        "minutes": 0.1,
+        "updated_utc": "2026-04-23 13:35:11"
+      },
+      "old_note_matches_actual": true,
+      "new_note_matches_actual": false,
+      "sample_probe_checks": [
+        {
+          "flat_index": 56592,
+          "turn": "white",
+          "fen": "3K4/k7/8/8/8/8/8/2B5 w - - 0 1",
+          "old_table_value": 5,
+          "new_table_value": 5,
+          "old_probe_score": 999995,
+          "new_probe_score": 999995,
+          "probe_match": true
+        },
+        {
+          "flat_index": 31118,
+          "turn": "white",
+          "fen": "2K4k/8/8/8/8/8/3B4/8 w - - 0 1",
+          "old_table_value": 7,
+          "new_table_value": 7,
+          "old_probe_score": 999993,
+          "new_probe_score": 999993,
+          "probe_match": true
+        },
+        {
+          "flat_index": 48016,
+          "turn": "white",
+          "fen": "8/k7/2K5/8/8/8/7B/8 w - - 0 1",
+          "old_table_value": 1,
+          "new_table_value": 1,
+          "old_probe_score": 999999,
+          "new_probe_score": 999999,
+          "probe_match": true
+        },
+        {
+          "flat_index": 59278,
+          "turn": "white",
+          "fen": "7k/3K3B/8/8/8/8/8/8 w - - 0 1",
+          "old_table_value": 1,
+          "new_table_value": 1,
+          "old_probe_score": 999999,
+          "new_probe_score": 999999,
+          "probe_match": true
+        },
+        {
+          "flat_index": 45794,
+          "turn": "white",
+          "fen": "8/8/2K5/8/5B2/8/1k6/8 w - - 0 1",
+          "old_table_value": 5,
+          "new_table_value": 5,
+          "old_probe_score": 999995,
+          "new_probe_score": 999995,
+          "probe_match": true
+        },
+        {
+          "flat_index": 80006,
+          "turn": "white",
+          "fen": "3k4/8/8/3K4/8/8/1B6/8 w - - 0 1",
+          "old_table_value": 3,
+          "new_table_value": 3,
+          "old_probe_score": 999997,
+          "new_probe_score": 999997,
+          "probe_match": true
+        },
+        {
+          "flat_index": 74484,
+          "turn": "white",
+          "fen": "5B2/8/8/3K4/8/8/8/2k5 w - - 0 1",
+          "old_table_value": 7,
+          "new_table_value": 7,
+          "old_probe_score": 999993,
+          "new_probe_score": 999993,
+          "probe_match": true
+        },
+        {
+          "flat_index": 43146,
+          "turn": "white",
+          "fen": "5k2/8/1BK5/8/8/8/8/8 w - - 0 1",
+          "old_table_value": 3,
+          "new_table_value": 3,
+          "old_probe_score": 999997,
+          "new_probe_score": 999997,
+          "probe_match": true
+        },
+        {
+          "flat_index": 60700,
+          "turn": "white",
+          "fen": "8/3K2k1/8/2B5/8/8/8/8 w - - 0 1",
+          "old_table_value": 5,
+          "new_table_value": 5,
+          "old_probe_score": 999995,
+          "new_probe_score": 999995,
+          "probe_match": true
+        },
+        {
+          "flat_index": 53278,
+          "turn": "white",
+          "fen": "3K4/7k/8/8/B7/8/8/8 w - - 0 1",
+          "old_table_value": 3,
+          "new_table_value": 3,
+          "old_probe_score": 999997,
+          "new_probe_score": 999997,
+          "probe_match": true
+        },
+        {
+          "flat_index": 81136,
+          "turn": "white",
+          "fen": "8/8/8/3K4/8/8/8/kB6 w - - 0 1",
+          "old_table_value": 1,
+          "new_table_value": 1,
+          "old_probe_score": 999999,
+          "new_probe_score": 999999,
+          "probe_match": true
+        }
+      ],
+      "sample_probe_mismatch_count": 0
+    },
+    {
+      "table": "K_Bishop_Knight_K",
+      "state_count": 5242880,
+      "identical": true,
+      "mismatch_count": 0,
+      "max_abs_diff": 0,
+      "old_actual": {
+        "max_abs_value": 32,
+        "decisive_entries": 2569194,
+        "zero_entries_total": 2673686
+      },
+      "new_actual": {
+        "max_abs_value": 32,
+        "decisive_entries": 2569194,
+        "zero_entries_total": 2673686
+      },
+      "mismatch_examples": [],
+      "metadata": {
+        "category": "4-Man Same-Side",
+        "shape": [
+          10,
+          64,
+          64,
+          64,
+          2
+        ],
+        "has_pawn": false
+      },
+      "old_note": {
+        "dtm": 32,
+        "decisive": 2569194,
+        "drawn": 204657,
+        "minutes": 13.4,
+        "updated_utc": "2026-04-21 08:18:24"
+      },
+      "new_note": {
+        "dtm": 19,
+        "decisive": 2569194,
+        "drawn": 204657,
+        "minutes": 5.5,
+        "updated_utc": "2026-04-23 14:16:09"
+      },
+      "old_note_matches_actual": true,
+      "new_note_matches_actual": false,
+      "sample_probe_checks": [
+        {
+          "flat_index": 1690729,
+          "turn": "black",
+          "fen": "2K5/6B1/8/N7/8/8/4k3/8 b - - 0 1",
+          "old_table_value": -12,
+          "new_table_value": -12,
+          "old_probe_score": 999988,
+          "new_probe_score": 999988,
+          "probe_match": true
+        },
+        {
+          "flat_index": 4693806,
+          "turn": "white",
+          "fen": "8/8/3K3k/8/8/8/8/4B1N1 w - - 0 1",
+          "old_table_value": 5,
+          "new_table_value": 5,
+          "old_probe_score": 999995,
+          "new_probe_score": 999995,
+          "probe_match": true
+        },
+        {
+          "flat_index": 908083,
+          "turn": "black",
+          "fen": "1K6/8/8/1k6/8/6B1/6N1/8 b - - 0 1",
+          "old_table_value": -10,
+          "new_table_value": -10,
+          "old_probe_score": 999990,
+          "new_probe_score": 999990,
+          "probe_match": true
+        },
+        {
+          "flat_index": 1538001,
+          "turn": "black",
+          "fen": "8/1K6/8/8/8/k6N/8/3B4 b - - 0 1",
+          "old_table_value": -12,
+          "new_table_value": -12,
+          "old_probe_score": 999988,
+          "new_probe_score": 999988,
+          "probe_match": true
+        },
+        {
+          "flat_index": 2908393,
+          "turn": "black",
+          "fen": "1N6/8/2K5/8/3B4/8/4k3/8 b - - 0 1",
+          "old_table_value": -10,
+          "new_table_value": -10,
+          "old_probe_score": 999990,
+          "new_probe_score": 999990,
+          "probe_match": true
+        },
+        {
+          "flat_index": 1319625,
+          "turn": "black",
+          "fen": "5N2/1K6/8/8/1B2k3/8/8/8 b - - 0 1",
+          "old_table_value": -12,
+          "new_table_value": -12,
+          "old_probe_score": 999988,
+          "new_probe_score": 999988,
+          "probe_match": true
+        },
+        {
+          "flat_index": 859840,
+          "turn": "white",
+          "fen": "1K6/8/8/8/k7/B7/8/5N2 w - - 0 1",
+          "old_table_value": 11,
+          "new_table_value": 11,
+          "old_probe_score": 999989,
+          "new_probe_score": 999989,
+          "probe_match": true
+        },
+        {
+          "flat_index": 1099911,
+          "turn": "black",
+          "fen": "3k2B1/1K6/1N6/8/8/8/8/8 b - - 0 1",
+          "old_table_value": -1,
+          "new_table_value": -1,
+          "old_probe_score": 999999,
+          "new_probe_score": 999999,
+          "probe_match": true
+        }
+      ],
+      "sample_probe_mismatch_count": 0
+    },
+    {
+      "table": "K_Bishop_Queen_K",
+      "state_count": 5242880,
+      "identical": true,
+      "mismatch_count": 0,
+      "max_abs_diff": 0,
+      "old_actual": {
+        "max_abs_value": 20,
+        "decisive_entries": 2555655,
+        "zero_entries_total": 2687225
+      },
+      "new_actual": {
+        "max_abs_value": 20,
+        "decisive_entries": 2555655,
+        "zero_entries_total": 2687225
+      },
+      "mismatch_examples": [],
+      "metadata": {
+        "category": "4-Man Same-Side",
+        "shape": [
+          10,
+          64,
+          64,
+          64,
+          2
+        ],
+        "has_pawn": false
+      },
+      "old_note": {
+        "dtm": 20,
+        "decisive": 2555655,
+        "drawn": 198088,
+        "minutes": 19.6,
+        "updated_utc": "2026-04-21 07:14:40"
+      },
+      "new_note": {
+        "dtm": 13,
+        "decisive": 2555655,
+        "drawn": 198088,
+        "minutes": 7.9,
+        "updated_utc": "2026-04-23 13:51:45"
+      },
+      "old_note_matches_actual": true,
+      "new_note_matches_actual": false,
+      "sample_probe_checks": [
+        {
+          "flat_index": 2350860,
+          "turn": "white",
+          "fen": "6k1/2K5/8/6B1/8/8/8/6Q1 w - - 0 1",
+          "old_table_value": 5,
+          "new_table_value": 5,
+          "old_probe_score": 999995,
+          "new_probe_score": 999995,
+          "probe_match": true
+        },
+        {
+          "flat_index": 4102237,
+          "turn": "black",
+          "fen": "8/3K4/8/8/8/6k1/Q3B3/8 b - - 0 1",
+          "old_table_value": -10,
+          "new_table_value": -10,
+          "old_probe_score": 999990,
+          "new_probe_score": 999990,
+          "probe_match": true
+        },
+        {
+          "flat_index": 4855292,
+          "turn": "white",
+          "fen": "8/8/B7/3K4/8/3Q4/8/6k1 w - - 0 1",
+          "old_table_value": 3,
+          "new_table_value": 3,
+          "old_probe_score": 999997,
+          "new_probe_score": 999997,
+          "probe_match": true
+        },
+        {
+          "flat_index": 2564008,
+          "turn": "white",
+          "fen": "8/2K5/4k3/8/8/8/8/B6Q w - - 0 1",
+          "old_table_value": 9,
+          "new_table_value": 9,
+          "old_probe_score": 999991,
+          "new_probe_score": 999991,
+          "probe_match": true
+        },
+        {
+          "flat_index": 3530551,
+          "turn": "black",
+          "fen": "3K4/8/8/3k4/8/6B1/8/6Q1 b - - 0 1",
+          "old_table_value": -12,
+          "new_table_value": -12,
+          "old_probe_score": 999988,
+          "new_probe_score": 999988,
+          "probe_match": true
+        },
+        {
+          "flat_index": 3983093,
+          "turn": "black",
+          "fen": "8/3K1Q2/8/8/6B1/8/8/2k5 b - - 0 1",
+          "old_table_value": -10,
+          "new_table_value": -10,
+          "old_probe_score": 999990,
+          "new_probe_score": 999990,
+          "probe_match": true
+        },
+        {
+          "flat_index": 849357,
+          "turn": "black",
+          "fen": "1K6/8/8/8/6kB/3Q4/8/8 b - - 0 1",
+          "old_table_value": -12,
+          "new_table_value": -12,
+          "old_probe_score": 999988,
+          "new_probe_score": 999988,
+          "probe_match": true
+        },
+        {
+          "flat_index": 4538033,
+          "turn": "black",
+          "fen": "8/8/3K4/k7/8/1B6/8/5Q2 b - - 0 1",
+          "old_table_value": -6,
+          "new_table_value": -6,
+          "old_probe_score": 999994,
+          "new_probe_score": 999994,
+          "probe_match": true
+        }
+      ],
+      "sample_probe_mismatch_count": 0
+    },
+    {
+      "table": "K_Bishop_Rook_K",
+      "state_count": 5242880,
+      "identical": true,
+      "mismatch_count": 0,
+      "max_abs_diff": 0,
+      "old_actual": {
+        "max_abs_value": 22,
+        "decisive_entries": 2509802,
+        "zero_entries_total": 2733078
+      },
+      "new_actual": {
+        "max_abs_value": 22,
+        "decisive_entries": 2509802,
+        "zero_entries_total": 2733078
+      },
+      "mismatch_examples": [],
+      "metadata": {
+        "category": "4-Man Same-Side",
+        "shape": [
+          10,
+          64,
+          64,
+          64,
+          2
+        ],
+        "has_pawn": false
+      },
+      "old_note": {
+        "dtm": 22,
+        "decisive": 2509802,
+        "drawn": 427644,
+        "minutes": 18.3,
+        "updated_utc": "2026-04-21 07:49:00"
+      },
+      "new_note": {
+        "dtm": 21,
+        "decisive": 2509802,
+        "drawn": 427644,
+        "minutes": 7.0,
+        "updated_utc": "2026-04-23 14:05:26"
+      },
+      "old_note_matches_actual": true,
+      "new_note_matches_actual": false,
+      "sample_probe_checks": [
+        {
+          "flat_index": 1312436,
+          "turn": "white",
+          "fen": "8/1K3R2/8/2k5/B7/8/8/8 w - - 0 1",
+          "old_table_value": 17,
+          "new_table_value": 17,
+          "old_probe_score": 999983,
+          "new_probe_score": 999983,
+          "probe_match": true
+        },
+        {
+          "flat_index": 2940753,
+          "turn": "black",
+          "fen": "8/8/2K5/8/6B1/k7/8/6R1 b - - 0 1",
+          "old_table_value": -14,
+          "new_table_value": -14,
+          "old_probe_score": 999986,
+          "new_probe_score": 999986,
+          "probe_match": true
+        },
+        {
+          "flat_index": 160777,
+          "turn": "black",
+          "fen": "K3k3/8/3B4/8/8/R7/8/8 b - - 0 1",
+          "old_table_value": -18,
+          "new_table_value": -18,
+          "old_probe_score": 999982,
+          "new_probe_score": 999982,
+          "probe_match": true
+        },
+        {
+          "flat_index": 3594140,
+          "turn": "white",
+          "fen": "3K4/6k1/8/8/8/7R/6B1/8 w - - 0 1",
+          "old_table_value": 1,
+          "new_table_value": 1,
+          "old_probe_score": 999999,
+          "new_probe_score": 999999,
+          "probe_match": true
+        },
+        {
+          "flat_index": 81077,
+          "turn": "black",
+          "fen": "K7/1B6/8/2k5/8/8/8/1R6 b - - 0 1",
+          "old_table_value": -20,
+          "new_table_value": -20,
+          "old_probe_score": 999980,
+          "new_probe_score": 999980,
+          "probe_match": true
+        },
+        {
+          "flat_index": 3718463,
+          "turn": "black",
+          "fen": "5B2/3K4/8/7k/8/8/8/2R5 b - - 0 1",
+          "old_table_value": -14,
+          "new_table_value": -14,
+          "old_probe_score": 999986,
+          "new_probe_score": 999986,
+          "probe_match": true
+        },
+        {
+          "flat_index": 1081486,
+          "turn": "white",
+          "fen": "1R2B2k/1K6/8/8/8/8/8/8 w - - 0 1",
+          "old_table_value": 13,
+          "new_table_value": 13,
+          "old_probe_score": 999987,
+          "new_probe_score": 999987,
+          "probe_match": true
+        },
+        {
+          "flat_index": 3672625,
+          "turn": "black",
+          "fen": "B7/3K4/4R3/k7/8/8/8/8 b - - 0 1",
+          "old_table_value": -16,
+          "new_table_value": -16,
+          "old_probe_score": 999984,
+          "new_probe_score": 999984,
+          "probe_match": true
+        },
+        {
+          "flat_index": 5203372,
+          "turn": "white",
+          "fen": "8/3R4/6k1/3K4/8/8/8/3B4 w - - 0 1",
+          "old_table_value": 7,
+          "new_table_value": 7,
+          "old_probe_score": 999993,
+          "new_probe_score": 999993,
+          "probe_match": true
+        }
+      ],
+      "sample_probe_mismatch_count": 0
+    },
+    {
+      "table": "K_Knight_K",
+      "state_count": 81920,
+      "identical": true,
+      "mismatch_count": 0,
+      "max_abs_diff": 0,
+      "old_actual": {
+        "max_abs_value": 32,
+        "decisive_entries": 44142,
+        "zero_entries_total": 37778
+      },
+      "new_actual": {
+        "max_abs_value": 32,
+        "decisive_entries": 44142,
+        "zero_entries_total": 37778
+      },
+      "mismatch_examples": [],
+      "metadata": {
+        "category": "3-Man",
+        "shape": [
+          10,
+          64,
+          64,
+          2
+        ],
+        "has_pawn": false
+      },
+      "old_note": {
+        "dtm": 32,
+        "decisive": 44142,
+        "drawn": 8443,
+        "minutes": 0.1,
+        "updated_utc": "2026-04-21 06:36:15"
+      },
+      "new_note": {
+        "dtm": 31,
+        "decisive": 44142,
+        "drawn": 8443,
+        "minutes": 0.0,
+        "updated_utc": "2026-04-23 13:35:22"
+      },
+      "old_note_matches_actual": true,
+      "new_note_matches_actual": false,
+      "sample_probe_checks": [
+        {
+          "flat_index": 47645,
+          "turn": "black",
+          "fen": "8/6k1/2K5/8/8/8/4N3/8 b - - 0 1",
+          "old_table_value": -20,
+          "new_table_value": -20,
+          "old_probe_score": 999980,
+          "new_probe_score": 999980,
+          "probe_match": true
+        },
+        {
+          "flat_index": 7814,
+          "turn": "white",
+          "fen": "K2k4/8/8/8/8/8/8/5N2 w - - 0 1",
+          "old_table_value": 19,
+          "new_table_value": 19,
+          "old_probe_score": 999981,
+          "new_probe_score": 999981,
+          "probe_match": true
+        },
+        {
+          "flat_index": 58543,
+          "turn": "black",
+          "fen": "8/1N1K4/7k/8/8/8/8/8 b - - 0 1",
+          "old_table_value": -18,
+          "new_table_value": -18,
+          "old_probe_score": 999982,
+          "new_probe_score": 999982,
+          "probe_match": true
+        },
+        {
+          "flat_index": 33628,
+          "turn": "white",
+          "fen": "6N1/2K5/8/8/8/6k1/8/8 w - - 0 1",
+          "old_table_value": 19,
+          "new_table_value": 19,
+          "old_probe_score": 999981,
+          "new_probe_score": 999981,
+          "probe_match": true
+        },
+        {
+          "flat_index": 58237,
+          "turn": "black",
+          "fen": "6N1/3K4/8/8/8/8/8/6k1 b - - 0 1",
+          "old_table_value": -22,
+          "new_table_value": -22,
+          "old_probe_score": 999978,
+          "new_probe_score": 999978,
+          "probe_match": true
+        },
+        {
+          "flat_index": 13284,
+          "turn": "white",
+          "fen": "1K6/8/8/8/7N/8/2k5/8 w - - 0 1",
+          "old_table_value": 21,
+          "new_table_value": 21,
+          "old_probe_score": 999979,
+          "new_probe_score": 999979,
+          "probe_match": true
+        },
+        {
+          "flat_index": 10399,
+          "turn": "black",
+          "fen": "1K6/7k/1N6/8/8/8/8/8 b - - 0 1",
+          "old_table_value": -20,
+          "new_table_value": -20,
+          "old_probe_score": 999980,
+          "new_probe_score": 999980,
+          "probe_match": true
+        },
+        {
+          "flat_index": 64013,
+          "turn": "black",
+          "fen": "6k1/3K4/8/8/8/8/4N3/8 b - - 0 1",
+          "old_table_value": -8,
+          "new_table_value": -8,
+          "old_probe_score": 999992,
+          "new_probe_score": 999992,
+          "probe_match": true
+        },
+        {
+          "flat_index": 51960,
+          "turn": "white",
+          "fen": "3K4/8/5N2/8/8/8/8/4k3 w - - 0 1",
+          "old_table_value": 15,
+          "new_table_value": 15,
+          "old_probe_score": 999985,
+          "new_probe_score": 999985,
+          "probe_match": true
+        },
+        {
+          "flat_index": 32059,
+          "turn": "black",
+          "fen": "2K5/8/8/5k2/8/8/8/2N5 b - - 0 1",
+          "old_table_value": -26,
+          "new_table_value": -26,
+          "old_probe_score": 999974,
+          "new_probe_score": 999974,
+          "probe_match": true
+        },
+        {
+          "flat_index": 28223,
+          "turn": "black",
+          "fen": "2K5/8/8/4N2k/8/8/8/8 b - - 0 1",
+          "old_table_value": -18,
+          "new_table_value": -18,
+          "old_probe_score": 999982,
+          "new_probe_score": 999982,
+          "probe_match": true
+        }
+      ],
+      "sample_probe_mismatch_count": 0
+    },
+    {
+      "table": "K_Knight_Knight_K",
+      "state_count": 5242880,
+      "identical": true,
+      "mismatch_count": 0,
+      "max_abs_diff": 0,
+      "old_actual": {
+        "max_abs_value": 32,
+        "decisive_entries": 1387352,
+        "zero_entries_total": 3855528
+      },
+      "new_actual": {
+        "max_abs_value": 32,
+        "decisive_entries": 1387352,
+        "zero_entries_total": 3855528
+      },
+      "mismatch_examples": [],
+      "metadata": {
+        "category": "4-Man Same-Side",
+        "shape": [
+          10,
+          64,
+          64,
+          64,
+          2
+        ],
+        "has_pawn": false
+      },
+      "old_note": {
+        "dtm": 32,
+        "decisive": 1387352,
+        "drawn": 6490,
+        "minutes": 2.8,
+        "updated_utc": "2026-04-21 08:21:15"
+      },
+      "new_note": {
+        "dtm": 21,
+        "decisive": 1387352,
+        "drawn": 6490,
+        "minutes": 1.3,
+        "updated_utc": "2026-04-23 14:17:28"
+      },
+      "old_note_matches_actual": true,
+      "new_note_matches_actual": false,
+      "sample_probe_checks": [
+        {
+          "flat_index": 4734717,
+          "turn": "black",
+          "fen": "1N6/8/8/3K4/8/8/8/5Nk1 b - - 0 1",
+          "old_table_value": -18,
+          "new_table_value": -18,
+          "old_probe_score": 999982,
+          "new_probe_score": 999982,
+          "probe_match": true
+        },
+        {
+          "flat_index": 1584538,
+          "turn": "white",
+          "fen": "1NK5/5k2/8/3N4/8/8/8/8 w - - 0 1",
+          "old_table_value": 3,
+          "new_table_value": 3,
+          "old_probe_score": 999997,
+          "new_probe_score": 999997,
+          "probe_match": true
+        },
+        {
+          "flat_index": 3579149,
+          "turn": "black",
+          "fen": "3K2k1/8/8/8/8/8/4N3/2N5 b - - 0 1",
+          "old_table_value": -8,
+          "new_table_value": -8,
+          "old_probe_score": 999992,
+          "new_probe_score": 999992,
+          "probe_match": true
+        },
+        {
+          "flat_index": 4777206,
+          "turn": "white",
+          "fen": "7N/1N6/8/3K4/8/8/8/3k4 w - - 0 1",
+          "old_table_value": 7,
+          "new_table_value": 7,
+          "old_probe_score": 999993,
+          "new_probe_score": 999993,
+          "probe_match": true
+        },
+        {
+          "flat_index": 4769274,
+          "turn": "white",
+          "fen": "6N1/3N4/8/3K4/8/8/8/5k2 w - - 0 1",
+          "old_table_value": 7,
+          "new_table_value": 7,
+          "old_probe_score": 999993,
+          "new_probe_score": 999993,
+          "probe_match": true
+        },
+        {
+          "flat_index": 3258676,
+          "turn": "white",
+          "fen": "3K4/5N2/8/2k5/8/8/2N5/8 w - - 0 1",
+          "old_table_value": 1,
+          "new_table_value": 1,
+          "old_probe_score": 999999,
+          "new_probe_score": 999999,
+          "probe_match": true
+        },
+        {
+          "flat_index": 1662828,
+          "turn": "white",
+          "fen": "2K5/2N5/8/8/8/8/6k1/6N1 w - - 0 1",
+          "old_table_value": 17,
+          "new_table_value": 17,
+          "old_probe_score": 999983,
+          "new_probe_score": 999983,
+          "probe_match": true
+        },
+        {
+          "flat_index": 2448033,
+          "turn": "black",
+          "fen": "8/2K5/k7/8/8/2N5/5N2/8 b - - 0 1",
+          "old_table_value": -2,
+          "new_table_value": -2,
+          "old_probe_score": 999998,
+          "new_probe_score": 999998,
+          "probe_match": true
+        }
+      ],
+      "sample_probe_mismatch_count": 0
+    },
+    {
+      "table": "K_Knight_Queen_K",
+      "state_count": 5242880,
+      "identical": true,
+      "mismatch_count": 0,
+      "max_abs_diff": 0,
+      "old_actual": {
+        "max_abs_value": 32,
+        "decisive_entries": 2770151,
+        "zero_entries_total": 2472729
+      },
+      "new_actual": {
+        "max_abs_value": 32,
+        "decisive_entries": 2770151,
+        "zero_entries_total": 2472729
+      },
+      "mismatch_examples": [],
+      "metadata": {
+        "category": "4-Man Same-Side",
+        "shape": [
+          10,
+          64,
+          64,
+          64,
+          2
+        ],
+        "has_pawn": false
+      },
+      "old_note": {
+        "dtm": 32,
+        "decisive": 2770151,
+        "drawn": 6490,
+        "minutes": 11.3,
+        "updated_utc": "2026-04-21 07:26:01"
+      },
+      "new_note": {
+        "dtm": 11,
+        "decisive": 2770151,
+        "drawn": 6490,
+        "minutes": 4.4,
+        "updated_utc": "2026-04-23 13:56:12"
+      },
+      "old_note_matches_actual": true,
+      "new_note_matches_actual": false,
+      "sample_probe_checks": [
+        {
+          "flat_index": 2237097,
+          "turn": "black",
+          "fen": "5Q2/2K5/1N2k3/8/8/8/8/8 b - - 0 1",
+          "old_table_value": -8,
+          "new_table_value": -8,
+          "old_probe_score": 999992,
+          "new_probe_score": 999992,
+          "probe_match": true
+        },
+        {
+          "flat_index": 1689267,
+          "turn": "black",
+          "fen": "2K5/5QN1/8/1k6/8/8/8/8 b - - 0 1",
+          "old_table_value": -8,
+          "new_table_value": -8,
+          "old_probe_score": 999992,
+          "new_probe_score": 999992,
+          "probe_match": true
+        },
+        {
+          "flat_index": 1304263,
+          "turn": "black",
+          "fen": "8/1K3Q2/8/7N/3k4/8/8/8 b - - 0 1",
+          "old_table_value": -8,
+          "new_table_value": -8,
+          "old_probe_score": 999992,
+          "new_probe_score": 999992,
+          "probe_match": true
+        },
+        {
+          "flat_index": 405673,
+          "turn": "black",
+          "fen": "K7/8/4k3/8/1Q6/8/1N6/8 b - - 0 1",
+          "old_table_value": -8,
+          "new_table_value": -8,
+          "old_probe_score": 999992,
+          "new_probe_score": 999992,
+          "probe_match": true
+        },
+        {
+          "flat_index": 1477040,
+          "turn": "white",
+          "fen": "8/1K6/3Q4/k7/8/8/4N3/8 w - - 0 1",
+          "old_table_value": 1,
+          "new_table_value": 1,
+          "old_probe_score": 999999,
+          "new_probe_score": 999999,
+          "probe_match": true
+        },
+        {
+          "flat_index": 3949749,
+          "turn": "black",
+          "fen": "8/1Q1K4/8/2k5/2N5/8/8/8 b - - 0 1",
+          "old_table_value": -16,
+          "new_table_value": -16,
+          "old_probe_score": 999984,
+          "new_probe_score": 999984,
+          "probe_match": true
+        }
+      ],
+      "sample_probe_mismatch_count": 0
+    },
+    {
+      "table": "K_Knight_Rook_K",
+      "state_count": 5242880,
+      "identical": true,
+      "mismatch_count": 0,
+      "max_abs_diff": 0,
+      "old_actual": {
+        "max_abs_value": 32,
+        "decisive_entries": 2694827,
+        "zero_entries_total": 2548053
+      },
+      "new_actual": {
+        "max_abs_value": 32,
+        "decisive_entries": 2694827,
+        "zero_entries_total": 2548053
+      },
+      "mismatch_examples": [],
+      "metadata": {
+        "category": "4-Man Same-Side",
+        "shape": [
+          10,
+          64,
+          64,
+          64,
+          2
+        ],
+        "has_pawn": false
+      },
+      "old_note": {
+        "dtm": 32,
+        "decisive": 2694827,
+        "drawn": 249777,
+        "minutes": 11.7,
+        "updated_utc": "2026-04-21 08:00:52"
+      },
+      "new_note": {
+        "dtm": 27,
+        "decisive": 2694827,
+        "drawn": 249777,
+        "minutes": 3.5,
+        "updated_utc": "2026-04-23 14:08:58"
+      },
+      "old_note_matches_actual": true,
+      "new_note_matches_actual": false,
+      "sample_probe_checks": [
+        {
+          "flat_index": 4455088,
+          "turn": "white",
+          "fen": "8/8/3K4/k6N/8/8/5R2/8 w - - 0 1",
+          "old_table_value": 5,
+          "new_table_value": 5,
+          "old_probe_score": 999995,
+          "new_probe_score": 999995,
+          "probe_match": true
+        },
+        {
+          "flat_index": 4936657,
+          "turn": "black",
+          "fen": "8/8/8/2NK4/7R/k7/8/8 b - - 0 1",
+          "old_table_value": -4,
+          "new_table_value": -4,
+          "old_probe_score": 999996,
+          "new_probe_score": 999996,
+          "probe_match": true
+        },
+        {
+          "flat_index": 3699262,
+          "turn": "white",
+          "fen": "3N4/3K4/8/7k/4R3/8/8/8 w - - 0 1",
+          "old_table_value": 1,
+          "new_table_value": 1,
+          "old_probe_score": 999999,
+          "new_probe_score": 999999,
+          "probe_match": true
+        },
+        {
+          "flat_index": 2501311,
+          "turn": "black",
+          "fen": "8/2K5/5R2/7k/8/8/1N6/8 b - - 0 1",
+          "old_table_value": -10,
+          "new_table_value": -10,
+          "old_probe_score": 999990,
+          "new_probe_score": 999990,
+          "probe_match": true
+        },
+        {
+          "flat_index": 4229681,
+          "turn": "black",
+          "fen": "4N3/8/3KR3/k7/8/8/8/8 b - - 0 1",
+          "old_table_value": -10,
+          "new_table_value": -10,
+          "old_probe_score": 999990,
+          "new_probe_score": 999990,
+          "probe_match": true
+        },
+        {
+          "flat_index": 5131271,
+          "turn": "black",
+          "fen": "3k4/8/8/R2K4/8/8/2N5/8 b - - 0 1",
+          "old_table_value": -8,
+          "new_table_value": -8,
+          "old_probe_score": 999992,
+          "new_probe_score": 999992,
+          "probe_match": true
+        },
+        {
+          "flat_index": 2634741,
+          "turn": "black",
+          "fen": "1N6/8/2K5/8/7R/8/8/2k5 b - - 0 1",
+          "old_table_value": -12,
+          "new_table_value": -12,
+          "old_probe_score": 999988,
+          "new_probe_score": 999988,
+          "probe_match": true
+        },
+        {
+          "flat_index": 2996876,
+          "turn": "white",
+          "fen": "6k1/8/2K5/8/8/5N2/5R2/8 w - - 0 1",
+          "old_table_value": 5,
+          "new_table_value": 5,
+          "old_probe_score": 999995,
+          "new_probe_score": 999995,
+          "probe_match": true
+        },
+        {
+          "flat_index": 2998417,
+          "turn": "black",
+          "fen": "1R6/k7/2K5/8/8/6N1/8/8 b - - 0 1",
+          "old_table_value": -6,
+          "new_table_value": -6,
+          "old_probe_score": 999994,
+          "new_probe_score": 999994,
+          "probe_match": true
+        },
+        {
+          "flat_index": 4247379,
+          "turn": "black",
+          "fen": "6N1/8/3K4/6R1/8/1k6/8/8 b - - 0 1",
+          "old_table_value": -10,
+          "new_table_value": -10,
+          "old_probe_score": 999990,
+          "new_probe_score": 999990,
+          "probe_match": true
+        }
+      ],
+      "sample_probe_mismatch_count": 0
+    },
+    {
+      "table": "K_Queen_K",
+      "state_count": 81920,
+      "identical": true,
+      "mismatch_count": 0,
+      "max_abs_diff": 0,
+      "old_actual": {
+        "max_abs_value": 20,
+        "decisive_entries": 46917,
+        "zero_entries_total": 35003
+      },
+      "new_actual": {
+        "max_abs_value": 20,
+        "decisive_entries": 46917,
+        "zero_entries_total": 35003
+      },
+      "mismatch_examples": [],
+      "metadata": {
+        "category": "3-Man",
+        "shape": [
+          10,
+          64,
+          64,
+          2
+        ],
+        "has_pawn": false
+      },
+      "old_note": {
+        "dtm": 20,
+        "decisive": 46917,
+        "drawn": 5186,
+        "minutes": 0.2,
+        "updated_utc": "2026-04-21 06:35:40"
+      },
+      "new_note": {
+        "dtm": 19,
+        "decisive": 46917,
+        "drawn": 5186,
+        "minutes": 0.0,
+        "updated_utc": "2026-04-23 13:30:40"
+      },
+      "old_note_matches_actual": true,
+      "new_note_matches_actual": false,
+      "sample_probe_checks": [
+        {
+          "flat_index": 29116,
+          "turn": "white",
+          "fen": "2K5/8/8/6k1/3Q4/8/8/8 w - - 0 1",
+          "old_table_value": 11,
+          "new_table_value": 11,
+          "old_probe_score": 999989,
+          "new_probe_score": 999989,
+          "probe_match": true
+        },
+        {
+          "flat_index": 47327,
+          "turn": "black",
+          "fen": "8/8/2K5/8/8/7k/1Q6/8 b - - 0 1",
+          "old_table_value": -16,
+          "new_table_value": -16,
+          "old_probe_score": 999984,
+          "new_probe_score": 999984,
+          "probe_match": true
+        },
+        {
+          "flat_index": 56185,
+          "turn": "black",
+          "fen": "3K4/8/8/8/8/8/6Q1/4k3 b - - 0 1",
+          "old_table_value": -18,
+          "new_table_value": -18,
+          "old_probe_score": 999982,
+          "new_probe_score": 999982,
+          "probe_match": true
+        },
+        {
+          "flat_index": 22822,
+          "turn": "white",
+          "fen": "8/1K6/3k4/8/8/8/2Q5/8 w - - 0 1",
+          "old_table_value": 15,
+          "new_table_value": 15,
+          "old_probe_score": 999985,
+          "new_probe_score": 999985,
+          "probe_match": true
+        },
+        {
+          "flat_index": 30804,
+          "turn": "white",
+          "fen": "2K5/8/8/8/8/2k5/Q7/8 w - - 0 1",
+          "old_table_value": 17,
+          "new_table_value": 17,
+          "old_probe_score": 999983,
+          "new_probe_score": 999983,
+          "probe_match": true
+        },
+        {
+          "flat_index": 1082,
+          "turn": "white",
+          "fen": "K7/Q7/8/5k2/8/8/8/8 w - - 0 1",
+          "old_table_value": 17,
+          "new_table_value": 17,
+          "old_probe_score": 999983,
+          "new_probe_score": 999983,
+          "probe_match": true
+        },
+        {
+          "flat_index": 23488,
+          "turn": "white",
+          "fen": "8/1K6/8/8/k7/8/7Q/8 w - - 0 1",
+          "old_table_value": 11,
+          "new_table_value": 11,
+          "old_probe_score": 999989,
+          "new_probe_score": 999989,
+          "probe_match": true
+        },
+        {
+          "flat_index": 14423,
+          "turn": "black",
+          "fen": "1K6/8/8/8/8/3k4/Q7/8 b - - 0 1",
+          "old_table_value": -18,
+          "new_table_value": -18,
+          "old_probe_score": 999982,
+          "new_probe_score": 999982,
+          "probe_match": true
+        },
+        {
+          "flat_index": 59660,
+          "turn": "white",
+          "fen": "6k1/3K4/2Q5/8/8/8/8/8 w - - 0 1",
+          "old_table_value": 1,
+          "new_table_value": 1,
+          "old_probe_score": 999999,
+          "new_probe_score": 999999,
+          "probe_match": true
+        },
+        {
+          "flat_index": 27546,
+          "turn": "white",
+          "fen": "2K5/5k2/7Q/8/8/8/8/8 w - - 0 1",
+          "old_table_value": 5,
+          "new_table_value": 5,
+          "old_probe_score": 999995,
+          "new_probe_score": 999995,
+          "probe_match": true
+        },
+        {
+          "flat_index": 36086,
+          "turn": "white",
+          "fen": "8/2K5/8/1Q6/8/8/8/3k4 w - - 0 1",
+          "old_table_value": 13,
+          "new_table_value": 13,
+          "old_probe_score": 999987,
+          "new_probe_score": 999987,
+          "probe_match": true
+        },
+        {
+          "flat_index": 15039,
+          "turn": "black",
+          "fen": "1K6/8/8/7k/8/8/5Q2/8 b - - 0 1",
+          "old_table_value": -16,
+          "new_table_value": -16,
+          "old_probe_score": 999984,
+          "new_probe_score": 999984,
+          "probe_match": true
+        }
+      ],
+      "sample_probe_mismatch_count": 0
+    },
+    {
+      "table": "K_Queen_Queen_K",
+      "state_count": 5242880,
+      "identical": true,
+      "mismatch_count": 0,
+      "max_abs_diff": 0,
+      "old_actual": {
+        "max_abs_value": 20,
+        "decisive_entries": 1366504,
+        "zero_entries_total": 3876376
+      },
+      "new_actual": {
+        "max_abs_value": 20,
+        "decisive_entries": 1366504,
+        "zero_entries_total": 3876376
+      },
+      "mismatch_examples": [],
+      "metadata": {
+        "category": "4-Man Same-Side",
+        "shape": [
+          10,
+          64,
+          64,
+          64,
+          2
+        ],
+        "has_pawn": false
+      },
+      "old_note": {
+        "dtm": 20,
+        "decisive": 1366504,
+        "drawn": 0,
+        "minutes": 5.4,
+        "updated_utc": "2026-04-21 06:42:00"
+      },
+      "new_note": {
+        "dtm": 9,
+        "decisive": 1366504,
+        "drawn": 0,
+        "minutes": 3.0,
+        "updated_utc": "2026-04-23 13:38:22"
+      },
+      "old_note_matches_actual": true,
+      "new_note_matches_actual": false,
+      "sample_probe_checks": [
+        {
+          "flat_index": 4820173,
+          "turn": "black",
+          "fen": "8/4Q3/8/1Q1K4/6k1/8/8/8 b - - 0 1",
+          "old_table_value": -6,
+          "new_table_value": -6,
+          "old_probe_score": 999994,
+          "new_probe_score": 999994,
+          "probe_match": true
+        },
+        {
+          "flat_index": 2663372,
+          "turn": "white",
+          "fen": "5Q1Q/8/2K5/8/6k1/8/8/8 w - - 0 1",
+          "old_table_value": 3,
+          "new_table_value": 3,
+          "old_probe_score": 999997,
+          "new_probe_score": 999997,
+          "probe_match": true
+        },
+        {
+          "flat_index": 3855363,
+          "turn": "black",
+          "fen": "1k6/3K4/6Q1/8/8/Q7/8/8 b - - 0 1",
+          "old_table_value": -1,
+          "new_table_value": -1,
+          "old_probe_score": 999999,
+          "new_probe_score": 999999,
+          "probe_match": true
+        },
+        {
+          "flat_index": 2669299,
+          "turn": "black",
+          "fen": "5Q2/8/2K5/8/8/8/5Q2/1k6 b - - 0 1",
+          "old_table_value": -6,
+          "new_table_value": -6,
+          "old_probe_score": 999994,
+          "new_probe_score": 999994,
+          "probe_match": true
+        },
+        {
+          "flat_index": 1145813,
+          "turn": "black",
+          "fen": "8/1K1Q4/8/8/8/2k5/7Q/8 b - - 0 1",
+          "old_table_value": -8,
+          "new_table_value": -8,
+          "old_probe_score": 999992,
+          "new_probe_score": 999992,
+          "probe_match": true
+        },
+        {
+          "flat_index": 100704,
+          "turn": "white",
+          "fen": "K7/4Q3/2Q5/8/8/8/k7/8 w - - 0 1",
+          "old_table_value": 3,
+          "new_table_value": 3,
+          "old_probe_score": 999997,
+          "new_probe_score": 999997,
+          "probe_match": true
+        },
+        {
+          "flat_index": 708791,
+          "turn": "black",
+          "fen": "1K6/8/6Q1/3k4/1Q6/8/8/8 b - - 0 1",
+          "old_table_value": -8,
+          "new_table_value": -8,
+          "old_probe_score": 999992,
+          "new_probe_score": 999992,
+          "probe_match": true
+        },
+        {
+          "flat_index": 251402,
+          "turn": "white",
+          "fen": "K4k2/8/8/6Q1/8/4Q3/8/8 w - - 0 1",
+          "old_table_value": 3,
+          "new_table_value": 3,
+          "old_probe_score": 999997,
+          "new_probe_score": 999997,
+          "probe_match": true
+        }
+      ],
+      "sample_probe_mismatch_count": 0
+    },
+    {
+      "table": "K_Queen_Rook_K",
+      "state_count": 5242880,
+      "identical": true,
+      "mismatch_count": 0,
+      "max_abs_diff": 0,
+      "old_actual": {
+        "max_abs_value": 20,
+        "decisive_entries": 2667075,
+        "zero_entries_total": 2575805
+      },
+      "new_actual": {
+        "max_abs_value": 20,
+        "decisive_entries": 2667075,
+        "zero_entries_total": 2575805
+      },
+      "mismatch_examples": [],
+      "metadata": {
+        "category": "4-Man Same-Side",
+        "shape": [
+          10,
+          64,
+          64,
+          64,
+          2
+        ],
+        "has_pawn": false
+      },
+      "old_note": {
+        "dtm": 20,
+        "decisive": 2667075,
+        "drawn": 243748,
+        "minutes": 13.0,
+        "updated_utc": "2026-04-21 06:55:02"
+      },
+      "new_note": {
+        "dtm": 13,
+        "decisive": 2667075,
+        "drawn": 243748,
+        "minutes": 5.5,
+        "updated_utc": "2026-04-23 13:43:50"
+      },
+      "old_note_matches_actual": true,
+      "new_note_matches_actual": false,
+      "sample_probe_checks": [
+        {
+          "flat_index": 4260580,
+          "turn": "white",
+          "fen": "5R2/Q7/3K4/8/8/8/2k5/8 w - - 0 1",
+          "old_table_value": 9,
+          "new_table_value": 9,
+          "old_probe_score": 999991,
+          "new_probe_score": 999991,
+          "probe_match": true
+        },
+        {
+          "flat_index": 1019463,
+          "turn": "black",
+          "fen": "1K6/8/8/4R3/3k4/8/8/4Q3 b - - 0 1",
+          "old_table_value": -10,
+          "new_table_value": -10,
+          "old_probe_score": 999990,
+          "new_probe_score": 999990,
+          "probe_match": true
+        },
+        {
+          "flat_index": 123085,
+          "turn": "black",
+          "fen": "KR6/7Q/8/8/6k1/8/8/8 b - - 0 1",
+          "old_table_value": -14,
+          "new_table_value": -14,
+          "old_probe_score": 999986,
+          "new_probe_score": 999986,
+          "probe_match": true
+        },
+        {
+          "flat_index": 569159,
+          "turn": "black",
+          "fen": "1K3Q2/8/8/6R1/3k4/8/8/8 b - - 0 1",
+          "old_table_value": -12,
+          "new_table_value": -12,
+          "old_probe_score": 999988,
+          "new_probe_score": 999988,
+          "probe_match": true
+        },
+        {
+          "flat_index": 2112585,
+          "turn": "black",
+          "fen": "1Q6/2K5/8/8/4k3/8/8/R7 b - - 0 1",
+          "old_table_value": -12,
+          "new_table_value": -12,
+          "old_probe_score": 999988,
+          "new_probe_score": 999988,
+          "probe_match": true
+        },
+        {
+          "flat_index": 4133535,
+          "turn": "black",
+          "fen": "8/3K3k/8/8/5R2/8/8/Q7 b - - 0 1",
+          "old_table_value": -6,
+          "new_table_value": -6,
+          "old_probe_score": 999994,
+          "new_probe_score": 999994,
+          "probe_match": true
+        },
+        {
+          "flat_index": 1897904,
+          "turn": "white",
+          "fen": "2K5/8/8/k7/7Q/3R4/8/8 w - - 0 1",
+          "old_table_value": 3,
+          "new_table_value": 3,
+          "old_probe_score": 999997,
+          "new_probe_score": 999997,
+          "probe_match": true
+        }
+      ],
+      "sample_probe_mismatch_count": 0
+    },
+    {
+      "table": "K_Rook_K",
+      "state_count": 81920,
+      "identical": true,
+      "mismatch_count": 0,
+      "max_abs_diff": 0,
+      "old_actual": {
+        "max_abs_value": 15,
+        "decisive_entries": 986,
+        "zero_entries_total": 80934
+      },
+      "new_actual": {
+        "max_abs_value": 15,
+        "decisive_entries": 986,
+        "zero_entries_total": 80934
+      },
+      "mismatch_examples": [],
+      "metadata": {
+        "category": "3-Man",
+        "shape": [
+          10,
+          64,
+          64,
+          2
+        ],
+        "has_pawn": false
+      },
+      "old_note": {
+        "dtm": 15,
+        "decisive": 986,
+        "drawn": 55475,
+        "minutes": 0.2,
+        "updated_utc": "2026-04-21 06:35:51"
+      },
+      "new_note": {
+        "dtm": 14,
+        "decisive": 986,
+        "drawn": 55475,
+        "minutes": 0.0,
+        "updated_utc": "2026-04-23 13:35:07"
+      },
+      "old_note_matches_actual": true,
+      "new_note_matches_actual": false,
+      "sample_probe_checks": [
+        {
+          "flat_index": 71808,
+          "turn": "white",
+          "fen": "k7/8/3K4/8/8/8/1R6/8 w - - 0 1",
+          "old_table_value": 5,
+          "new_table_value": 5,
+          "old_probe_score": 999995,
+          "new_probe_score": 999995,
+          "probe_match": true
+        },
+        {
+          "flat_index": 63746,
+          "turn": "white",
+          "fen": "1k6/3K4/8/8/8/8/2R5/8 w - - 0 1",
+          "old_table_value": 7,
+          "new_table_value": 7,
+          "old_probe_score": 999993,
+          "new_probe_score": 999993,
+          "probe_match": true
+        },
+        {
+          "flat_index": 53772,
+          "turn": "white",
+          "fen": "3K2k1/8/8/8/4R3/8/8/8 w - - 0 1",
+          "old_table_value": 5,
+          "new_table_value": 5,
+          "old_probe_score": 999995,
+          "new_probe_score": 999995,
+          "probe_match": true
+        },
+        {
+          "flat_index": 73232,
+          "turn": "white",
+          "fen": "8/k7/3K4/8/8/8/8/4R3 w - - 0 1",
+          "old_table_value": 15,
+          "new_table_value": 15,
+          "old_probe_score": 999985,
+          "new_probe_score": 999985,
+          "probe_match": true
+        },
+        {
+          "flat_index": 44945,
+          "turn": "black",
+          "fen": "8/k7/2K5/7R/8/8/8/8 b - - 0 1",
+          "old_table_value": -4,
+          "new_table_value": -4,
+          "old_probe_score": 999996,
+          "new_probe_score": 999996,
+          "probe_match": true
+        },
+        {
+          "flat_index": 75920,
+          "turn": "white",
+          "fen": "8/k7/1R6/3K4/8/8/8/8 w - - 0 1",
+          "old_table_value": 3,
+          "new_table_value": 3,
+          "old_probe_score": 999997,
+          "new_probe_score": 999997,
+          "probe_match": true
+        },
+        {
+          "flat_index": 68224,
+          "turn": "white",
+          "fen": "k7/8/3K1R2/8/8/8/8/8 w - - 0 1",
+          "old_table_value": 1,
+          "new_table_value": 1,
+          "old_probe_score": 999999,
+          "new_probe_score": 999999,
+          "probe_match": true
+        },
+        {
+          "flat_index": 60800,
+          "turn": "white",
+          "fen": "k7/3K4/8/3R4/8/8/8/8 w - - 0 1",
+          "old_table_value": 3,
+          "new_table_value": 3,
+          "old_probe_score": 999997,
+          "new_probe_score": 999997,
+          "probe_match": true
+        },
+        {
+          "flat_index": 46864,
+          "turn": "white",
+          "fen": "8/k7/2K5/8/8/6R1/8/8 w - - 0 1",
+          "old_table_value": 3,
+          "new_table_value": 3,
+          "old_probe_score": 999997,
+          "new_probe_score": 999997,
+          "probe_match": true
+        },
+        {
+          "flat_index": 72722,
+          "turn": "white",
+          "fen": "8/1k6/3K4/8/8/8/8/R7 w - - 0 1",
+          "old_table_value": 13,
+          "new_table_value": 13,
+          "old_probe_score": 999987,
+          "new_probe_score": 999987,
+          "probe_match": true
+        },
+        {
+          "flat_index": 61826,
+          "turn": "white",
+          "fen": "1k6/3K4/8/8/3R4/8/8/8 w - - 0 1",
+          "old_table_value": 5,
+          "new_table_value": 5,
+          "old_probe_score": 999995,
+          "new_probe_score": 999995,
+          "probe_match": true
+        }
+      ],
+      "sample_probe_mismatch_count": 0
+    },
+    {
+      "table": "K_Rook_Rook_K",
+      "state_count": 5242880,
+      "identical": true,
+      "mismatch_count": 0,
+      "max_abs_diff": 0,
+      "old_actual": {
+        "max_abs_value": 22,
+        "decisive_entries": 1327485,
+        "zero_entries_total": 3915395
+      },
+      "new_actual": {
+        "max_abs_value": 22,
+        "decisive_entries": 1327485,
+        "zero_entries_total": 3915395
+      },
+      "mismatch_examples": [],
+      "metadata": {
+        "category": "4-Man Same-Side",
+        "shape": [
+          10,
+          64,
+          64,
+          64,
+          2
+        ],
+        "has_pawn": false
+      },
+      "old_note": {
+        "dtm": 22,
+        "decisive": 1327485,
+        "drawn": 228113,
+        "minutes": 4.7,
+        "updated_utc": "2026-04-21 07:30:43"
+      },
+      "new_note": {
+        "dtm": 21,
+        "decisive": 1327485,
+        "drawn": 228113,
+        "minutes": 2.2,
+        "updated_utc": "2026-04-23 13:58:24"
+      },
+      "old_note_matches_actual": true,
+      "new_note_matches_actual": false,
+      "sample_probe_checks": [
+        {
+          "flat_index": 2406655,
+          "turn": "black",
+          "fen": "8/2K5/8/8/5R2/8/1R6/7k b - - 0 1",
+          "old_table_value": -8,
+          "new_table_value": -8,
+          "old_probe_score": 999992,
+          "new_probe_score": 999992,
+          "probe_match": true
+        },
+        {
+          "flat_index": 3289345,
+          "turn": "black",
+          "fen": "k2K4/8/1R6/8/2R5/8/8/8 b - - 0 1",
+          "old_table_value": -2,
+          "new_table_value": -2,
+          "old_probe_score": 999998,
+          "new_probe_score": 999998,
+          "probe_match": true
+        },
+        {
+          "flat_index": 3708903,
+          "turn": "black",
+          "fen": "4R3/3K4/8/8/8/7R/3k4/8 b - - 0 1",
+          "old_table_value": -14,
+          "new_table_value": -14,
+          "old_probe_score": 999986,
+          "new_probe_score": 999986,
+          "probe_match": true
+        },
+        {
+          "flat_index": 4963363,
+          "turn": "black",
+          "fen": "8/8/1k6/3K1R2/8/8/8/R7 b - - 0 1",
+          "old_table_value": -10,
+          "new_table_value": -10,
+          "old_probe_score": 999990,
+          "new_probe_score": 999990,
+          "probe_match": true
+        },
+        {
+          "flat_index": 4816591,
+          "turn": "black",
+          "fen": "8/3R4/8/3K4/7k/8/8/5R2 b - - 0 1",
+          "old_table_value": -12,
+          "new_table_value": -12,
+          "old_probe_score": 999988,
+          "new_probe_score": 999988,
+          "probe_match": true
+        },
+        {
+          "flat_index": 3146836,
+          "turn": "white",
+          "fen": "R2K4/R7/8/8/8/2k5/8/8 w - - 0 1",
+          "old_table_value": 15,
+          "new_table_value": 15,
+          "old_probe_score": 999985,
+          "new_probe_score": 999985,
+          "probe_match": true
+        },
+        {
+          "flat_index": 2113125,
+          "turn": "black",
+          "fen": "1R6/2K5/8/8/8/8/2k5/4R3 b - - 0 1",
+          "old_table_value": -16,
+          "new_table_value": -16,
+          "old_probe_score": 999984,
+          "new_probe_score": 999984,
+          "probe_match": true
+        },
+        {
+          "flat_index": 1775560,
+          "turn": "white",
+          "fen": "2K5/8/8/R7/4k3/7R/8/8 w - - 0 1",
+          "old_table_value": 17,
+          "new_table_value": 17,
+          "old_probe_score": 999983,
+          "new_probe_score": 999983,
+          "probe_match": true
+        },
+        {
+          "flat_index": 3870570,
+          "turn": "white",
+          "fen": "8/3K4/8/R5R1/8/8/5k2/8 w - - 0 1",
+          "old_table_value": 11,
+          "new_table_value": 11,
+          "old_probe_score": 999989,
+          "new_probe_score": 999989,
+          "probe_match": true
+        },
+        {
+          "flat_index": 335756,
+          "turn": "white",
+          "fen": "K5k1/8/8/8/8/R7/8/7R w - - 0 1",
+          "old_table_value": 13,
+          "new_table_value": 13,
+          "old_probe_score": 999987,
+          "new_probe_score": 999987,
+          "probe_match": true
+        },
+        {
+          "flat_index": 554350,
+          "turn": "white",
+          "fen": "1K1R4/8/8/8/8/2R5/7k/8 w - - 0 1",
+          "old_table_value": 13,
+          "new_table_value": 13,
+          "old_probe_score": 999987,
+          "new_probe_score": 999987,
+          "probe_match": true
+        },
+        {
+          "flat_index": 2850221,
+          "turn": "black",
+          "fen": "8/8/2K3k1/3R4/8/8/8/3R4 b - - 0 1",
+          "old_table_value": -16,
+          "new_table_value": -16,
+          "old_probe_score": 999984,
+          "new_probe_score": 999984,
+          "probe_match": true
+        }
+      ],
+      "sample_probe_mismatch_count": 0
+    }
+  ],
+  "summary": {
+    "fully_identical_tables": 14,
+    "tables_with_value_mismatches": 0,
+    "sample_probe_checks_run": 127,
+    "sample_probe_mismatches": 0
+  }
+}

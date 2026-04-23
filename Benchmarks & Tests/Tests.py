@@ -934,7 +934,7 @@ def case_regression_tb_5man_cross_probe():
         ("black", Knight, (1, 4)),
     ])
     manager = TablebaseManager()
-    table_name = "K_Queen_Rook_vs_Knight_K_sml"
+    table_name = "K_Queen_Rook_vs_Knight_K"
     manager.tables[table_name] = np.zeros((10, 64, 64, 64, 64, 2), dtype=np.int16)
 
     result = manager.probe(board, "white")

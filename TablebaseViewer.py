@@ -1,4 +1,4 @@
-# TablebaseViewer.py (v1.1 - Updated to match new int-8 standard)
+# TablebaseViewer.py (v1.2 - Updated for unified 16-bit tables)
 
 import os
 import numpy as np
@@ -8,6 +8,7 @@ from GameLogic import Board, King, Queen, Rook, Bishop, Knight, Pawn, is_in_chec
 
 # --- CONFIGURATION ---
 TB_DIR = "tablebases"
+TB_SUFFIX = "_tb16.bin"
 SQUARE_SIZE = 60
 BOARD_COLOR_1 = "#D2B48C"
 BOARD_COLOR_2 = "#8B5A2B"
@@ -35,7 +36,7 @@ for c in range(4):
 
 
 def parse_tablebase_filename(filename):
-    stem = filename[:-9] if filename.endswith("_xsml.bin") else filename
+    stem = filename[:-len(TB_SUFFIX)] if filename.endswith(TB_SUFFIX) else filename
     parts = stem.split('_')
     if len(parts) < 3 or parts[0] != 'K' or parts[-1] != 'K':
         return None
@@ -149,7 +150,7 @@ class TBViewerApp:
 
     def load_file_list(self):
         if not os.path.exists(TB_DIR): os.makedirs(TB_DIR)
-        files = [f for f in os.listdir(TB_DIR) if f.endswith("_xsml.bin")]
+        files = [f for f in os.listdir(TB_DIR) if f.endswith(TB_SUFFIX)]
         if not files: return
 
         for f in sorted(files):
@@ -202,7 +203,7 @@ class TBViewerApp:
         has_pawn = "Pawn" in filename
 
         try:
-            data = np.memmap(filepath, dtype=np.int8, mode='r')
+            data = np.memmap(filepath, dtype=np.int16, mode='r')
             data_flat = data.reshape(-1)
             abs_data = np.abs(data_flat)
             
