@@ -213,7 +213,7 @@ class OpponentAI:
     USE_FUTILITY_PRUNING = True
     FUTILITY_MARGIN = 1000 # Lowered for speed at the cost of some tactical loss
 
-    TT_MAX_SIZE = 20_000_000
+    TT_MAX_SIZE = 50_000_000
 
     BONUS_PV_MOVE = 10_000_000
     BONUS_CAPTURE = 8_000_000
