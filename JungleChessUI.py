@@ -1,4 +1,4 @@
-# JungleChessUI.py (v15.3 - Improved AI_Series save file)
+# JungleChessUI.py (v15.4 - Use trimmed mean in AI_Series_Result)
 
 import tkinter as tk
 from tkinter import ttk, messagebox
@@ -1682,16 +1682,18 @@ class EnhancedChessApp:
             if not stats: return None
             n     = len(stats)
             num_d = sorted(int(x['depth']) for x in stats if x['depth'].isdigit())
-            def median(lst):
-                m = len(lst) // 2
-                return (lst[m] if len(lst) % 2 else (lst[m-1] + lst[m]) / 2) if lst else None
+            def trimmed_mean(lst):
+                if not lst: return None
+                cut = max(1, int(len(lst) * 0.16))
+                trimmed = lst[cut:-cut] if len(lst) > cut * 2 else lst
+                return sum(trimmed) / len(trimmed)
             return {
                 'n':     n,
                 't_avg': sum(x['time']  for x in stats) / n,
                 't_max': max(x['time']  for x in stats),
                 'n_avg': sum(x['nodes'] for x in stats) / n,
                 'kn':    sum(x['knps']  for x in stats) / n,
-                'd_med': median(num_d),
+                'd_med': trimmed_mean(num_d),
                 'd_max': max(num_d) if num_d else None,
             }
 
@@ -1724,7 +1726,7 @@ class EnhancedChessApp:
                 f.write(f"\t{mn}\t{on}\tDiff\n")
                 row("Moves", f"{ma['n']:,}", f"{oa['n']:,}", "")
                 if use_clock and ma['d_med'] is not None and oa['d_med'] is not None:
-                    row("Median depth", f"{ma['d_med']:.1f}", f"{oa['d_med']:.1f}",
+                    row("Avg depth (68%)", f"{ma['d_med']:.1f}", f"{oa['d_med']:.1f}",
                         diff_str(ma['d_med'], oa['d_med'], ".1f"))
                     row("Max depth", f"{ma['d_max']}", f"{oa['d_max']}",
                         diff_str(ma['d_max'], oa['d_max'], "d"))

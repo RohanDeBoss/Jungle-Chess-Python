@@ -1,4 +1,4 @@
-# AI.py (v113.11 - Qsearch populates TT + Q-Search Mate Score Corruption Fix)
+# AI.py (v113.2 - Qsearch positions only saved as stan pat Eval TT not main TT)
 
 import json
 import os
@@ -299,6 +299,7 @@ class ChessBot:
 
     def _initialize_search_state(self):
         self.tt = {}
+        self.eval_tt = {}
         self.nodes_searched = 0
         self.used_heuristic_eval = False
         self.tb_hits = 0
@@ -985,17 +986,6 @@ class ChessBot:
                 raise SearchCancelledException()
 
         hash_val = current_hash if current_hash is not None else board_hash(board, turn)
-        
-        tt_entry = self.tt.get(hash_val)
-        if tt_entry:
-            tt_score = tt_entry.score
-            if tt_score >  self.MATE_SCORE - 1000: tt_score -= ply
-            elif tt_score < -self.MATE_SCORE + 1000: tt_score += ply
-
-            if tt_entry.flag == TT_FLAG_EXACT:       return tt_score
-            elif tt_entry.flag == TT_FLAG_LOWERBOUND: alpha = max(alpha, tt_score)
-            elif tt_entry.flag == TT_FLAG_UPPERBOUND: beta  = min(beta,  tt_score)
-            if alpha >= beta: return tt_score
 
         if len(board.white_pieces) + len(board.black_pieces) <= self.tb_probe_limit:
             tb_score_absolute = self.tb_manager.probe(board, turn)
@@ -1010,20 +1000,25 @@ class ChessBot:
 
         if ply >= self.MAX_Q_SEARCH_DEPTH:
             self.used_heuristic_eval = True
-            return self.evaluate_board(board, turn)
+            if hash_val in self.eval_tt: return self.eval_tt[hash_val]
+            score = self.evaluate_board(board, turn)
+            if len(self.eval_tt) > 5_000_000: self.eval_tt.clear()
+            self.eval_tt[hash_val] = score
+            return score
 
         self.used_heuristic_eval = True
-        original_alpha = alpha
-        stand_pat        = self.evaluate_board(board, turn)
+        
+        if hash_val in self.eval_tt:
+            stand_pat = self.eval_tt[hash_val]
+        else:
+            stand_pat = self.evaluate_board(board, turn)
+            if len(self.eval_tt) > 5_000_000: self.eval_tt.clear()
+            self.eval_tt[hash_val] = stand_pat
+            
         is_in_check_flag = is_in_check(board, turn)
 
         if not is_in_check_flag:
-            if stand_pat >= beta:
-                sto = beta
-                if sto > self.MATE_SCORE - 1000: sto = beta + ply
-                elif sto < -self.MATE_SCORE + 1000: sto = beta - ply
-                self._store_tt(hash_val, sto, 0, TT_FLAG_LOWERBOUND, None)
-                return beta
+            if stand_pat >= beta: return beta
             alpha = max(alpha, stand_pat)
 
         if ply <= 4:
@@ -1072,22 +1067,12 @@ class ChessBot:
             search_score = -self.qsearch(board, -beta, -alpha, opponent_turn, ply + 1, current_hash=child_hash)
             board.unmake_move(record)
 
-            if search_score >= beta:
-                sto = beta
-                if sto > self.MATE_SCORE - 1000: sto = beta + ply
-                elif sto < -self.MATE_SCORE + 1000: sto = beta - ply
-                self._store_tt(hash_val, sto, 0, TT_FLAG_LOWERBOUND, None)
-                return beta
+            if search_score >= beta: return beta
             alpha = max(alpha, search_score)
 
         if is_in_check_flag and legal_moves_count == 0:
             return -self.MATE_SCORE + ply
 
-        sto = alpha
-        if sto > self.MATE_SCORE - 1000: sto = alpha + ply
-        elif sto < -self.MATE_SCORE + 1000: sto = alpha - ply
-        flag = TT_FLAG_EXACT if alpha > original_alpha else TT_FLAG_UPPERBOUND
-        self._store_tt(hash_val, sto, 0, flag, None)
         return alpha
 
     def order_moves(self, board, moves, ply, hash_move, turn, return_meta=False, counter_move=None, prev_move_tuple=None):

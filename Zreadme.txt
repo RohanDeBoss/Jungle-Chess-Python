@@ -98,3 +98,9 @@ Standard chess engines use steep Late Move Reductions (LMR) and Reverse Futility
 
 5. Tablebases Handle the Endgame
 Because non-check stalemates are strictly an endgame phenomenon (requiring a nearly empty board and paralyzed pieces), the engine relies entirely on a precomputed Tablebase for positions with 5 or fewer pieces. Do not add heuristic code for 5-piece endgame stalemates; the Tablebase solves these instantly.
+
+## Engine Development & Regression Testing (`OPAI.py`)
+
+The `OPAI.py` (Opponent AI) file exists **exclusively** for regression testing and benchmarking. Its purpose is to serve as a frozen, stable baseline engine. 
+
+When introducing new heuristics, pruning techniques, or performance optimizations to the main engine (`AI.py`), those changes should **never** be copied into `OPAI.py`. Instead, use the "AI vs OP Series" mode in the UI to pit the modified `AI.py` against the stable `OPAI.py`. This ensures that any new changes actually yield an objective improvement in playing strength (measured by win rate) rather than just tricking the evaluation function.
