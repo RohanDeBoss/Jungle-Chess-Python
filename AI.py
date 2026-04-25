@@ -1,4 +1,4 @@
-# AI.py (v113.1 - Qsearch populates TT)
+# AI.py (v113.11 - Qsearch populates TT + Q-Search Mate Score Corruption Fix)
 
 import json
 import os
@@ -1019,7 +1019,10 @@ class ChessBot:
 
         if not is_in_check_flag:
             if stand_pat >= beta:
-                self._store_tt(hash_val, beta, 0, TT_FLAG_LOWERBOUND, None)
+                sto = beta
+                if sto > self.MATE_SCORE - 1000: sto = beta + ply
+                elif sto < -self.MATE_SCORE + 1000: sto = beta - ply
+                self._store_tt(hash_val, sto, 0, TT_FLAG_LOWERBOUND, None)
                 return beta
             alpha = max(alpha, stand_pat)
 
@@ -1070,15 +1073,21 @@ class ChessBot:
             board.unmake_move(record)
 
             if search_score >= beta:
-                self._store_tt(hash_val, beta, 0, TT_FLAG_LOWERBOUND, None)
+                sto = beta
+                if sto > self.MATE_SCORE - 1000: sto = beta + ply
+                elif sto < -self.MATE_SCORE + 1000: sto = beta - ply
+                self._store_tt(hash_val, sto, 0, TT_FLAG_LOWERBOUND, None)
                 return beta
             alpha = max(alpha, search_score)
 
         if is_in_check_flag and legal_moves_count == 0:
             return -self.MATE_SCORE + ply
 
+        sto = alpha
+        if sto > self.MATE_SCORE - 1000: sto = alpha + ply
+        elif sto < -self.MATE_SCORE + 1000: sto = alpha - ply
         flag = TT_FLAG_EXACT if alpha > original_alpha else TT_FLAG_UPPERBOUND
-        self._store_tt(hash_val, alpha, 0, flag, None)
+        self._store_tt(hash_val, sto, 0, flag, None)
         return alpha
 
     def order_moves(self, board, moves, ply, hash_move, turn, return_meta=False, counter_move=None, prev_move_tuple=None):
