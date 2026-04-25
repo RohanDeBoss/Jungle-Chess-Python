@@ -1,4 +1,4 @@
-# AI.py (v112.11 - Q-Search TT Probe optimization to eliminate recalculation of tactical explosions w.bugfix)
+# AI.py (v112.2 - fix performance leak)
 import json
 import os
 import time
@@ -1013,7 +1013,9 @@ class ChessBot:
         is_in_check_flag = is_in_check(board, turn)
 
         if not is_in_check_flag:
-            if stand_pat >= beta: return beta
+            if stand_pat >= beta:
+                self._store_tt(hash_val, beta, 0, TT_FLAG_LOWERBOUND, None)
+                return beta
             alpha = max(alpha, stand_pat)
 
         if ply <= 4:
