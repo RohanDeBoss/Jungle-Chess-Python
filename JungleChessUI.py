@@ -1,4 +1,4 @@
-# JungleChessUI.py (v15.2 - Arrows & Highlights Integration)
+# JungleChessUI.py (v15.3 - Improved AI_Series save file)
 
 import tkinter as tk
 from tkinter import ttk, messagebox
@@ -164,7 +164,8 @@ class EnhancedChessApp:
         self.analysis_mode_var   = tk.BooleanVar(value=True)
         self.ai_series_running   = False
         self.ai_series_stats     = {'game_count': 0, 'my_ai_wins': 0, 'op_ai_wins': 0, 'draws': 0}
-        self.depth_stats         = {}
+        self.move_stats          = {}
+        self._pending_move_stat  = {}
         
         self.auto_save_stats_var  = tk.BooleanVar(value=True)
         self.show_pv_var          = tk.BooleanVar(value=True)
@@ -1321,11 +1322,18 @@ class EnhancedChessApp:
                 if kind == 'log':
                     print(msg[1])
                     if self.auto_save_stats_var.get() and self.game_mode.get() == GameMode.AI_VS_AI.value:
-                        m = re.search(r'> (.*?) \(D(\d+|TB)\).*?Time=([0-9.]+)s', msg[1])
+                        m = re.search(
+                            r'>\s*(.*?)\s*\(D(\d+|TB)\):.*?Eval=([+-][\d.]+).*?'
+                            r'NodesTotal=(\d+).*?KNPS=([\d.]+).*?Time=([\d.]+)s',
+                            msg[1])
                         if m:
-                            for cat in (m.group(1).strip(), 'Global'):
-                                self.depth_stats.setdefault(cat, {}).setdefault(
-                                    m.group(2), []).append(float(m.group(3)))
+                            self._pending_move_stat[m.group(1)] = {
+                                'depth': m.group(2),
+                                'eval':  float(m.group(3)),
+                                'nodes': int(m.group(4)),
+                                'knps':  float(m.group(5)),
+                                'time':  float(m.group(6)),
+                            }
                 elif kind == 'eval':
                     self.last_eval_score, self.last_eval_depth = msg[1], msg[2]
                     self.draw_eval_bar(msg[1], msg[2])
@@ -1335,6 +1343,10 @@ class EnhancedChessApp:
                 elif kind == 'move':
                     # Only accept the move if it matches the current generation ID
                     if self.active_worker_name is not None and msg_task_id == self.current_task_id:
+                        if self.auto_save_stats_var.get() and self.game_mode.get() == GameMode.AI_VS_AI.value:
+                            for bot, stat in self._pending_move_stat.items():
+                                self.move_stats.setdefault(bot, []).append(stat)
+                            self._pending_move_stat.clear()
                         self.active_worker_name = None
                         self.analysis_thinking  = False
                         self._execute_ai_move(msg[1])
@@ -1615,7 +1627,8 @@ class EnhancedChessApp:
         self._stop_ai_process()
         self.game_mode.set(GameMode.AI_VS_AI.value)
         self.ai_series_stats          = {'game_count': 0, 'my_ai_wins': 0, 'op_ai_wins': 0, 'draws': 0}
-        self.depth_stats              = {}
+        self.move_stats               = {}
+        self._pending_move_stat       = {}
         self.ai_series_running        = True
         self.current_opening_sequence = []
         self.update_scoreboard()
@@ -1659,25 +1672,70 @@ class EnhancedChessApp:
             self.scoreboard_label.config(text="")
 
     def save_depth_stats_to_file(self):
-        if not self.depth_stats or not self.depth_stats.get('Global'):
+        if not self.move_stats:
             return
-        sort_key = lambda k: int(k) if k.isdigit() else 999
+        use_clock   = self.use_clock_var.get()
+        fixed_depth = self.bot_depth_slider.get()
+        s           = self.ai_series_stats
+
+        def _summarise(stats):
+            if not stats: return None
+            n     = len(stats)
+            num_d = [int(x['depth']) for x in stats if x['depth'].isdigit()]
+            return {
+                'n':     n,
+                't_avg': sum(x['time']  for x in stats) / n,
+                't_max': max(x['time']  for x in stats),
+                'n_avg': sum(x['nodes'] for x in stats) / n,
+                'kn':    sum(x['knps']  for x in stats) / n,
+                'd_avg': sum(num_d) / len(num_d) if num_d else None,
+                'd_max': max(num_d)               if num_d else None,
+            }
+
         try:
-            with open("AI_Series_Depth_Averages.txt", "w") as f:
-                s = self.ai_series_stats
-                f.write(f"=== AI vs OP Series Depth Stats ===\n"
-                        f"Games: {s['game_count']}  Score: {self.MAIN_AI_NAME} "
-                        f"{s['my_ai_wins']}-{s['op_ai_wins']} {self.OPPONENT_AI_NAME} "
-                        f"(Draws: {s['draws']})\n\n")
-                for cat in ['Global', self.MAIN_AI_NAME, self.OPPONENT_AI_NAME]:
-                    data = self.depth_stats.get(cat)
-                    if not data:
-                        continue
-                    f.write(f"--- {cat} ---\n")
-                    for d in sorted(data, key=sort_key):
-                        ts = data[d]
-                        f.write(f"  D{d:<3} Avg:{sum(ts)/len(ts):.3f}s  Max:{max(ts):.3f}s  N:{len(ts)}\n")
-                    f.write("\n")
+            with open("AI_Series_Results.txt", "w") as f:
+                mode_str = (f"Clock ({int(self.time_control_seconds.get())}s "
+                            f"+ {self.increment:.1f}s inc)") \
+                           if use_clock else f"Fixed depth {fixed_depth}"
+                mn  = self.MAIN_AI_NAME
+                on  = self.OPPONENT_AI_NAME
+                ma  = _summarise(self.move_stats.get(mn, []))
+                oa  = _summarise(self.move_stats.get(on, []))
+
+                # Header
+                f.write(f"AI Series Results  |  {mode_str}  |  {s['game_count']} / {self.AI_SERIES_GAMES} games\n")
+                f.write(f"{mn} {s['my_ai_wins']}  {on} {s['op_ai_wins']}  Draws {s['draws']}\n\n")
+
+                if not ma or not oa:
+                    f.write("(insufficient data)\n")
+                    return
+
+                # Column layout
+                C0, C1, C2, C3 = 20, 12, 12, 12
+                def row(label, a_str, b_str, d_str):
+                    f.write(f"{label:<{C0}}{a_str:>{C1}}{b_str:>{C2}}{d_str:>{C3}}\n")
+
+                def diff_str(a, b, fmt):
+                    d = a - b
+                    return ("+" if d > 0 else "") + format(d, fmt)
+
+                row("", mn, on, "Diff (A-B)")
+                f.write("-" * (C0 + C1 + C2 + C3) + "\n")
+                row("Moves", f"{ma['n']:,}", f"{oa['n']:,}", "")
+                if use_clock and ma['d_avg'] is not None and oa['d_avg'] is not None:
+                    row("Avg depth", f"{ma['d_avg']:.1f}", f"{oa['d_avg']:.1f}",
+                        diff_str(ma['d_avg'], oa['d_avg'], ".1f"))
+                    row("Max depth", f"{ma['d_max']}", f"{oa['d_max']}",
+                        diff_str(ma['d_max'], oa['d_max'], "d"))
+                row("Avg nodes", f"{ma['n_avg']:,.0f}", f"{oa['n_avg']:,.0f}",
+                    diff_str(ma['n_avg'], oa['n_avg'], ",.0f"))
+                row("Avg time", f"{ma['t_avg']:.3f}s", f"{oa['t_avg']:.3f}s",
+                    diff_str(ma['t_avg'], oa['t_avg'], ".3f") + "s")
+                row("Max time", f"{ma['t_max']:.3f}s", f"{oa['t_max']:.3f}s",
+                    diff_str(ma['t_max'], oa['t_max'], ".3f") + "s")
+                row("Avg KNPS", f"{ma['kn']:.1f}", f"{oa['kn']:.1f}",
+                    diff_str(ma['kn'], oa['kn'], ".1f"))
+
         except Exception as e:
             print(f"Failed to save stats: {e}")
 
