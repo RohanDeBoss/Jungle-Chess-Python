@@ -2,7 +2,11 @@ JUNGLE CHESS - OFFICIAL RULES
 
 OBJECTIVE:
 The aim of the game is to checkmate the opponent's king, just like in standard chess. You do not need to "evaporate" or "explode" the king to win, just put the opponent in a position where no matter what they do, they will lose on the next turn.
-This means that, unlike normal chess, a 'stalemate' position is actually a win.
+
+TERMINAL CONDITION - NO LEGAL MOVES:
+In Jungle Chess, having no legal moves is ALWAYS a loss for the side to move. This is a terminal condition regardless of whether the side to move is in check.
+- If in check with no legal moves: loss (checkmate).
+- If NOT in check with no legal moves: loss (stalemate is a loss here, unlike standard chess).
 If your opponent has no legal moves on their turn, you win immediately. In that sense, Jungle Chess behaves like a king-capture variant but ends one move before the king would actually be taken, so the king is not actually captured.
 
 
@@ -59,7 +63,7 @@ NOTATION AND CHECK RULES:
   * Rook example: Rxh1 (xh2)
   * Queen example: Qxf7 (xf7 xg7 xh7 xg8)
 
-- If the side to move has no legal moves, that is an immediate win for the other player.
+- If the side to move has no legal moves, that is an immediate loss (terminal condition). This applies whether or not the side to move is in check. The opponent wins immediately.
 
 
 GAME EXAMPLE:
@@ -70,3 +74,27 @@ GAME EXAMPLE:
 
 
 Have fun playing Jungle Chess!
+
+NOTES FOR AI AND ENGINE DEVELOPERS
+
+If you are an AI assistant or a developer analyzing or modifying the Jungle Chess engine, please read these architectural notes carefully to avoid introducing regressions. The volatile nature of this variant breaks many standard chess heuristics.
+
+1. Stalemate is a Loss (Horizon Blindness is Harmless)
+Because having no legal moves is a terminal loss, "Horizon Blindness" in Quiescence Search (where the search misses a non-check stalemate because it only generates captures) is harmless. If the engine starves the opponent of moves at the horizon, the static evaluation will heavily favor the engine anyway due to overwhelming material or positional dominance. Do not inject expensive has_legal_moves() checks into qsearch.
+
+2. Non-Check Stalemates are Geometrically Rare
+Do not over-optimize for non-check stalemates in the middlegame. They are virtually impossible to force because:
+- Pawns Capture Forward: Pawn chains cannot permanently lock up; a pawn can simply step forward onto the piece blocking it.
+- 2-Square King Phasing: The King can move 2 squares and phase through attacked squares. Boxing it in without checking it requires a massive, complex cage of pieces.
+
+3. Absolute Pins Paralyze Pieces Completely
+Unlike standard chess, where pinned pieces can slide along the pin-ray (e.g., a Rook pinned to a file can still move up and down that file), Jungle Chess pieces have asymmetric movement and are often left with 0 legal moves when pinned:
+- Knights cannot jump without leaving the pin-ray.
+- Rooks pinned diagonally cannot move.
+- Pawns pinned diagonally or horizontally cannot move.
+
+4. 3000-Point Material Swings (Beware of Aggressive Pruning)
+Standard chess engines use steep Late Move Reductions (LMR) and Reverse Futility Pruning (RFP) because evaluations are stable. In Jungle Chess, an AoE Knight or Queen can evaporate 3000+ points of material in a single turn. Aggressive pruning margins will cause the engine to miss these explosive tactics. Keep pruning conservative.
+
+5. Tablebases Handle the Endgame
+Because non-check stalemates are strictly an endgame phenomenon (requiring a nearly empty board and paralyzed pieces), the engine relies entirely on a precomputed Tablebase for positions with 5 or fewer pieces. Do not add heuristic code for 5-piece endgame stalemates; the Tablebase solves these instantly.

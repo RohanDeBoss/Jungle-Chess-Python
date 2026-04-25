@@ -1,4 +1,4 @@
-# AI.py (v111.4 - Now works with new tbs)
+# AI.py (v112 - Ghost fix, improved move ordering efficiency by fixing a bug in continuation history)
 import json
 import os
 import time
@@ -213,7 +213,7 @@ class ChessBot:
     USE_FUTILITY_PRUNING = True
     FUTILITY_MARGIN = 1000 # Lowered for speed at the cost of some tactical loss
 
-    TT_MAX_SIZE = 20_000_000
+    TT_MAX_SIZE = 50_000_000
 
     BONUS_PV_MOVE = 10_000_000
     BONUS_CAPTURE = 8_000_000
@@ -703,22 +703,25 @@ class ChessBot:
 
             search_path = {root_hash}
             try:
+                mp = record.moving_piece
+                next_prev_tuple = (move, PIECE_TYPE_IDX[type(mp)])
+
                 if alpha_floor is not None:
                     probe_score = -self.negamax(
                         board, depth - 1, -(alpha_floor + 1), -alpha_floor,
                         self.opponent_color, 1, search_path,
-                        current_hash=child_hash, prev_move=move)
+                        current_hash=child_hash, prev_move_tuple=next_prev_tuple)
                     if probe_score <= alpha_floor:
                         continue
                     score = -self.negamax(
                         board, depth - 1, -beta, -alpha,
                         self.opponent_color, 1, search_path,
-                        current_hash=child_hash, prev_move=move)
+                        current_hash=child_hash, prev_move_tuple=next_prev_tuple)
                 else:
                     score = -self.negamax(
                         board, depth - 1, -beta, -alpha,
                         self.opponent_color, 1, search_path,
-                        current_hash=child_hash, prev_move=move)
+                        current_hash=child_hash, prev_move_tuple=next_prev_tuple)
             finally:
                 board.unmake_move(record)
 
@@ -733,7 +736,7 @@ class ChessBot:
             best_score_this_iter = self.DRAW_SCORE
         return best_score_this_iter, best_move_this_iter
 
-    def negamax(self, board, depth, alpha, beta, turn, ply, search_path, current_hash=None, prev_move=None, extensions=0):
+    def negamax(self, board, depth, alpha, beta, turn, ply, search_path, current_hash=None, prev_move_tuple=None, extensions=0):
         self.nodes_searched += 1
         if (self.nodes_searched & self.time_check_mask) == 0:
             if self.cancellation_event.is_set() or (self.stop_time and time.time() > self.stop_time):
@@ -818,14 +821,14 @@ class ChessBot:
             pseudo_moves = get_all_pseudo_legal_moves(board, turn)
             hash_move    = tt_entry.best_move if tt_entry else None
             
-            if prev_move:
-                (pr1, pc1), (pr2, pc2) = prev_move
+            if prev_move_tuple:
+                (pr1, pc1), (pr2, pc2) = prev_move_tuple[0]
                 c_move = self.counter_moves[0 if turn == 'white' else 1][pr1 * 8 + pc1][pr2 * 8 + pc2]
             else:
                 c_move = None
 
             ordered_entries = self.order_moves(board, pseudo_moves, ply, hash_move, turn,
-                                            return_meta=True, counter_move=c_move, prev_move=prev_move)
+                                            return_meta=True, counter_move=c_move, prev_move_tuple=prev_move_tuple)
             best_move_for_node = None
             legal_moves_count  = 0
             quiet_moves_tried  = []
@@ -902,15 +905,17 @@ class ChessBot:
 
                 search_depth_child = depth - 1 - reduction
 
+                next_prev_tuple = (move, PIECE_TYPE_IDX[type(moving_piece)])
+
                 if legal_moves_count == 1:
                     score = -self.negamax(board, search_depth_child, -beta, -alpha,
-                                        opponent_turn, ply + 1, search_path, child_hash, move, extensions)
+                                        opponent_turn, ply + 1, search_path, child_hash, next_prev_tuple, extensions)
                 else: # Principal Variation Search (PVS)
                     score = -self.negamax(board, search_depth_child, -(alpha + 1), -alpha,
-                                        opponent_turn, ply + 1, search_path, child_hash, move, extensions)
+                                        opponent_turn, ply + 1, search_path, child_hash, next_prev_tuple, extensions)
                     if alpha < score < beta:
                         score = -self.negamax(board, depth - 1, -beta, -alpha,
-                                            opponent_turn, ply + 1, search_path, child_hash, move, extensions)
+                                            opponent_turn, ply + 1, search_path, child_hash, next_prev_tuple, extensions)
 
                 board.unmake_move(record)
 
@@ -922,8 +927,8 @@ class ChessBot:
                         if ply < len(self.killer_moves) and self.killer_moves[ply][0] != move:
                             self.killer_moves[ply][1], self.killer_moves[ply][0] = \
                                 self.killer_moves[ply][0], move
-                        if prev_move:
-                            (pr1, pc1), (pr2, pc2) = prev_move
+                        if prev_move_tuple:
+                            (pr1, pc1), (pr2, pc2) = prev_move_tuple[0]
                             self.counter_moves[0 if turn == 'white' else 1][pr1 * 8 + pc1][pr2 * 8 + pc2] = move
                         
                         # --- CALIBRATED HISTORY UPDATES ---
@@ -935,17 +940,15 @@ class ChessBot:
                             # Gravity update for the successful move
                             ht[f_sq][t_sq] += bonus - (ht[f_sq][t_sq] * bonus) // 2_000_000
                             
-                            # --- NEW: Update Continuation History ---
-                            if prev_move:
+                            # --- FIXED: Update Continuation History ---
+                            if prev_move_tuple:
+                                prev_move, prev_pt_idx = prev_move_tuple
                                 pr, pc = prev_move[1]
-                                prev_piece = board.grid[pr][pc]
-                                if prev_piece:
-                                    prev_pt_idx = PIECE_TYPE_IDX[type(prev_piece)]
-                                    prev_to_sq  = pr * 8 + pc
-                                    mp_idx      = PIECE_TYPE_IDX[type(moving_piece)]
-                                    
-                                    ch_table = self.continuation_history[c_idx][prev_pt_idx][prev_to_sq][mp_idx]
-                                    ch_table[t_sq] += bonus - (ch_table[t_sq] * bonus) // 64_000
+                                prev_to_sq  = pr * 8 + pc
+                                mp_idx      = PIECE_TYPE_IDX[type(moving_piece)]
+                                
+                                ch_table = self.continuation_history[c_idx][prev_pt_idx][prev_to_sq][mp_idx]
+                                ch_table[t_sq] += bonus - (ch_table[t_sq] * bonus) // 64_000
                             
                             # Gravity penalty for the failed quiet moves
                             for f_move in quiet_moves_tried:
@@ -1057,7 +1060,7 @@ class ChessBot:
 
         return alpha
 
-    def order_moves(self, board, moves, ply, hash_move, turn, return_meta=False, counter_move=None, prev_move=None):
+    def order_moves(self, board, moves, ply, hash_move, turn, return_meta=False, counter_move=None, prev_move_tuple=None):
         if not moves: return []
         scored_moves = []
         killers   = self.killer_moves[ply] if ply < len(self.killer_moves) else [None, None]
@@ -1095,18 +1098,16 @@ class ChessBot:
                 score = 2_000_000
             else:
                 score = 0
-                if prev_move:
+                if prev_move_tuple:
+                    prev_move, prev_pt_idx = prev_move_tuple
                     pr, pc = prev_move[1]
-                    prev_piece = board.grid[pr][pc] 
-                    if prev_piece:
-                        prev_pt_idx = PIECE_TYPE_IDX[type(prev_piece)]
-                        prev_to_sq  = pr * 8 + pc
-                        mp_idx      = PIECE_TYPE_IDX[type(moving_piece)]
-                        to_sq       = r2 * 8 + c2
-                        
-                        ch_score = self.continuation_history[c_idx][prev_pt_idx][prev_to_sq][mp_idx][to_sq]
-                        if ch_score > 1000:
-                            score = self.BONUS_CONTINUATION + ch_score
+                    prev_to_sq  = pr * 8 + pc
+                    mp_idx      = PIECE_TYPE_IDX[type(moving_piece)]
+                    to_sq       = r2 * 8 + c2
+                    
+                    ch_score = self.continuation_history[c_idx][prev_pt_idx][prev_to_sq][mp_idx][to_sq]
+                    if ch_score > 1000:
+                        score = self.BONUS_CONTINUATION + ch_score
                 
                 if score == 0:
                     score = history_table[r1 * 8 + c1][r2 * 8 + c2]

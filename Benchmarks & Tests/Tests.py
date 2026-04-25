@@ -946,6 +946,100 @@ def case_regression_tb_5man_cross_probe():
     return details
 
 
+def case_regression_no_legal_moves_without_check_qsearch():
+    board = make_board([
+        ("white", King, (1, 5)),   # f7
+        ("white", Queen, (2, 4)),  # e6
+        ("white", Pawn, (7, 0)),   # a1
+        ("white", Pawn, (7, 1)),   # b1
+        ("white", Pawn, (7, 2)),   # c1
+        ("black", King, (0, 7)),   # h8
+    ])
+
+    details = position_details(board, "Black to move with no legal moves and not in check")
+    expect(not is_in_check(board, "black"), "Test setup error: black should not be in check.")
+    expect(not has_legal_moves(board, "black"), "Test setup error: black should have no legal moves.")
+
+    for bot_class in (ChessBot,):
+        bot = bot_class(board, "black", {}, _DummyQueue(), _DummyEvent(), use_tablebase=False)
+        bot.stop_time = None
+        bot.time_check_mask = (1 << 30) - 1
+
+        alpha = -bot.MATE_SCORE
+        beta = bot.MATE_SCORE
+        qsearch_score = bot.qsearch(board, alpha, beta, "black", 0)
+        depth0_score = bot.negamax(board, 0, alpha, beta, "black", 0, set())
+
+        details.append(f"{bot_class.__name__} qsearch score: {qsearch_score}")
+        details.append(f"{bot_class.__name__} depth-0 negamax score: {depth0_score}")
+
+        expect(
+            qsearch_score == -bot.MATE_SCORE,
+            f"Regression detected: {bot_class.__name__}.qsearch scored a no-legal-moves loss as {qsearch_score} instead of {-bot.MATE_SCORE}.",
+        )
+        expect(
+            depth0_score == -bot.MATE_SCORE,
+            f"Regression detected: {bot_class.__name__}.negamax(depth=0) scored a no-legal-moves loss as {depth0_score} instead of {-bot.MATE_SCORE}.",
+        )
+
+    return details
+
+
+def case_robustness_illegal_position_king_kill_ordering():
+    board = make_board([
+        ("white", King, (6, 3)),   # d2
+        ("white", Rook, (5, 4)),   # e3
+        ("white", Queen, (5, 2)),  # c3
+        ("black", Knight, (4, 7)), # h4
+        ("black", Queen, (6, 2)),  # c2 checking the white king
+        ("black", King, (7, 1)),   # b1
+    ])
+
+    details = position_details(board, "Illegal/imported position: both sides effectively checking, search ordering must still reject self-check")
+    expect(is_in_check(board, "white"), "Test setup error: white should be in check.")
+    expect(not has_legal_moves(board, "white"), "Test setup error: white should have no legal moves.")
+
+    pseudo_winning_move = ((5, 2), (6, 2))  # Qc3xc2 explodes Kb1 but leaves white king in check.
+    expect(
+        pseudo_winning_move in get_all_pseudo_legal_moves(board, "white"),
+        "Test setup error: expected pseudo-legal queen explosion move is missing.",
+    )
+    expect(
+        pseudo_winning_move not in get_all_legal_moves(board, "white"),
+        "Test setup error: illegal self-check king-kill should not be legal.",
+    )
+
+    for bot_class in (ChessBot,):
+        bot = bot_class(board, "white", {}, _DummyQueue(), _DummyEvent(), use_tablebase=False)
+        bot.stop_time = None
+        bot.time_check_mask = (1 << 30) - 1
+
+        alpha = -bot.MATE_SCORE
+        beta = bot.MATE_SCORE
+        qsearch_score = bot.qsearch(board, alpha, beta, "white", 0)
+        depth0_score = bot.negamax(board, 0, alpha, beta, "white", 0, set())
+        depth1_score = bot.negamax(board, 1, alpha, beta, "white", 0, set())
+
+        details.append(f"{bot_class.__name__} qsearch score: {qsearch_score}")
+        details.append(f"{bot_class.__name__} depth-0 negamax score: {depth0_score}")
+        details.append(f"{bot_class.__name__} depth-1 negamax score: {depth1_score}")
+
+        expect(
+            qsearch_score == -bot.MATE_SCORE,
+            f"Robustness failure: {bot_class.__name__}.qsearch accepted an illegal king-kill and returned {qsearch_score}.",
+        )
+        expect(
+            depth0_score == -bot.MATE_SCORE,
+            f"Robustness failure: {bot_class.__name__}.negamax(depth=0) accepted an illegal king-kill and returned {depth0_score}.",
+        )
+        expect(
+            depth1_score == -bot.MATE_SCORE,
+            f"Robustness failure: {bot_class.__name__}.negamax(depth=1) accepted an illegal king-kill and returned {depth1_score}.",
+        )
+
+    return details
+
+
 CASES = [
     TestCaseSpec(
         "move_tracking_edge_cases",
@@ -976,6 +1070,18 @@ CASES = [
         "engine_internals",
         "Verify NMP is suppressed when beta indicates a forced-mate line (abs(beta) >= MATE_SCORE - 1000).",
         case_regression_nmp_mate_blindness,
+    ),
+    TestCaseSpec(
+        "regression_no_legal_moves_without_check_qsearch",
+        "engine_internals",
+        "Verify qsearch treats a no-legal-moves loss as terminal even when the side to move is not in check.",
+        case_regression_no_legal_moves_without_check_qsearch,
+    ),
+    TestCaseSpec(
+        "robustness_illegal_position_king_kill_ordering",
+        "engine_internals",
+        "Verify search stays sane on illegal/imported positions instead of scoring an illegal enemy-king explosion as mate.",
+        case_robustness_illegal_position_king_kill_ordering,
     ),
     TestCaseSpec(
         "oracle_deep_fuzz",
