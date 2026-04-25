@@ -1710,17 +1710,15 @@ class EnhancedChessApp:
                     f.write("(insufficient data)\n")
                     return
 
-                # Column layout
-                C0, C1, C2, C3 = 20, 12, 12, 12
+                # Column layout (tab-separated for Excel paste compatibility)
                 def row(label, a_str, b_str, d_str):
-                    f.write(f"{label:<{C0}}{a_str:>{C1}}{b_str:>{C2}}{d_str:>{C3}}\n")
+                    f.write(f"{label}\t{a_str}\t{b_str}\t{d_str}\n")
 
                 def diff_str(a, b, fmt):
                     d = a - b
                     return ("+" if d > 0 else "") + format(d, fmt)
 
-                row("", mn, on, "Diff (A-B)")
-                f.write("-" * (C0 + C1 + C2 + C3) + "\n")
+                f.write(f"\t{mn}\t{on}\tDiff\n")
                 row("Moves", f"{ma['n']:,}", f"{oa['n']:,}", "")
                 if use_clock and ma['d_avg'] is not None and oa['d_avg'] is not None:
                     row("Avg depth", f"{ma['d_avg']:.1f}", f"{oa['d_avg']:.1f}",
@@ -1729,10 +1727,10 @@ class EnhancedChessApp:
                         diff_str(ma['d_max'], oa['d_max'], "d"))
                 row("Avg nodes", f"{ma['n_avg']:,.0f}", f"{oa['n_avg']:,.0f}",
                     diff_str(ma['n_avg'], oa['n_avg'], ",.0f"))
-                row("Avg time", f"{ma['t_avg']:.3f}s", f"{oa['t_avg']:.3f}s",
-                    diff_str(ma['t_avg'], oa['t_avg'], ".3f") + "s")
-                row("Max time", f"{ma['t_max']:.3f}s", f"{oa['t_max']:.3f}s",
-                    diff_str(ma['t_max'], oa['t_max'], ".3f") + "s")
+                row("Avg time (s)", f"{ma['t_avg']:.3f}", f"{oa['t_avg']:.3f}",
+                    diff_str(ma['t_avg'], oa['t_avg'], ".3f"))
+                row("Max time (s)", f"{ma['t_max']:.3f}", f"{oa['t_max']:.3f}",
+                    diff_str(ma['t_max'], oa['t_max'], ".3f"))
                 row("Avg KNPS", f"{ma['kn']:.1f}", f"{oa['kn']:.1f}",
                     diff_str(ma['kn'], oa['kn'], ".1f"))
 
