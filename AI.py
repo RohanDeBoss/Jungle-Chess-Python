@@ -1,4 +1,4 @@
-# AI.py (v113 - Never trust a fail high)
+# AI.py (v113.1 - Qsearch populates TT)
 
 import json
 import os
@@ -775,7 +775,7 @@ class ChessBot:
             elif tt_entry.flag == TT_FLAG_UPPERBOUND: beta  = min(beta,  tt_score)
             if alpha >= beta: return tt_score
 
-        if depth <= 0: return self.qsearch(board, alpha, beta, turn, ply)
+        if depth <= 0: return self.qsearch(board, alpha, beta, turn, ply, current_hash=hash_val)
 
         opponent_turn    = 'black' if turn == 'white' else 'white'
         is_in_check_flag = is_in_check(board, turn)
@@ -978,11 +978,24 @@ class ChessBot:
             if path_added: search_path.discard(hash_val)
 
 
-    def qsearch(self, board, alpha, beta, turn, ply):
+    def qsearch(self, board, alpha, beta, turn, ply, current_hash=None):
         self.nodes_searched += 1
         if (self.nodes_searched & self.time_check_mask) == 0:
             if self.cancellation_event.is_set() or (self.stop_time and time.time() > self.stop_time):
                 raise SearchCancelledException()
+
+        hash_val = current_hash if current_hash is not None else board_hash(board, turn)
+        
+        tt_entry = self.tt.get(hash_val)
+        if tt_entry:
+            tt_score = tt_entry.score
+            if tt_score >  self.MATE_SCORE - 1000: tt_score -= ply
+            elif tt_score < -self.MATE_SCORE + 1000: tt_score += ply
+
+            if tt_entry.flag == TT_FLAG_EXACT:       return tt_score
+            elif tt_entry.flag == TT_FLAG_LOWERBOUND: alpha = max(alpha, tt_score)
+            elif tt_entry.flag == TT_FLAG_UPPERBOUND: beta  = min(beta,  tt_score)
+            if alpha >= beta: return tt_score
 
         if len(board.white_pieces) + len(board.black_pieces) <= self.tb_probe_limit:
             tb_score_absolute = self.tb_manager.probe(board, turn)
@@ -1000,11 +1013,14 @@ class ChessBot:
             return self.evaluate_board(board, turn)
 
         self.used_heuristic_eval = True
+        original_alpha = alpha
         stand_pat        = self.evaluate_board(board, turn)
         is_in_check_flag = is_in_check(board, turn)
 
         if not is_in_check_flag:
-            if stand_pat >= beta: return beta
+            if stand_pat >= beta:
+                self._store_tt(hash_val, beta, 0, TT_FLAG_LOWERBOUND, None)
+                return beta
             alpha = max(alpha, stand_pat)
 
         if ply <= 4:
@@ -1049,15 +1065,20 @@ class ChessBot:
                 continue
 
             legal_moves_count += 1
-            search_score = -self.qsearch(board, -beta, -alpha, opponent_turn, ply + 1)
+            child_hash = incremental_hash(hash_val, record)
+            search_score = -self.qsearch(board, -beta, -alpha, opponent_turn, ply + 1, current_hash=child_hash)
             board.unmake_move(record)
 
-            if search_score >= beta: return beta
+            if search_score >= beta:
+                self._store_tt(hash_val, beta, 0, TT_FLAG_LOWERBOUND, None)
+                return beta
             alpha = max(alpha, search_score)
 
         if is_in_check_flag and legal_moves_count == 0:
             return -self.MATE_SCORE + ply
 
+        flag = TT_FLAG_EXACT if alpha > original_alpha else TT_FLAG_UPPERBOUND
+        self._store_tt(hash_val, alpha, 0, flag, None)
         return alpha
 
     def order_moves(self, board, moves, ply, hash_move, turn, return_meta=False, counter_move=None, prev_move_tuple=None):
@@ -1381,25 +1402,25 @@ class ChessBot:
 # --- Piece-Square Tables ---
 
 pawn_pst = [
-    [  0,   0,   0,   0,   0,   0,   0,   0],
-    [ 90,  90,  90,  90,  90,  90,  90,  90],
-    [ 50,  50,  50,  50,  55,  50,  50,  50],
-    [ 25,  30,  30,  45,  50,  30,  30,  25],
-    [ 15,  15,  20,  30,  35,  20,  15,  15],
-    [ 10,  10,  20,  25,  30,  20,  10,  10],
-    [  0,   0,   0,  -5, -10,  10,   0,   0],
-    [  0,   0,   0,   0,   0,   0,   0,   0]
+    [   0,    0,    0,    0,    0,    0,    0,    0],
+    [  90,   90,   90,   90,   90,   90,   90,   90],
+    [  50,   50,   50,   50,   55,   50,   50,   50],
+    [  25,   30,   30,   45,   50,   30,   30,   25],
+    [  15,   15,   20,   30,   35,   20,   15,   15],
+    [  10,   10,   20,   25,   30,   20,   10,   10],
+    [   0,    0,    0,   -5,  -10,   10,    0,    0],
+    [   0,    0,    0,    0,    0,    0,    0,    0]
 ]
 
 pawn_endgame_pst = [
-    [  0,   0,   0,   0,   0,   0,   0,   0],
-    [160, 160, 160, 160, 160, 160, 160, 160],
-    [ 80,  85,  85,  85,  85,  85,  85,  80],
-    [ 45,  50,  50,  55,  55,  50,  50,  45],
-    [ 25,  30,  30,  35,  35,  30,  30,  25],
-    [ 10,  15,  15,  20,  20,  15,  15,  10],
-    [  0,   5,   5,   5,   5,  15,   5,   0],
-    [  0,   0,   0,   0,   0,   0,   0,   0]
+    [   0,    0,    0,    0,    0,    0,    0,    0],
+    [ 160,  160,  160,  160,  160,  160,  160,  160],
+    [  80,   85,   85,   85,   85,   85,   85,   80],
+    [  45,   50,   50,   55,   55,   50,   50,   45],
+    [  25,   30,   30,   35,   35,   30,   30,   25],
+    [  10,   15,   15,   20,   20,   15,   15,   10],
+    [   0,    5,    5,    5,    5,   15,    5,    0],
+    [   0,    0,    0,    0,    0,    0,    0,    0]
 ]
 
 knight_pst = [
@@ -1410,7 +1431,7 @@ knight_pst = [
     [ -30,   22,   38,   52,   52,   38,   22,  -30],
     [ -45,   15,   30,   38,   38,   45,   15,  -45],
     [ -60,  -30,    8,   15,   15,    8,  -30,  -60],
-    [ -90,  -75,  -45,  -45,  -45,  -45,  -75,  -90],
+    [ -90,  -75,  -45,  -45,  -45,  -45,  -75,  -90]
 ]
 
 bishop_pst = [
@@ -1421,7 +1442,7 @@ bishop_pst = [
     [ -15,    8,   22,   15,   15,   22,    8,  -15],
     [ -15,   15,   15,    8,    8,   15,   15,  -15],
     [ -15,    8,    0,    0,    0,    0,    8,  -15],
-    [ -30,  -15,  -15,  -22,  -22,  -15,  -15,  -30],
+    [ -30,  -15,  -15,  -22,  -22,  -15,  -15,  -30]
 ]
 
 rook_pst = [
@@ -1432,7 +1453,7 @@ rook_pst = [
     [   8,    0,    0,    8,    8,    0,    0,    8],
     [   8,    0,    0,    8,    8,    0,    0,    8],
     [   0,    0,    0,    8,    8,    0,    0,    0],
-    [  10,   -5,    0,   15,   15,    0,   -5,   10],
+    [  10,   -5,    0,   15,   15,    0,   -5,   10]
 ]
 
 queen_pst = [
@@ -1443,7 +1464,7 @@ queen_pst = [
     [  -8,    8,   30,   45,   45,   30,    8,   -8],
     [ -15,    8,   22,   22,   22,   22,    8,  -15],
     [ -30,  -15,    0,    8,    8,    0,  -15,  -30],
-    [ -45,  -30,  -30,  -15,  -30,  -30,  -30,  -45],
+    [ -45,  -30,  -30,  -15,  -30,  -30,  -30,  -45]
 ]
 
 king_midgame_pst = [
@@ -1454,7 +1475,7 @@ king_midgame_pst = [
     [ -45,  -60,  -60,  -60,  -60,  -60,  -60,  -45],
     [ -15,  -15,  -30,  -30,  -30,  -30,  -15,  -15],
     [  -8,    0,    8,    8,    8,    8,    0,   -8],
-    [ -30,   15,   15,   15,   30,   15,   15,  -30],
+    [ -30,   15,   15,   15,   30,   15,   15,  -30]
 ]
 
 king_endgame_pst = [
@@ -1465,7 +1486,7 @@ king_endgame_pst = [
     [ -45,    8,   22,   30,   30,   22,    8,  -45],
     [ -45,    0,   15,   15,   15,   15,    0,  -45],
     [ -45,    0,    8,    8,    8,    8,    0,  -45],
-    [ -60,  -45,  -15,  -15,  -15,  -15,  -45,  -60],
+    [ -60,  -45,  -15,  -15,  -15,  -15,  -45,  -60]
 ]
 
 PIECE_SQUARE_TABLES = {
