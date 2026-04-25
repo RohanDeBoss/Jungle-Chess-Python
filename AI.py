@@ -1,4 +1,4 @@
-# AI.py (v112.2 - fix performance leak)
+# AI.py (v112 - Ghost fix, improved move ordering efficiency by fixing a bug in continuation history)
 import json
 import os
 import time
@@ -547,6 +547,7 @@ class ChessBot:
                 target_depth = 100
             else:
                 self.stop_time = None
+                # self.time_check_mask is now set in __init__
                 target_depth = self.search_depth
 
             for current_depth in range(1, target_depth + 1):
@@ -867,11 +868,14 @@ class ChessBot:
                         legal_moves_count > self.LMR_MOVE_COUNT_THRESHOLD and
                         not is_in_check_flag and not is_good_tactic):
                     
+                    # 1. Base reduction with much gentler scaling
                     reduction = 1 + (depth // 7) + (legal_moves_count // 12)
                     
+                    # 2. Protect likely refutations
                     if (ply < len(self.killer_moves) and move in self.killer_moves[ply]) or move == c_move:
                         reduction -= 1
                         
+                    # 3. JUNGLE HEURISTIC: Protect volatile quiet pieces
                     if type(moving_piece) is Knight:
                         reduction -= 1
                     elif type(moving_piece) is Queen:
@@ -890,9 +894,11 @@ class ChessBot:
                         if attacks_enemy:
                             reduction -= 1
                         
+                    # 4. History influence (only reward good moves, don't punish bad ones as hard)
                     if history_table[f_sq][t_sq] > 250_000:
                         reduction -= 1
                         
+                    # 5. Safety Clamp
                     reduction = max(0, min(reduction, depth - 2))
 
                 search_depth_child = depth - 1 - reduction
@@ -929,6 +935,7 @@ class ChessBot:
                             bonus = depth * depth
                             ht    = self.history_heuristic_table[c_idx]
                             
+                            # Gravity update for the successful move
                             ht[f_sq][t_sq] += bonus - (ht[f_sq][t_sq] * bonus) // 2_000_000
                             
                             # --- FIXED: Update Continuation History ---
@@ -941,6 +948,7 @@ class ChessBot:
                                 ch_table = self.continuation_history[c_idx][prev_pt_idx][prev_to_sq][mp_idx]
                                 ch_table[t_sq] += bonus - (ch_table[t_sq] * bonus) // 64_000
                             
+                            # Gravity penalty for the failed quiet moves
                             for f_move in quiet_moves_tried:
                                 if f_move != move:
                                     (fr1, fc1), (fr2, fc2) = f_move
@@ -985,25 +993,6 @@ class ChessBot:
 
         if is_insufficient_material(board): return self.DRAW_SCORE
 
-        original_alpha = alpha  # <-- FIXED: Capture original_alpha immediately
-
-        # --- Q-SEARCH TT PROBE (v112.1 optimization) ---
-        # In Jungle Chess, high transpositional density from AoE effects means
-        # the same tactical positions are reached via different move orders.
-        # Probing the TT here prevents recalculating millions of duplicate explosions.
-        hash_val = board_hash(board, turn)
-        tt_entry = self.tt.get(hash_val)
-        if tt_entry:
-            tt_score = tt_entry.score
-            if tt_score >  self.MATE_SCORE - 1000: tt_score -= ply
-            elif tt_score < -self.MATE_SCORE + 1000: tt_score += ply
-
-            if tt_entry.flag == TT_FLAG_EXACT:       return tt_score
-            elif tt_entry.flag == TT_FLAG_LOWERBOUND: alpha = max(alpha, tt_score)
-            elif tt_entry.flag == TT_FLAG_UPPERBOUND: beta  = min(beta,  tt_score)
-            if alpha >= beta: return tt_score
-        # ----
-
         if ply >= self.MAX_Q_SEARCH_DEPTH:
             self.used_heuristic_eval = True
             return self.evaluate_board(board, turn)
@@ -1013,9 +1002,7 @@ class ChessBot:
         is_in_check_flag = is_in_check(board, turn)
 
         if not is_in_check_flag:
-            if stand_pat >= beta:
-                self._store_tt(hash_val, beta, 0, TT_FLAG_LOWERBOUND, None)
-                return beta
+            if stand_pat >= beta: return beta
             alpha = max(alpha, stand_pat)
 
         if ply <= 4:
@@ -1053,9 +1040,7 @@ class ChessBot:
 
             if not board.find_king_pos(opponent_turn):
                 board.unmake_move(record)
-                result = self.MATE_SCORE - ply
-                # Don't cache mate positions; they're terminal
-                return result
+                return self.MATE_SCORE - ply
 
             if is_in_check(board, turn):
                 board.unmake_move(record)
@@ -1065,20 +1050,12 @@ class ChessBot:
             search_score = -self.qsearch(board, -beta, -alpha, opponent_turn, ply + 1)
             board.unmake_move(record)
 
-            if search_score >= beta:
-                # Beta cutoff: store as lower bound
-                self._store_tt(hash_val, beta, 0, TT_FLAG_LOWERBOUND, None)
-                return beta
+            if search_score >= beta: return beta
             alpha = max(alpha, search_score)
 
         if is_in_check_flag and legal_moves_count == 0:
-            result = -self.MATE_SCORE + ply
-            # Don't cache mate positions; they're terminal
-            return result
+            return -self.MATE_SCORE + ply
 
-        # --- FIXED: Store final result to TT using proper bounds logic ---
-        flag = TT_FLAG_EXACT if alpha > original_alpha else TT_FLAG_UPPERBOUND
-        self._store_tt(hash_val, alpha, 0, flag, None)
         return alpha
 
     def order_moves(self, board, moves, ply, hash_move, turn, return_meta=False, counter_move=None, prev_move_tuple=None):
