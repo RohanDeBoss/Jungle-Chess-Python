@@ -1681,15 +1681,18 @@ class EnhancedChessApp:
         def _summarise(stats):
             if not stats: return None
             n     = len(stats)
-            num_d = [int(x['depth']) for x in stats if x['depth'].isdigit()]
+            num_d = sorted(int(x['depth']) for x in stats if x['depth'].isdigit())
+            def median(lst):
+                m = len(lst) // 2
+                return (lst[m] if len(lst) % 2 else (lst[m-1] + lst[m]) / 2) if lst else None
             return {
                 'n':     n,
                 't_avg': sum(x['time']  for x in stats) / n,
                 't_max': max(x['time']  for x in stats),
                 'n_avg': sum(x['nodes'] for x in stats) / n,
                 'kn':    sum(x['knps']  for x in stats) / n,
-                'd_avg': sum(num_d) / len(num_d) if num_d else None,
-                'd_max': max(num_d)               if num_d else None,
+                'd_med': median(num_d),
+                'd_max': max(num_d) if num_d else None,
             }
 
         try:
@@ -1720,9 +1723,9 @@ class EnhancedChessApp:
 
                 f.write(f"\t{mn}\t{on}\tDiff\n")
                 row("Moves", f"{ma['n']:,}", f"{oa['n']:,}", "")
-                if use_clock and ma['d_avg'] is not None and oa['d_avg'] is not None:
-                    row("Avg depth", f"{ma['d_avg']:.1f}", f"{oa['d_avg']:.1f}",
-                        diff_str(ma['d_avg'], oa['d_avg'], ".1f"))
+                if use_clock and ma['d_med'] is not None and oa['d_med'] is not None:
+                    row("Median depth", f"{ma['d_med']:.1f}", f"{oa['d_med']:.1f}",
+                        diff_str(ma['d_med'], oa['d_med'], ".1f"))
                     row("Max depth", f"{ma['d_max']}", f"{oa['d_max']}",
                         diff_str(ma['d_max'], oa['d_max'], "d"))
                 row("Avg nodes", f"{ma['n_avg']:,.0f}", f"{oa['n_avg']:,.0f}",
