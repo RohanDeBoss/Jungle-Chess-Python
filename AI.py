@@ -1,4 +1,4 @@
-# AI.py (v113.2 - Qsearch positions only saved as stan pat Eval TT not main TT)
+# AI.py (v114 - Continuation History Fix + Zero-Swing Tactic Detection fix)
 
 import json
 import os
@@ -854,7 +854,7 @@ class ChessBot:
                     continue
 
                 legal_moves_count += 1
-                if not is_good_tactic: quiet_moves_tried.append(move)
+                if not is_good_tactic: quiet_moves_tried.append((move, moving_piece))
 
                 if futility_prune and not is_good_tactic and legal_moves_count > 1:
                     # SAFETY GUARD: Never prune a quiet move that delivers check.
@@ -952,12 +952,20 @@ class ChessBot:
                                 ch_table[t_sq] += bonus - (ch_table[t_sq] * bonus) // 64_000
                             
                             # Gravity penalty for the failed quiet moves
-                            for f_move in quiet_moves_tried:
+                            for f_move, f_mp in quiet_moves_tried:
                                 if f_move != move:
                                     (fr1, fc1), (fr2, fc2) = f_move
                                     ff = fr1 * 8 + fc1
                                     ft = fr2 * 8 + fc2
                                     ht[ff][ft] -= bonus + (ht[ff][ft] * bonus) // 2_000_000
+                                    
+                                    if prev_move_tuple:
+                                        prev_move, prev_pt_idx = prev_move_tuple
+                                        pr, pc = prev_move[1]
+                                        prev_to_sq = pr * 8 + pc
+                                        f_mp_idx = PIECE_TYPE_IDX[type(f_mp)]
+                                        ch_table = self.continuation_history[c_idx][prev_pt_idx][prev_to_sq][f_mp_idx]
+                                        ch_table[ft] -= bonus + (ch_table[ft] * bonus) // 64_000
 
                     sto = beta
                     if sto >  self.MATE_SCORE - 1000: sto = beta + ply
@@ -1036,7 +1044,7 @@ class ChessBot:
             (r1, c1), (r2, c2) = move
             moving_piece = board.grid[r1][c1]
             target_piece = board.grid[r2][c2]
-            swing = fast_approximate_material_swing(board, move, moving_piece, target_piece, ORDERING_VALUES)
+            swing, is_tactic = fast_approximate_material_swing(board, move, moving_piece, target_piece, ORDERING_VALUES)
 
             # In Jungle Chess, detonations often result in negative immediate 
             # material swings, but they are highly forcing. We MUST NOT prune them just for being < 0.
@@ -1089,13 +1097,11 @@ class ChessBot:
             target_piece = board.grid[r2][c2]
             ptype = type(moving_piece)
 
-            swing = fast_approximate_material_swing(board, move, moving_piece, target_piece, ORDERING_VALUES)
-            is_capture_or_promo = (target_piece is not None or
-                                   (ptype is Pawn and (r2 == 0 or r2 == ROWS - 1)))
+            swing, is_tactic = fast_approximate_material_swing(board, move, moving_piece, target_piece, ORDERING_VALUES)
             
             # In Jungle Chess, volatile moves (explosions, evaporations, piercings) 
             # are ALWAYS critical tactics, even if the net material swing is negative.
-            is_good_tactic = is_capture_or_promo or (swing != 0)
+            is_good_tactic = is_tactic
 
             if move == hash_move:
                 score = self.BONUS_PV_MOVE

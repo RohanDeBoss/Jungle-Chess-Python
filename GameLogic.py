@@ -1,4 +1,4 @@
-# GameLogic.py (v57 - Precomputed bishop zigzag ray, Removed repeated king lookups in the hottest path by using cached king positions)
+# GameLogic.py (v58 - Zero-Swing Tactic Detection)
 
 
 # -----------------------------------------------------------------------
@@ -1001,14 +1001,17 @@ def generate_all_tactical_moves(board, color):
 
 def fast_approximate_material_swing(board, move, moving_piece, target_piece, piece_values):
     swing   = 0
+    is_tactic = False
     my_type = type(moving_piece)
     my_color = moving_piece.color
 
     if target_piece is not None:
         swing += piece_values[type(target_piece)]
+        is_tactic = True
 
     if my_type is Pawn and move[1][0] == moving_piece.promo_rank:
         swing += piece_values[Queen] - piece_values[Pawn]
+        is_tactic = True
 
     if my_type is Queen and target_piece is not None:
         swing -= piece_values[Queen]
@@ -1016,7 +1019,8 @@ def fast_approximate_material_swing(board, move, moving_piece, target_piece, pie
             adj = board.grid[r][c]
             if adj and adj.color != my_color:
                 swing += piece_values[type(adj)]
-        return swing
+                is_tactic = True
+        return swing, is_tactic
 
     pierced_knights = []
     if my_type is Rook:
@@ -1028,6 +1032,7 @@ def fast_approximate_material_swing(board, move, moving_piece, target_piece, pie
             target = board.grid[cr][cc]
             if target and target.color != my_color:
                 swing += piece_values[type(target)]
+                is_tactic = True
                 if type(target) is Knight:
                     pierced_knights.append((cr, cc))
             cr += dr
@@ -1039,6 +1044,7 @@ def fast_approximate_material_swing(board, move, moving_piece, target_piece, pie
             target = board.grid[r][c]
             if target and target.color != my_color:
                 swing += piece_values[type(target)]
+                is_tactic = True
                 if type(target) is Knight:
                     # Enemy knight passively evaporates us and potentially our allies
                     for pr, pc in KNIGHT_ATTACKS_FROM[(r, c)]:
@@ -1051,7 +1057,7 @@ def fast_approximate_material_swing(board, move, moving_piece, target_piece, pie
                             if ptarget and ptarget.color == my_color and ptarget not in seen_passive:
                                 swing -= piece_values[type(ptarget)]
                                 seen_passive.add(ptarget)
-        return swing
+        return swing, is_tactic
 
     for r, c in KNIGHT_ATTACKS_FROM[move[1]]:
         pk = board.grid[r][c]
@@ -1061,9 +1067,10 @@ def fast_approximate_material_swing(board, move, moving_piece, target_piece, pie
             evap_type = (Queen if (my_type is Pawn and move[1][0] == moving_piece.promo_rank)
                          else my_type)
             swing -= piece_values[evap_type]
+            is_tactic = True
             break
 
-    return swing
+    return swing, is_tactic
 
 
 def format_move(move):
