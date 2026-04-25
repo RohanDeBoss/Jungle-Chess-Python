@@ -1,4 +1,5 @@
-# AI.py (v112 - Ghost fix, improved move ordering efficiency by fixing a bug in continuation history)
+# AI.py (v113 - Never trust a fail high)
+
 import json
 import os
 import time
@@ -911,9 +912,10 @@ class ChessBot:
                 else: # Principal Variation Search (PVS)
                     score = -self.negamax(board, search_depth_child, -(alpha + 1), -alpha,
                                         opponent_turn, ply + 1, search_path, child_hash, next_prev_tuple, extensions)
-                    if alpha < score < beta:
-                        score = -self.negamax(board, depth - 1, -beta, -alpha,
-                                            opponent_turn, ply + 1, search_path, child_hash, next_prev_tuple, extensions)
+                    if score > alpha:
+                        if reduction > 0 or score < beta:
+                            score = -self.negamax(board, depth - 1, -beta, -alpha,
+                                                opponent_turn, ply + 1, search_path, child_hash, next_prev_tuple, extensions)
 
                 board.unmake_move(record)
 
