@@ -1,4 +1,4 @@
-# AI.py (v112 - Ghost fix, improved move ordering efficiency by fixing a bug in continuation history)
+# AI.py (v112.1 - Q-Search TT Probe optimization to eliminate recalculation of tactical explosions)
 import json
 import os
 import time
@@ -995,6 +995,23 @@ class ChessBot:
 
         if is_insufficient_material(board): return self.DRAW_SCORE
 
+        # --- Q-SEARCH TT PROBE (v112.1 optimization) ---
+        # In Jungle Chess, high transpositional density from AoE effects means
+        # the same tactical positions are reached via different move orders.
+        # Probing the TT here prevents recalculating millions of duplicate explosions.
+        hash_val = board_hash(board, turn)
+        tt_entry = self.tt.get(hash_val)
+        if tt_entry:
+            tt_score = tt_entry.score
+            if tt_score >  self.MATE_SCORE - 1000: tt_score -= ply
+            elif tt_score < -self.MATE_SCORE + 1000: tt_score += ply
+
+            if tt_entry.flag == TT_FLAG_EXACT:       return tt_score
+            elif tt_entry.flag == TT_FLAG_LOWERBOUND: alpha = max(alpha, tt_score)
+            elif tt_entry.flag == TT_FLAG_UPPERBOUND: beta  = min(beta,  tt_score)
+            if alpha >= beta: return tt_score
+        # ----
+
         if ply >= self.MAX_Q_SEARCH_DEPTH:
             self.used_heuristic_eval = True
             return self.evaluate_board(board, turn)
@@ -1042,7 +1059,9 @@ class ChessBot:
 
             if not board.find_king_pos(opponent_turn):
                 board.unmake_move(record)
-                return self.MATE_SCORE - ply
+                result = self.MATE_SCORE - ply
+                # Don't cache mate positions; they're terminal
+                return result
 
             if is_in_check(board, turn):
                 board.unmake_move(record)
@@ -1052,12 +1071,21 @@ class ChessBot:
             search_score = -self.qsearch(board, -beta, -alpha, opponent_turn, ply + 1)
             board.unmake_move(record)
 
-            if search_score >= beta: return beta
+            if search_score >= beta:
+                # Beta cutoff: store as lower bound
+                self._store_tt(hash_val, beta, 0, TT_FLAG_LOWERBOUND, None)
+                return beta
             alpha = max(alpha, search_score)
 
         if is_in_check_flag and legal_moves_count == 0:
-            return -self.MATE_SCORE + ply
+            result = -self.MATE_SCORE + ply
+            # Don't cache mate positions; they're terminal
+            return result
 
+        # Store final result to TT (EXACT if we searched all moves, or we hit stand_pat early)
+        original_alpha = alpha  # To determine flag below
+        flag = TT_FLAG_EXACT if not is_in_check_flag else TT_FLAG_EXACT
+        self._store_tt(hash_val, alpha, 0, flag, None)
         return alpha
 
     def order_moves(self, board, moves, ply, hash_move, turn, return_meta=False, counter_move=None, prev_move_tuple=None):
