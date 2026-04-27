@@ -1,4 +1,4 @@
-# OPAI.py (v114.2 - only use fams + speedup)
+# OPAI.py (v114.3 - only use fams + speedup, support for gamelogic v59.1)
 
 import json
 import os
@@ -98,21 +98,22 @@ def board_hash(board, turn):
         h ^= ZOBRIST_TURN
     return h
 
-def incremental_hash(parent_hash, record):
+def incremental_hash(parent_hash, record_tuple):
     h = parent_hash ^ ZOBRIST_TURN
     arr = ZOBRIST_ARRAY
     idx = PIECE_TYPE_IDX
 
-    mp     = record.moving_piece
+    start, end, mp, removed_pieces, added_pieces = record_tuple
+    
     c_idx  = 0 if mp.color == 'white' else 1
     p_idx  = idx[type(mp)]
-    sr, sc = record.start
-    er, ec = record.end
+    sr, sc = start
+    er, ec = end
 
     h ^= arr[c_idx][p_idx][sr][sc]
     
     mp_survived = True
-    for piece, r, c in record.removed_pieces:
+    for piece, r, c in removed_pieces:
         if piece is mp:
             mp_survived = False
         else:
@@ -122,7 +123,7 @@ def incremental_hash(parent_hash, record):
     if mp_survived:
         h ^= arr[c_idx][p_idx][er][ec]
 
-    for piece, r, c in record.added_pieces:
+    for piece, r, c in added_pieces:
         pc_idx = 0 if piece.color == 'white' else 1
         h ^= arr[pc_idx][idx[type(piece)]][r][c]
 
@@ -703,7 +704,7 @@ class OpponentAI:
 
             search_path = {root_hash}
             try:
-                mp = record.moving_piece
+                mp = record[2]
                 next_prev_tuple = (move, PIECE_TYPE_IDX[type(mp)])
 
                 if alpha_floor is not None:
@@ -1145,7 +1146,6 @@ class OpponentAI:
             return self.DRAW_SCORE
 
         grid = board.grid
-        PST  = PIECE_SQUARE_TABLES
 
         white_pawn_files = [False] * COLS
         black_pawn_files = [False] * COLS

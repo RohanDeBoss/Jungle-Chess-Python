@@ -1,4 +1,4 @@
-# GameLogic.py (v59 - Removed a bunch of code)
+# GameLogic.py (v59.1 - replaces the yield generators in all pieces with direct list accumulation)
 
 
 # -----------------------------------------------------------------------
@@ -111,50 +111,58 @@ class King(Piece):
     def symbol(self): return "♔" if self.color == "white" else "♚"
 
     def get_valid_moves(self, board, pos):
+        moves = []
         r_start, c_start = pos
+        opp = self.opponent_color
+        grid = board.grid
         for dr, dc in DIRECTIONS['king']:
             r1, c1 = r_start + dr, c_start + dc
             if 0 <= r1 < ROWS and 0 <= c1 < COLS:
-                target = board.grid[r1][c1]
-                if target is None or target.color == self.opponent_color:
-                    yield (r1, c1)
+                target = grid[r1][c1]
+                if target is None or target.color == opp:
+                    moves.append((r1, c1))
                     if target is None:
                         r2, c2 = r1 + dr, c1 + dc
                         if 0 <= r2 < ROWS and 0 <= c2 < COLS:
-                            t2 = board.grid[r2][c2]
-                            if t2 is None or t2.color == self.opponent_color:
-                                yield (r2, c2)
+                            t2 = grid[r2][c2]
+                            if t2 is None or t2.color == opp:
+                                moves.append((r2, c2))
+        return moves
 
 
 class Queen(Piece):
     def symbol(self): return "♕" if self.color == "white" else "♛"
 
     def get_valid_moves(self, board, pos):
-        grid        = board.grid
+        moves = []
+        grid = board.grid
         start_index = pos[0] * COLS + pos[1]
         for i in range(8):
             for r, c in RAYS[start_index][i]:
                 target = grid[r][c]
                 if target is None:
-                    yield (r, c)
+                    moves.append((r, c))
                 else:
                     if target.color != self.color:
-                        yield (r, c)
+                        moves.append((r, c))
                     break
+        return moves
 
 
 class Rook(Piece):
     def symbol(self): return "♖" if self.color == "white" else "♜"
 
     def get_valid_moves(self, board, pos):
-        grid        = board.grid
+        moves = []
+        grid = board.grid
         start_index = pos[0] * COLS + pos[1]
         for i in range(4):
             for r, c in RAYS[start_index][i]:
                 target = grid[r][c]
                 if target and target.color == self.color:
                     break
-                yield (r, c)
+                moves.append((r, c))
+        return moves
 
 
 class Bishop(Piece):
@@ -184,18 +192,19 @@ class Bishop(Piece):
                     break
                 moves.add((r, c))
 
-        for m in moves:
-            yield m
+        return list(moves)
 
 
 class Knight(Piece):
     def symbol(self): return "♘" if self.color == "white" else "♞"
 
     def get_valid_moves(self, board, pos):
+        moves = []
         grid = board.grid
         for r, c in KNIGHT_ATTACKS_FROM[pos]:
             if grid[r][c] is None:
-                yield (r, c)
+                moves.append((r, c))
+        return moves
 
 
 class Pawn(Piece):
@@ -208,59 +217,32 @@ class Pawn(Piece):
     def symbol(self): return "♙" if self.color == "white" else "♟"
 
     def get_valid_moves(self, board, pos):
+        moves = []
         r, c      = pos
         direction = self.direction
         grid      = board.grid
+        opp       = self.opponent_color
 
         one_r = r + direction
         if 0 <= one_r < ROWS:
             target1 = grid[one_r][c]
-            if target1 is None or target1.color == self.opponent_color:
-                yield (one_r, c)
+            if target1 is None or target1.color == opp:
+                moves.append((one_r, c))
                 if r == self.starting_row and target1 is None:
                     two_r   = r + (2 * direction)
                     target2 = grid[two_r][c]
-                    if target2 is None or target2.color == self.opponent_color:
-                        yield (two_r, c)
+                    if target2 is None or target2.color == opp:
+                        moves.append((two_r, c))
 
         if c > 0:
             target = grid[r][c - 1]
-            if target and target.color == self.opponent_color:
-                yield (r, c - 1)
+            if target and target.color == opp:
+                moves.append((r, c - 1))
         if c < COLS - 1:
             target = grid[r][c + 1]
-            if target and target.color == self.opponent_color:
-                yield (r, c + 1)
-
-
-# -----------------------------------------------------------------------
-# MoveRecord
-# -----------------------------------------------------------------------
-class MoveRecord:
-    """
-    Lightweight snapshot of every board mutation made by make_move_track(),
-    used by unmake_move() to restore the position without cloning.
-
-    removed_pieces : list[(piece, r, c)]  — every piece taken off the board
-    added_pieces   : list[(piece, r, c)]  — pieces placed (promotions only)
-
-    Design invariants
-    -----------------
-    * The moving piece appears in removed_pieces when it self-destructs
-      (queen explosion, knight self-evap, pawn promotion).  unmake_move skips
-      it there and restores it via the 'mp_pos is None' branch.
-    * Pieces created this move (promoted queens) appear in added_pieces AND
-      possibly in removed_pieces (if immediately evaporated).  added_ids in
-      unmake_move guards against double-restore.
-    """
-    __slots__ = ('start', 'end', 'moving_piece', 'removed_pieces', 'added_pieces')
-
-    def __init__(self, start, end, moving_piece):
-        self.start          = start
-        self.end            = end
-        self.moving_piece   = moving_piece
-        self.removed_pieces = []
-        self.added_pieces   = []
+            if target and target.color == opp:
+                moves.append((r, c + 1))
+        return moves
 
 
 # -----------------------------------------------------------------------
@@ -391,18 +373,14 @@ class Board:
     # make_move_track / unmake_move  (search path — no cloning)
     # -----------------------------------------------------------------------
     def make_move_track(self, start, end):
-        """
-        Execute the move exactly like make_move() but return a MoveRecord that
-        allows the board to be restored perfectly via unmake_move().
-        """
         moving_piece = self.grid[start[0]][start[1]]
-        record  = MoveRecord(start, end, moving_piece)
-        removed = record.removed_pieces
-        mc      = moving_piece.color
+        removed = []
+        added = []
+        mc = moving_piece.color
         mp_type = type(moving_piece)
 
         target_piece = self.grid[end[0]][end[1]]
-        is_capture   = target_piece is not None
+        is_capture = target_piece is not None
 
         # ── 1. Rook piercing ──
         if mp_type is Rook:
@@ -441,21 +419,18 @@ class Board:
             self.remove_piece(end[0], end[1])
             new_queen = Queen(mc)
             self.add_piece(new_queen, end[0], end[1])
-            record.added_pieces.append((new_queen, end[0], end[1]))
+            added.append((new_queen, end[0], end[1]))
 
         # ── 6. Knight AOE ──
         grid = self.grid
         if mp_type is Knight:
-            enemy_knight_coords =[]
-            
-            # Step 6a: Identify enemy knights in blast radius
+            enemy_knight_coords = []
             for r, c in KNIGHT_ATTACKS_FROM[end]:
                 target = grid[r][c]
                 if target is not None and target.color != mc:
                     if type(target) is Knight:
                         enemy_knight_coords.append((r, c))
             
-            # Step 6b: Enemy knights counter-evaporate
             for ek_r, ek_c in enemy_knight_coords:
                 for r, c in KNIGHT_ATTACKS_FROM[(ek_r, ek_c)]:
                     target = grid[r][c]
@@ -463,7 +438,6 @@ class Board:
                         removed.append((target, r, c))
                         self.remove_piece(r, c)
             
-            # Step 6c: The moving knight evaporates targets
             for r, c in KNIGHT_ATTACKS_FROM[end]:
                 target = grid[r][c]
                 if target is not None and target.color != mc:
@@ -480,50 +454,42 @@ class Board:
                         self.remove_piece(end[0], end[1])
                         break
 
-        return record
+        return (start, end, moving_piece, removed, added)
 
-    def unmake_move(self, record):
-        """Restore the board to the exact state before make_move_track()."""
-        start        = record.start
-        moving_piece = record.moving_piece
-        removed      = record.removed_pieces
+    def unmake_move(self, record_tuple):
+        start, end, moving_piece, removed, added = record_tuple
+        added_ids = {id(p) for p, _r, _c in added} if added else set()
 
-        added_ids = {id(p) for p, _r, _c in record.added_pieces} if record.added_pieces else set()
-
-        # ── 1. Undo promoted pieces ──
-        for piece, r, c in reversed(record.added_pieces):
+        for piece, r, c in reversed(added):
             if piece.pos is not None:
                 self.grid[r][c] = None
-                piece.pos       = None
-                self._list_remove(piece)   # O(1)
+                piece.pos = None
+                self._list_remove(piece)
                 self.piece_counts[piece.color][type(piece)] -= 1
 
-        # ── 2. Restore moving piece to start ──
         mp_pos = moving_piece.pos
         if mp_pos is not None:
             self.grid[mp_pos[0]][mp_pos[1]] = None
-            self.grid[start[0]][start[1]]   = moving_piece
+            self.grid[start[0]][start[1]] = moving_piece
             moving_piece.pos = start
             if type(moving_piece) is King:
                 if moving_piece.color == 'white': self.white_king_pos = start
                 else:                             self.black_king_pos = start
         else:
-            # Was removed this move (queen explosion / knight self-evap / promo)
             self.grid[start[0]][start[1]] = moving_piece
             moving_piece.pos = start
-            self._list_append(moving_piece)   # O(1)
+            self._list_append(moving_piece)
             self.piece_counts[moving_piece.color][type(moving_piece)] += 1
             if type(moving_piece) is King:
                 if moving_piece.color == 'white': self.white_king_pos = start
                 else:                             self.black_king_pos = start
 
-        # ── 3. Restore all removed pieces ──
         for piece, r, c in removed:
             if piece is moving_piece:   continue
             if id(piece) in added_ids:  continue
             self.grid[r][c] = piece
-            piece.pos       = (r, c)
-            self._list_append(piece)   # O(1)
+            piece.pos = (r, c)
+            self._list_append(piece)
             self.piece_counts[piece.color][type(piece)] += 1
             if type(piece) is King:
                 if piece.color == 'white': self.white_king_pos = (r, c)
