@@ -1022,7 +1022,7 @@ class OpponentAI:
             (r1, c1), (r2, c2) = move
             moving_piece = board.grid[r1][c1]
             target_piece = board.grid[r2][c2]
-            swing = fast_approximate_material_swing(board, move, moving_piece, target_piece, ORDERING_VALUES)
+            swing, is_tactic = fast_approximate_material_swing(board, move, moving_piece, target_piece, ORDERING_VALUES)
 
             # In Jungle Chess, detonations often result in negative immediate 
             # material swings, but they are highly forcing. We MUST NOT prune them just for being < 0.
@@ -1074,7 +1074,7 @@ class OpponentAI:
             target_piece = board.grid[r2][c2]
             ptype = type(moving_piece)
 
-            swing = fast_approximate_material_swing(board, move, moving_piece, target_piece, ORDERING_VALUES)
+            swing, is_tactic = fast_approximate_material_swing(board, move, moving_piece, target_piece, ORDERING_VALUES)
             is_capture_or_promo = (target_piece is not None or
                                    (ptype is Pawn and (r2 == 0 or r2 == ROWS - 1)))
             
