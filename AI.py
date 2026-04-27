@@ -1090,10 +1090,11 @@ class ChessBot:
         is_opening = (ply <= self.OPENING_BONUS_MAX_PLY and self._is_opening_position(board))
         history_table = self.history_heuristic_table[c_idx]
 
+        grid = board.grid
         for move in moves:
             (r1, c1), (r2, c2) = move
-            moving_piece = board.grid[r1][c1]
-            target_piece = board.grid[r2][c2]
+            moving_piece = grid[r1][c1]
+            target_piece = grid[r2][c2]
             ptype = type(moving_piece)
 
             swing, is_tactic = fast_approximate_material_swing(board, move, moving_piece, target_piece, ORDERING_VALUES)

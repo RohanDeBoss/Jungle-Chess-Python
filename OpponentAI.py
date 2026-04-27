@@ -1,4 +1,5 @@
-# OPAI.py (v112 - Ghost fix, fixed a bug in continuation history, new baseline)
+# OPAI.py (v114.2 - only use fams + speedup)
+
 import json
 import os
 import time
@@ -284,12 +285,10 @@ class OpponentAI:
 
         self.tb_manager = TablebaseManager()
 
-        # --- 2. ADD THIS BLOCK ---
         if not use_tablebase:
             # Neuter the probe method so it does nothing and returns None,
             # causing the engine to fall back to its own search.
             self.tb_manager.probe = lambda b, t: None
-        # -------------------------
 
         if bot_name is None:
             self.bot_name = "OP Bot" if self.__class__.__name__ == "OpponentAI" else "AI Bot"
@@ -300,6 +299,7 @@ class OpponentAI:
 
     def _initialize_search_state(self):
         self.tt = {}
+        self.eval_tt = {}
         self.nodes_searched = 0
         self.used_heuristic_eval = False
         self.tb_hits = 0
@@ -776,7 +776,7 @@ class OpponentAI:
             elif tt_entry.flag == TT_FLAG_UPPERBOUND: beta  = min(beta,  tt_score)
             if alpha >= beta: return tt_score
 
-        if depth <= 0: return self.qsearch(board, alpha, beta, turn, ply)
+        if depth <= 0: return self.qsearch(board, alpha, beta, turn, ply, current_hash=hash_val)
 
         opponent_turn    = 'black' if turn == 'white' else 'white'
         is_in_check_flag = is_in_check(board, turn)
@@ -854,7 +854,7 @@ class OpponentAI:
                     continue
 
                 legal_moves_count += 1
-                if not is_good_tactic: quiet_moves_tried.append(move)
+                if not is_good_tactic: quiet_moves_tried.append((move, moving_piece))
 
                 if futility_prune and not is_good_tactic and legal_moves_count > 1:
                     # SAFETY GUARD: Never prune a quiet move that delivers check.
@@ -913,9 +913,10 @@ class OpponentAI:
                 else: # Principal Variation Search (PVS)
                     score = -self.negamax(board, search_depth_child, -(alpha + 1), -alpha,
                                         opponent_turn, ply + 1, search_path, child_hash, next_prev_tuple, extensions)
-                    if alpha < score < beta:
-                        score = -self.negamax(board, depth - 1, -beta, -alpha,
-                                            opponent_turn, ply + 1, search_path, child_hash, next_prev_tuple, extensions)
+                    if score > alpha:
+                        if reduction > 0 or score < beta:
+                            score = -self.negamax(board, depth - 1, -beta, -alpha,
+                                                opponent_turn, ply + 1, search_path, child_hash, next_prev_tuple, extensions)
 
                 board.unmake_move(record)
 
@@ -951,12 +952,20 @@ class OpponentAI:
                                 ch_table[t_sq] += bonus - (ch_table[t_sq] * bonus) // 64_000
                             
                             # Gravity penalty for the failed quiet moves
-                            for f_move in quiet_moves_tried:
+                            for f_move, f_mp in quiet_moves_tried:
                                 if f_move != move:
                                     (fr1, fc1), (fr2, fc2) = f_move
                                     ff = fr1 * 8 + fc1
                                     ft = fr2 * 8 + fc2
                                     ht[ff][ft] -= bonus + (ht[ff][ft] * bonus) // 2_000_000
+                                    
+                                    if prev_move_tuple:
+                                        prev_move, prev_pt_idx = prev_move_tuple
+                                        pr, pc = prev_move[1]
+                                        prev_to_sq = pr * 8 + pc
+                                        f_mp_idx = PIECE_TYPE_IDX[type(f_mp)]
+                                        ch_table = self.continuation_history[c_idx][prev_pt_idx][prev_to_sq][f_mp_idx]
+                                        ch_table[ft] -= bonus + (ch_table[ft] * bonus) // 64_000
 
                     sto = beta
                     if sto >  self.MATE_SCORE - 1000: sto = beta + ply
@@ -978,11 +987,13 @@ class OpponentAI:
             if path_added: search_path.discard(hash_val)
 
 
-    def qsearch(self, board, alpha, beta, turn, ply):
+    def qsearch(self, board, alpha, beta, turn, ply, current_hash=None):
         self.nodes_searched += 1
         if (self.nodes_searched & self.time_check_mask) == 0:
             if self.cancellation_event.is_set() or (self.stop_time and time.time() > self.stop_time):
                 raise SearchCancelledException()
+
+        hash_val = current_hash if current_hash is not None else board_hash(board, turn)
 
         if len(board.white_pieces) + len(board.black_pieces) <= self.tb_probe_limit:
             tb_score_absolute = self.tb_manager.probe(board, turn)
@@ -997,25 +1008,33 @@ class OpponentAI:
 
         if ply >= self.MAX_Q_SEARCH_DEPTH:
             self.used_heuristic_eval = True
-            return self.evaluate_board(board, turn)
+            if hash_val in self.eval_tt: return self.eval_tt[hash_val]
+            score = self.evaluate_board(board, turn)
+            if len(self.eval_tt) > 5_000_000: self.eval_tt.clear()
+            self.eval_tt[hash_val] = score
+            return score
 
         self.used_heuristic_eval = True
-        stand_pat        = self.evaluate_board(board, turn)
+        
+        if hash_val in self.eval_tt:
+            stand_pat = self.eval_tt[hash_val]
+        else:
+            stand_pat = self.evaluate_board(board, turn)
+            if len(self.eval_tt) > 5_000_000: self.eval_tt.clear()
+            self.eval_tt[hash_val] = stand_pat
+            
         is_in_check_flag = is_in_check(board, turn)
 
         if not is_in_check_flag:
             if stand_pat >= beta: return beta
             alpha = max(alpha, stand_pat)
 
-        if ply <= 4: #not tb issue
+        if ply <= 4:
             current_margin = self.Q_MARGIN_MAX
         else:
             current_margin = max(self.Q_MARGIN_MIN, self.Q_MARGIN_MAX - (ply - 4) * 117)
 
-        if is_in_check_flag:
-            promising_moves = list(get_all_pseudo_legal_moves(board, turn))
-        else:
-            promising_moves = list(generate_all_tactical_moves(board, turn))
+        promising_moves = get_all_pseudo_legal_moves(board, turn)
 
         scored_moves = []
         for move in promising_moves:
@@ -1024,11 +1043,13 @@ class OpponentAI:
             target_piece = board.grid[r2][c2]
             swing, is_tactic = fast_approximate_material_swing(board, move, moving_piece, target_piece, ORDERING_VALUES)
 
-            # In Jungle Chess, detonations often result in negative immediate 
-            # material swings, but they are highly forcing. We MUST NOT prune them just for being < 0.
-            # Delta pruning (current_margin) will safely catch truly terrible moves (like QxP hitting nothing else).
-            if not is_in_check_flag and (stand_pat + swing + current_margin < alpha):
-                continue
+            if not is_in_check_flag:
+                # In Q-search, if not in check, we only look at tactical moves.
+                if not is_tactic:
+                    continue
+                # Delta pruning (current_margin) will safely catch truly terrible tactics (like QxP hitting nothing else).
+                if stand_pat + swing + current_margin < alpha:
+                    continue
 
             scored_moves.append((swing, move))
 
@@ -1049,7 +1070,8 @@ class OpponentAI:
                 continue
 
             legal_moves_count += 1
-            search_score = -self.qsearch(board, -beta, -alpha, opponent_turn, ply + 1)
+            child_hash = incremental_hash(hash_val, record)
+            search_score = -self.qsearch(board, -beta, -alpha, opponent_turn, ply + 1, current_hash=child_hash)
             board.unmake_move(record)
 
             if search_score >= beta: return beta
@@ -1068,30 +1090,23 @@ class OpponentAI:
         is_opening = (ply <= self.OPENING_BONUS_MAX_PLY and self._is_opening_position(board))
         history_table = self.history_heuristic_table[c_idx]
 
+        grid = board.grid
         for move in moves:
             (r1, c1), (r2, c2) = move
-            moving_piece = board.grid[r1][c1]
-            target_piece = board.grid[r2][c2]
+            moving_piece = grid[r1][c1]
+            target_piece = grid[r2][c2]
             ptype = type(moving_piece)
 
             swing, is_tactic = fast_approximate_material_swing(board, move, moving_piece, target_piece, ORDERING_VALUES)
-            is_capture_or_promo = (target_piece is not None or
-                                   (ptype is Pawn and (r2 == 0 or r2 == ROWS - 1)))
             
             # In Jungle Chess, volatile moves (explosions, evaporations, piercings) 
             # are ALWAYS critical tactics, even if the net material swing is negative.
-            is_good_tactic = is_capture_or_promo or (swing != 0)
+            is_good_tactic = is_tactic
 
             if move == hash_move:
                 score = self.BONUS_PV_MOVE
             elif is_good_tactic:
-                # --- JUNGLE HEURISTIC: The "Chaos" Tie-Breaker ---
-                chaos_bonus = 0
-                if ptype is Queen: chaos_bonus = 30
-                elif ptype is Knight: chaos_bonus = 20
-                elif ptype is Rook: chaos_bonus = 10
-                
-                score = self.BONUS_CAPTURE + (swing * 100) + chaos_bonus
+                score = self.BONUS_CAPTURE + (swing * 100)
             elif move in killers:
                 score = 4_000_000 if move == killers[0] else 3_000_000
             elif move == counter_move:
@@ -1155,14 +1170,30 @@ class OpponentAI:
                     if r < black_pawn_min_row[c]: black_pawn_min_row[c] = r
 
         scores_mg = [0, 0]; scores_eg = [0, 0]
-        piece_counts  = [0, 0]; pawn_counts   = [0, 0]
-        last_piece_type = [None, None]
-        rook_counts   = [0, 0]; bishop_counts = [0, 0]
-        knight_counts = [0, 0]; queen_counts  = [0, 0]
+
+        pc_w = board.piece_counts['white']
+        pc_b = board.piece_counts['black']
+
+        pawn_counts   = [pc_w[Pawn], pc_b[Pawn]]
+        knight_counts = [pc_w[Knight], pc_b[Knight]]
+        bishop_counts = [pc_w[Bishop], pc_b[Bishop]]
+        rook_counts   = [pc_w[Rook], pc_b[Rook]]
+        queen_counts  = [pc_w[Queen], pc_b[Queen]]
+
+        piece_counts = [
+            knight_counts[0] + bishop_counts[0] + rook_counts[0] + queen_counts[0],
+            knight_counts[1] + bishop_counts[1] + rook_counts[1] + queen_counts[1]
+        ]
+
+        phase_material_score = (
+            (knight_counts[0] + knight_counts[1]) * MG_PIECE_VALUES[Knight] +
+            (bishop_counts[0] + bishop_counts[1]) * MG_PIECE_VALUES[Bishop] +
+            (rook_counts[0] + rook_counts[1]) * MG_PIECE_VALUES[Rook] +
+            (queen_counts[0] + queen_counts[1]) * MG_PIECE_VALUES[Queen]
+        )
 
         king_pos    = [board.white_king_pos, board.black_king_pos]
         piece_lists = [board.white_pieces,   board.black_pieces]
-        phase_material_score = 0
 
         PAWN_PHALANX_BONUS       = self.EVAL_PAWN_PHALANX_BONUS
         ROOK_ALIGNMENT_BONUS     = self.EVAL_ROOK_ALIGNMENT_BONUS
@@ -1186,35 +1217,16 @@ class OpponentAI:
             is_white = (color_idx == 0)
             my_color_name = 'white' if is_white else 'black'
             enemy_king    = king_pos[1 - color_idx]
+            pst_mg = FLAT_PST_MG_WHITE if is_white else FLAT_PST_MG_BLACK
+            pst_eg = FLAT_PST_EG_WHITE if is_white else FLAT_PST_EG_BLACK
 
             for piece in pieces:
                 ptype   = type(piece)
                 r, c    = piece.pos
+                sq      = r * 8 + c
 
-                if ptype is Pawn:
-                    pawn_counts[color_idx] += 1
-                elif ptype is not King:
-                    piece_counts[color_idx] += 1
-                    last_piece_type[color_idx] = ptype
-                    phase_material_score += MG_PIECE_VALUES[ptype]
-                    if ptype is Rook:     rook_counts[color_idx]   += 1
-                    elif ptype is Bishop: bishop_counts[color_idx] += 1
-                    elif ptype is Knight: knight_counts[color_idx] += 1
-                    elif ptype is Queen:  queen_counts[color_idx]  += 1
-
-                val_mg  = MG_PIECE_VALUES[ptype]
-                val_eg  = EG_PIECE_VALUES[ptype]
-                r_pst   = r if is_white else 7 - r
-
-                if ptype is King:
-                    scores_mg[color_idx] += PST['king_midgame'][r_pst][c]
-                    scores_eg[color_idx] += PST['king_endgame'][r_pst][c]
-                elif ptype is Pawn:
-                    scores_mg[color_idx] += val_mg + PST[Pawn][r_pst][c]
-                    scores_eg[color_idx] += val_eg + PST['pawn_endgame'][r_pst][c]
-                else:
-                    scores_mg[color_idx] += val_mg + PST[ptype][r_pst][c]
-                    scores_eg[color_idx] += val_eg + PST[ptype][r_pst][c]
+                scores_mg[color_idx] += pst_mg[ptype][sq]
+                scores_eg[color_idx] += pst_eg[ptype][sq]
 
                 if ptype is Pawn:
                     left  = grid[r][c-1] if c > 0       else None
@@ -1255,8 +1267,7 @@ class OpponentAI:
 
                     # --- JUNGLE-NATIVE MOBILITY (Piercing) ---
                     mobility = 0
-                    start_idx = r * 8 + c
-                    for ray in RAYS[start_idx][:4]: # Orthogonal rays
+                    for ray in RAYS[sq][:4]: # Orthogonal rays
                         for cr, cc in ray:
                             target = grid[cr][cc]
                             if target is not None:
@@ -1269,8 +1280,7 @@ class OpponentAI:
                 elif ptype is Bishop:
                     # --- JUNGLE-NATIVE MOBILITY (Sliding) ---
                     mobility = 0
-                    start_idx = r * 8 + c
-                    for ray in RAYS[start_idx][4:]: # Diagonal rays
+                    for ray in RAYS[sq][4:]: # Diagonal rays
                         for cr, cc in ray:
                             target = grid[cr][cc]
                             if target is not None:
@@ -1298,8 +1308,7 @@ class OpponentAI:
                         
                     # --- JUNGLE-NATIVE MOBILITY (Sliding) ---
                     mobility = 0
-                    start_idx = r * 8 + c
-                    for ray in RAYS[start_idx]: # All 8 rays
+                    for ray in RAYS[sq]: # All 8 rays
                         for cr, cc in ray:
                             target = grid[cr][cc]
                             if target is not None:
@@ -1332,8 +1341,8 @@ class OpponentAI:
 
             if piece_counts[i] == 1 and pawn_counts[i] <= 4: #Not related to TB!
                 penalty = 0
-                if last_piece_type[i] is Rook:   penalty = LONE_ROOK_PENALTIES[pawn_counts[i]]
-                elif last_piece_type[i] is Bishop: penalty = LONE_BISHOP_PENALTIES[pawn_counts[i]]
+                if rook_counts[i] == 1:   penalty = LONE_ROOK_PENALTIES[pawn_counts[i]]
+                elif bishop_counts[i] == 1: penalty = LONE_BISHOP_PENALTIES[pawn_counts[i]]
                 if penalty > 0:
                     if i == 0 and scores_eg[0] > scores_eg[1]:
                         scores_eg[0] = max(scores_eg[1], scores_eg[0] - penalty)
@@ -1381,25 +1390,25 @@ class OpponentAI:
 # --- Piece-Square Tables ---
 
 pawn_pst = [
-    [  0,   0,   0,   0,   0,   0,   0,   0],
-    [ 90,  90,  90,  90,  90,  90,  90,  90],
-    [ 50,  50,  50,  50,  55,  50,  50,  50],
-    [ 25,  30,  30,  45,  50,  30,  30,  25],
-    [ 15,  15,  20,  30,  35,  20,  15,  15],
-    [ 10,  10,  20,  25,  30,  20,  10,  10],
-    [  0,   0,   0,  -5, -10,  10,   0,   0],
-    [  0,   0,   0,   0,   0,   0,   0,   0]
+    [   0,    0,    0,    0,    0,    0,    0,    0],
+    [  90,   90,   90,   90,   90,   90,   90,   90],
+    [  50,   50,   50,   50,   55,   50,   50,   50],
+    [  25,   30,   30,   45,   50,   30,   30,   25],
+    [  15,   15,   20,   30,   35,   20,   15,   15],
+    [  10,   10,   20,   25,   30,   20,   10,   10],
+    [   0,    0,    0,   -5,  -10,   10,    0,    0],
+    [   0,    0,    0,    0,    0,    0,    0,    0]
 ]
 
 pawn_endgame_pst = [
-    [  0,   0,   0,   0,   0,   0,   0,   0],
-    [160, 160, 160, 160, 160, 160, 160, 160],
-    [ 80,  85,  85,  85,  85,  85,  85,  80],
-    [ 45,  50,  50,  55,  55,  50,  50,  45],
-    [ 25,  30,  30,  35,  35,  30,  30,  25],
-    [ 10,  15,  15,  20,  20,  15,  15,  10],
-    [  0,   5,   5,   5,   5,  15,   5,   0],
-    [  0,   0,   0,   0,   0,   0,   0,   0]
+    [   0,    0,    0,    0,    0,    0,    0,    0],
+    [ 160,  160,  160,  160,  160,  160,  160,  160],
+    [  80,   85,   85,   85,   85,   85,   85,   80],
+    [  45,   50,   50,   55,   55,   50,   50,   45],
+    [  25,   30,   30,   35,   35,   30,   30,   25],
+    [  10,   15,   15,   20,   20,   15,   15,   10],
+    [   0,    5,    5,    5,    5,   15,    5,    0],
+    [   0,    0,    0,    0,    0,    0,    0,    0]
 ]
 
 knight_pst = [
@@ -1410,7 +1419,7 @@ knight_pst = [
     [ -30,   22,   38,   52,   52,   38,   22,  -30],
     [ -45,   15,   30,   38,   38,   45,   15,  -45],
     [ -60,  -30,    8,   15,   15,    8,  -30,  -60],
-    [ -90,  -75,  -45,  -45,  -45,  -45,  -75,  -90],
+    [ -90,  -75,  -45,  -45,  -45,  -45,  -75,  -90]
 ]
 
 bishop_pst = [
@@ -1421,7 +1430,7 @@ bishop_pst = [
     [ -15,    8,   22,   15,   15,   22,    8,  -15],
     [ -15,   15,   15,    8,    8,   15,   15,  -15],
     [ -15,    8,    0,    0,    0,    0,    8,  -15],
-    [ -30,  -15,  -15,  -22,  -22,  -15,  -15,  -30],
+    [ -30,  -15,  -15,  -22,  -22,  -15,  -15,  -30]
 ]
 
 rook_pst = [
@@ -1432,7 +1441,7 @@ rook_pst = [
     [   8,    0,    0,    8,    8,    0,    0,    8],
     [   8,    0,    0,    8,    8,    0,    0,    8],
     [   0,    0,    0,    8,    8,    0,    0,    0],
-    [  10,   -5,    0,   15,   15,    0,   -5,   10],
+    [  10,   -5,    0,   15,   15,    0,   -5,   10]
 ]
 
 queen_pst = [
@@ -1443,7 +1452,7 @@ queen_pst = [
     [  -8,    8,   30,   45,   45,   30,    8,   -8],
     [ -15,    8,   22,   22,   22,   22,    8,  -15],
     [ -30,  -15,    0,    8,    8,    0,  -15,  -30],
-    [ -45,  -30,  -30,  -15,  -30,  -30,  -30,  -45],
+    [ -45,  -30,  -30,  -15,  -30,  -30,  -30,  -45]
 ]
 
 king_midgame_pst = [
@@ -1454,7 +1463,7 @@ king_midgame_pst = [
     [ -45,  -60,  -60,  -60,  -60,  -60,  -60,  -45],
     [ -15,  -15,  -30,  -30,  -30,  -30,  -15,  -15],
     [  -8,    0,    8,    8,    8,    8,    0,   -8],
-    [ -30,   15,   15,   15,   30,   15,   15,  -30],
+    [ -30,   15,   15,   15,   30,   15,   15,  -30]
 ]
 
 king_endgame_pst = [
@@ -1465,7 +1474,7 @@ king_endgame_pst = [
     [ -45,    8,   22,   30,   30,   22,    8,  -45],
     [ -45,    0,   15,   15,   15,   15,    0,  -45],
     [ -45,    0,    8,    8,    8,    8,    0,  -45],
-    [ -60,  -45,  -15,  -15,  -15,  -15,  -45,  -60],
+    [ -60,  -45,  -15,  -15,  -15,  -15,  -45,  -60]
 ]
 
 PIECE_SQUARE_TABLES = {
@@ -1478,3 +1487,36 @@ PIECE_SQUARE_TABLES = {
     'king_midgame': king_midgame_pst,
     'king_endgame': king_endgame_pst,
 }
+
+FLAT_PST_MG_WHITE = {}
+FLAT_PST_MG_BLACK = {}
+FLAT_PST_EG_WHITE = {}
+FLAT_PST_EG_BLACK = {}
+
+for pt in [Pawn, Knight, Bishop, Rook, Queen, King]:
+    FLAT_PST_MG_WHITE[pt] = [0] * 64
+    FLAT_PST_MG_BLACK[pt] = [0] * 64
+    FLAT_PST_EG_WHITE[pt] = [0] * 64
+    FLAT_PST_EG_BLACK[pt] = [0] * 64
+    
+    mg_val = MG_PIECE_VALUES[pt]
+    eg_val = EG_PIECE_VALUES[pt]
+    
+    if pt == Pawn:
+        mg_table = PIECE_SQUARE_TABLES[Pawn]
+        eg_table = PIECE_SQUARE_TABLES['pawn_endgame']
+    elif pt == King:
+        mg_table = PIECE_SQUARE_TABLES['king_midgame']
+        eg_table = PIECE_SQUARE_TABLES['king_endgame']
+    else:
+        mg_table = PIECE_SQUARE_TABLES[pt]
+        eg_table = PIECE_SQUARE_TABLES[pt]
+        
+    for r in range(8):
+        for c in range(8):
+            sq_w = r * 8 + c
+            sq_b = (7 - r) * 8 + c
+            FLAT_PST_MG_WHITE[pt][sq_w] = mg_val + mg_table[r][c]
+            FLAT_PST_MG_BLACK[pt][sq_b] = mg_val + mg_table[r][c]
+            FLAT_PST_EG_WHITE[pt][sq_w] = eg_val + eg_table[r][c]
+            FLAT_PST_EG_BLACK[pt][sq_b] = eg_val + eg_table[r][c]

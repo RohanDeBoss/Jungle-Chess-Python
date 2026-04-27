@@ -1,4 +1,4 @@
-# GameLogic.py (v58 - Zero-Swing Tactic Detection)
+# GameLogic.py (v59 - Removed a bunch of code)
 
 
 # -----------------------------------------------------------------------
@@ -382,30 +382,10 @@ class Board:
         return new_board
 
     # -----------------------------------------------------------------------
-    # make_move  (UI path — no undo needed)
+    # make_move  (UI path — delegates to make_move_track)
     # -----------------------------------------------------------------------
     def make_move(self, start, end):
-        moving_piece = self.grid[start[0]][start[1]]
-        if not moving_piece:
-            return
-
-        target_piece = self.grid[end[0]][end[1]]
-        is_capture   = target_piece is not None
-        mp_type      = type(moving_piece)
-
-        if mp_type is Rook:
-            self._apply_rook_piercing(start, end, moving_piece.color)
-        if is_capture:
-            self.remove_piece(end[0], end[1])
-        self.move_piece(start, end)
-
-        if mp_type is Queen and is_capture:
-            self._apply_queen_aoe(end, moving_piece.color)
-        elif mp_type is Pawn and end[0] == moving_piece.promo_rank:
-            self.remove_piece(end[0], end[1])
-            self.add_piece(Queen(moving_piece.color), end[0], end[1])
-
-        self._apply_knight_aoe(end, is_active_move=(mp_type is Knight))
+        self.make_move_track(start, end)
 
     # -----------------------------------------------------------------------
     # make_move_track / unmake_move  (search path — no cloning)
@@ -548,159 +528,6 @@ class Board:
             if type(piece) is King:
                 if piece.color == 'white': self.white_king_pos = (r, c)
                 else:                      self.black_king_pos = (r, c)
-
-    # -----------------------------------------------------------------------
-    # Special-effect helpers
-    # -----------------------------------------------------------------------
-    def _apply_queen_aoe(self, pos, queen_color):
-        if self.grid[pos[0]][pos[1]]:
-            self.remove_piece(pos[0], pos[1])
-        for r, c in ADJACENT_SQUARES_MAP[pos]:
-            adj = self.grid[r][c]
-            if adj and adj.color != queen_color:
-                self.remove_piece(r, c)
-
-    def _apply_rook_piercing(self, start, end, rook_color):
-        dr = (end[0] > start[0]) - (start[0] > end[0])
-        dc = (end[1] > start[1]) - (start[1] > end[1])
-        cr, cc = start[0] + dr, start[1] + dc
-        while (cr, cc) != end:
-            target = self.grid[cr][cc]
-            if target and target.color != rook_color:
-                self.remove_piece(cr, cc)
-            cr += dr
-            cc += dc
-
-    def _apply_knight_aoe(self, pos, is_active_move):
-        grid = self.grid
-        if is_active_move:
-            knight_instance = grid[pos[0]][pos[1]]
-            if not knight_instance:
-                return
-            captured, passive_losses, enemy_knights = \
-                self._collect_knight_evaporation(pos, knight_instance.color, knight_instance)
-            delayed = set(enemy_knights)
-            done    = set()
-            for piece in captured + passive_losses:
-                if (piece is None or piece is knight_instance or piece in delayed
-                        or piece in done or piece.pos is None):
-                    continue
-                self.remove_piece(piece.pos[0], piece.pos[1])
-                done.add(piece)
-            for ek in enemy_knights:
-                if ek.pos is not None:
-                    self.remove_piece(ek.pos[0], ek.pos[1])
-            if knight_instance in passive_losses and knight_instance.pos is not None:
-                self.remove_piece(pos[0], pos[1])
-        else:
-            victim = grid[pos[0]][pos[1]]
-            if not victim:
-                return
-            for r, c in KNIGHT_ATTACKS_FROM[pos]:
-                pk = grid[r][c]
-                if pk and type(pk) is Knight and pk.color != victim.color:
-                    self.remove_piece(pos[0], pos[1])
-                    return
-
-    def _get_rook_piercing_captures(self, start, end, rook_color):
-        captured = []
-        dr = (end[0] > start[0]) - (start[0] > end[0])
-        dc = (end[1] > start[1]) - (start[1] > end[1])
-        cr, cc = start[0] + dr, start[1] + dc
-        while (cr, cc) != end:
-            target = self.grid[cr][cc]
-            if target and target.color != rook_color:
-                captured.append(target)
-            cr += dr
-            cc += dc
-        return captured
-
-    def _get_queen_aoe_captures(self, pos, queen_color):
-        return [
-            self.grid[r][c]
-            for r, c in ADJACENT_SQUARES_MAP[pos]
-            if self.grid[r][c] and self.grid[r][c].color != queen_color
-        ]
-
-    def _collect_knight_evaporation(self, knight_pos, knight_color, self_piece=None):
-        captured       = []
-        passive_losses = []
-        enemy_knights  = []
-        if self_piece is None:
-            self_piece = self.grid[knight_pos[0]][knight_pos[1]]
-
-        for r, c in KNIGHT_ATTACKS_FROM[knight_pos]:
-            target = self.grid[r][c]
-            if target and target.color != knight_color:
-                captured.append(target)
-                if type(target) is Knight:
-                    enemy_knights.append(target)
-
-        if enemy_knights:
-            for ek in enemy_knights:
-                if ek.pos is None:
-                    continue
-                for r, c in KNIGHT_ATTACKS_FROM[ek.pos]:
-                    target = self_piece if (r, c) == knight_pos else self.grid[r][c]
-                    if target and target.color == knight_color and target not in passive_losses:
-                        passive_losses.append(target)
-
-        return captured, passive_losses, enemy_knights
-
-    def _get_knight_aoe_outcome(self, knight_pos, knight_color, self_piece=None):
-        captured, passive_losses, _ = self._collect_knight_evaporation(
-            knight_pos, knight_color, self_piece)
-        return captured, passive_losses
-
-    def get_move_outcome(self, move):
-        start_pos, end_pos = move
-        moving_piece = self.grid[start_pos[0]][start_pos[1]]
-        if not moving_piece:
-            return set(), set(), None
-
-        friendly_lost     = set()
-        opponent_captured = set()
-        promotion_type    = None
-        mp_type           = type(moving_piece)
-
-        target_piece = self.grid[end_pos[0]][end_pos[1]]
-        is_capture   = target_piece is not None
-        if is_capture:
-            opponent_captured.add(target_piece)
-
-        if mp_type is Rook:
-            opponent_captured.update(
-                self._get_rook_piercing_captures(start_pos, end_pos, moving_piece.color))
-        elif mp_type is Queen and is_capture:
-            friendly_lost.add(moving_piece)
-            opponent_captured.update(
-                self._get_queen_aoe_captures(end_pos, moving_piece.color))
-        elif mp_type is Knight:
-            captures, passive_losses = self._get_knight_aoe_outcome(
-                end_pos, moving_piece.color, moving_piece)
-            opponent_captured.update(captures)
-            friendly_lost.update(passive_losses)
-        elif mp_type is Pawn and end_pos[0] == moving_piece.promo_rank:
-            promotion_type = Queen
-            friendly_lost.add(moving_piece)
-
-        if mp_type is not Knight:
-            if mp_type is Queen and is_capture:
-                passive_victim_type = None
-            elif promotion_type is not None:
-                passive_victim_type = Queen
-            else:
-                passive_victim_type = mp_type
-            if passive_victim_type is not None:
-                for r, c in KNIGHT_ATTACKS_FROM[end_pos]:
-                    pk = self.grid[r][c]
-                    if (pk and type(pk) is Knight
-                            and pk.color != moving_piece.color
-                            and pk not in opponent_captured):
-                        friendly_lost.add(passive_victim_type(moving_piece.color))
-                        break
-
-        return friendly_lost, opponent_captured, promotion_type
 
 
 # -----------------------------------------------------------------------
@@ -930,73 +757,9 @@ def get_game_state(board, turn_to_move, position_counts, ply_count, max_moves):
     return "ongoing", None
 
 
-def calculate_material_swing(board, move, tapered_vals_by_type):
-    friendly_lost, opponent_captured, promotion_type = board.get_move_outcome(move)
-    if not friendly_lost and not opponent_captured and promotion_type is None:
-        return 0
-    swing = 0
-    for piece in opponent_captured:
-        swing += tapered_vals_by_type.get(type(piece), 0)
-    for piece in friendly_lost:
-        swing -= tapered_vals_by_type.get(type(piece), 0)
-    if promotion_type is not None:
-        swing += tapered_vals_by_type.get(promotion_type, 0)
-    return swing
-
-
 def is_draw(board, turn_to_move, position_counts, ply_count, max_moves):
     state, _ = get_game_state(board, turn_to_move, position_counts, ply_count, max_moves)
     return state in ("insufficient_material", "repetition", "move_limit")
-
-
-def generate_all_tactical_moves(board, color):
-    grid       = board.grid
-    piece_list = board.white_pieces if color == 'white' else board.black_pieces
-    for piece in piece_list:
-        start_pos = piece.pos
-        if start_pos is None:
-            continue
-        mp_type = type(piece)
-        my_color = piece.color
-        opp_color = piece.opponent_color
-        for end_pos in piece.get_valid_moves(board, start_pos):
-            end_r, end_c = end_pos
-            is_capture   = grid[end_r][end_c] is not None
-            is_promotion = mp_type is Pawn and end_r == piece.promo_rank
-
-            if is_capture or is_promotion:
-                yield (start_pos, end_pos)
-                continue
-
-            yielded = False
-
-            if mp_type is Rook:
-                dr = (end_r > start_pos[0]) - (start_pos[0] > end_r)
-                dc = (end_c > start_pos[1]) - (start_pos[1] > end_c)
-                cr, cc = start_pos[0] + dr, start_pos[1] + dc
-                while (cr, cc) != end_pos:
-                    target = grid[cr][cc]
-                    if target is not None and target.color != my_color:
-                        yield (start_pos, end_pos)
-                        yielded = True
-                        break
-                    cr += dr
-                    cc += dc
-
-            elif mp_type is Knight:
-                for r, c in KNIGHT_ATTACKS_FROM[end_pos]:
-                    target = grid[r][c]
-                    if target is not None and target.color == opp_color:
-                        yield (start_pos, end_pos)
-                        yielded = True
-                        break
-
-            if not yielded:
-                for r, c in KNIGHT_ATTACKS_FROM[end_pos]:
-                    pk = grid[r][c]
-                    if pk is not None and type(pk) is Knight and pk.color != my_color:
-                        yield (start_pos, end_pos)
-                        break
 
 
 def fast_approximate_material_swing(board, move, moving_piece, target_piece, piece_values):
