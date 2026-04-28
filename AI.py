@@ -1,4 +1,4 @@
-# AI.py (v115.1 - Support gamelogic's new zidx)
+# AI.py (v116 - Try new knight PSTs and new Pieces values)
 
 import json
 import os
@@ -18,19 +18,19 @@ MIN_MOVE_TIME   = 0.03
 # --- EVALUATION CONSTANTS (Tuned) ---
 MG_PIECE_VALUES = {
     Pawn: 100,
-    Knight: 960,
-    Bishop: 580,
-    Rook: 640,
-    Queen: 1400,
+    Knight: 1000,
+    Bishop: 600,
+    Rook: 600,
+    Queen: 1300,
     King: 20000
 }
 
 EG_PIECE_VALUES = {
     Pawn: 100,
-    Knight: 1080,
-    Bishop: 740,
-    Rook: 770,
-    Queen: 900,
+    Knight: 950,
+    Bishop: 700,
+    Rook: 750,
+    Queen: 1000,
     King: 20000
 }
 
@@ -248,15 +248,16 @@ class ChessBot:
     EVAL_DOUBLE_ROOK_PENALTY = 15
     EVAL_ROOK_PAWN_SCALING = 5
     KNIGHT_ACTIVITY_BONUS = 12
-    EVAL_KING_ZONE_ATTACK_PENALTY = 15
-    EVAL_PASSED_PAWN_PER_RANK = 12
+    EVAL_KING_ZONE_ATTACK_PENALTY = 50 #Stronger pentalty
+    EVAL_PASSED_PAWN_PER_RANK = 10
     LONE_ROOK_PENALTIES = (550, 200, 150, 80, 40)
     LONE_BISHOP_PENALTIES = (650, 250, 170, 100, 50)
     EVAL_PAWN_VULNERABILITY_EG = 15
 
     EVAL_MOBILITY_ROOK   = 4
-    EVAL_MOBILITY_BISHOP = 3
     EVAL_MOBILITY_QUEEN  = 2
+    EVAL_MOBILITY_BISHOP = 4
+    EVAL_MOBILITY_QUEEN  = 5
 
     def __init__(self, board, color, position_counts, comm_queue, cancellation_event,
                  bot_name=None, ply_count=0, game_mode="bot", max_moves=200,
@@ -283,7 +284,6 @@ class ChessBot:
              self.time_check_mask = self._calc_time_check_mask(allocated)
         else:
              self.time_check_mask = 511 # A reasonable default for pondering/fixed-depth
-        # -----------------------
 
         # --- OPENING BOOK FLAG ---
         self.use_opening_book = use_opening_book
@@ -1417,14 +1417,14 @@ pawn_endgame_pst = [
 ]
 
 knight_pst = [
-    [ -90,  -60,  -45,  -45,  -45,  -45,  -60,  -90],
-    [ -60,  -30,    8,   15,   15,    8,  -30,  -60],
-    [ -45,    8,   30,   38,   38,   30,    8,  -45],
-    [ -45,   15,   38,   52,   52,   38,   15,  -45],
-    [ -30,   22,   38,   52,   52,   38,   22,  -30],
-    [ -45,   15,   30,   38,   38,   45,   15,  -45],
-    [ -60,  -30,    8,   15,   15,    8,  -30,  -60],
-    [ -90,  -75,  -45,  -45,  -45,  -45,  -75,  -90]
+    [-120,  -80,  -60,  -50,  -50,  -60,  -80, -120],
+    [ -50,  -10,   30,   40,   40,   30,  -10,  -50],
+    [   0,   10,   40,   60,   60,   40,   10,    0],
+    [  10,   20,   60,   90,   90,   60,   20,   10],
+    [  30,   20,   70,   90,   90,   70,   20,   30],
+    [   0,   10,   60,   40,   40,   60,   10,    0],
+    [ -80,  -40,   10,   20,   20,   10,  -40,  -80],
+    [-120,  -80,  -60,  -60,  -60,  -60,  -80, -120]
 ]
 
 bishop_pst = [
@@ -1461,10 +1461,10 @@ queen_pst = [
 ]
 
 king_midgame_pst = [
-    [ -90,  -75,  -75,  -75,  -75,  -75,  -75,  -90],
-    [ -60,  -75,  -75,  -90,  -90,  -75,  -75,  -60],
-    [ -60,  -75,  -75,  -90,  -90,  -75,  -75,  -60],
-    [ -60,  -75,  -75,  -90,  -90,  -75,  -75,  -60],
+    [ -90,  -85,  -85,  -85,  -85,  -85,  -85,  -90],
+    [ -70,  -75,  -75,  -90,  -90,  -75,  -75,  -70],
+    [ -60,  -75,  -75,  -80,  -80,  -75,  -75,  -60],
+    [ -60,  -75,  -75,  -80,  -80,  -75,  -75,  -60],
     [ -45,  -60,  -60,  -60,  -60,  -60,  -60,  -45],
     [ -15,  -15,  -30,  -30,  -30,  -30,  -15,  -15],
     [  -8,    0,    8,    8,    8,    8,    0,   -8],
