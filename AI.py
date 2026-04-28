@@ -18,7 +18,7 @@ MIN_MOVE_TIME   = 0.03
 # --- EVALUATION CONSTANTS (Tuned) ---
 MG_PIECE_VALUES = {
     Pawn: 100,
-    Knight: 1000,
+    Knight: 950,
     Bishop: 600,
     Rook: 600,
     Queen: 1300,

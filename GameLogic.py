@@ -1,4 +1,4 @@
-# GameLogic.py (v61.1 - Use new zidx for speed)
+# GameLogic.py (v62 - Further optimisations)
 
 
 # -----------------------------------------------------------------------
@@ -121,13 +121,13 @@ class King(Piece):
             if 0 <= r1 < ROWS and 0 <= c1 < COLS:
                 target = grid[r1][c1]
                 if target is None or target.color == opp:
-                    moves.append((r1, c1))
+                    moves.append((pos, (r1, c1)))
                     if target is None:
                         r2, c2 = r1 + dr, c1 + dc
                         if 0 <= r2 < ROWS and 0 <= c2 < COLS:
                             t2 = grid[r2][c2]
                             if t2 is None or t2.color == opp:
-                                moves.append((r2, c2))
+                                moves.append((pos, (r2, c2)))
         return moves
 
 
@@ -143,10 +143,10 @@ class Queen(Piece):
             for r, c in RAYS[start_index][i]:
                 target = grid[r][c]
                 if target is None:
-                    moves.append((r, c))
+                    moves.append((pos, (r, c)))
                 else:
                     if target.color != self.color:
-                        moves.append((r, c))
+                        moves.append((pos, (r, c)))
                     break
         return moves
 
@@ -164,7 +164,7 @@ class Rook(Piece):
                 target = grid[r][c]
                 if target and target.color == self.color:
                     break
-                moves.append((r, c))
+                moves.append((pos, (r, c)))
         return moves
 
 
@@ -183,20 +183,20 @@ class Bishop(Piece):
                 target = grid[r][c]
                 if target:
                     if target.color != self.color:
-                        moves.add((r, c))
+                        moves.add((pos, (r, c)))
                     break
-                moves.add((r, c))
+                moves.add((pos, (r, c)))
 
         for ray in BISHOP_ZIGZAG_RAYS[start_index]:
             for r, c in ray:
                 target = grid[r][c]
                 if target:
                     if target.color != self.color:
-                        moves.add((r, c))
+                        moves.add((pos, (r, c)))
                     break
-                moves.add((r, c))
+                moves.add((pos, (r, c)))
 
-        return list(moves)
+        return sorted(moves, key=lambda m: m[1])
 
 
 class Knight(Piece):
@@ -208,7 +208,7 @@ class Knight(Piece):
         grid = board.grid
         for r, c in KNIGHT_ATTACKS_FROM[pos]:
             if grid[r][c] is None:
-                moves.append((r, c))
+                moves.append((pos, (r, c)))
         return moves
 
 
@@ -233,21 +233,21 @@ class Pawn(Piece):
         if 0 <= one_r < ROWS:
             target1 = grid[one_r][c]
             if target1 is None or target1.color == opp:
-                moves.append((one_r, c))
+                moves.append((pos, (one_r, c)))
                 if r == self.starting_row and target1 is None:
                     two_r   = r + (2 * direction)
                     target2 = grid[two_r][c]
                     if target2 is None or target2.color == opp:
-                        moves.append((two_r, c))
+                        moves.append((pos, (two_r, c)))
 
         if c > 0:
             target = grid[r][c - 1]
             if target and target.color == opp:
-                moves.append((r, c - 1))
+                moves.append((pos, (r, c - 1)))
         if c < COLS - 1:
             target = grid[r][c + 1]
             if target and target.color == opp:
-                moves.append((r, c + 1))
+                moves.append((pos, (r, c + 1)))
         return moves
 
 
@@ -480,7 +480,7 @@ class Board:
             self.grid[mp_pos[0]][mp_pos[1]] = None
             self.grid[start[0]][start[1]] = moving_piece
             moving_piece.pos = start
-            if type(moving_piece) is King:
+            if moving_piece.z_idx == 5:
                 if moving_piece.color == 'white': self.white_king_pos = start
                 else:                             self.black_king_pos = start
         else:
@@ -488,7 +488,7 @@ class Board:
             moving_piece.pos = start
             self._list_append(moving_piece)
             self.piece_counts[moving_piece.color][type(moving_piece)] += 1
-            if type(moving_piece) is King:
+            if moving_piece.z_idx == 5:
                 if moving_piece.color == 'white': self.white_king_pos = start
                 else:                             self.black_king_pos = start
 
@@ -499,7 +499,7 @@ class Board:
             piece.pos = (r, c)
             self._list_append(piece)
             self.piece_counts[piece.color][type(piece)] += 1
-            if type(piece) is King:
+            if piece.z_idx == 5:
                 if piece.color == 'white': self.white_king_pos = (r, c)
                 else:                      self.black_king_pos = (r, c)
 
@@ -539,8 +539,6 @@ def is_square_attacked(board, r, c, attacking_color):
     attacker_counts = board.piece_counts[attacking_color]
     attacking_king_pos = board.white_king_pos if attacking_color == 'white' else board.black_king_pos
 
-    # O(1) length check bypassing 5 dictionary lookups. 
-    # Perfectly handles search states where the King might be temporarily dead.
     if len(attacking_pieces) == attacker_counts[King]:
         if attacking_king_pos:
             kr, kc         = attacking_king_pos
@@ -554,23 +552,21 @@ def is_square_attacked(board, r, c, attacking_color):
                     return True
         return False
 
-    # ── Knight check: reverse lookup — O(8 direct + 8×8 two-hop) ──
     if attacker_counts[Knight] > 0:
         for pr, pc in KNIGHT_ATTACKS_FROM[(r, c)]:
             p = grid[pr][pc]
             if p is not None:
-                if type(p) is Knight and p.color == attacking_color:
+                if p.z_idx == 1 and p.color == attacking_color:
                     return True
             else:
                 for qr, qc in KNIGHT_ATTACKS_FROM[(pr, pc)]:
                     q = grid[qr][qc]
-                    if q is not None and type(q) is Knight and q.color == attacking_color:
+                    if q is not None and q.z_idx == 1 and q.color == attacking_color:
                         return True
 
-    # ── Queen AOE check ──
     if attacker_counts[Queen] > 0:
         for piece in attacking_pieces:
-            if type(piece) is Queen and piece.pos:
+            if piece.z_idx == 4 and piece.pos:
                 qr, qc = piece.pos
                 q_idx  = qr * COLS + qc
                 for i in range(8):
@@ -585,7 +581,6 @@ def is_square_attacked(board, r, c, attacking_color):
     has_rooks   = attacker_counts[Rook] > 0
     start_index = r * COLS + c
 
-    # ── Sliding pieces (rooks on orthogonal rays, bishops on diagonal) ──
     for direction_idx, ray_path in enumerate(RAYS[start_index]):
         is_orthogonal    = direction_idx < 4
         defenders_passed = 0
@@ -593,13 +588,13 @@ def is_square_attacked(board, r, c, attacking_color):
             piece = grid[cr][cc]
             if piece is None:
                 continue
-            p_type = type(piece)
+            p_z = piece.z_idx
             if piece.color == attacking_color:
                 if is_orthogonal:
-                    if p_type is Rook:
+                    if p_z == 3:
                         return True
                 else:
-                    if p_type is Bishop and defenders_passed == 0:
+                    if p_z == 2 and defenders_passed == 0:
                         return True
                 break
             else:
@@ -607,29 +602,27 @@ def is_square_attacked(board, r, c, attacking_color):
                 if not has_rooks:
                     break
 
-    # ── Pawn check ──
     pawn_move_dir = -1 if attacking_color == 'white' else 1
     pr = r - pawn_move_dir
     if 0 <= pr < ROWS:
         p = grid[pr][c]
-        if p is not None and p.color == attacking_color and type(p) is Pawn:
+        if p is not None and p.color == attacking_color and p.z_idx == 0:
             return True
         elif p is None:
             two_pr       = r - (2 * pawn_move_dir)
             starting_row = 6 if attacking_color == 'white' else 1
             if 0 <= two_pr < ROWS and two_pr == starting_row:
                 p2 = grid[two_pr][c]
-                if p2 is not None and p2.color == attacking_color and type(p2) is Pawn:
+                if p2 is not None and p2.color == attacking_color and p2.z_idx == 0:
                     return True
 
     for dc_off in (-1, 1):
         pc = c + dc_off
         if 0 <= pc < COLS:
             p = grid[r][pc]
-            if p is not None and p.color == attacking_color and type(p) is Pawn:
+            if p is not None and p.color == attacking_color and p.z_idx == 0:
                 return True
 
-    # ── Enemy king check ──
     if attacking_king_pos:
         kr, kc         = attacking_king_pos
         dr, dc         = r - kr, c - kc
@@ -641,12 +634,11 @@ def is_square_attacked(board, r, c, attacking_color):
             if grid[kr + dr // 2][kc + dc // 2] is None:
                 return True
 
-    # ── Bishop zigzag check ──
     if attacker_counts[Bishop] > 0:
         target_parity = (r + c) & 1
         for piece in attacking_pieces:
             pos = piece.pos
-            if type(piece) is Bishop and pos and ((pos[0] + pos[1]) & 1) == target_parity:
+            if piece.z_idx == 2 and pos and ((pos[0] + pos[1]) & 1) == target_parity:
                 if _bishop_attacks_square(board, pos, r, c, attacking_color):
                     return True
 
@@ -665,10 +657,9 @@ def generate_legal_moves_generator(board, color, yield_boards=False):
     opp_color = "black" if color == "white" else "white"
     piece_list = list(board.white_pieces if color == 'white' else board.black_pieces)
     for piece in piece_list:
-        start_pos = piece.pos
-        if start_pos is None: continue
-        for end_pos in piece.get_valid_moves(board, start_pos):
-            record   = board.make_move_track(start_pos, end_pos)
+        if piece.pos is None: continue
+        for move in piece.get_valid_moves(board, piece.pos):
+            record   = board.make_move_track(move[0], move[1])
 
             my_kp = board.white_king_pos if color == 'white' else board.black_king_pos
             legal = (my_kp is not None and not is_square_attacked(board, my_kp[0], my_kp[1], opp_color))
@@ -677,8 +668,8 @@ def generate_legal_moves_generator(board, color, yield_boards=False):
                 result_board = board.clone()
             board.unmake_move(record)
             if legal:
-                if yield_boards: yield (start_pos, end_pos), result_board
-                else: yield (start_pos, end_pos)
+                if yield_boards: yield move, result_board
+                else: yield move
 
 
 def get_all_legal_moves(board, color):
@@ -686,15 +677,11 @@ def get_all_legal_moves(board, color):
 
 
 def get_all_pseudo_legal_moves(board, color):
-    moves      = []
-    append     = moves.append
+    moves = []
     piece_list = board.white_pieces if color == 'white' else board.black_pieces
     for piece in piece_list:
-        start_pos = piece.pos
-        if start_pos is None:
-            continue
-        for end_pos in piece.get_valid_moves(board, start_pos):
-            append((start_pos, end_pos))
+        if piece.pos is not None:
+            moves.extend(piece.get_valid_moves(board, piece.pos))
     return moves
 
 
@@ -841,7 +828,7 @@ def format_move_san(board_before, board_after, move):
                       else board_before.black_pieces)
         for p in piece_list:
             if type(p) is ptype and p.pos != start_pos:
-                if end_pos in p.get_valid_moves(board_before, p.pos):
+                if any(m[1] == end_pos for m in p.get_valid_moves(board_before, p.pos)):
                     others.append(p.pos)
         if others:
             same_file = any(pos[1] == start_pos[1] for pos in others)
