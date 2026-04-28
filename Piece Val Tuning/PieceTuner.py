@@ -1,4 +1,4 @@
-# PieceTuner.py (v3.2 - Compatible with AI v111.3)
+# PieceTuner.py (v3.3 - Compatible with AI v114.3 and GameLogic v59.1)
 
 import sys
 import os
@@ -34,7 +34,7 @@ from AI import board_hash
 # ═══════════════════════════════════════════════════════════════════════════════
 
 GAMES_TO_GENERATE       = 1000     # Games to generate (or APPEND) per run
-GENERATION_DEPTH        = 6      # Search depth per move
+GENERATION_DEPTH        = 7      # Search depth per move
 RANDOM_OPENING_PLIES    = 4      # Random moves before engine kicks in (diversity)
 MAX_GAME_PLIES          = 200    # Hard ply limit
 SAMPLE_EVERY_N_PLIES    = 2      # Record 1 position per N plies
@@ -45,8 +45,8 @@ RESULT_FILE             = os.path.join(TUNER_DIR, "tuner_results.json")
 
 CHECKPOINT_EVERY        = 50     # Flush partial results every N games (crash safety)
 
-OPENING_EVAL_THRESHOLD  = 300    # cp — discard game if post-opening eval exceeds this
-OPENING_SCREEN_DEPTH    = 7      # Depth for the opening screen check
+OPENING_EVAL_THRESHOLD  = 400    # cp — discard game if post-opening eval exceeds this
+OPENING_SCREEN_DEPTH    = 8      # Depth for the opening screen check
 MAX_REGENERATION_TRIES  = 15     # Max attempts to find a balanced opening per game slot
 TB_ADJUDICATION_PIECES  = 5      # Probe TB and adjudicate if total pieces <= this
 
@@ -75,6 +75,27 @@ PARAM_BOUNDS  = [
     ( 50,  350), (200, 1800), (200, 1800), (200, 1800), (300, 2000),
 ]
 
+def _rebuild_flat_psts() -> None:
+    PST = AI.PIECE_SQUARE_TABLES
+    for pt in [Pawn, Knight, Bishop, Rook, Queen, King]:
+        mg_val = AI.MG_PIECE_VALUES[pt]
+        eg_val = AI.EG_PIECE_VALUES[pt]
+        if pt == Pawn:
+            mg_table = PST[Pawn];          eg_table = PST['pawn_endgame']
+        elif pt == King:
+            mg_table = PST['king_midgame']; eg_table = PST['king_endgame']
+        else:
+            mg_table = PST[pt];            eg_table = PST[pt]
+        for r in range(8):
+            for c in range(8):
+                sq_w = r * 8 + c
+                sq_b = (7 - r) * 8 + c
+                z = pt.z_idx
+                AI.FLAT_PST_MG_WHITE[z][sq_w] = mg_val + mg_table[r][c]
+                AI.FLAT_PST_MG_BLACK[z][sq_b] = mg_val + mg_table[r][c]
+                AI.FLAT_PST_EG_WHITE[z][sq_w] = eg_val + eg_table[r][c]
+                AI.FLAT_PST_EG_BLACK[z][sq_b] = eg_val + eg_table[r][c]
+
 def patch_ai_values(mg_vals: dict, eg_vals: dict) -> None:
     for cls in PIECE_CLASSES:
         AI.MG_PIECE_VALUES[cls] = mg_vals[cls]
@@ -85,6 +106,7 @@ def patch_ai_values(mg_vals: dict, eg_vals: dict) -> None:
         AI.MG_PIECE_VALUES[Bishop] * 4 +
         AI.MG_PIECE_VALUES[Queen]  * 2
     )
+    _rebuild_flat_psts()
 
 def vals_to_vec(mg: dict, eg: dict) -> list:
     return [mg[Knight], mg[Bishop], mg[Rook], mg[Queen],
@@ -372,8 +394,13 @@ def report_uniqueness(positions_data: list) -> None:
 # TEXEL LOSS (OPTIMIZED)
 # ═══════════════════════════════════════════════════════════════════════════════
 
+_last_patched_vec = [None]
+
 def compute_mse(parsed_data: list, K: float, mg_vals: dict, eg_vals: dict) -> float:
-    patch_ai_values(mg_vals, eg_vals)
+    vec = vals_to_vec(mg_vals, eg_vals)
+    if vec != _last_patched_vec[0]:
+        patch_ai_values(mg_vals, eg_vals)
+        _last_patched_vec[0] = vec[:]
     bot = _get_bot()
     eval_fn = bot.evaluate_board
     

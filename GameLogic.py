@@ -1,4 +1,4 @@
-# GameLogic.py (v59.1 - replaces the yield generators in all pieces with direct list accumulation)
+# GameLogic.py (v61.1 - Use new zidx for speed)
 
 
 # -----------------------------------------------------------------------
@@ -108,6 +108,7 @@ class Piece:
 
 
 class King(Piece):
+    z_idx = 5
     def symbol(self): return "♔" if self.color == "white" else "♚"
 
     def get_valid_moves(self, board, pos):
@@ -131,6 +132,7 @@ class King(Piece):
 
 
 class Queen(Piece):
+    z_idx = 4
     def symbol(self): return "♕" if self.color == "white" else "♛"
 
     def get_valid_moves(self, board, pos):
@@ -150,6 +152,7 @@ class Queen(Piece):
 
 
 class Rook(Piece):
+    z_idx = 3
     def symbol(self): return "♖" if self.color == "white" else "♜"
 
     def get_valid_moves(self, board, pos):
@@ -166,6 +169,7 @@ class Rook(Piece):
 
 
 class Bishop(Piece):
+    z_idx = 2
     def symbol(self): return "♗" if self.color == "white" else "♝"
 
     def get_valid_moves(self, board, pos):
@@ -196,6 +200,7 @@ class Bishop(Piece):
 
 
 class Knight(Piece):
+    z_idx = 1
     def symbol(self): return "♘" if self.color == "white" else "♞"
 
     def get_valid_moves(self, board, pos):
@@ -208,6 +213,7 @@ class Knight(Piece):
 
 
 class Pawn(Piece):
+    z_idx = 0
     def __init__(self, color):
         super().__init__(color)
         self.direction    = -1 if color == "white" else 1
@@ -376,14 +382,14 @@ class Board:
         moving_piece = self.grid[start[0]][start[1]]
         removed = []
         added = []
-        mc = moving_piece.color
-        mp_type = type(moving_piece)
+        mc      = moving_piece.color
+        mp_z = moving_piece.z_idx
 
         target_piece = self.grid[end[0]][end[1]]
         is_capture = target_piece is not None
 
         # ── 1. Rook piercing ──
-        if mp_type is Rook:
+        if mp_z == 3:   # Rook
             dr = (end[0] > start[0]) - (start[0] > end[0])
             dc = (end[1] > start[1]) - (start[1] > end[1])
             cr, cc = start[0] + dr, start[1] + dc
@@ -404,7 +410,7 @@ class Board:
         self.move_piece(start, end)
 
         # ── 4. Queen AOE explosion ──
-        if mp_type is Queen and is_capture:
+        if mp_z == 4 and is_capture:   # Queen
             removed.append((moving_piece, end[0], end[1]))
             self.remove_piece(end[0], end[1])
             for r, c in ADJACENT_SQUARES_MAP[end]:
@@ -414,7 +420,7 @@ class Board:
                     self.remove_piece(r, c)
 
         # ── 5. Pawn promotion ──
-        elif mp_type is Pawn and end[0] == moving_piece.promo_rank:
+        elif mp_z == 0 and end[0] == moving_piece.promo_rank:   # Pawn
             removed.append((moving_piece, end[0], end[1]))
             self.remove_piece(end[0], end[1])
             new_queen = Queen(mc)
@@ -423,12 +429,12 @@ class Board:
 
         # ── 6. Knight AOE ──
         grid = self.grid
-        if mp_type is Knight:
+        if mp_z == 1:   # Knight
             enemy_knight_coords = []
             for r, c in KNIGHT_ATTACKS_FROM[end]:
                 target = grid[r][c]
                 if target is not None and target.color != mc:
-                    if type(target) is Knight:
+                    if target.z_idx == 1:
                         enemy_knight_coords.append((r, c))
             
             for ek_r, ek_c in enemy_knight_coords:
@@ -449,7 +455,7 @@ class Board:
             if victim is not None:
                 for r, c in KNIGHT_ATTACKS_FROM[end]:
                     killer = grid[r][c]
-                    if killer is not None and type(killer) is Knight and killer.color != mc:
+                    if killer is not None and killer.z_idx == 1 and killer.color != mc:
                         removed.append((victim, end[0], end[1]))
                         self.remove_piece(end[0], end[1])
                         break
@@ -457,9 +463,11 @@ class Board:
         return (start, end, moving_piece, removed, added)
 
     def unmake_move(self, record_tuple):
+        """Restore the board to the exact state before make_move_track()."""
         start, end, moving_piece, removed, added = record_tuple
         added_ids = {id(p) for p, _r, _c in added} if added else set()
 
+        # ── 1. Undo promoted pieces ──
         for piece, r, c in reversed(added):
             if piece.pos is not None:
                 self.grid[r][c] = None
@@ -728,31 +736,31 @@ def is_draw(board, turn_to_move, position_counts, ply_count, max_moves):
     return state in ("insufficient_material", "repetition", "move_limit")
 
 
-def fast_approximate_material_swing(board, move, moving_piece, target_piece, piece_values):
+def fast_approximate_material_swing(board, move, moving_piece, target_piece, piece_values_list):
     swing   = 0
     is_tactic = False
-    my_type = type(moving_piece)
+    my_z = moving_piece.z_idx
     my_color = moving_piece.color
 
     if target_piece is not None:
-        swing += piece_values[type(target_piece)]
+        swing += piece_values_list[target_piece.z_idx]
         is_tactic = True
 
-    if my_type is Pawn and move[1][0] == moving_piece.promo_rank:
-        swing += piece_values[Queen] - piece_values[Pawn]
+    if my_z == 0 and move[1][0] == moving_piece.promo_rank:
+        swing += piece_values_list[4] - piece_values_list[0]
         is_tactic = True
 
-    if my_type is Queen and target_piece is not None:
-        swing -= piece_values[Queen]
+    if my_z == 4 and target_piece is not None:
+        swing -= piece_values_list[4]
         for r, c in ADJACENT_SQUARES_MAP[move[1]]:
             adj = board.grid[r][c]
             if adj and adj.color != my_color:
-                swing += piece_values[type(adj)]
+                swing += piece_values_list[adj.z_idx]
                 is_tactic = True
         return swing, is_tactic
 
     pierced_knights = []
-    if my_type is Rook:
+    if my_z == 3:
         start, end = move
         dr = (end[0] > start[0]) - (start[0] > end[0])
         dc = (end[1] > start[1]) - (start[1] > end[1])
@@ -760,42 +768,40 @@ def fast_approximate_material_swing(board, move, moving_piece, target_piece, pie
         while (cr, cc) != end:
             target = board.grid[cr][cc]
             if target and target.color != my_color:
-                swing += piece_values[type(target)]
+                swing += piece_values_list[target.z_idx]
                 is_tactic = True
-                if type(target) is Knight:
+                if target.z_idx == 1:
                     pierced_knights.append((cr, cc))
             cr += dr
             cc += dc
 
-    if my_type is Knight:
+    if my_z == 1:
         seen_passive = set()
         for r, c in KNIGHT_ATTACKS_FROM[move[1]]:
             target = board.grid[r][c]
             if target and target.color != my_color:
-                swing += piece_values[type(target)]
+                swing += piece_values_list[target.z_idx]
                 is_tactic = True
-                if type(target) is Knight:
-                    # Enemy knight passively evaporates us and potentially our allies
+                if target.z_idx == 1:
                     for pr, pc in KNIGHT_ATTACKS_FROM[(r, c)]:
                         if (pr, pc) == move[1]:
-                            if Knight not in seen_passive: 
-                                swing -= piece_values[Knight]
-                                seen_passive.add(Knight)
+                            if 1 not in seen_passive: 
+                                swing -= piece_values_list[1]
+                                seen_passive.add(1)
                         else:
                             ptarget = board.grid[pr][pc]
-                            if ptarget and ptarget.color == my_color and ptarget not in seen_passive:
-                                swing -= piece_values[type(ptarget)]
-                                seen_passive.add(ptarget)
+                            if ptarget and ptarget.color == my_color and ptarget.z_idx not in seen_passive:
+                                swing -= piece_values_list[ptarget.z_idx]
+                                seen_passive.add(ptarget.z_idx)
         return swing, is_tactic
 
     for r, c in KNIGHT_ATTACKS_FROM[move[1]]:
         pk = board.grid[r][c]
-        if (pk and type(pk) is Knight
+        if (pk and pk.z_idx == 1
                 and pk.color != my_color
                 and (r, c) not in pierced_knights):
-            evap_type = (Queen if (my_type is Pawn and move[1][0] == moving_piece.promo_rank)
-                         else my_type)
-            swing -= piece_values[evap_type]
+            evap_z = 4 if (my_z == 0 and move[1][0] == moving_piece.promo_rank) else my_z
+            swing -= piece_values_list[evap_z]
             is_tactic = True
             break
 

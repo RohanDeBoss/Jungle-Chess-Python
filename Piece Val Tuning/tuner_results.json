@@ -1,23 +1,23 @@
 {
-  "K": 0.42388400822776784,
-  "final_mse": 0.10000165268233223,
+  "K": 0.6317544254898841,
+  "final_mse": 0.07286315428756779,
   "generation_depth": 6,
   "random_opening_plies": 4,
-  "tb_adjudication_pieces": 4,
+  "tb_adjudication_pieces": 5,
   "mg": {
     "Pawn": 100,
-    "Knight": 965,
-    "Bishop": 550,
-    "Rook": 655,
-    "Queen": 1445
+    "Knight": 545,
+    "Bishop": 625,
+    "Rook": 270,
+    "Queen": 520
   },
   "eg": {
-    "Pawn": 90,
-    "Knight": 1075,
-    "Bishop": 770,
-    "Rook": 750,
-    "Queen": 895
+    "Pawn": 65,
+    "Knight": 1385,
+    "Bishop": 755,
+    "Rook": 950,
+    "Queen": 1565
   },
-  "total_positions": 34178,
-  "timestamp": "2026-03-15 11:04:25"
+  "total_positions": 35931,
+  "timestamp": "2026-04-28 06:27:10"
 }

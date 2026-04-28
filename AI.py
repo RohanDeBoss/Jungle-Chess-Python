@@ -1,4 +1,4 @@
-# AI.py (v114.3 - only use fams + speedup, support for gamelogic v59.1)
+# AI.py (v115.1 - Support gamelogic's new zidx)
 
 import json
 import os
@@ -34,14 +34,20 @@ EG_PIECE_VALUES = {
     King: 20000
 }
 
-ORDERING_VALUES = MG_PIECE_VALUES
+# Array directly accessed via piece.z_idx
+ORDERING_VALUES = [
+    MG_PIECE_VALUES[Pawn],
+    MG_PIECE_VALUES[Knight],
+    MG_PIECE_VALUES[Bishop],
+    MG_PIECE_VALUES[Rook],
+    MG_PIECE_VALUES[Queen],
+    MG_PIECE_VALUES[King]
+]
 
 INITIAL_PHASE_MATERIAL = (MG_PIECE_VALUES[Rook] * 4 + MG_PIECE_VALUES[Knight] * 4 +
                           MG_PIECE_VALUES[Bishop] * 4 + MG_PIECE_VALUES[Queen] * 2)
 
 # --- ZOBRIST HASHING ---
-PIECE_TYPE_IDX = {Pawn: 0, Knight: 1, Bishop: 2, Rook: 3, Queen: 4, King: 5}
-
 ZOBRIST_ARRAY = None
 ZOBRIST_TURN = None
 
@@ -87,12 +93,11 @@ def run_ai_process(board, color, position_counts, comm_queue, cancellation_event
 def board_hash(board, turn):
     h = 0
     arr = ZOBRIST_ARRAY
-    idx = PIECE_TYPE_IDX
 
     for piece in board.white_pieces:
-        h ^= arr[0][idx[type(piece)]][piece.pos[0]][piece.pos[1]]
+        h ^= arr[0][piece.z_idx][piece.pos[0]][piece.pos[1]]
     for piece in board.black_pieces:
-        h ^= arr[1][idx[type(piece)]][piece.pos[0]][piece.pos[1]]
+        h ^= arr[1][piece.z_idx][piece.pos[0]][piece.pos[1]]
 
     if turn == 'black':
         h ^= ZOBRIST_TURN
@@ -101,12 +106,11 @@ def board_hash(board, turn):
 def incremental_hash(parent_hash, record_tuple):
     h = parent_hash ^ ZOBRIST_TURN
     arr = ZOBRIST_ARRAY
-    idx = PIECE_TYPE_IDX
 
     start, end, mp, removed_pieces, added_pieces = record_tuple
     
     c_idx  = 0 if mp.color == 'white' else 1
-    p_idx  = idx[type(mp)]
+    p_idx  = mp.z_idx
     sr, sc = start
     er, ec = end
 
@@ -118,14 +122,14 @@ def incremental_hash(parent_hash, record_tuple):
             mp_survived = False
         else:
             pc_idx = 0 if piece.color == 'white' else 1
-            h ^= arr[pc_idx][idx[type(piece)]][r][c]
+            h ^= arr[pc_idx][piece.z_idx][r][c]
 
     if mp_survived:
         h ^= arr[c_idx][p_idx][er][ec]
 
     for piece, r, c in added_pieces:
         pc_idx = 0 if piece.color == 'white' else 1
-        h ^= arr[pc_idx][idx[type(piece)]][r][c]
+        h ^= arr[pc_idx][piece.z_idx][r][c]
 
     return h
 
@@ -705,7 +709,7 @@ class ChessBot:
             search_path = {root_hash}
             try:
                 mp = record[2]
-                next_prev_tuple = (move, PIECE_TYPE_IDX[type(mp)])
+                next_prev_tuple = (move, mp.z_idx)
 
                 if alpha_floor is not None:
                     probe_score = -self.negamax(
@@ -843,7 +847,7 @@ class ChessBot:
                 record     = board.make_move_track(move[0], move[1])
                 child_hash = incremental_hash(hash_val, record)
 
-                opp_king_alive    = board.find_king_pos(opponent_turn) is not None
+                opp_king_alive    = (board.white_king_pos is not None) if opponent_turn == 'white' else (board.black_king_pos is not None)
                 own_king_in_check = is_in_check(board, turn)
 
                 if not opp_king_alive:
@@ -879,9 +883,9 @@ class ChessBot:
                         reduction -= 1
                         
                     # 3. JUNGLE HEURISTIC: Protect volatile quiet pieces
-                    if type(moving_piece) is Knight:
+                    if moving_piece.z_idx == 1: # Knight
                         reduction -= 1
-                    elif type(moving_piece) is Queen:
+                    elif moving_piece.z_idx == 4: # Queen
                         # Fast ray-cast from the Queen's new square. 
                         attacks_enemy = False
                         grid_ref = board.grid
@@ -906,7 +910,7 @@ class ChessBot:
 
                 search_depth_child = depth - 1 - reduction
 
-                next_prev_tuple = (move, PIECE_TYPE_IDX[type(moving_piece)])
+                next_prev_tuple = (move, moving_piece.z_idx)
 
                 if legal_moves_count == 1:
                     score = -self.negamax(board, search_depth_child, -beta, -alpha,
@@ -947,7 +951,7 @@ class ChessBot:
                                 prev_move, prev_pt_idx = prev_move_tuple
                                 pr, pc = prev_move[1]
                                 prev_to_sq  = pr * 8 + pc
-                                mp_idx      = PIECE_TYPE_IDX[type(moving_piece)]
+                                mp_idx      = moving_piece.z_idx
                                 
                                 ch_table = self.continuation_history[c_idx][prev_pt_idx][prev_to_sq][mp_idx]
                                 ch_table[t_sq] += bonus - (ch_table[t_sq] * bonus) // 64_000
@@ -964,7 +968,7 @@ class ChessBot:
                                         prev_move, prev_pt_idx = prev_move_tuple
                                         pr, pc = prev_move[1]
                                         prev_to_sq = pr * 8 + pc
-                                        f_mp_idx = PIECE_TYPE_IDX[type(f_mp)]
+                                        f_mp_idx = f_mp.z_idx
                                         ch_table = self.continuation_history[c_idx][prev_pt_idx][prev_to_sq][f_mp_idx]
                                         ch_table[ft] -= bonus + (ch_table[ft] * bonus) // 64_000
 
@@ -1038,10 +1042,11 @@ class ChessBot:
         promising_moves = get_all_pseudo_legal_moves(board, turn)
 
         scored_moves = []
+        grid = board.grid
         for move in promising_moves:
             (r1, c1), (r2, c2) = move
-            moving_piece = board.grid[r1][c1]
-            target_piece = board.grid[r2][c2]
+            moving_piece = grid[r1][c1]
+            target_piece = grid[r2][c2]
             swing, is_tactic = fast_approximate_material_swing(board, move, moving_piece, target_piece, ORDERING_VALUES)
 
             if not is_in_check_flag:
@@ -1062,7 +1067,8 @@ class ChessBot:
         for swing, move in scored_moves:
             record = board.make_move_track(move[0], move[1])
 
-            if not board.find_king_pos(opponent_turn):
+            opp_king_alive = board.white_king_pos if opponent_turn == 'white' else board.black_king_pos
+            if not opp_king_alive:
                 board.unmake_move(record)
                 return self.MATE_SCORE - ply
 
@@ -1096,7 +1102,6 @@ class ChessBot:
             (r1, c1), (r2, c2) = move
             moving_piece = grid[r1][c1]
             target_piece = grid[r2][c2]
-            ptype = type(moving_piece)
 
             swing, is_tactic = fast_approximate_material_swing(board, move, moving_piece, target_piece, ORDERING_VALUES)
             
@@ -1118,7 +1123,7 @@ class ChessBot:
                     prev_move, prev_pt_idx = prev_move_tuple
                     pr, pc = prev_move[1]
                     prev_to_sq  = pr * 8 + pc
-                    mp_idx      = PIECE_TYPE_IDX[type(moving_piece)]
+                    mp_idx      = moving_piece.z_idx
                     to_sq       = r2 * 8 + c2
                     
                     ch_score = self.continuation_history[c_idx][prev_pt_idx][prev_to_sq][mp_idx][to_sq]
@@ -1221,18 +1226,18 @@ class ChessBot:
             pst_eg = FLAT_PST_EG_WHITE if is_white else FLAT_PST_EG_BLACK
 
             for piece in pieces:
-                ptype   = type(piece)
+                z       = piece.z_idx
                 r, c    = piece.pos
                 sq      = r * 8 + c
 
-                scores_mg[color_idx] += pst_mg[ptype][sq]
-                scores_eg[color_idx] += pst_eg[ptype][sq]
+                scores_mg[color_idx] += pst_mg[z][sq]
+                scores_eg[color_idx] += pst_eg[z][sq]
 
-                if ptype is Pawn:
+                if z == 0: # Pawn
                     left  = grid[r][c-1] if c > 0       else None
                     right = grid[r][c+1] if c < COLS-1  else None
-                    if ((left  and type(left)  is Pawn and left.color  == my_color_name) or
-                        (right and type(right) is Pawn and right.color == my_color_name)):
+                    if ((left  and left.z_idx == 0  and left.color  == my_color_name) or
+                        (right and right.z_idx == 0 and right.color == my_color_name)):
                         scores_mg[color_idx] += PAWN_PHALANX_BONUS
 
                     is_passed = True
@@ -1257,7 +1262,7 @@ class ChessBot:
                         advance = max(0, (6 - r) if is_white else (r - 1))
                         scores_eg[color_idx] += advance * PASSED_PAWN_PER_RANK
 
-                elif ptype is Rook:
+                elif z == 3: # Rook
                     if enemy_king and (r == enemy_king[0] or c == enemy_king[1]):
                         scores_mg[color_idx] += ROOK_ALIGNMENT_BONUS
                     my_pawn_files = white_pawn_files if is_white else black_pawn_files
@@ -1277,7 +1282,7 @@ class ChessBot:
                     scores_mg[color_idx] += mobility * self.EVAL_MOBILITY_ROOK
                     scores_eg[color_idx] += mobility * self.EVAL_MOBILITY_ROOK
 
-                elif ptype is Bishop:
+                elif z == 2: # Bishop
                     # --- JUNGLE-NATIVE MOBILITY (Sliding) ---
                     mobility = 0
                     for ray in RAYS[sq][4:]: # Diagonal rays
@@ -1291,10 +1296,10 @@ class ChessBot:
                     scores_mg[color_idx] += mobility * self.EVAL_MOBILITY_BISHOP
                     scores_eg[color_idx] += mobility * self.EVAL_MOBILITY_BISHOP
 
-                elif ptype is Knight:
+                elif z == 1: # Knight
                     for ar, ac in KNIGHT_ATTACKS_FROM[(r, c)]:
                         threatened = grid[ar][ac]
-                        if threatened and type(threatened) is not King and threatened.color != my_color_name:
+                        if threatened and threatened.z_idx != 5 and threatened.color != my_color_name:
                             scores_mg[color_idx] += KNIGHT_ACTIVITY_BONUS
                             scores_eg[color_idx] += KNIGHT_ACTIVITY_BONUS
                     if enemy_king:
@@ -1302,7 +1307,7 @@ class ChessBot:
                             if abs(ar - enemy_king[0]) <= 2 and abs(ac - enemy_king[1]) <= 2:
                                 king_zone_attacks[1 - color_idx] += 1; break
 
-                elif ptype is Queen:
+                elif z == 4: # Queen
                     if enemy_king and (abs(r - enemy_king[0]) + abs(c - enemy_king[1]) <= 3):
                         king_zone_attacks[1 - color_idx] += 2
                         
@@ -1488,16 +1493,17 @@ PIECE_SQUARE_TABLES = {
     'king_endgame': king_endgame_pst,
 }
 
-FLAT_PST_MG_WHITE = {}
-FLAT_PST_MG_BLACK = {}
-FLAT_PST_EG_WHITE = {}
-FLAT_PST_EG_BLACK = {}
+FLAT_PST_MG_WHITE = [None] * 6
+FLAT_PST_MG_BLACK = [None] * 6
+FLAT_PST_EG_WHITE = [None] * 6
+FLAT_PST_EG_BLACK = [None] * 6
 
 for pt in [Pawn, Knight, Bishop, Rook, Queen, King]:
-    FLAT_PST_MG_WHITE[pt] = [0] * 64
-    FLAT_PST_MG_BLACK[pt] = [0] * 64
-    FLAT_PST_EG_WHITE[pt] = [0] * 64
-    FLAT_PST_EG_BLACK[pt] = [0] * 64
+    z = pt.z_idx
+    FLAT_PST_MG_WHITE[z] = [0] * 64
+    FLAT_PST_MG_BLACK[z] = [0] * 64
+    FLAT_PST_EG_WHITE[z] = [0] * 64
+    FLAT_PST_EG_BLACK[z] = [0] * 64
     
     mg_val = MG_PIECE_VALUES[pt]
     eg_val = EG_PIECE_VALUES[pt]
@@ -1516,7 +1522,7 @@ for pt in [Pawn, Knight, Bishop, Rook, Queen, King]:
         for c in range(8):
             sq_w = r * 8 + c
             sq_b = (7 - r) * 8 + c
-            FLAT_PST_MG_WHITE[pt][sq_w] = mg_val + mg_table[r][c]
-            FLAT_PST_MG_BLACK[pt][sq_b] = mg_val + mg_table[r][c]
-            FLAT_PST_EG_WHITE[pt][sq_w] = eg_val + eg_table[r][c]
-            FLAT_PST_EG_BLACK[pt][sq_b] = eg_val + eg_table[r][c]
+            FLAT_PST_MG_WHITE[z][sq_w] = mg_val + mg_table[r][c]
+            FLAT_PST_MG_BLACK[z][sq_b] = mg_val + mg_table[r][c]
+            FLAT_PST_EG_WHITE[z][sq_w] = eg_val + eg_table[r][c]
+            FLAT_PST_EG_BLACK[z][sq_b] = eg_val + eg_table[r][c]

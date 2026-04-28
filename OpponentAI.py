@@ -1,4 +1,4 @@
-# OPAI.py (v114.3 - only use fams + speedup, support for gamelogic v59.1)
+# OPAI.py (v114.31 - only use fams + speedup, old version with new gamelogic v61 support)
 
 import json
 import os
@@ -34,7 +34,15 @@ EG_PIECE_VALUES = {
     King: 20000
 }
 
-ORDERING_VALUES = MG_PIECE_VALUES
+# Array directly accessed via piece.z_idx
+ORDERING_VALUES = [
+    MG_PIECE_VALUES[Pawn],
+    MG_PIECE_VALUES[Knight],
+    MG_PIECE_VALUES[Bishop],
+    MG_PIECE_VALUES[Rook],
+    MG_PIECE_VALUES[Queen],
+    MG_PIECE_VALUES[King]
+]
 
 INITIAL_PHASE_MATERIAL = (MG_PIECE_VALUES[Rook] * 4 + MG_PIECE_VALUES[Knight] * 4 +
                           MG_PIECE_VALUES[Bishop] * 4 + MG_PIECE_VALUES[Queen] * 2)
