@@ -1,4 +1,4 @@
-# JungleChessUI.py (v15.4 - Use trimmed mean in AI_Series_Result)
+# JungleChessUI.py (v15.5- Use trimmed mean in AI_Series_Result + Bugfix for UI hover)
 
 import tkinter as tk
 from tkinter import ttk, messagebox
@@ -1772,6 +1772,13 @@ class EnhancedChessApp:
         self.tt_canvas.delete("all")
         sq     = self.tt_sq_size
         C1, C2 = "#D2B48C", "#8B5A2B"
+        flipped_last_move = None
+        if last_move:
+            if self.board_orientation == "black":
+                flipped_last_move = [((ROWS - 1 - r), (COLS - 1 - c)) for r, c in last_move]
+            else:
+                flipped_last_move = last_move
+        
         for r in range(ROWS):
             for c in range(COLS):
                 dr = (ROWS - 1 - r) if self.board_orientation == "black" else r
@@ -1779,7 +1786,7 @@ class EnhancedChessApp:
                 x1, y1 = dc * sq, dr * sq
                 self.tt_canvas.create_rectangle(x1, y1, x1 + sq, y1 + sq,
                                                 fill=C1 if (r + c) % 2 == 0 else C2, outline="")
-                if last_move and (r, c) in last_move:
+                if flipped_last_move and (dr, dc) in flipped_last_move:
                     self.tt_canvas.create_rectangle(x1, y1, x1 + sq, y1 + sq,
                                                     fill="#F0E68C", stipple="gray50", outline="")
                 piece = sim_board.grid[r][c]
