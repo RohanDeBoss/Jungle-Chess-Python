@@ -1,8 +1,7 @@
-# Tests.py (v4.1 - fixed new directory)
+# Tests.py (v5))
 
 import sys
 import os
-from AI import ORDERING_VALUES
 
 # --- PATH INJECTION (MUST BE AT THE VERY TOP) ---
 # Get the directory where this script is located
@@ -20,7 +19,7 @@ os.chdir(PARENT_DIR)
 import argparse
 from dataclasses import dataclass
 from GameLogic import *
-from AI import ChessBot, MG_PIECE_VALUES, TT_FLAG_EXACT, TT_FLAG_LOWERBOUND
+from AI import ChessBot, MG_PIECE_VALUES, ORDERING_VALUES, TT_FLAG_EXACT, TT_FLAG_LOWERBOUND
 from OpponentAI import OpponentAI
 from TablebaseManager import TablebaseManager
 
@@ -621,7 +620,22 @@ def compare_engine_and_reference(board, color, label):
 
 
 def compare_outcomes(board, move, ref_state_before, ref_state_after):
-    friendly_lost, opponent_captured, promo_type = board.get_move_outcome(move)
+    tracked = board.clone()
+    moving_piece = tracked.grid[move[0][0]][move[0][1]]
+    record = tracked.make_move_track(move[0], move[1])
+    _start, _end, _mp, removed, added = record
+    promo_type = type(added[0][0]) if added else None
+
+    friendly_lost = []
+    opponent_captured = []
+    for piece, _r, _c in removed:
+        if piece is moving_piece and promo_type is not None:
+            continue
+        if piece.color == moving_piece.color:
+            friendly_lost.append(piece)
+        else:
+            opponent_captured.append(piece)
+    tracked.unmake_move(record)
     
     engine_lost_counts = {}
     for p in friendly_lost:
@@ -841,10 +855,13 @@ def case_regression_nmp_mate_blindness():
 
     # Preconditions: verify position properties before searching.
     expect(not is_in_check(board, "white"), "Test setup error: white should not be in check.")
-    white_wins_immediately = any(
-        board.clone().tap(lambda b: b.make_move(m[0], m[1])).find_king_pos("black") is None
-        for m in get_all_legal_moves(board, "white")
-    )
+    white_wins_immediately = False
+    for m in get_all_legal_moves(board, "white"):
+        child = board.clone()
+        child.make_move(m[0], m[1])
+        if child.find_king_pos("black") is None:
+            white_wins_immediately = True
+            break
     # Manual check: Rc5 cannot reach h8 (different rank AND file).
     # Ka1 cannot reach h8 (too far). No immediate win possible.
 
@@ -938,10 +955,11 @@ def case_regression_tb_5man_cross_probe():
     manager = TablebaseManager()
     table_name = "K_Queen_Rook_vs_Knight_K"
     manager.tables[table_name] = np.zeros((10, 64, 64, 64, 64, 2), dtype=np.int16)
+    manager.full_wdl_tables.add(table_name)
 
     result = manager.probe(board, "white")
     details = [
-        "Mocked a 5-man cross table lookup for K+Q+R vs K+N.",
+        "Mocked a marked full-WDL 5-man cross table lookup for K+Q+R vs K+N.",
         f"Probe result: {result}",
     ]
     expect(result == 0, f"Regression detected: expected mocked 5-man cross probe to return 0, got {result}")
