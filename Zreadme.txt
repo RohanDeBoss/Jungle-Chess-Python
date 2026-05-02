@@ -31,7 +31,7 @@ Bishop:
     * Sideways Zig-Zag: Moves 1 square diagonally forward-right, then 1 square diagonally backward-right, and repeats.
 
 Knight:
-  - Moves normally (in an L-shape: 2 squares in one direction and 1 square perpendicular), but can only jump to empty squares.
+  - Moves normally (in an L-shape: 2 squares in one direction and 1 square perpendicular), but can only jump to empty squares due to their evaporation ability removing all enemy pieces from the squares it can move to.
   - Evaporates all squares it could move to: At all times, the knight evaporates (removes) all pieces on the squares it could move to except its own pieces. Because evaporation is a passive aura, the knight "captures" pieces simply by landing near them, rather than landing on them.
   - If two knights try to evaporate each other, both knights are removed, but the other pieces affected by their evaporation are still removed first.
 
@@ -87,16 +87,10 @@ Do not over-optimize for non-check stalemates in the middlegame. They are virtua
 - Pawns Capture Forward: Pawn chains cannot permanently lock up; a pawn can simply step forward onto the piece blocking it.
 - 2-Square King Phasing: The King can move 2 squares and phase through attacked squares. Boxing it in without checking it requires a massive, complex cage of pieces.
 
-3. Absolute Pins Paralyze Pieces Completely
-Unlike standard chess, where pinned pieces can slide along the pin-ray (e.g., a Rook pinned to a file can still move up and down that file), Jungle Chess pieces have asymmetric movement and are often left with 0 legal moves when pinned:
-- Knights cannot jump without leaving the pin-ray.
-- Rooks pinned diagonally cannot move.
-- Pawns pinned diagonally or horizontally cannot move.
-
-4. 3000-Point Material Swings (Beware of Aggressive Pruning)
+3. 3000-Point Material Swings (Beware of Aggressive Pruning)
 Standard chess engines use steep Late Move Reductions (LMR) and Reverse Futility Pruning (RFP) because evaluations are stable. In Jungle Chess, an AoE Knight or Queen can evaporate 3000+ points of material in a single turn. Aggressive pruning margins will cause the engine to miss these explosive tactics. Keep pruning conservative.
 
-5. Tablebases Handle the Endgame
+4. Tablebases Handle the Endgame
 Because non-check stalemates are strictly an endgame phenomenon (requiring a nearly empty board and paralyzed pieces), the engine relies entirely on a precomputed Tablebase for positions with 5 or fewer pieces. Do not add heuristic code for 5-piece endgame stalemates; the Tablebase solves these instantly.
 
 ## Engine Development & Regression Testing (`OPAI.py`)

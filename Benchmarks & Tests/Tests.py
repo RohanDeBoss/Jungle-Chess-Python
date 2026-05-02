@@ -2,6 +2,7 @@
 
 import sys
 import os
+from AI import ORDERING_VALUES
 
 # --- PATH INJECTION (MUST BE AT THE VERY TOP) ---
 # Get the directory where this script is located
@@ -771,7 +772,8 @@ def case_regression_promotion_knight_zone():
     moving_piece = board.grid[1][0]
     target_piece = board.grid[0][0]
     
-    swing = fast_approximate_material_swing(board, move, moving_piece, target_piece, MG_PIECE_VALUES)
+    
+    swing, _ = fast_approximate_material_swing(board, move, moving_piece, target_piece, ORDERING_VALUES)
     
     # Expected: 
     # Pawn value (100) -> Queen value (1400) = +1300 gain
@@ -842,7 +844,7 @@ def case_regression_nmp_mate_blindness():
     white_wins_immediately = any(
         board.clone().tap(lambda b: b.make_move(m[0], m[1])).find_king_pos("black") is None
         for m in get_all_legal_moves(board, "white")
-    ) if hasattr(board, "tap") else False
+    )
     # Manual check: Rc5 cannot reach h8 (different rank AND file).
     # Ka1 cannot reach h8 (too far). No immediate win possible.
 

@@ -1,4 +1,4 @@
-# JungleChessUI.py (v15.5- Use trimmed mean in AI_Series_Result + Bugfix for UI hover)
+# JungleChessUI.py (v15.6 - Analysis toggle fix)
 
 import tkinter as tk
 from tkinter import ttk, messagebox
@@ -622,6 +622,32 @@ class EnhancedChessApp:
 
     def redraw_eval_bar_on_resize(self, event):
         self.draw_eval_bar(self.last_eval_score, self.last_eval_depth)
+
+    def _analysis_output_enabled(self):
+        return bool(getattr(self, 'analysis_mode_var', None) and self.analysis_mode_var.get())
+
+    def _clear_analysis_output(self):
+        self.last_eval_score = 0.0
+        self.last_eval_depth = None
+        self.current_pv_raw  = []
+        self.current_pv_san  = []
+        self.last_pv_message = None
+        self.draw_eval_bar(0)
+        self.eval_score_label.config(text="Even")
+        if hasattr(self, 'pv_text'):
+            self.pv_text.config(state=tk.NORMAL)
+            self.pv_text.delete(1.0, tk.END)
+            self.pv_text.config(state=tk.DISABLED)
+
+    def _sync_analysis_output_visibility(self):
+        if self._analysis_output_enabled():
+            if not self.eval_frame.winfo_manager():
+                self.eval_frame.pack(side=tk.TOP, anchor=tk.CENTER, pady=(6, 5),
+                                     before=self.board_row_frame)
+            self._render_pv()
+        else:
+            self.eval_frame.pack_forget()
+            self.pv_text.pack_forget()
 
     # ------------------------------------------------------------------ flip / swap / mode
     def _update_flip_view_button_style(self):
@@ -1336,10 +1362,12 @@ class EnhancedChessApp:
                             }
                 elif kind == 'eval':
                     self.last_eval_score, self.last_eval_depth = msg[1], msg[2]
-                    self.draw_eval_bar(msg[1], msg[2])
+                    if self._analysis_output_enabled():
+                        self.draw_eval_bar(msg[1], msg[2])
                 elif kind == 'pv':
                     self.last_pv_message = msg
-                    self._render_pv()
+                    if self._analysis_output_enabled():
+                        self._render_pv()
                 elif kind == 'move':
                     # Only accept the move if it matches the current generation ID
                     if self.active_worker_name is not None and msg_task_id == self.current_task_id:
@@ -1360,7 +1388,8 @@ class EnhancedChessApp:
                     pass
 
     def _render_pv(self):
-        if not getattr(self, 'show_pv_var', None) or not self.show_pv_var.get():
+        if not self._analysis_output_enabled() or \
+                not getattr(self, 'show_pv_var', None) or not self.show_pv_var.get():
             self.pv_text.pack_forget()
             return
         self.pv_text.pack(side=tk.BOTTOM, fill=tk.X, padx=5, pady=10)
@@ -1457,9 +1486,17 @@ class EnhancedChessApp:
             self.update_bot_labels()
 
     def _update_analysis_after_state_change(self):
-        self._stop_ai_process()
-        if self.analysis_mode_var.get() and \
-                self.game_mode.get() == GameMode.HUMAN_VS_HUMAN.value and not self.game_over:
+        self._sync_analysis_output_visibility()
+        if not self.analysis_mode_var.get():
+            if self.analysis_thinking:
+                self._stop_ai_process()
+            self._clear_analysis_output()
+            return
+
+        if self.game_mode.get() == GameMode.HUMAN_VS_HUMAN.value:
+            self._stop_ai_process()
+
+        if self.game_mode.get() == GameMode.HUMAN_VS_HUMAN.value and not self.game_over:
             fullmove = (self.history_pointer + 1) // 2 + 1
             print(f"\n--- Analysis: Move {fullmove}, Ply {self.history_pointer}, {self.turn.capitalize()} ---")
             self.master.after(50, lambda: self._start_ai_process(ChessBot, self.ANALYSIS_AI_NAME, 99))

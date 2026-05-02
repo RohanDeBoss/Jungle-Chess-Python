@@ -100,6 +100,9 @@ def patch_ai_values(mg_vals: dict, eg_vals: dict) -> None:
     for cls in PIECE_CLASSES:
         AI.MG_PIECE_VALUES[cls] = mg_vals[cls]
         AI.EG_PIECE_VALUES[cls] = eg_vals[cls]
+        # Ensure FAMS move-ordering array matches the new MG values
+        AI.ORDERING_VALUES[cls.z_idx] = mg_vals[cls]
+        
     AI.INITIAL_PHASE_MATERIAL = (
         AI.MG_PIECE_VALUES[Rook]   * 4 +
         AI.MG_PIECE_VALUES[Knight] * 4 +
