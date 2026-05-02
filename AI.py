@@ -1,4 +1,4 @@
-# AI.py (v116 - Try new knight PSTs and new Pieces values)
+# AI.py (v116.1 - Try new knight PSTs and new Pieces values + Bug fixes)
 
 import json
 import os
@@ -219,7 +219,7 @@ class ChessBot:
     USE_FUTILITY_PRUNING = True
     FUTILITY_MARGIN = 1000 # Lowered for speed at the cost of some tactical loss
 
-    TT_MAX_SIZE = 50_000_000
+    TT_MAX_SIZE = 10_000_000 #Lots of entries
 
     BONUS_PV_MOVE = 10_000_000
     BONUS_CAPTURE = 8_000_000
@@ -254,9 +254,8 @@ class ChessBot:
     LONE_BISHOP_PENALTIES = (650, 250, 170, 100, 50)
     EVAL_PAWN_VULNERABILITY_EG = 15
 
-    EVAL_MOBILITY_ROOK   = 4
-    EVAL_MOBILITY_QUEEN  = 2
     EVAL_MOBILITY_BISHOP = 4
+    EVAL_MOBILITY_ROOK   = 4
     EVAL_MOBILITY_QUEEN  = 5
 
     def __init__(self, board, color, position_counts, comm_queue, cancellation_event,
@@ -698,7 +697,6 @@ class ChessBot:
 
         ordered_root_moves = self.order_moves(self.board, root_moves, 0, pv_move, self.color)
         board = self.board
-        all_moves_draw = True
 
         for move in ordered_root_moves:
             if self.cancellation_event.is_set(): raise SearchCancelledException()
@@ -730,15 +728,11 @@ class ChessBot:
             finally:
                 board.unmake_move(record)
 
-            if score != self.DRAW_SCORE: all_moves_draw = False
-
             if score > best_score_this_iter:
                 best_score_this_iter = score
                 best_move_this_iter  = move
             alpha = max(alpha, best_score_this_iter)
 
-        if alpha_floor is None and all_moves_draw:
-            best_score_this_iter = self.DRAW_SCORE
         return best_score_this_iter, best_move_this_iter
 
     def negamax(self, board, depth, alpha, beta, turn, ply, search_path, current_hash=None, prev_move_tuple=None, extensions=0):
@@ -1283,15 +1277,23 @@ class ChessBot:
                     scores_eg[color_idx] += mobility * self.EVAL_MOBILITY_ROOK
 
                 elif z == 2: # Bishop
-                    # --- JUNGLE-NATIVE MOBILITY (Sliding) ---
+                    # --- JUNGLE-NATIVE MOBILITY (Sliding & Zigzag) ---
                     mobility = 0
                     for ray in RAYS[sq][4:]: # Diagonal rays
                         for cr, cc in ray:
                             target = grid[cr][cc]
                             if target is not None:
                                 if target.color != my_color_name:
-                                    mobility += 1 # Count the capture square
-                                break # Stop at any piece
+                                    mobility += 1
+                                break
+                            mobility += 1
+                    for ray in BISHOP_ZIGZAG_RAYS[sq]: # Zigzag rays
+                        for cr, cc in ray:
+                            target = grid[cr][cc]
+                            if target is not None:
+                                if target.color != my_color_name:
+                                    mobility += 1
+                                break
                             mobility += 1
                     scores_mg[color_idx] += mobility * self.EVAL_MOBILITY_BISHOP
                     scores_eg[color_idx] += mobility * self.EVAL_MOBILITY_BISHOP
