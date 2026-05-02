@@ -1,4 +1,4 @@
-# AI.py (v116.1 - Try new knight PSTs and new Pieces values + Bug fixes)
+# AI.py (v117)
 
 import json
 import os
@@ -841,16 +841,16 @@ class ChessBot:
                 record     = board.make_move_track(move[0], move[1])
                 child_hash = incremental_hash(hash_val, record)
 
-                opp_king_alive    = (board.white_king_pos is not None) if opponent_turn == 'white' else (board.black_king_pos is not None)
                 own_king_in_check = is_in_check(board, turn)
-
-                if not opp_king_alive:
-                    board.unmake_move(record)
-                    return self.MATE_SCORE - ply
 
                 if own_king_in_check:
                     board.unmake_move(record)
                     continue
+
+                opp_king_alive    = (board.white_king_pos is not None) if opponent_turn == 'white' else (board.black_king_pos is not None)
+                if not opp_king_alive:
+                    board.unmake_move(record)
+                    return self.MATE_SCORE - ply
 
                 legal_moves_count += 1
                 if not is_good_tactic: quiet_moves_tried.append((move, moving_piece))
@@ -1061,14 +1061,14 @@ class ChessBot:
         for swing, move in scored_moves:
             record = board.make_move_track(move[0], move[1])
 
+            if is_in_check(board, turn):
+                board.unmake_move(record)
+                continue
+
             opp_king_alive = board.white_king_pos if opponent_turn == 'white' else board.black_king_pos
             if not opp_king_alive:
                 board.unmake_move(record)
                 return self.MATE_SCORE - ply
-
-            if is_in_check(board, turn):
-                board.unmake_move(record)
-                continue
 
             legal_moves_count += 1
             child_hash = incremental_hash(hash_val, record)
@@ -1078,7 +1078,7 @@ class ChessBot:
             if search_score >= beta: return beta
             alpha = max(alpha, search_score)
 
-        if is_in_check_flag and legal_moves_count == 0:
+        if legal_moves_count == 0 and (is_in_check_flag or not has_legal_moves(board, turn)):
             return -self.MATE_SCORE + ply
 
         return alpha

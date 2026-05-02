@@ -1,12 +1,4 @@
-# TablebaseGenerator.py (v17.1 - Unified 16-bit Tablebase Generator. fix: renamed the helper families so 4-man-vs uses its own functions)
-#
-# Features:
-# - External Disk Binning: Zero RAM, zero disk-thrashing O(N log N) graph sort.
-# - Out-of-Core Memmap Streaming: Solves 16GB graphs using OS Page Caching.
-# - Bidirectional Topological Out-Degree BFS Retrograde Analysis.
-# - Unified 16-bit table storage and loading across the entire pipeline.
-# - Standardized 5-element Tuple IPC for all processes.
-# - Mathematical Topological Sorting for flawless Pawn Promotion routing.
+# TablebaseGenerator.py (v18)
 
 import os
 import time
@@ -22,10 +14,11 @@ os.makedirs(TB_DIR, exist_ok=True)
 
 TB_SUFFIX = "_tb16.bin"
 TB_DTYPE = np.int16
+TB_WDL_MARKER_SUFFIX = ".wdl"
 MAX_DTM = 32766
 LONGEST_MATES_NOTE_FILE = os.path.join(TB_DIR, "longest_mates_tb16.tsv")
 LONGEST_MATE_KEY_PREFIX = "regen_"
-TB_THREADS_SUBTRACT = 2
+TB_THREADS_SUBTRACT = 3
 _IN_TABLE_SENTINEL = "IN_TABLE"
 PIECE_CLASS_BY_NAME = {
     "Queen": Queen, "Rook": Rook, "Knight": Knight, "Bishop": Bishop, "Pawn": Pawn,
@@ -229,6 +222,10 @@ def _write_dense_table(filename, total_positions, solved_flats_np, solved_values
     with open(filename, 'wb') as f:
         dense_table.tofile(f)
 
+def _write_wdl_marker(filename):
+    with open(filename + TB_WDL_MARKER_SUFFIX, "w", encoding="utf-8") as f:
+        f.write("side-to-move signed WDL/DTM\n")
+
 def _make_temp_graph_paths(output_filename):
     base_name = os.path.basename(output_filename).replace(TB_SUFFIX, "")
     run_prefix = f"{base_name}_{os.getpid()}_{time.time_ns()}"
@@ -320,25 +317,41 @@ def _run_flat_bfs(unsolved_flats_np, init_table_np, init_out_degree_np,
     max_child_dtm = np.zeros(num_states, dtype=np.uint16)
     
     queues = [array('I') for _ in range(MAX_DTM + 2)]
+    solved_count = 0
+    pending_count = 0
 
     def _queue_forced_win(state_idx, dtm_value):
+        nonlocal solved_count, pending_count
+        if local_table[state_idx] != 0:
+            return False
         dtm_int = int(dtm_value)
         if dtm_int > MAX_DTM:
             raise OverflowError(f"16-bit DTM overflow: {dtm_int}")
         local_table[state_idx] = dtm_int
         queues[dtm_int].append(int(state_idx))
+        solved_count += 1
+        pending_count += 1
+        return True
 
     def _queue_forced_loss(state_idx, dtm_value):
+        nonlocal solved_count, pending_count
+        if local_table[state_idx] != 0:
+            return False
         dtm_int = int(dtm_value)
         if dtm_int > MAX_DTM:
             raise OverflowError(f"16-bit DTM overflow: {dtm_int}")
         local_table[state_idx] = -dtm_int
         queues[dtm_int].append(int(state_idx))
+        solved_count += 1
+        pending_count += 1
+        return True
     
     solved_idxs = np.where(local_table != 0)[0]
-    solved_count = len(solved_idxs)
     for idx in solved_idxs:
-        queues[1].append(idx)
+        dtm = abs(int(local_table[idx]))
+        queues[dtm].append(idx)
+        solved_count += 1
+        pending_count += 1
         
     for i in range(len(wtm_promo_wins_idx)):
         idx = wtm_promo_wins_idx[i]
@@ -356,7 +369,6 @@ def _run_flat_bfs(unsolved_flats_np, init_table_np, init_out_degree_np,
             if out_degree[idx] == 0:
                 dtm = int(max_child_dtm[idx]) + 1
                 _queue_forced_loss(idx, dtm)
-                solved_count += 1
             
     max_dtm_solved = 1 if solved_count > 0 else 0
     
@@ -369,6 +381,7 @@ def _run_flat_bfs(unsolved_flats_np, init_table_np, init_out_degree_np,
         max_dtm_solved = dtm
         
         q_arr = np.frombuffer(q, dtype=np.uint32)
+        pending_count -= len(q)
         changed = 0
         
         for idx in q_arr:
@@ -376,6 +389,7 @@ def _run_flat_bfs(unsolved_flats_np, init_table_np, init_out_degree_np,
             
             if local_table[idx] == 0:
                 local_table[idx] = dtm if t_idx == 0 else -dtm
+                solved_count += 1
                 changed += 1
             elif abs(local_table[idx]) != dtm:
                 continue 
@@ -383,32 +397,177 @@ def _run_flat_bfs(unsolved_flats_np, init_table_np, init_out_degree_np,
             if t_idx == 1: 
                 start_e, end_e = b2w_head[idx], b2w_head[idx+1]
                 for p_idx in b2w_edges[start_e:end_e]:
-                    if local_table[p_idx] == 0:
-                        _queue_forced_win(p_idx, dtm + 1)
+                    if _queue_forced_win(p_idx, dtm + 1):
                         changed += 1
                         
             else: 
                 start_e, end_e = w2b_head[idx], w2b_head[idx+1]
                 for p_idx in w2b_edges[start_e:end_e]:
+                    if local_table[p_idx] != 0:
+                        continue
                     if out_degree[p_idx] == 65535: continue
                     if max_child_dtm[p_idx] < dtm:
                         max_child_dtm[p_idx] = dtm
                     out_degree[p_idx] -= 1
                     if out_degree[p_idx] == 0:
                         p_dtm = int(max_child_dtm[p_idx]) + 1
-                        _queue_forced_loss(p_idx, p_dtm)
-                        changed += 1
-                        
-        if changed > 0:
-            solved_count = np.count_nonzero(local_table)
-            
-        pending_count = sum(len(queues[i]) for i in range(dtm + 1, MAX_DTM + 1))
+                        if _queue_forced_loss(p_idx, p_dtm):
+                            changed += 1
         
         if dtm == MAX_DTM and pending_count > 0:
             raise OverflowError("16-bit DTM overflowed the supported tablebase range.")
 
         print(f"  [DTM {dtm:^3}] Solved: {solved_count:,}/{num_states:,} "
               f"| Next Q: {len(queues[dtm+1]):<6,} | Held: {pending_count:<6,} ", flush=True)
+
+    return local_table, max_dtm_solved, solved_count
+
+
+def _append_full_wdl_state(flat, trans, unsolved_flats, init_table,
+                           init_out_degree, init_max_child_dtm, f_b2w, f_w2b):
+    i = len(unsolved_flats)
+    unsolved_flats.append(flat)
+
+    terminal_value = int(trans[1])
+    known_values = trans[2]
+    child_flats = trans[3]
+
+    if terminal_value:
+        init_table.append(terminal_value)
+        init_out_degree.append(0)
+        init_max_child_dtm.append(0)
+    else:
+        forced_win_dtm = None
+        max_known_child_win = 0
+        has_draw_escape = False
+
+        for raw_val in known_values:
+            val = int(raw_val)
+            if val < 0:
+                dtm = abs(val) + 1
+                forced_win_dtm = dtm if forced_win_dtm is None else min(forced_win_dtm, dtm)
+            elif val > 0:
+                if val > max_known_child_win:
+                    max_known_child_win = val
+            else:
+                has_draw_escape = True
+
+        if forced_win_dtm is not None:
+            init_table.append(forced_win_dtm)
+            init_out_degree.append(0)
+            init_max_child_dtm.append(0)
+        elif has_draw_escape:
+            init_table.append(0)
+            init_out_degree.append(65535)
+            init_max_child_dtm.append(max_known_child_win)
+        elif not child_flats:
+            init_table.append(-(max_known_child_win + 1))
+            init_out_degree.append(0)
+            init_max_child_dtm.append(0)
+        else:
+            init_table.append(0)
+            init_out_degree.append(len(child_flats))
+            init_max_child_dtm.append(max_known_child_win)
+
+    if child_flats:
+        arr = np.empty((len(child_flats), 2), dtype=np.uint32)
+        arr[:, 0] = child_flats
+        arr[:, 1] = i
+        if (flat & 1) == 0:
+            f_b2w.write(arr.tobytes())
+        else:
+            f_w2b.write(arr.tobytes())
+
+
+def _run_flat_bfs_full_wdl(unsolved_flats_np, init_table_np,
+                           init_out_degree_np, init_max_child_dtm_np,
+                           b2w_head, b2w_edges, w2b_head, w2b_edges,
+                           start_time):
+    num_states = len(unsolved_flats_np)
+    local_table = init_table_np.astype(TB_DTYPE)
+    out_degree = init_out_degree_np.copy()
+    max_child_dtm = init_max_child_dtm_np.copy()
+
+    queues = [array('I') for _ in range(MAX_DTM + 2)]
+    solved_count = 0
+    pending_count = 0
+
+    def _queue_value(state_idx, signed_value):
+        nonlocal solved_count, pending_count
+        val = int(signed_value)
+        if val == 0 or local_table[state_idx] != 0:
+            return False
+        dtm = abs(val)
+        if dtm > MAX_DTM:
+            raise OverflowError(f"16-bit DTM overflow: {dtm}")
+        local_table[state_idx] = val
+        queues[dtm].append(int(state_idx))
+        solved_count += 1
+        pending_count += 1
+        return True
+
+    for idx, val in enumerate(local_table):
+        if val != 0:
+            dtm = abs(int(val))
+            if dtm > MAX_DTM:
+                raise OverflowError(f"16-bit DTM overflow: {dtm}")
+            queues[dtm].append(idx)
+            solved_count += 1
+            pending_count += 1
+
+    max_dtm_solved = 1 if solved_count > 0 else 0
+
+    print(f"[Stage 3] Full WDL BFS start (16-bit) | Seeded: {solved_count:,} | "
+          f"Elapsed so far: {_fmt_elapsed(time.time() - start_time)}", flush=True)
+
+    for dtm in range(1, MAX_DTM + 1):
+        q = queues[dtm]
+        if not q:
+            continue
+
+        max_dtm_solved = dtm
+        q_arr = np.frombuffer(q, dtype=np.uint32)
+        pending_count -= len(q)
+        changed = 0
+
+        for idx in q_arr:
+            child_val = int(local_table[idx])
+            if child_val == 0 or abs(child_val) != dtm:
+                continue
+
+            t_idx = unsolved_flats_np[idx] & 1
+            if t_idx == 1:
+                start_e, end_e = b2w_head[idx], b2w_head[idx + 1]
+                parent_edges = b2w_edges[start_e:end_e]
+            else:
+                start_e, end_e = w2b_head[idx], w2b_head[idx + 1]
+                parent_edges = w2b_edges[start_e:end_e]
+
+            for p_idx in parent_edges:
+                if local_table[p_idx] != 0:
+                    continue
+
+                if child_val < 0:
+                    if _queue_value(p_idx, dtm + 1):
+                        changed += 1
+                    continue
+
+                if out_degree[p_idx] == 65535:
+                    continue
+                if max_child_dtm[p_idx] < dtm:
+                    max_child_dtm[p_idx] = dtm
+                out_degree[p_idx] -= 1
+                if out_degree[p_idx] == 0:
+                    p_dtm = int(max_child_dtm[p_idx]) + 1
+                    if _queue_value(p_idx, -p_dtm):
+                        changed += 1
+
+        if dtm == MAX_DTM and pending_count > 0:
+            raise OverflowError("16-bit DTM overflowed the supported tablebase range.")
+
+        print(f"  [DTM {dtm:^3}] Solved: {solved_count:,}/{num_states:,} "
+              f"| Next Q: {len(queues[dtm+1]):<6,} | Held: {pending_count:<6,} "
+              f"| New: {changed:<6,}", flush=True)
 
     return local_table, max_dtm_solved, solved_count
 
@@ -822,7 +981,8 @@ def _init_transition_worker_4vs(w_name, b_name):
     if b_name == "Pawn": promo_targets.add((w_name, "Queen"))
     for key in promo_targets:
         sk = tuple(sorted(key)); path = os.path.join(TB_DIR, f"K_{sk[0]}_vs_{sk[1]}_K{TB_SUFFIX}")
-        if os.path.exists(path): _W4V_PROMO_TABLES[sk] = _load_4man_table_file(path)
+        if os.path.exists(path) and os.path.exists(path + TB_WDL_MARKER_SUFFIX):
+            _W4V_PROMO_TABLES[sk] = _load_4man_table_file(path)
     _W4V_BOARD = Board(setup=False)
     _W4V_WK_OBJ, _W4V_WP_OBJ = King('white'), PIECE_CLASS_BY_NAME[_W4V_W_NAME]('white')
     _W4V_BK_OBJ, _W4V_BP_OBJ = King('black'), PIECE_CLASS_BY_NAME[_W4V_B_NAME]('black')
@@ -856,6 +1016,30 @@ def _w4v_white_win_dtm_promo_vs(w_name, b_name, wk, wp, bk, bp, turn_idx):
         q_idx = _canonical_flat_4vs(wk[0]*8+wk[1], wp[0]*8+wp[1], bk[0]*8+bk[1], bp[0]*8+bp[1], turn_idx, hp)
         val = int(tb.flat[q_idx]); return None if val == 0 else (abs(val) if ((turn_idx==0 and val>0) or (turn_idx==1 and val<0)) else None)
 
+def _w4v_stm_value_3man(piece_name, wk, p, bk, turn_idx, is_white_piece):
+    tb = _W4V_3MAN_TABLES.get(piece_name)
+    if tb is None: return 0
+    if is_white_piece:
+        q_idx = _canonical_flat_3(wk[0]*8+wk[1], p[0]*8+p[1], bk[0]*8+bk[1], turn_idx, piece_name=="Pawn")
+        return int(tb.flat[q_idx])
+
+    t2 = 1 - turn_idx
+    atk_k, atk_p, def_k = _flip(bk), _flip(p), _flip(wk)
+    q_idx = _canonical_flat_3(atk_k[0]*8+atk_k[1], atk_p[0]*8+atk_p[1], def_k[0]*8+def_k[1], t2, piece_name=="Pawn")
+    return int(tb.flat[q_idx])
+
+def _w4v_stm_value_promo_vs(w_name, b_name, wk, wp, bk, bp, turn_idx):
+    key = tuple(sorted((w_name, b_name))); tb = _W4V_PROMO_TABLES.get(key)
+    if tb is None: return 0
+    hp = ("Pawn" in {w_name, b_name})
+    if w_name > b_name:
+        t2 = 1 - turn_idx
+        bk_f, bp_f, wk_f, wp_f = _flip(bk), _flip(bp), _flip(wk), _flip(wp)
+        q_idx = _canonical_flat_4vs(bk_f[0]*8+bk_f[1], bp_f[0]*8+bp_f[1], wk_f[0]*8+wk_f[1], wp_f[0]*8+wp_f[1], t2, hp)
+    else:
+        q_idx = _canonical_flat_4vs(wk[0]*8+wk[1], wp[0]*8+wp[1], bk[0]*8+bk[1], bp[0]*8+bp[1], turn_idx, hp)
+    return int(tb.flat[q_idx])
+
 def _w4v_ext_white_win_4vs(child, turn_idx):
     w_nk = [p for p in child.white_pieces if not isinstance(p, King)]
     b_nk = [p for p in child.black_pieces if not isinstance(p, King)]
@@ -872,6 +1056,23 @@ def _w4v_ext_white_win_4vs(child, turn_idx):
         return None
     return None
 
+def _w4v_ext_stm_value_4vs(child, turn_idx):
+    w_nk = [p for p in child.white_pieces if not isinstance(p, King)]
+    b_nk = [p for p in child.black_pieces if not isinstance(p, King)]
+    wkp, bkp = child.white_king_pos, child.black_king_pos
+    if len(w_nk) == 1 and len(b_nk) == 1:
+        wn, bn = type(w_nk[0]).__name__, type(b_nk[0]).__name__
+        if wn == _W4V_W_NAME and bn == _W4V_B_NAME:
+            return _IN_TABLE_SENTINEL
+        return _w4v_stm_value_promo_vs(wn, bn, wkp, w_nk[0].pos, bkp, b_nk[0].pos, turn_idx)
+    if len(w_nk) == 1 and len(b_nk) == 0:
+        return _w4v_stm_value_3man(type(w_nk[0]).__name__, wkp, w_nk[0].pos, bkp, turn_idx, True)
+    if len(w_nk) == 0 and len(b_nk) == 1:
+        return _w4v_stm_value_3man(type(b_nk[0]).__name__, wkp, b_nk[0].pos, bkp, turn_idx, False)
+    if len(w_nk) == 0 and len(b_nk) == 0:
+        return 0
+    return 0
+
 def _build_transition_worker_4vs(flat):
     rest = flat // 2; bp_sq = rest % 64; rest //= 64; bk_sq = rest % 64; rest //= 64
     wp_sq = rest % 64; wk_idx = rest // 64
@@ -887,43 +1088,44 @@ def _build_transition_worker_4vs(flat):
     board.white_king_pos,board.black_king_pos = wk,bk
     board.white_pieces[:] = [_W4V_WK_OBJ,_W4V_WP_OBJ]; board.black_pieces[:] = [_W4V_BK_OBJ,_W4V_BP_OBJ]
     if is_in_check(board, 'black' if turn_is_white else 'white'): return None
-    moves = get_all_pseudo_legal_moves(board, 'white' if turn_is_white else 'black')
-    if turn_is_white:
-        immediate_win, known_wins, child_flats = False, [], []
-        for start, end in moves:
-            record = board.make_move_track(start, end)
-            if not board.white_king_pos or not board.black_king_pos or is_in_check(board, 'white'):
-                board.unmake_move(record); continue
-            if not has_legal_moves(board, 'black'):
-                immediate_win = True; board.unmake_move(record); break
-            ext = _w4v_ext_white_win_4vs(board, opp_turn_idx)
-            if ext == _IN_TABLE_SENTINEL:
-                w_p = next((p for p in board.white_pieces if not isinstance(p, King)), None)
-                b_p = next((p for p in board.black_pieces if not isinstance(p, King)), None)
-                if w_p and b_p:
-                    child_flats.append(_canonical_flat_4vs(board.white_king_pos[0]*8+board.white_king_pos[1], w_p.pos[0]*8+w_p.pos[1], board.black_king_pos[0]*8+board.black_king_pos[1], b_p.pos[0]*8+b_p.pos[1], opp_turn_idx, _W4V_HAS_PAWN))
-            elif ext is not None and ext > 0: known_wins.append(ext + 1)
-            board.unmake_move(record)
-        return (flat, ('w', immediate_win, tuple(known_wins), tuple(child_flats)))
-    else:
-        legal_moves, escape, known_wins, child_flats = 0, False, [], []
-        for start, end in moves:
-            record = board.make_move_track(start, end)
-            if not board.black_king_pos or not board.white_king_pos or is_in_check(board, 'black'):
-                board.unmake_move(record); continue
-            legal_moves += 1
-            if not has_legal_moves(board, 'white'): escape = True; board.unmake_move(record); continue
-            ext = _w4v_ext_white_win_4vs(board, opp_turn_idx)
-            if ext == _IN_TABLE_SENTINEL:
-                w_p = next((p for p in board.white_pieces if not isinstance(p, King)), None)
-                b_p = next((p for p in board.black_pieces if not isinstance(p, King)), None)
-                if not w_p or not b_p: escape = True
-                else:
-                    child_flats.append(_canonical_flat_4vs(board.white_king_pos[0]*8+board.white_king_pos[1], w_p.pos[0]*8+w_p.pos[1], board.black_king_pos[0]*8+board.black_king_pos[1], b_p.pos[0]*8+b_p.pos[1], opp_turn_idx, _W4V_HAS_PAWN))
-            elif ext is not None and ext > 0: known_wins.append(ext)
-            else: escape = True
-            board.unmake_move(record)
-        return (flat, ('b', legal_moves, escape, tuple(known_wins), tuple(child_flats)))
+    turn = 'white' if turn_is_white else 'black'
+    opponent = 'black' if turn_is_white else 'white'
+    moves = get_all_pseudo_legal_moves(board, turn)
+
+    legal_moves, immediate_win, known_values, child_flats = 0, False, [], []
+    for start, end in moves:
+        record = board.make_move_track(start, end)
+        own_king_pos = board.white_king_pos if turn_is_white else board.black_king_pos
+        if not own_king_pos or is_in_check(board, turn):
+            board.unmake_move(record); continue
+        legal_moves += 1
+
+        opp_king_pos = board.black_king_pos if turn_is_white else board.white_king_pos
+        if not opp_king_pos or not has_legal_moves(board, opponent):
+            immediate_win = True; board.unmake_move(record); break
+
+        ext = _w4v_ext_stm_value_4vs(board, opp_turn_idx)
+        if ext == _IN_TABLE_SENTINEL:
+            w_p = next((p for p in board.white_pieces if not isinstance(p, King)), None)
+            b_p = next((p for p in board.black_pieces if not isinstance(p, King)), None)
+            if w_p and b_p:
+                child_flats.append(_canonical_flat_4vs(
+                    board.white_king_pos[0]*8+board.white_king_pos[1],
+                    w_p.pos[0]*8+w_p.pos[1],
+                    board.black_king_pos[0]*8+board.black_king_pos[1],
+                    b_p.pos[0]*8+b_p.pos[1],
+                    opp_turn_idx, _W4V_HAS_PAWN))
+            else:
+                known_values.append(0)
+        else:
+            known_values.append(int(ext))
+        board.unmake_move(record)
+
+    if legal_moves == 0:
+        return (flat, ('g', -1, (), ()))
+    if immediate_win:
+        return (flat, ('g', 1, (), ()))
+    return (flat, ('g', 0, tuple(known_values), tuple(child_flats)))
 
 def _gen_valid_4man_vs_indices_numpy(total_positions, w_name, b_name, has_pawn, chunk_size=8_000_000):
     for start in range(0, total_positions, chunk_size):
@@ -966,8 +1168,7 @@ class Generator4Vs:
         s2 = time.time(); print(f"[Stage 2] Building flat disk cache ({total:,} states)...", flush=True)
         unsolved_flats = array('I')
         init_table = array('h'); init_out_degree = array('H')
-        wtm_promo_idx = array('I'); wtm_promo_val = array('H')
-        btm_promo_idx = array('I'); btm_promo_val = array('H')
+        init_max_child_dtm = array('H')
         
         run_prefix, tmp_b2w, tmp_w2b = _make_temp_graph_paths(self.filename)
         f_b2w = open(tmp_b2w, "wb")
@@ -978,28 +1179,9 @@ class Generator4Vs:
             for done, result in enumerate(ex.map(_build_transition_worker_4vs, all_flats, chunksize=4096), 1):
                 if result is not None:
                     flat, trans = result
-                    i = len(unsolved_flats)
-                    unsolved_flats.append(flat)
-                    if (flat & 1) == 0:
-                        if trans[1]: init_table.append(1); init_out_degree.append(0)
-                        else:
-                            init_table.append(0); init_out_degree.append(len(trans[3]))
-                            if trans[2]: wtm_promo_idx.append(i); wtm_promo_val.append(min(trans[2]))
-                        if trans[3]:
-                            arr = np.empty((len(trans[3]), 2), dtype=np.uint32)
-                            arr[:, 0] = trans[3]; arr[:, 1] = i
-                            f_b2w.write(arr.tobytes())
-                    else:
-                        if trans[1] == 0: init_table.append(-1); init_out_degree.append(0)
-                        elif trans[2]: init_table.append(0); init_out_degree.append(65535)
-                        else:
-                            promo_losses, children = trans[3], trans[4]
-                            init_table.append(0); init_out_degree.append(len(children) + len(promo_losses))
-                            for p_val in promo_losses: btm_promo_idx.append(i); btm_promo_val.append(p_val)
-                            if children:
-                                arr = np.empty((len(children), 2), dtype=np.uint32)
-                                arr[:, 0] = children; arr[:, 1] = i
-                                f_w2b.write(arr.tobytes())
+                    _append_full_wdl_state(flat, trans, unsolved_flats, init_table,
+                                           init_out_degree, init_max_child_dtm,
+                                           f_b2w, f_w2b)
                 if done % 50_000 == 0:
                     elapsed = time.time() - start_time; speed = done / max(0.001, time.time() - s2)
                     print(f"  > {done/total*100:.1f}% ({done:,}/{total:,}) | {speed:,.0f} st/s | Elapsed: {_fmt_elapsed(elapsed)}", end='\r', flush=True)
@@ -1015,13 +1197,15 @@ class Generator4Vs:
         print(f"[Stage 2b] Done | {_fmt_elapsed(time.time()-s3)}", flush=True)
         
         try:
-            table_flat, max_dtm, decisive = _run_flat_bfs(
-                unsolved_flats_np, np.array(init_table, dtype=TB_DTYPE), np.array(init_out_degree, dtype=np.uint16),
-                np.array(wtm_promo_idx, dtype=np.uint32), np.array(wtm_promo_val, dtype=np.uint16),
-                np.array(btm_promo_idx, dtype=np.uint32), np.array(btm_promo_val, dtype=np.uint16),
+            table_flat, max_dtm, decisive = _run_flat_bfs_full_wdl(
+                unsolved_flats_np,
+                np.array(init_table, dtype=TB_DTYPE),
+                np.array(init_out_degree, dtype=np.uint16),
+                np.array(init_max_child_dtm, dtype=np.uint16),
                 b2w_head, b2w_edges, w2b_head, w2b_edges, start_time)
 
             _write_dense_table(self.filename, self.total_positions, unsolved_flats_np, table_flat)
+            _write_wdl_marker(self.filename)
                 
             elapsed = time.time() - start_time
             tb_key = os.path.basename(self.filename).replace(TB_SUFFIX, '')
@@ -1210,10 +1394,11 @@ class Generator5:
         print(f"\n{'='*60}\n GENERATING: K+{self.p1_name}+{self.p2_name}+{self.p3_name} vs K (TB16)", flush=True)
         print(f" Estimated file size: {sz_mb:.0f} MB\n{'='*60}", flush=True)
         s1 = time.time(); print(f"[Stage 1] Enumerating candidates...", flush=True)
-        all_flats = array('I')
-        for chunk in _gen_valid_5same_indices_numpy(self.total_positions, self.p1_name, self.p2_name, self.p3_name, self.has_pawn):
-            all_flats.extend(chunk)
-        total = len(all_flats)
+        total = sum(
+            len(chunk)
+            for chunk in _gen_valid_5same_indices_numpy(
+                self.total_positions, self.p1_name, self.p2_name, self.p3_name, self.has_pawn)
+        )
         print(f"[Stage 1] Done: {total:,} candidates | {_fmt_elapsed(time.time()-s1)}", flush=True)
         
         s2 = time.time(); print(f"[Stage 2] Building flat disk cache ({total:,} states)...", flush=True)
@@ -1228,7 +1413,13 @@ class Generator5:
         
         with ProcessPoolExecutor(max_workers=self.transition_workers, initializer=_init_transition_worker_5,
                                  initargs=(self.p1_name, self.p2_name, self.p3_name)) as ex:
-            for done, result in enumerate(ex.map(_build_transition_worker_5, all_flats, chunksize=256), 1):
+            flat_iter = (
+                flat
+                for chunk in _gen_valid_5same_indices_numpy(
+                    self.total_positions, self.p1_name, self.p2_name, self.p3_name, self.has_pawn)
+                for flat in chunk
+            )
+            for done, result in enumerate(ex.map(_build_transition_worker_5, flat_iter, chunksize=256), 1):
                 if result is not None:
                     flat, trans = result
                     i = len(unsolved_flats)
@@ -1255,7 +1446,8 @@ class Generator5:
                                 f_w2b.write(arr.tobytes())
                 if done % 100_000 == 0:
                     elapsed = time.time() - start_time; speed = done / max(0.001, time.time() - s2)
-                    print(f"  > {done/total*100:.1f}% ({done:,}/{total:,}) | {speed:,.0f} st/s | Elapsed: {_fmt_elapsed(elapsed)}", end='\r', flush=True)
+                    pct = (done / total * 100) if total else 100.0
+                    print(f"  > {pct:.1f}% ({done:,}/{total:,}) | {speed:,.0f} st/s | Elapsed: {_fmt_elapsed(elapsed)}", end='\r', flush=True)
         
         f_b2w.close(); f_w2b.close()
         print(); s2e = time.time() - s2
@@ -1313,27 +1505,34 @@ def _init_transition_worker_5vs(w1_name, w2_name, b_name):
     for n1 in pieces:
         for n2 in pieces:
             key = tuple(sorted([n1, n2]))
-            if key in seen4: continue; seen4.add(key)
+            if key in seen4:
+                continue
+            seen4.add(key)
             path = os.path.join(TB_DIR, f"K_{key[0]}_{key[1]}_K{TB_SUFFIX}")
             if os.path.exists(path): _W5V_4MAN_TABLES[f"{key[0]}_{key[1]}"] = _load_4man_table_file(path)
     seen4v = set()
     for wn in pieces:
         for bn in pieces:
             key = tuple(sorted([wn, bn]))
-            if key in seen4v: continue; seen4v.add(key)
+            if key in seen4v:
+                continue
+            seen4v.add(key)
             path = os.path.join(TB_DIR, f"K_{key[0]}_vs_{key[1]}_K{TB_SUFFIX}")
-            if os.path.exists(path): _W5V_4VS_TABLES[f"{key[0]}_vs_{key[1]}"] = _load_4man_table_file(path)
+            if os.path.exists(path) and os.path.exists(path + TB_WDL_MARKER_SUFFIX):
+                _W5V_4VS_TABLES[f"{key[0]}_vs_{key[1]}"] = _load_4man_table_file(path)
     if _W5V_HAS_PAWN:
         if "Pawn" in [w1_name, w2_name]:
             w_names = [w1_name, w2_name]; w_names[w_names.index("Pawn")] = "Queen"
             w_names.sort(key=lambda n: (_PIECE_CANONICAL_ORDER.get(PIECE_CLASS_BY_NAME[n],99), n))
             tb_name = f"K_{w_names[0]}_{w_names[1]}_vs_{b_name}_K{TB_SUFFIX}"
             path = os.path.join(TB_DIR, tb_name)
-            if os.path.exists(path): _W5V_PROMO_TABLES[("w", tuple(w_names), b_name)] = _load_5man_table_file(path)
+            if os.path.exists(path) and os.path.exists(path + TB_WDL_MARKER_SUFFIX):
+                _W5V_PROMO_TABLES[("w", tuple(w_names), b_name)] = _load_5man_table_file(path)
         if b_name == "Pawn":
             tb_name = f"K_{w1_name}_{w2_name}_vs_Queen_K{TB_SUFFIX}"
             path = os.path.join(TB_DIR, tb_name)
-            if os.path.exists(path): _W5V_PROMO_TABLES[("b", (w1_name, w2_name), "Queen")] = _load_5man_table_file(path)
+            if os.path.exists(path) and os.path.exists(path + TB_WDL_MARKER_SUFFIX):
+                _W5V_PROMO_TABLES[("b", (w1_name, w2_name), "Queen")] = _load_5man_table_file(path)
     _W5V_BOARD = Board(setup=False)
     _W5V_WK_OBJ = King('white'); _W5V_WP1_OBJ = PIECE_CLASS_BY_NAME[w1_name]('white'); _W5V_WP2_OBJ = PIECE_CLASS_BY_NAME[w2_name]('white')
     _W5V_BK_OBJ = King('black'); _W5V_BP_OBJ = PIECE_CLASS_BY_NAME[b_name]('black')
@@ -1387,6 +1586,81 @@ def _w5v_ext_dtm(board, turn_idx):
         return None
     return None
 
+def _w5v_stm_value_3man(piece_name, wk, p, bk, turn_idx, is_white_piece):
+    tb = _W5V_3MAN_TABLES.get(piece_name)
+    if tb is None: return 0
+    if is_white_piece:
+        q_idx = _canonical_flat_3(wk[0]*8+wk[1], p[0]*8+p[1], bk[0]*8+bk[1], turn_idx, piece_name=="Pawn")
+        return int(tb.flat[q_idx])
+
+    t2 = 1 - turn_idx
+    atk_k, atk_p, def_k = _flip(bk), _flip(p), _flip(wk)
+    q_idx = _canonical_flat_3(atk_k[0]*8+atk_k[1], atk_p[0]*8+atk_p[1], def_k[0]*8+def_k[1], t2, piece_name=="Pawn")
+    return int(tb.flat[q_idx])
+
+def _w5v_ext_stm_value(board, turn_idx):
+    w_nk = [p for p in board.white_pieces if not isinstance(p, King)]
+    b_nk = [p for p in board.black_pieces if not isinstance(p, King)]
+    wkp, bkp = board.white_king_pos, board.black_king_pos
+    nw, nb = len(w_nk), len(b_nk)
+
+    if nw == 2 and nb == 1:
+        ws = sorted(w_nk, key=lambda p: (_PIECE_CANONICAL_ORDER.get(type(p),99), p.pos[0]*8+p.pos[1]))
+        cw1, cw2 = type(ws[0]).__name__, type(ws[1]).__name__
+        cb = type(b_nk[0]).__name__
+        if cw1 == _W5V_W1_NAME and cw2 == _W5V_W2_NAME and cb == _W5V_B_NAME:
+            return _IN_TABLE_SENTINEL
+        key = ("w" if cb == _W5V_B_NAME else "b", (cw1, cw2), cb)
+        tb = _W5V_PROMO_TABLES.get(key)
+        if tb is None: return 0
+        hp = ("Pawn" in {cw1, cw2, cb})
+        q_idx = _canonical_flat_5vs(
+            wkp[0]*8+wkp[1], ws[0].pos[0]*8+ws[0].pos[1],
+            ws[1].pos[0]*8+ws[1].pos[1], bkp[0]*8+bkp[1],
+            b_nk[0].pos[0]*8+b_nk[0].pos[1], turn_idx, hp, cw1, cw2)
+        return int(tb.flat[q_idx])
+
+    if nw == 2 and nb == 0:
+        ws = sorted(w_nk, key=lambda p: (_PIECE_CANONICAL_ORDER.get(type(p),99), p.pos[0]*8+p.pos[1]))
+        n1, n2 = type(ws[0]).__name__, type(ws[1]).__name__
+        tb = _W5V_4MAN_TABLES.get(f"{n1}_{n2}")
+        if tb is None: return 0
+        hp = ("Pawn" in {n1, n2})
+        q_idx = _canonical_flat_4(
+            wkp[0]*8+wkp[1], ws[0].pos[0]*8+ws[0].pos[1],
+            ws[1].pos[0]*8+ws[1].pos[1], bkp[0]*8+bkp[1],
+            turn_idx, hp, n1 == n2)
+        return int(tb.flat[q_idx])
+
+    if nw == 1 and nb == 1:
+        wn, bn = type(w_nk[0]).__name__, type(b_nk[0]).__name__
+        sn1, sn2 = sorted([wn, bn])
+        tb = _W5V_4VS_TABLES.get(f"{sn1}_vs_{sn2}")
+        if tb is None: return 0
+        hp = ("Pawn" in {wn, bn})
+        if wn <= bn:
+            q_idx = _canonical_flat_4vs(
+                wkp[0]*8+wkp[1], w_nk[0].pos[0]*8+w_nk[0].pos[1],
+                bkp[0]*8+bkp[1], b_nk[0].pos[0]*8+b_nk[0].pos[1],
+                turn_idx, hp)
+        else:
+            t2 = 1 - turn_idx
+            bk_f, bp_f = _flip(bkp), _flip(b_nk[0].pos)
+            wk_f, wp_f = _flip(wkp), _flip(w_nk[0].pos)
+            q_idx = _canonical_flat_4vs(
+                bk_f[0]*8+bk_f[1], bp_f[0]*8+bp_f[1],
+                wk_f[0]*8+wk_f[1], wp_f[0]*8+wp_f[1],
+                t2, hp)
+        return int(tb.flat[q_idx])
+
+    if nw == 1 and nb == 0:
+        return _w5v_stm_value_3man(type(w_nk[0]).__name__, wkp, w_nk[0].pos, bkp, turn_idx, True)
+    if nw == 0 and nb == 1:
+        return _w5v_stm_value_3man(type(b_nk[0]).__name__, wkp, b_nk[0].pos, bkp, turn_idx, False)
+    if nw == 0 and nb == 0:
+        return 0
+    return 0
+
 def _build_transition_worker_5vs(flat):
     rest = flat // 2; bp_sq = rest % 64; rest //= 64; bk_sq = rest % 64; rest //= 64
     wp2_sq = rest % 64; rest //= 64; wp1_sq = rest % 64; wk_idx = rest // 64
@@ -1403,41 +1677,47 @@ def _build_transition_worker_5vs(flat):
     board.white_king_pos,board.black_king_pos = wk,bk
     board.white_pieces[:] = [_W5V_WK_OBJ,_W5V_WP1_OBJ,_W5V_WP2_OBJ]; board.black_pieces[:] = [_W5V_BK_OBJ,_W5V_BP_OBJ]
     if is_in_check(board, 'black' if turn_is_white else 'white'): return None
-    moves = get_all_pseudo_legal_moves(board, 'white' if turn_is_white else 'black')
-    if turn_is_white:
-        immediate_win, known_wins, child_flats = False, [], []
-        for start, end in moves:
-            record = board.make_move_track(start, end)
-            if not board.white_king_pos or is_in_check(board, 'white'): board.unmake_move(record); continue
-            if not has_legal_moves(board, 'black'):
-                immediate_win = True; board.unmake_move(record); break
-            ext = _w5v_ext_dtm(board, opp_turn_idx)
-            if ext == _IN_TABLE_SENTINEL:
-                w_nk = [p for p in board.white_pieces if not isinstance(p, King)]
-                b_nk = [p for p in board.black_pieces if not isinstance(p, King)]
-                ws = sorted(w_nk, key=lambda p: (_PIECE_CANONICAL_ORDER.get(type(p),99), p.pos[0]*8+p.pos[1]))
-                child_flats.append(_canonical_flat_5vs(board.white_king_pos[0]*8+board.white_king_pos[1], ws[0].pos[0]*8+ws[0].pos[1], ws[1].pos[0]*8+ws[1].pos[1], board.black_king_pos[0]*8+board.black_king_pos[1], b_nk[0].pos[0]*8+b_nk[0].pos[1], opp_turn_idx, _W5V_HAS_PAWN, type(ws[0]).__name__, type(ws[1]).__name__))
-            elif ext is not None and ext > 0: known_wins.append(ext + 1)
-            board.unmake_move(record)
-        return (flat, ('w', immediate_win, tuple(known_wins), tuple(child_flats)))
-    else:
-        legal_moves, escape, known_wins, child_flats = 0, False, [], []
-        for start, end in moves:
-            record = board.make_move_track(start, end)
-            if not board.black_king_pos or not board.white_king_pos or is_in_check(board, 'black'):
-                board.unmake_move(record); continue
-            legal_moves += 1
-            if not has_legal_moves(board, 'white'): escape = True; board.unmake_move(record); continue
-            ext = _w5v_ext_dtm(board, opp_turn_idx)
-            if ext == _IN_TABLE_SENTINEL:
-                w_nk = [p for p in board.white_pieces if not isinstance(p, King)]
-                b_nk = [p for p in board.black_pieces if not isinstance(p, King)]
-                ws = sorted(w_nk, key=lambda p: (_PIECE_CANONICAL_ORDER.get(type(p),99), p.pos[0]*8+p.pos[1]))
-                child_flats.append(_canonical_flat_5vs(board.white_king_pos[0]*8+board.white_king_pos[1], ws[0].pos[0]*8+ws[0].pos[1], ws[1].pos[0]*8+ws[1].pos[1], board.black_king_pos[0]*8+board.black_king_pos[1], b_nk[0].pos[0]*8+b_nk[0].pos[1], opp_turn_idx, _W5V_HAS_PAWN, type(ws[0]).__name__, type(ws[1]).__name__))
-            elif ext is not None and ext > 0: known_wins.append(ext)
-            else: escape = True
-            board.unmake_move(record)
-        return (flat, ('b', legal_moves, escape, tuple(known_wins), tuple(child_flats)))
+    turn = 'white' if turn_is_white else 'black'
+    opponent = 'black' if turn_is_white else 'white'
+    moves = get_all_pseudo_legal_moves(board, turn)
+
+    legal_moves, immediate_win, known_values, child_flats = 0, False, [], []
+    for start, end in moves:
+        record = board.make_move_track(start, end)
+        own_king_pos = board.white_king_pos if turn_is_white else board.black_king_pos
+        if not own_king_pos or is_in_check(board, turn):
+            board.unmake_move(record); continue
+        legal_moves += 1
+
+        opp_king_pos = board.black_king_pos if turn_is_white else board.white_king_pos
+        if not opp_king_pos or not has_legal_moves(board, opponent):
+            immediate_win = True; board.unmake_move(record); break
+
+        ext = _w5v_ext_stm_value(board, opp_turn_idx)
+        if ext == _IN_TABLE_SENTINEL:
+            w_nk = [p for p in board.white_pieces if not isinstance(p, King)]
+            b_nk = [p for p in board.black_pieces if not isinstance(p, King)]
+            ws = sorted(w_nk, key=lambda p: (_PIECE_CANONICAL_ORDER.get(type(p),99), p.pos[0]*8+p.pos[1]))
+            if len(ws) == 2 and len(b_nk) == 1:
+                child_flats.append(_canonical_flat_5vs(
+                    board.white_king_pos[0]*8+board.white_king_pos[1],
+                    ws[0].pos[0]*8+ws[0].pos[1],
+                    ws[1].pos[0]*8+ws[1].pos[1],
+                    board.black_king_pos[0]*8+board.black_king_pos[1],
+                    b_nk[0].pos[0]*8+b_nk[0].pos[1],
+                    opp_turn_idx, _W5V_HAS_PAWN,
+                    type(ws[0]).__name__, type(ws[1]).__name__))
+            else:
+                known_values.append(0)
+        else:
+            known_values.append(int(ext))
+        board.unmake_move(record)
+
+    if legal_moves == 0:
+        return (flat, ('g', -1, (), ()))
+    if immediate_win:
+        return (flat, ('g', 1, (), ()))
+    return (flat, ('g', 0, tuple(known_values), tuple(child_flats)))
 
 def _gen_valid_5vs_indices_numpy(total, w1n, w2n, bn, has_pawn, same_wp, chunk_size=2_000_000):
     wk_list = np.array(PAWN_WK_SQUARES if has_pawn else NON_PAWN_WK_SQUARES)
@@ -1478,17 +1758,18 @@ class Generator5Vs:
         print(f"\n{'='*60}\n GENERATING: K+{self.w1_name}+{self.w2_name} vs K+{self.b_name} (TB16)", flush=True)
         print(f" Estimated file size: {sz_mb:.0f} MB\n{'='*60}", flush=True)
         s1 = time.time(); print(f"[Stage 1] Enumerating candidates...", flush=True)
-        all_flats = array('I')
-        for chunk in _gen_valid_5vs_indices_numpy(self.total_positions, self.w1_name, self.w2_name, self.b_name, self.has_pawn, self.same_wp):
-            all_flats.extend(chunk)
-        total = len(all_flats)
+        total = sum(
+            len(chunk)
+            for chunk in _gen_valid_5vs_indices_numpy(
+                self.total_positions, self.w1_name, self.w2_name,
+                self.b_name, self.has_pawn, self.same_wp)
+        )
         print(f"[Stage 1] Done: {total:,} candidates | {_fmt_elapsed(time.time()-s1)}", flush=True)
         
         s2 = time.time(); print(f"[Stage 2] Building flat disk cache ({total:,} states)...", flush=True)
         unsolved_flats = array('I')
         init_table = array('h'); init_out_degree = array('H')
-        wtm_promo_idx = array('I'); wtm_promo_val = array('H')
-        btm_promo_idx = array('I'); btm_promo_val = array('H')
+        init_max_child_dtm = array('H')
         
         run_prefix, tmp_b2w, tmp_w2b = _make_temp_graph_paths(self.filename)
         f_b2w = open(tmp_b2w, "wb")
@@ -1496,34 +1777,23 @@ class Generator5Vs:
         
         with ProcessPoolExecutor(max_workers=self.transition_workers, initializer=_init_transition_worker_5vs,
                                  initargs=(self.w1_name, self.w2_name, self.b_name)) as ex:
-            for done, result in enumerate(ex.map(_build_transition_worker_5vs, all_flats, chunksize=256), 1):
+            flat_iter = (
+                flat
+                for chunk in _gen_valid_5vs_indices_numpy(
+                    self.total_positions, self.w1_name, self.w2_name,
+                    self.b_name, self.has_pawn, self.same_wp)
+                for flat in chunk
+            )
+            for done, result in enumerate(ex.map(_build_transition_worker_5vs, flat_iter, chunksize=256), 1):
                 if result is not None:
                     flat, trans = result
-                    i = len(unsolved_flats)
-                    unsolved_flats.append(flat)
-                    if (flat & 1) == 0:
-                        if trans[1]: init_table.append(1); init_out_degree.append(0)
-                        else:
-                            init_table.append(0); init_out_degree.append(len(trans[3]))
-                            if trans[2]: wtm_promo_idx.append(i); wtm_promo_val.append(min(trans[2]))
-                        if trans[3]:
-                            arr = np.empty((len(trans[3]), 2), dtype=np.uint32)
-                            arr[:, 0] = trans[3]; arr[:, 1] = i
-                            f_b2w.write(arr.tobytes())
-                    else:
-                        if trans[1] == 0: init_table.append(-1); init_out_degree.append(0)
-                        elif trans[2]: init_table.append(0); init_out_degree.append(65535)
-                        else:
-                            promo_losses, children = trans[3], trans[4]
-                            init_table.append(0); init_out_degree.append(len(children) + len(promo_losses))
-                            for p_val in promo_losses: btm_promo_idx.append(i); btm_promo_val.append(p_val)
-                            if children:
-                                arr = np.empty((len(children), 2), dtype=np.uint32)
-                                arr[:, 0] = children; arr[:, 1] = i
-                                f_w2b.write(arr.tobytes())
+                    _append_full_wdl_state(flat, trans, unsolved_flats, init_table,
+                                           init_out_degree, init_max_child_dtm,
+                                           f_b2w, f_w2b)
                 if done % 100_000 == 0:
                     elapsed = time.time() - start_time; speed = done / max(0.001, time.time() - s2)
-                    print(f"  > {done/total*100:.1f}% ({done:,}/{total:,}) | {speed:,.0f} st/s | Elapsed: {_fmt_elapsed(elapsed)}", end='\r', flush=True)
+                    pct = (done / total * 100) if total else 100.0
+                    print(f"  > {pct:.1f}% ({done:,}/{total:,}) | {speed:,.0f} st/s | Elapsed: {_fmt_elapsed(elapsed)}", end='\r', flush=True)
         
         f_b2w.close(); f_w2b.close()
         print(); s2e = time.time() - s2
@@ -1536,13 +1806,15 @@ class Generator5Vs:
         print(f"[Stage 2b] Done | {_fmt_elapsed(time.time()-s3)}", flush=True)
         
         try:
-            table_flat, max_dtm, decisive = _run_flat_bfs(
-                unsolved_flats_np, np.array(init_table, dtype=TB_DTYPE), np.array(init_out_degree, dtype=np.uint16),
-                np.array(wtm_promo_idx, dtype=np.uint32), np.array(wtm_promo_val, dtype=np.uint16),
-                np.array(btm_promo_idx, dtype=np.uint32), np.array(btm_promo_val, dtype=np.uint16),
+            table_flat, max_dtm, decisive = _run_flat_bfs_full_wdl(
+                unsolved_flats_np,
+                np.array(init_table, dtype=TB_DTYPE),
+                np.array(init_out_degree, dtype=np.uint16),
+                np.array(init_max_child_dtm, dtype=np.uint16),
                 b2w_head, b2w_edges, w2b_head, w2b_edges, start_time)
 
             _write_dense_table(self.filename, self.total_positions, unsolved_flats_np, table_flat)
+            _write_wdl_marker(self.filename)
                 
             elapsed = time.time() - start_time
             tb_key = os.path.basename(self.filename).replace(TB_SUFFIX, '')

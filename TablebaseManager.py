@@ -1,4 +1,4 @@
-# TablebaseManager.py (v9.0 - Unified 16-bit tablebase loading)
+# TablebaseManager.py (v10)
 
 import os
 import numpy as np
@@ -7,6 +7,7 @@ from itertools import combinations, combinations_with_replacement
 
 TB_SUFFIX = "_tb16.bin"
 TB_DTYPE = np.int16
+TB_WDL_MARKER_SUFFIX = ".wdl"
 
 def _flip(pos):
     return (7 - pos[0], pos[1])
@@ -47,6 +48,7 @@ _PIECE_NAME_ORDER = {"Bishop": 0, "Knight": 1, "Pawn": 2, "Queen": 3, "Rook": 4}
 class TablebaseManager:
     def __init__(self):
         self.tables = {}
+        self.full_wdl_tables = set()
         self.tb_dir = "tablebases"
         self.pre_load_all()
 
@@ -109,6 +111,8 @@ class TablebaseManager:
             shape = tuple([wk_size] + [64] * (num_pieces + 1) + [2])
             
             self.tables[base_name] = np.memmap(filename, dtype=TB_DTYPE, mode='r', shape=shape)
+            if os.path.exists(filename + TB_WDL_MARKER_SUFFIX):
+                self.full_wdl_tables.add(base_name)
             return True
         except Exception as e:
             print(f"[TablebaseManager] Failed to memmap {base_name}: {e}")
@@ -118,6 +122,12 @@ class TablebaseManager:
         if tb_val == 0: return 0
         score = 1000000 - abs(int(tb_val))
         return score if is_win_for_white else -score
+
+    def _cross_zero_is_unknown(self, tb_name, tb_val):
+        # Older cross-material tables only solved canonical-white wins.  In
+        # those files a zero can mean either "draw" or "canonical black win",
+        # so let search handle it unless a regenerated WDL marker is present.
+        return tb_val == 0 and "_vs_" in tb_name and tb_name not in self.full_wdl_tables
 
     @staticmethod
     def _canonical_tuple_3(wk, p1, bk, turn, has_pawn):
@@ -285,6 +295,7 @@ class TablebaseManager:
                 if tb in self.tables:
                     idx = self._canonical_tuple_4vs(wk, wp_sq, bk, bp_sq, t_idx, "Pawn" in tb)
                     val = int(self.tables[tb][idx])
+                    if self._cross_zero_is_unknown(tb, val): return None
                     is_win = (t_idx == 0 and val > 0) or (t_idx == 1 and val < 0)
                     return self._tb_score_to_ai_score(val, is_win)
             else:
@@ -297,6 +308,7 @@ class TablebaseManager:
                     
                     idx = self._canonical_tuple_4vs(bk_sq, bp_sq2, wk_sq, wp_sq2, 1 - t_idx, "Pawn" in tb)
                     val = int(self.tables[tb][idx])
+                    if self._cross_zero_is_unknown(tb, val): return None
                     b_wins = ((1 - t_idx) == 0 and val > 0) or ((1 - t_idx) == 1 and val < 0)
                     return self._tb_score_to_ai_score(val, not b_wins)
 
@@ -337,6 +349,7 @@ class TablebaseManager:
             if tb in self.tables:
                 idx = self._canonical_tuple_5vs(wk, wp1_sq, wp2_sq, bk, bp_sq, t_idx, "Pawn" in tb, wn1, wn2)
                 val = int(self.tables[tb][idx])
+                if self._cross_zero_is_unknown(tb, val): return None
                 is_win = (t_idx == 0 and val > 0) or (t_idx == 1 and val < 0)
                 return self._tb_score_to_ai_score(val, is_win)
             
@@ -353,6 +366,7 @@ class TablebaseManager:
                 bk_f, wk_f = _flip(board.black_king_pos), _flip(board.white_king_pos)
                 idx = self._canonical_tuple_5vs(bk_f[0]*8+bk_f[1], bp1_sq, bp2_sq, wk_f[0]*8+wk_f[1], wp_sq, 1 - t_idx, "Pawn" in tb, bn1, bn2)
                 val = int(self.tables[tb][idx])
+                if self._cross_zero_is_unknown(tb, val): return None
                 b_wins = ((1 - t_idx) == 0 and val > 0) or ((1 - t_idx) == 1 and val < 0)
                 return self._tb_score_to_ai_score(val, not b_wins)
                 
