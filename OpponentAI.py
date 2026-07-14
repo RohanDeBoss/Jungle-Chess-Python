@@ -1,4 +1,4 @@
-# OPAI.py (v114.31 - only use fams + speedup, old version with new gamelogic v61 support)
+# OPAI.py (v114.32 - only use fams + speedup, new UI support)
 
 import json
 import os
@@ -66,25 +66,18 @@ initialize_zobrist_table()
 def run_ai_process(board, color, position_counts, comm_queue, cancellation_event,
                    bot_class, bot_name, search_depth, ply_count, game_mode,
                    time_left=None, increment=None, use_opening_book=True, use_tablebase=True):
-    try:
-        bot = bot_class(board, color, position_counts, comm_queue, cancellation_event,
-                        bot_name, ply_count, game_mode, time_left=time_left, increment=increment,
-                        use_opening_book=use_opening_book, use_tablebase=use_tablebase)
-    except TypeError:
-        try:
-            # Fallback for bots missing the tablebase argument
-            bot = bot_class(board, color, position_counts, comm_queue, cancellation_event,
-                            bot_name, ply_count, game_mode, time_left=time_left, increment=increment,
-                            use_opening_book=use_opening_book)
-        except TypeError:
-            try:
-                # Fallback for bots missing the opening book argument
-                bot = bot_class(board, color, position_counts, comm_queue, cancellation_event,
-                                bot_name, ply_count, game_mode, time_left=time_left, increment=increment)
-            except TypeError:
-                # Fallback for very old bots
-                bot = bot_class(board, color, position_counts, comm_queue, cancellation_event,
-                                bot_name, ply_count, game_mode)
+    import inspect
+    accepted_params = set(inspect.signature(bot_class.__init__).parameters)
+    kwargs = {
+        'time_left': time_left,
+        'increment': increment,
+        'use_opening_book': use_opening_book,
+        'use_tablebase': use_tablebase
+    }
+    filtered_kwargs = {k: v for k, v in kwargs.items() if k in accepted_params}
+    
+    bot = bot_class(board, color, position_counts, comm_queue, cancellation_event,
+                    bot_name, ply_count, game_mode, **filtered_kwargs)
 
     bot.search_depth = search_depth
     if search_depth == 99:

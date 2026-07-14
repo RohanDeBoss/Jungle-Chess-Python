@@ -1,3 +1,4 @@
+#TB Equivalence Checker (v1.0)
 import argparse
 import json
 import os
@@ -387,8 +388,12 @@ def main():
 
     for offset, base_name in enumerate(common_bases):
         metadata = parse_table_metadata(base_name)
-        old_arr = load_table(args.old_dir, base_name, args.old_suffix, np.int8, metadata.shape)
-        new_arr = load_table(args.new_dir, base_name, args.new_suffix, np.int16, metadata.shape)
+        
+        old_dtype = np.int8 if "xsml" in args.old_suffix else np.int16
+        new_dtype = np.int8 if "xsml" in args.new_suffix else np.int16
+        
+        old_arr = load_table(args.old_dir, base_name, args.old_suffix, old_dtype, metadata.shape)
+        new_arr = load_table(args.new_dir, base_name, args.new_suffix, new_dtype, metadata.shape)
 
         table_report = full_compare_table(base_name, old_arr, new_arr)
         table_report["metadata"] = {

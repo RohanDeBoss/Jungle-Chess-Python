@@ -3,6 +3,7 @@
 
 # -----------------------------------------------------------------------
 # Global constants
+# z_idx reference: 0=Pawn 1=Knight 2=Bishop 3=Rook 4=Queen(kamikaze) 5=King
 # -----------------------------------------------------------------------
 ROWS, COLS = 8, 8
 SQUARE_SIZE = 75
@@ -532,6 +533,16 @@ def _bishop_attacks_square(board, start, tr, tc, bishop_color):
     return False
 
 
+def _king_attacks_square(grid, kr, kc, r, c):
+    dr, dc = r - kr, c - kc
+    abs_dr, abs_dc = abs(dr), abs(dc)
+    m_dist = max(abs_dr, abs_dc)
+    if m_dist == 1:
+        return True
+    if m_dist == 2 and (abs_dr == abs_dc or abs_dr == 0 or abs_dc == 0):
+        return grid[kr + dr // 2][kc + dc // 2] is None
+    return False
+
 def is_square_attacked(board, r, c, attacking_color):
     grid            = board.grid
     defending_color = 'black' if attacking_color == 'white' else 'white'
@@ -541,15 +552,7 @@ def is_square_attacked(board, r, c, attacking_color):
 
     if len(attacking_pieces) == attacker_counts[King]:
         if attacking_king_pos:
-            kr, kc         = attacking_king_pos
-            dr, dc         = r - kr, c - kc
-            abs_dr, abs_dc = abs(dr), abs(dc)
-            m_dist         = max(abs_dr, abs_dc)
-            if m_dist == 1:
-                return True
-            if m_dist == 2 and (abs_dr == abs_dc or abs_dr == 0 or abs_dc == 0):
-                if grid[kr + dr // 2][kc + dc // 2] is None:
-                    return True
+            return _king_attacks_square(grid, attacking_king_pos[0], attacking_king_pos[1], r, c)
         return False
 
     if attacker_counts[Knight] > 0:
@@ -624,15 +627,8 @@ def is_square_attacked(board, r, c, attacking_color):
                 return True
 
     if attacking_king_pos:
-        kr, kc         = attacking_king_pos
-        dr, dc         = r - kr, c - kc
-        abs_dr, abs_dc = abs(dr), abs(dc)
-        m_dist         = max(abs_dr, abs_dc)
-        if m_dist == 1:
+        if _king_attacks_square(grid, attacking_king_pos[0], attacking_king_pos[1], r, c):
             return True
-        if m_dist == 2 and (abs_dr == abs_dc or abs_dr == 0 or abs_dc == 0):
-            if grid[kr + dr // 2][kc + dc // 2] is None:
-                return True
 
     if attacker_counts[Bishop] > 0:
         target_parity = (r + c) & 1
@@ -697,6 +693,14 @@ def is_insufficient_material(board):
     return (len(board.white_pieces) + len(board.black_pieces)) <= 2
 
 
+_board_hash_fn = None
+def _get_board_hash():
+    global _board_hash_fn
+    if _board_hash_fn is None:
+        from AI import board_hash
+        _board_hash_fn = board_hash
+    return _board_hash_fn
+
 def get_game_state(board, turn_to_move, position_counts, ply_count, max_moves):
     if not has_legal_moves(board, turn_to_move):
         winner = 'black' if turn_to_move == 'white' else 'white'
@@ -706,8 +710,8 @@ def get_game_state(board, turn_to_move, position_counts, ply_count, max_moves):
         return ("insufficient_material", None)
 
     try:
-        from AI import board_hash
-        if position_counts.get(board_hash(board, turn_to_move), 0) >= 3:
+        bh_fn = _get_board_hash()
+        if position_counts.get(bh_fn(board, turn_to_move), 0) >= 3:
             return ("repetition", None)
     except ImportError:
         pass

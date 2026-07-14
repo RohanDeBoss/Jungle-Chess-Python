@@ -42,6 +42,7 @@ def persistent_worker(work_queue, comm_queue, cancel_event, bot_class):
     Sits in a loop waiting for task dicts. Each task dict contains everything
     the bot needs. Sending None shuts the worker down.
     """
+    import inspect
     while True:
         task = work_queue.get()          # blocks until a task arrives
         if task is None:                 # shutdown signal
@@ -55,42 +56,20 @@ def persistent_worker(work_queue, comm_queue, cancel_event, bot_class):
         wrapped_comm = TaskQueueWrapper(comm_queue, task_id)
 
         try:
-            try:
-                # Try with full modern signature (including use_tablebase)
-                bot = bot_class(
-                    task['board'], task['color'], task['position_counts'],
-                    wrapped_comm, cancel_event,
-                    task['bot_name'], task['ply_count'], task['game_mode'],
-                    time_left=task.get('time_left'),
-                    increment=task.get('increment'),
-                    use_opening_book=task.get('use_opening_book', True),
-                    use_tablebase=task.get('use_tablebase', True),
-                )
-            except TypeError:
-                try:
-                    bot = bot_class(
-                        task['board'], task['color'], task['position_counts'],
-                        wrapped_comm, cancel_event,
-                        task['bot_name'], task['ply_count'], task['game_mode'],
-                        time_left=task.get('time_left'),
-                        increment=task.get('increment'),
-                        use_opening_book=task.get('use_opening_book', True),
-                    )
-                except TypeError:
-                    try:
-                        bot = bot_class(
-                            task['board'], task['color'], task['position_counts'],
-                            wrapped_comm, cancel_event,
-                            task['bot_name'], task['ply_count'], task['game_mode'],
-                            time_left=task.get('time_left'),
-                            increment=task.get('increment'),
-                        )
-                    except TypeError:
-                        bot = bot_class(
-                            task['board'], task['color'], task['position_counts'],
-                            wrapped_comm, cancel_event,
-                            task['bot_name'], task['ply_count'], task['game_mode'],
-                        )
+            accepted_params = set(inspect.signature(bot_class.__init__).parameters)
+            kwargs = {
+                'time_left': task.get('time_left'),
+                'increment': task.get('increment'),
+                'use_opening_book': task.get('use_opening_book', True),
+                'use_tablebase': task.get('use_tablebase', True)
+            }
+            filtered_kwargs = {k: v for k, v in kwargs.items() if k in accepted_params}
+            
+            bot = bot_class(
+                task['board'], task['color'], task['position_counts'],
+                wrapped_comm, cancel_event, task['bot_name'], 
+                task['ply_count'], task['game_mode'], **filtered_kwargs
+            )
 
             bot.search_depth = task['search_depth']
             if task['search_depth'] == 99:
@@ -613,6 +592,8 @@ class EnhancedChessApp:
         self._position_side_labels()
 
     def handle_key_press(self, event):
+        if isinstance(event.widget, (tk.Entry, tk.Text)):
+            return
         if self.is_ai_thinking() and not self.analysis_thinking:
             return
         action = {'Left': self.undo_move, 'Right': self.redo_move,
@@ -784,7 +765,7 @@ class EnhancedChessApp:
             move_num += 1
         for i in range(0, len(moves), 2):
             w, b = moves[i], moves[i+1] if i+1 < len(moves) else None
-            pgn += f"{move_num}. {w}, {b} " if b else f"{move_num}. {w} "
+            pgn += f"{move_num}. {w} {b} " if b else f"{move_num}. {w} "
             move_num += 1
         if self.game_result:
             r = self.game_result[1]
@@ -804,7 +785,7 @@ class EnhancedChessApp:
         pgn_text = self.pgn_entry.get().strip()
         if not pgn_text:
             return
-        self.reset_game()
+        self.reset_game(schedule_ai=False)
         self._pause_clock()
         self.last_clock_tick = None
         for res in ["1-0", "0-1", "1/2-1/2", "*"]:
@@ -1120,7 +1101,7 @@ class EnhancedChessApp:
                 capstyle=tk.ROUND, joinstyle=tk.ROUND, tags=tags)
 
     # ------------------------------------------------------------------ resets and modes
-    def reset_game(self):
+    def reset_game(self, schedule_ai=True):
         if self.game_mode.get() != GameMode.AI_VS_AI.value:
             self.ai_series_running = False
         self._stop_ai_process()
@@ -1145,11 +1126,11 @@ class EnhancedChessApp:
             self.board_orientation = "white" if self.white_playing_bot_type == "main" else "black"
             if self.ai_series_running:
                 self.apply_series_opening_move()
-            if not self.game_over:
+            if not self.game_over and schedule_ai:
                 self.master.after(delay, self._make_game_ai_move)
         elif mode == GameMode.HUMAN_VS_BOT.value:
             self.board_orientation = self.human_color
-            if self.turn != self.human_color:
+            if self.turn != self.human_color and schedule_ai:
                 self.master.after(delay, self._make_game_ai_move)
         else:
             self.board_orientation = "white"
@@ -1735,7 +1716,9 @@ class EnhancedChessApp:
             }
 
         try:
-            with open("AI_Series_Results.txt", "w") as f:
+            import os
+            out_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "AI_Series_Results.txt")
+            with open(out_path, "w") as f:
                 mode_str = (f"Clock ({int(self.time_control_seconds.get())}s "
                             f"+ {self.increment:.1f}s inc)") \
                            if use_clock else f"Fixed depth {fixed_depth}"
