@@ -1,4 +1,4 @@
-# AI.py (v119.1 - Move ordering tiebreaker + nmp = 3)
+# AI.py (v120 - Speedups)
 
 import json
 import os
@@ -1112,16 +1112,35 @@ class ChessBot:
         history_table = self.history_heuristic_table[c_idx]
 
         grid = board.grid
+        opponent_turn = 'black' if turn == 'white' else 'white'
+        has_enemy_knights = board.piece_counts[opponent_turn][Knight] > 0
+
         for move in moves:
             (r1, c1), (r2, c2) = move
             moving_piece = grid[r1][c1]
             target_piece = grid[r2][c2]
-
-            swing, is_tactic = fast_approximate_material_swing(board, move, moving_piece, target_piece, ORDERING_VALUES)
             
-            # In Jungle Chess, volatile moves (explosions, evaporations, piercings) 
-            # are ALWAYS critical tactics, even if the net material swing is negative.
-            is_good_tactic = is_tactic
+            my_z = moving_piece.z_idx
+
+            # FAST INLINE BYPASS: Skip function call overhead for guaranteed quiet moves
+            is_definitely_quiet = False
+            if target_piece is None:
+                if my_z in (2, 4, 5) or (my_z == 0 and r2 != moving_piece.promo_rank):
+                    gets_evaporated = False
+                    if has_enemy_knights:
+                        for kr, kc in KNIGHT_ATTACKS_FROM[(r2, c2)]:
+                            kp = grid[kr][kc]
+                            if kp is not None and kp.z_idx == 1 and kp.color == opponent_turn:
+                                gets_evaporated = True
+                                break
+                    if not gets_evaporated:
+                        is_definitely_quiet = True
+
+            if is_definitely_quiet:
+                swing = 0
+                is_good_tactic = False
+            else:
+                swing, is_good_tactic = fast_approximate_material_swing(board, move, moving_piece, target_piece, ORDERING_VALUES)
 
             if move == hash_move:
                 score = self.BONUS_PV_MOVE

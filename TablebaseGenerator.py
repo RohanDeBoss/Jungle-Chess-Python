@@ -18,7 +18,7 @@ TB_WDL_MARKER_SUFFIX = ".wdl"
 MAX_DTM = 32766
 LONGEST_MATES_NOTE_FILE = os.path.join(TB_DIR, "longest_mates_tb16.tsv")
 LONGEST_MATE_KEY_PREFIX = "regen_"
-TB_THREADS_SUBTRACT = 3
+TB_THREADS_SUBTRACT = 4
 _IN_TABLE_SENTINEL = "IN_TABLE"
 PIECE_CLASS_BY_NAME = {
     "Queen": Queen, "Rook": Rook, "Knight": Knight, "Bishop": Bishop, "Pawn": Pawn,
@@ -1352,7 +1352,7 @@ def _build_transition_worker_5(flat):
             board.unmake_move(record)
         return (flat, ('b', legal_moves, escape, tuple(known_wins), tuple(child_flats)))
 
-def _gen_valid_5same_indices_numpy(total, p1n, p2n, p3n, has_pawn, chunk_size=2_000_000):
+def _gen_valid_5same_indices_numpy(total, p1n, p2n, p3n, has_pawn, chunk_size=1_000_000):
     wk_list = np.array(PAWN_WK_SQUARES if has_pawn else NON_PAWN_WK_SQUARES)
     same_12 = (p1n == p2n); same_23 = (p2n == p3n)
     for start in range(0, total, chunk_size):
@@ -1719,7 +1719,7 @@ def _build_transition_worker_5vs(flat):
         return (flat, ('g', 1, (), ()))
     return (flat, ('g', 0, tuple(known_values), tuple(child_flats)))
 
-def _gen_valid_5vs_indices_numpy(total, w1n, w2n, bn, has_pawn, same_wp, chunk_size=2_000_000):
+def _gen_valid_5vs_indices_numpy(total, w1n, w2n, bn, has_pawn, same_wp, chunk_size=1_000_000):
     wk_list = np.array(PAWN_WK_SQUARES if has_pawn else NON_PAWN_WK_SQUARES)
     for start in range(0, total, chunk_size):
         end_c = min(start + chunk_size, total); flat = np.arange(start, end_c, dtype=np.int64); rest = flat // 2
