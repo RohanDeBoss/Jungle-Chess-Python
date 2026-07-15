@@ -1,4 +1,4 @@
-# GameLogic.py (v62 - Further optimisations)
+# GameLogic.py (v63 - Quick Breaking for pure performance gain)
 
 
 # -----------------------------------------------------------------------
@@ -585,8 +585,7 @@ def is_square_attacked(board, r, c, attacking_color):
     start_index = r * COLS + c
 
     for direction_idx, ray_path in enumerate(RAYS[start_index]):
-        is_orthogonal    = direction_idx < 4
-        defenders_passed = 0
+        is_orthogonal = direction_idx < 4
         for cr, cc in ray_path:
             piece = grid[cr][cc]
             if piece is None:
@@ -594,15 +593,16 @@ def is_square_attacked(board, r, c, attacking_color):
             p_z = piece.z_idx
             if piece.color == attacking_color:
                 if is_orthogonal:
-                    if p_z == 3:
+                    if p_z == 3: # Rook
                         return True
                 else:
-                    if p_z == 2 and defenders_passed == 0:
+                    if p_z == 2: # Bishop (no defenders possible; we would have broken already)
                         return True
                 break
             else:
-                defenders_passed += 1
-                if not has_rooks:
+                # We hit a defending piece (a blocker).
+                # Diagonals don't pierce. Orthogonals only pierce if Rooks are on the board.
+                if not is_orthogonal or not has_rooks:
                     break
 
     pawn_move_dir = -1 if attacking_color == 'white' else 1

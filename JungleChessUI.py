@@ -386,6 +386,15 @@ class EnhancedChessApp:
         self.main_frame.bind("<Configure>",   self.handle_main_resize)
         self.center_panel.bind("<Configure>", self.handle_board_resize)
         
+        # --- INFORMATION SHORTCUT BUTTON ---
+        self.info_btn = tk.Button(
+            self.master, text="ⓘ", font=("Helvetica", 13, "bold"),
+            bg=self.COLORS['bg_dark'], fg=self.COLORS['text_dark'],
+            activebackground=self.COLORS['bg_dark'], activeforeground=self.COLORS['text_light'],
+            bd=0, relief="flat", cursor="hand2", command=self.show_readme_popup
+        )
+        self.info_btn.place(in_=self.master, relx=1.0, y=12, x=-20, anchor="ne")
+        
         # --- PERMANENT CANVAS EVENT BINDINGS ---
         self.canvas.bind("<Button-1>",        self.on_drag_start)
         self.canvas.bind("<B1-Motion>",       self.on_drag_motion)
@@ -1619,6 +1628,96 @@ class EnhancedChessApp:
             c = x // self.square_size
             r = y // self.square_size
         return (r, c) if 0 <= r < ROWS and 0 <= c < COLS else (-1, -1)
+
+    def show_readme_popup(self):
+        """Creates a dark-themed scrollable popup rendering Zreadme.txt."""
+        popup = tk.Toplevel(self.master)
+        popup.title("Jungle Chess - Rules & Engine Reference")
+        popup.geometry("800x700")
+        popup.configure(bg=self.COLORS['bg_dark'])
+        popup.transient(self.master)
+        popup.grab_set()
+
+        # Center popup on master window
+        popup.update_idletasks()
+        mx = self.master.winfo_x() + (self.master.winfo_width() - 800) // 2
+        my = self.master.winfo_y() + (self.master.winfo_height() - 700) // 2
+        popup.geometry(f"800x700+{mx}+{my}")
+
+        # Scrollable Text Container Frame
+        text_frame = tk.Frame(popup, bg=self.COLORS['bg_medium'])
+        text_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=(20, 15))
+
+        scrollbar = ttk.Scrollbar(text_frame)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        text = tk.Text(text_frame, wrap=tk.WORD, yscrollcommand=scrollbar.set,
+                       bg=self.COLORS['bg_medium'], fg=self.COLORS['text_light'],
+                       insertbackground=self.COLORS['text_light'], relief="flat", bd=0,
+                       font=("Helvetica", 11), padx=15, pady=15)
+        text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.config(command=text.yview)
+
+        # Custom Styling Tags for a styled markdown look
+        text.tag_config("title", foreground=self.COLORS['accent'], font=("Helvetica", 18, "bold"), spacing1=10, spacing2=5)
+        text.tag_config("h2", foreground=self.COLORS['text_light'], font=("Helvetica", 14, "bold"), spacing1=15, spacing2=5)
+        text.tag_config("h3", foreground=self.COLORS['text_light'], font=("Helvetica", 12, "bold"), spacing1=10, spacing2=5)
+        text.tag_config("code", font=("Courier", 10), background=self.COLORS['bg_light'], foreground="#00ffcc")
+        text.tag_config("bold", font=("Helvetica", 11, "bold"))
+        text.tag_config("normal", font=("Helvetica", 11), spacing3=4)
+
+        # Read the file
+        try:
+            with open("Zreadme.txt", "r", encoding="utf-8") as f:
+                readme_text = f.read()
+        except FileNotFoundError:
+            readme_text = "# Error\nCould not find `Zreadme.txt` in the current directory."
+
+        # Parse and insert text
+        lines = readme_text.split('\n')
+        in_code_block = False
+
+        for line in lines:
+            if line.startswith("```"):
+                in_code_block = not in_code_block
+                text.insert(tk.END, "\n")
+                continue
+            
+            if in_code_block:
+                text.insert(tk.END, line + "\n", "code")
+                continue
+
+            if line.startswith("# "):
+                text.insert(tk.END, line[2:] + "\n", "title")
+            elif line.startswith("## "):
+                text.insert(tk.END, line[3:] + "\n", "h2")
+            elif line.startswith("### "):
+                text.insert(tk.END, line[4:] + "\n", "h3")
+            elif line.startswith("---"):
+                text.insert(tk.END, "─" * 60 + "\n", "normal")
+            else:
+                # Parse inline bold and code tags within standard sentences
+                parts = re.split(r'(`[^`]+`)', line)
+                for part in parts:
+                    if part.startswith('`') and part.endswith('`'):
+                        text.insert(tk.END, part[1:-1], "code")
+                    else:
+                        sub_parts = re.split(r'(\*\*[^*]+\*\*)', part)
+                        for sub_part in sub_parts:
+                            if sub_part.startswith('**') and sub_part.endswith('**'):
+                                text.insert(tk.END, sub_part[2:-2], "bold")
+                            else:
+                                text.insert(tk.END, sub_part, "normal")
+                text.insert(tk.END, "\n")
+
+        text.config(state=tk.DISABLED)
+
+        # Got It button
+        close_btn = ttk.Button(popup, text="Close", command=popup.destroy, style='Control.TButton')
+        close_btn.pack(pady=(0, 15))
+
+        # Bind Escape to close
+        popup.bind("<Escape>", lambda e: popup.destroy())
 
     def undo_move(self):   self._navigate_history(self.history_pointer - 1)
     def redo_move(self):   self._navigate_history(self.history_pointer + 1)
