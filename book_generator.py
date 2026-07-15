@@ -1,4 +1,4 @@
-# book_generator.py (v3.1 - Compatible with AI v111.3)
+# book_generator.py (v3.2 - Compatible with AI v118 & Removes an ineffieciency)
 
 import os
 import json
@@ -49,6 +49,14 @@ def board_to_fen(board: Board, turn: str) -> str:
 # PARALLEL WORKER (Evaluates ONE full position, finding the Top N moves)
 # ═══════════════════════════════════════════════════════════════════════════════
 
+class DummyQueue:
+    def put(self, msg): pass
+    def empty(self): return True
+    def get_nowait(self): return None
+
+class DummyEvent:
+    def is_set(self): return False
+
 def evaluate_position(board_data, turn, ply, branch_factor, search_depth, eval_tol):
     """
     Worker function: Takes a board state, runs iterative deepening up to SEARCH_DEPTH 
@@ -57,8 +65,8 @@ def evaluate_position(board_data, turn, ply, branch_factor, search_depth, eval_t
     board = board_data.clone()
     fen = board_to_fen(board, turn)
     
-    # Initialize a silent bot
-    bot = AI.ChessBot(board, turn, {}, mp.Queue(), mp.Event(), bot_name='Worker', ply_count=ply, use_opening_book=False, use_tablebase=False)
+    # Initialize a silent bot with zero-overhead dummy IPC classes
+    bot = AI.ChessBot(board, turn, {}, DummyQueue(), DummyEvent(), bot_name='Worker', ply_count=ply, use_opening_book=False, use_tablebase=False)
     bot._report_log = lambda msg: None
     bot._report_eval = lambda s, d: None
     bot._report_move = lambda m: None

@@ -90,6 +90,10 @@ def run_benchmark():
             bot.position_counts = {board_hash(board, turn): 1}
             bot.ply_count = 0
             
+            # CRITICAL CORRECTNESS: Reset transposition tables, evaluation cache,
+            # history heuristics, and killer moves so positions don't bleed into each other.
+            bot._initialize_search_state()
+            
             root_moves = get_all_legal_moves(board, turn)
             best_move = root_moves[0]
             r_hash = board_hash(board, turn)

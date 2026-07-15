@@ -1,4 +1,4 @@
-# AI.py (v117)
+# AI.py (v118 - No more king capturing)
 
 import json
 import os
@@ -846,11 +846,6 @@ class ChessBot:
                     board.unmake_move(record)
                     continue
 
-                opp_king_alive    = (board.white_king_pos is not None) if opponent_turn == 'white' else (board.black_king_pos is not None)
-                if not opp_king_alive:
-                    board.unmake_move(record)
-                    return self.MATE_SCORE - ply
-
                 legal_moves_count += 1
                 if not is_good_tactic: quiet_moves_tried.append((move, moving_piece))
 
@@ -1063,11 +1058,6 @@ class ChessBot:
             if is_in_check(board, turn):
                 board.unmake_move(record)
                 continue
-
-            opp_king_alive = board.white_king_pos if opponent_turn == 'white' else board.black_king_pos
-            if not opp_king_alive:
-                board.unmake_move(record)
-                return self.MATE_SCORE - ply
 
             legal_moves_count += 1
             child_hash = incremental_hash(hash_val, record)

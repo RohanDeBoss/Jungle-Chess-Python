@@ -733,7 +733,21 @@ class EnhancedChessApp:
                 if pc:
                     self.board.add_piece(pc("white" if ch.isupper() else "black"), r, c)
                 c += 1
-        self.turn         = "white" if (parts[1] if len(parts) > 1 else 'w').lower() == 'w' else "black"
+        self.turn = "white" if (parts[1] if len(parts) > 1 else 'w').lower() == 'w' else "black"
+        
+        # --- JUNGLE CHESS LEGALITY CHECK ---
+        if not self.board.white_king_pos or not self.board.black_king_pos:
+            messagebox.showerror("Invalid FEN", "Illegal Position: Both Kings must be present on the board.")
+            self.reset_game(schedule_ai=False)
+            return
+            
+        passive_color = "black" if self.turn == "white" else "white"
+        if is_in_check(self.board, passive_color):
+            messagebox.showerror("Invalid FEN", f"Illegal Position: The side not to move ({passive_color}) is already in direct/indirect check.")
+            self.reset_game(schedule_ai=False)
+            return
+        # -----------------------------------
+
         self.game_started = True
         self._reset_clock_state()
         self.render_clocks()
