@@ -1,4 +1,4 @@
-# AI.py (v117.0 - Baseline with optimisations and fixes + time management finally!)
+# AI.py (v117.1 Time management v3)
 
 import json
 import os
@@ -553,19 +553,32 @@ class ChessBot:
             # --- TIME ALLOCATION STRATEGY (Optimum / Max split) ---
             search_start_time = time.time()
             if self.time_left is not None and self.increment is not None:
-                # Optimum: target spend for a "normal" move. Time banked on easy
-                # prior moves is already reflected here, since time_left comes
-                # straight from the live clock rather than a fixed per-move slice.
-                optimum_time = (self.time_left / 35.0) + (self.increment * 0.8)
-                optimum_time = max(MIN_MOVE_TIME, optimum_time)
-
-                # Max: the true hard ceiling. Capped as a multiple of optimum
-                # (not a raw fraction of the clock) so it can't run away even
-                # with a large increment, and always kept inside the safety
-                # buffer so we can never risk flagging.
                 buffer = max(TIME_BUFFER_SEC, self.time_left * TIME_BUFFER_PCT, self.increment * 1.5)
                 clock_ceiling = max(0.0, self.time_left - buffer)
-                max_time = min(clock_ceiling, optimum_time * 4.0)
+
+                # --- URGENCY-AWARE DIVISOR ---
+                # Base assumption: ~30 moves of game left. As the *buffer itself*
+                # gets thin relative to the raw clock, shrink the divisor so the
+                # engine claws back more time per move instead of a flat 1/30th
+                # regardless of how much debt has built up. This is what makes
+                # an overrun get repaid gradually rather than compounding.
+                if self.time_left > 0:
+                    buffer_health = max(0.0, min(1.0, clock_ceiling / self.time_left))
+                else:
+                    buffer_health = 0.0
+                
+                # CORRECTED MATH: 
+                # buffer_health near 1.0 (healthy clock) -> divisor ~30
+                # buffer_health near 0.0 (panic mode)    -> divisor ~50 (play faster to bank increment!)
+                divisor = 50 - (20 * buffer_health)
+
+                optimum_time = (self.time_left / divisor) + (self.increment * 0.8)
+                optimum_time = max(MIN_MOVE_TIME, optimum_time)
+                # Hard clamp: optimum can never exceed the true ceiling, so the
+                # soft bound below is never a no-op even when time is short.
+                optimum_time = min(optimum_time, clock_ceiling)
+
+                max_time = min(clock_ceiling, optimum_time * 3.5)
                 max_time = max(max_time, min(MIN_MOVE_TIME, clock_ceiling))
 
                 self.stop_time = search_start_time + max_time
@@ -650,7 +663,9 @@ class ChessBot:
                     predicted_next_duration = iter_duration * effective_branching
                     time_remaining_to_max   = self.stop_time - time.time()
 
-                    if predicted_next_duration > time_remaining_to_max:
+                    # Require 15% headroom, not just a bare fit — protects
+                    # against the prediction itself being slightly optimistic.
+                    if predicted_next_duration > time_remaining_to_max * 0.85:
                         break
 
                 prev_iter_duration = iter_duration
