@@ -1,4 +1,4 @@
-# AI.py (v116.3 - Baseline with optimisations and fixes)
+# AI.py (v117.0 - Baseline with optimisations and fixes + time management finally!)
 
 import json
 import os
@@ -537,23 +537,43 @@ class ChessBot:
                 self._report_move(None)
                 return
 
+            if len(root_moves) == 1:
+                self._report_log(f"  > {self.bot_name} (Forced): {self._format_move(self.board, root_moves[0])}")
+                # We optionally send a dummy PV/Eval so the UI doesn't hang on the previous move's evaluation
+                self.comm_queue.put(('pv', 0, "Forced", [self._format_move(self.board, root_moves[0])], [root_moves[0]]))
+                self._report_move(root_moves[0])
+                return
+
             best_move_overall  = root_moves[0]
             prev_iter_score    = None
+            prev_iter_duration = None
             total_nodes        = 0
             root_hash          = board_hash(self.board, self.color)
 
-            # --- TIME ALLOCATION STRATEGY ---
+            # --- TIME ALLOCATION STRATEGY (Optimum / Max split) ---
+            search_start_time = time.time()
             if self.time_left is not None and self.increment is not None:
-                allocated = (self.time_left / 30.0) + (self.increment * 0.8)
+                # Optimum: target spend for a "normal" move. Time banked on easy
+                # prior moves is already reflected here, since time_left comes
+                # straight from the live clock rather than a fixed per-move slice.
+                optimum_time = (self.time_left / 35.0) + (self.increment * 0.8)
+                optimum_time = max(MIN_MOVE_TIME, optimum_time)
+
+                # Max: the true hard ceiling. Capped as a multiple of optimum
+                # (not a raw fraction of the clock) so it can't run away even
+                # with a large increment, and always kept inside the safety
+                # buffer so we can never risk flagging.
                 buffer = max(TIME_BUFFER_SEC, self.time_left * TIME_BUFFER_PCT, self.increment * 1.5)
-                max_alloc = max(0.0, self.time_left - buffer)
-                allocated = min(allocated, max_alloc)
-                allocated = min(max_alloc, max(MIN_MOVE_TIME, allocated))
-                self.stop_time = time.time() + allocated
+                clock_ceiling = max(0.0, self.time_left - buffer)
+                max_time = min(clock_ceiling, optimum_time * 4.0)
+                max_time = max(max_time, min(MIN_MOVE_TIME, clock_ceiling))
+
+                self.stop_time = search_start_time + max_time
                 target_depth = 100
             else:
                 self.stop_time = None
-                # self.time_check_mask is now set in __init__
+                optimum_time = float('inf')
+                max_time = float('inf')
                 target_depth = self.search_depth
 
             for current_depth in range(1, target_depth + 1):
@@ -599,6 +619,41 @@ class ChessBot:
                 self.comm_queue.put(('pv', ui_eval, depth_label, pv_str, pv_raw))
 
                 if report_score > self.MATE_SCORE - 2000: break
+
+                # --- PREDICTIVE TIME BOUND ---
+                # Two independent gates before committing to another depth:
+                #  1. Soft bound: once we've spent our optimum budget, stop and
+                #     bank the rest for a later, harder move (time_left already
+                #     carries this saving into next move's optimum calculation).
+                #  2. Hard predictive bound: estimate the next depth's cost from
+                #     how much slower this depth was than the last one, and
+                #     refuse to START a depth we don't expect to finish inside
+                #     max_time. This is what lets max_time sit meaningfully
+                #     above optimum without risk — we only ever attempt depths
+                #     we expect to complete, so the in-search hard abort becomes
+                #     a rare safety net instead of the normal way a depth ends.
+                if self.stop_time:
+                    time_used = time.time() - search_start_time
+
+                    if time_used > optimum_time:
+                        break
+
+                    if prev_iter_duration and prev_iter_duration > 0:
+                        effective_branching = iter_duration / prev_iter_duration
+                        effective_branching = max(1.5, min(effective_branching, 8.0))
+                    else:
+                        # Not enough history yet (first completed iteration) —
+                        # assume a generously large branching factor so we don't
+                        # optimistically start a depth we can't finish.
+                        effective_branching = 6.0
+
+                    predicted_next_duration = iter_duration * effective_branching
+                    time_remaining_to_max   = self.stop_time - time.time()
+
+                    if predicted_next_duration > time_remaining_to_max:
+                        break
+
+                prev_iter_duration = iter_duration
 
             self._report_move(best_move_overall)
         except SearchCancelledException:
