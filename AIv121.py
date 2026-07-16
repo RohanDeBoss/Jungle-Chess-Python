@@ -1,4 +1,4 @@
-# AI.py (v116.1 - Try new knight PSTs and new Pieces values + Bug fixes)
+# AI.py (v121 - Lots of tweaks)
 
 import json
 import os
@@ -15,22 +15,22 @@ TIME_BUFFER_SEC = 0.50
 TIME_BUFFER_PCT = 0.05
 MIN_MOVE_TIME   = 0.03
 
-# --- EVALUATION CONSTANTS (Tuned) ---
+# --- EVALUATION CONSTANTS (AutoTuned) ---
 MG_PIECE_VALUES = {
     Pawn: 100,
     Knight: 950,
     Bishop: 600,
-    Rook: 600,
+    Rook: 650,
     Queen: 1300,
     King: 20000
 }
 
 EG_PIECE_VALUES = {
     Pawn: 100,
-    Knight: 950,
+    Knight: 1000,
     Bishop: 700,
-    Rook: 750,
-    Queen: 1000,
+    Rook: 800,
+    Queen: 900,
     King: 20000
 }
 
@@ -64,25 +64,18 @@ initialize_zobrist_table()
 def run_ai_process(board, color, position_counts, comm_queue, cancellation_event,
                    bot_class, bot_name, search_depth, ply_count, game_mode,
                    time_left=None, increment=None, use_opening_book=True, use_tablebase=True):
-    try:
-        bot = bot_class(board, color, position_counts, comm_queue, cancellation_event,
-                        bot_name, ply_count, game_mode, time_left=time_left, increment=increment,
-                        use_opening_book=use_opening_book, use_tablebase=use_tablebase)
-    except TypeError:
-        try:
-            # Fallback for bots missing the tablebase argument
-            bot = bot_class(board, color, position_counts, comm_queue, cancellation_event,
-                            bot_name, ply_count, game_mode, time_left=time_left, increment=increment,
-                            use_opening_book=use_opening_book)
-        except TypeError:
-            try:
-                # Fallback for bots missing the opening book argument
-                bot = bot_class(board, color, position_counts, comm_queue, cancellation_event,
-                                bot_name, ply_count, game_mode, time_left=time_left, increment=increment)
-            except TypeError:
-                # Fallback for very old bots
-                bot = bot_class(board, color, position_counts, comm_queue, cancellation_event,
-                                bot_name, ply_count, game_mode)
+    import inspect
+    accepted_params = set(inspect.signature(bot_class.__init__).parameters)
+    kwargs = {
+        'time_left': time_left,
+        'increment': increment,
+        'use_opening_book': use_opening_book,
+        'use_tablebase': use_tablebase
+    }
+    filtered_kwargs = {k: v for k, v in kwargs.items() if k in accepted_params}
+    
+    bot = bot_class(board, color, position_counts, comm_queue, cancellation_event,
+                    bot_name, ply_count, game_mode, **filtered_kwargs)
 
     bot.search_depth = search_depth
     if search_depth == 99:
@@ -95,9 +88,11 @@ def board_hash(board, turn):
     arr = ZOBRIST_ARRAY
 
     for piece in board.white_pieces:
-        h ^= arr[0][piece.z_idx][piece.pos[0]][piece.pos[1]]
+        r, c = piece.pos
+        h ^= arr[0][piece.z_idx][r][c]
     for piece in board.black_pieces:
-        h ^= arr[1][piece.z_idx][piece.pos[0]][piece.pos[1]]
+        r, c = piece.pos
+        h ^= arr[1][piece.z_idx][r][c]
 
     if turn == 'black':
         h ^= ZOBRIST_TURN
@@ -192,7 +187,7 @@ for _book_filename in _find_opening_book_files():
 # --------------------------
 
 # --- SEARCH STRUCTURES ---
-TTEntry = namedtuple('TTEntry', ['score', 'depth', 'flag', 'best_move'])
+TTEntry = namedtuple('TTEntry', ['score', 'depth', 'flag', 'best_move', 'static_eval'])
 TT_FLAG_EXACT, TT_FLAG_LOWERBOUND, TT_FLAG_UPPERBOUND = 0, 1, 2
 
 class SearchCancelledException(Exception): pass
@@ -205,19 +200,19 @@ class ChessBot:
     DRAW_SCORE = 0
 
     MAX_Q_SEARCH_DEPTH = 10
-    Q_MARGIN_MAX = 950
+    Q_MARGIN_MAX = 1400 # Prevent delta-pruning Queen sacrifices
     Q_MARGIN_MIN = 250
 
     LMR_DEPTH_THRESHOLD = 3
     LMR_MOVE_COUNT_THRESHOLD = 4
     LMR_REDUCTION = 1
-    NMP_MIN_DEPTH = 3
+    NMP_MIN_DEPTH = 3  # Forced to be 3 as 4 is just too performance taxing
     NMP_BASE_REDUCTION = 2
     NMP_DEPTH_DIVISOR = 6
     USE_NULL_MOVE_PRUNING = True
 
     USE_FUTILITY_PRUNING = True
-    FUTILITY_MARGIN = 1000 # Lowered for speed at the cost of some tactical loss
+    FUTILITY_MARGIN = 2000 # Wide enough to catch massive AoE setups at depth 1
 
     TT_MAX_SIZE = 10_000_000 #Lots of entries
 
@@ -234,7 +229,7 @@ class ChessBot:
     OPENING_PAWN_CENTER_WEIGHT = 10
     OPENING_CENTER_PAWN_BONUS = 28
     OPENING_CENTRAL_FILES = (COLS // 2 - 1, COLS // 2)
-    ASP_WINDOW_INIT = 250
+    ASP_WINDOW_INIT = 500 # Doubled to accommodate Jungle's volatility without destroying cutoff efficiency
     ASP_MAX_RETRIES = 3
 
     MAX_EXTENSION_DEPTH = 12  # absolute ply ceiling including check extensions
@@ -248,14 +243,14 @@ class ChessBot:
     EVAL_DOUBLE_ROOK_PENALTY = 15
     EVAL_ROOK_PAWN_SCALING = 5
     KNIGHT_ACTIVITY_BONUS = 12
-    EVAL_KING_ZONE_ATTACK_PENALTY = 50 #Stronger pentalty
-    EVAL_PASSED_PAWN_PER_RANK = 10
+    EVAL_KING_ZONE_ATTACK_PENALTY = 20
+    EVAL_PASSED_PAWN_PER_RANK = 12
     LONE_ROOK_PENALTIES = (550, 200, 150, 80, 40)
     LONE_BISHOP_PENALTIES = (650, 250, 170, 100, 50)
     EVAL_PAWN_VULNERABILITY_EG = 15
 
     EVAL_MOBILITY_BISHOP = 4
-    EVAL_MOBILITY_ROOK   = 4
+    EVAL_MOBILITY_ROOK   = 3
     EVAL_MOBILITY_QUEEN  = 5
 
     def __init__(self, board, color, position_counts, comm_queue, cancellation_event,
@@ -313,13 +308,14 @@ class ChessBot:
         # [color][prev_piece_type][prev_to_sq][my_piece_type][my_to_sq]
         self.continuation_history = [[[[[0] * 64 for _ in range(6)] for _ in range(64)] for _ in range(6)] for _ in range(2)]
 
-    def _store_tt(self, hash_val, score, depth, flag, move):
+    def _store_tt(self, hash_val, score, depth, flag, move, static_eval=None):
         existing = self.tt.get(hash_val)
         if len(self.tt) > self.TT_MAX_SIZE:
             self.tt.clear()
         if not existing or depth >= existing.depth:
             best_move = move if move is not None else (existing.best_move if existing else None)
-            self.tt[hash_val] = TTEntry(score, depth, flag, best_move)
+            se = static_eval if static_eval is not None else (existing.static_eval if existing else None)
+            self.tt[hash_val] = TTEntry(score, depth, flag, best_move, se)
 
     def _report_log(self, message):   self.comm_queue.put(('log', message))
     def _report_eval(self, score, depth): self.comm_queue.put(('eval', score if self.color == 'white' else -score, depth))
@@ -373,6 +369,7 @@ class ChessBot:
 
         best_move  = None
         best_score = -float('inf')
+        tied_draw_count = 0
 
         for move in get_all_legal_moves(self.board, self.color):
             sim = self.board.clone()
@@ -391,9 +388,14 @@ class ChessBot:
                 if score > self.MATE_SCORE - 1000: score -= 1
                 elif score < -self.MATE_SCORE + 1000: score += 1
 
-            if score > best_score or (score == best_score and score == 0 and random.random() > 0.5):
+            if score > best_score:
                 best_score = score
                 best_move  = move
+                tied_draw_count = 1 if score == 0 else 0
+            elif score == best_score == 0:
+                tied_draw_count += 1
+                if random.random() < 1.0 / tied_draw_count:
+                    best_move = move
 
         return best_move, best_score
 
@@ -779,10 +781,10 @@ class ChessBot:
 
         opponent_turn    = 'black' if turn == 'white' else 'white'
         is_in_check_flag = is_in_check(board, turn)
-        static_eval      = None
+        static_eval      = tt_entry.static_eval if (tt_entry and tt_entry.static_eval is not None) else None
 
         # --- CHECK EXTENSION with absolute ceiling ---
-        if is_in_check_flag and extensions < 16 and ply < self.MAX_EXTENSION_DEPTH:
+        if is_in_check_flag and ply < self.MAX_EXTENSION_DEPTH:
             depth      += 1
             extensions += 1
 
@@ -798,7 +800,8 @@ class ChessBot:
                 if (pc['white'][Knight] + pc['white'][Bishop] + pc['white'][Rook] + pc['white'][Queen] > 0 and
                         pc['black'][Knight] + pc['black'][Bishop] + pc['black'][Rook] + pc['black'][Queen] > 0):
                     self.used_heuristic_eval = True
-                    static_eval = self.evaluate_board(board, turn)
+                    if static_eval is None:
+                        static_eval = self.evaluate_board(board, turn)
                     if static_eval >= beta:
                         reduction  = self.NMP_BASE_REDUCTION + (depth // self.NMP_DEPTH_DIVISOR)
                         null_hash  = hash_val ^ ZOBRIST_TURN
@@ -841,12 +844,7 @@ class ChessBot:
                 record     = board.make_move_track(move[0], move[1])
                 child_hash = incremental_hash(hash_val, record)
 
-                opp_king_alive    = (board.white_king_pos is not None) if opponent_turn == 'white' else (board.black_king_pos is not None)
                 own_king_in_check = is_in_check(board, turn)
-
-                if not opp_king_alive:
-                    board.unmake_move(record)
-                    return self.MATE_SCORE - ply
 
                 if own_king_in_check:
                     board.unmake_move(record)
@@ -869,8 +867,8 @@ class ChessBot:
                         legal_moves_count > self.LMR_MOVE_COUNT_THRESHOLD and
                         not is_in_check_flag and not is_good_tactic):
                     
-                    # 1. Base reduction with much gentler scaling
-                    reduction = 1 + (depth // 7) + (legal_moves_count // 12)
+                    # 1. Base reduction with gentler scaling
+                    reduction = 1 + (depth // 6) + (legal_moves_count // 10)
                     
                     # 2. Protect likely refutations
                     if (ply < len(self.killer_moves) and move in self.killer_moves[ply]) or move == c_move:
@@ -969,7 +967,7 @@ class ChessBot:
                     sto = beta
                     if sto >  self.MATE_SCORE - 1000: sto = beta + ply
                     elif sto < -self.MATE_SCORE + 1000: sto = beta - ply
-                    self._store_tt(hash_val, sto, depth, TT_FLAG_LOWERBOUND, move)
+                    self._store_tt(hash_val, sto, depth, TT_FLAG_LOWERBOUND, move, static_eval)
                     return beta
 
             if legal_moves_count == 0:
@@ -979,7 +977,7 @@ class ChessBot:
             if sto >  self.MATE_SCORE - 1000: sto = alpha + ply
             elif sto < -self.MATE_SCORE + 1000: sto = alpha - ply
             flag = TT_FLAG_EXACT if alpha > original_alpha else TT_FLAG_UPPERBOUND
-            self._store_tt(hash_val, sto, depth, flag, best_move_for_node)
+            self._store_tt(hash_val, sto, depth, flag, best_move_for_node, static_eval)
             return alpha
 
         finally:
@@ -993,6 +991,16 @@ class ChessBot:
                 raise SearchCancelledException()
 
         hash_val = current_hash if current_hash is not None else board_hash(board, turn)
+
+        tt_entry = self.tt.get(hash_val)
+        if tt_entry:
+            tt_score = tt_entry.score
+            if tt_score >  self.MATE_SCORE - 1000: tt_score -= ply
+            elif tt_score < -self.MATE_SCORE + 1000: tt_score += ply
+
+            if tt_entry.flag == TT_FLAG_EXACT: return tt_score
+            if tt_entry.flag == TT_FLAG_LOWERBOUND and tt_score >= beta: return tt_score
+            if tt_entry.flag == TT_FLAG_UPPERBOUND and tt_score <= alpha: return tt_score
 
         if len(board.white_pieces) + len(board.black_pieces) <= self.tb_probe_limit:
             tb_score_absolute = self.tb_manager.probe(board, turn)
@@ -1031,40 +1039,56 @@ class ChessBot:
         if ply <= 4:
             current_margin = self.Q_MARGIN_MAX
         else:
-            current_margin = max(self.Q_MARGIN_MIN, self.Q_MARGIN_MAX - (ply - 4) * 117)
+            current_margin = max(self.Q_MARGIN_MIN, self.Q_MARGIN_MAX - (ply - 4) * 150)
 
         promising_moves = get_all_pseudo_legal_moves(board, turn)
-
         scored_moves = []
         grid = board.grid
+        tt_move = tt_entry.best_move if tt_entry else None
+        
+        opponent_turn = 'black' if turn == 'white' else 'white'
+        has_enemy_knights = board.piece_counts[opponent_turn][Knight] > 0
+
         for move in promising_moves:
             (r1, c1), (r2, c2) = move
             moving_piece = grid[r1][c1]
             target_piece = grid[r2][c2]
+            
+            my_z = moving_piece.z_idx
+            
+            if not is_in_check_flag and target_piece is None:
+                if my_z in (2, 4, 5) or (my_z == 0 and r2 != moving_piece.promo_rank):
+                    gets_evaporated = False
+                    if has_enemy_knights:
+                        for kr, kc in KNIGHT_ATTACKS_FROM[(r2, c2)]:
+                            kp = grid[kr][kc]
+                            if kp is not None and kp.z_idx == 1 and kp.color == opponent_turn:
+                                gets_evaporated = True
+                                break
+                    if not gets_evaporated:
+                        continue
+
             swing, is_tactic = fast_approximate_material_swing(board, move, moving_piece, target_piece, ORDERING_VALUES)
 
             if not is_in_check_flag:
-                # In Q-search, if not in check, we only look at tactical moves.
                 if not is_tactic:
                     continue
-                # Delta pruning (current_margin) will safely catch truly terrible tactics (like QxP hitting nothing else).
                 if stand_pat + swing + current_margin < alpha:
                     continue
 
-            scored_moves.append((swing, move))
+            # Tiebreak equal swings by prioritizing cheaper attackers (MVV-LVA)
+            score = (swing * 10) + (5 - my_z)
+            if move == tt_move:
+                score += 1_000_000
+                
+            scored_moves.append((score, move))
 
         scored_moves.sort(key=itemgetter(0), reverse=True)
 
         legal_moves_count = 0
-        opponent_turn     = 'black' if turn == 'white' else 'white'
 
-        for swing, move in scored_moves:
+        for score, move in scored_moves:
             record = board.make_move_track(move[0], move[1])
-
-            opp_king_alive = board.white_king_pos if opponent_turn == 'white' else board.black_king_pos
-            if not opp_king_alive:
-                board.unmake_move(record)
-                return self.MATE_SCORE - ply
 
             if is_in_check(board, turn):
                 board.unmake_move(record)
@@ -1078,7 +1102,7 @@ class ChessBot:
             if search_score >= beta: return beta
             alpha = max(alpha, search_score)
 
-        if is_in_check_flag and legal_moves_count == 0:
+        if legal_moves_count == 0 and (is_in_check_flag or not has_legal_moves(board, turn)):
             return -self.MATE_SCORE + ply
 
         return alpha
@@ -1092,21 +1116,41 @@ class ChessBot:
         history_table = self.history_heuristic_table[c_idx]
 
         grid = board.grid
+        opponent_turn = 'black' if turn == 'white' else 'white'
+        has_enemy_knights = board.piece_counts[opponent_turn][Knight] > 0
+
         for move in moves:
             (r1, c1), (r2, c2) = move
             moving_piece = grid[r1][c1]
             target_piece = grid[r2][c2]
-
-            swing, is_tactic = fast_approximate_material_swing(board, move, moving_piece, target_piece, ORDERING_VALUES)
             
-            # In Jungle Chess, volatile moves (explosions, evaporations, piercings) 
-            # are ALWAYS critical tactics, even if the net material swing is negative.
-            is_good_tactic = is_tactic
+            my_z = moving_piece.z_idx
+
+            # FAST INLINE BYPASS: Skip function call overhead for guaranteed quiet moves
+            is_definitely_quiet = False
+            if target_piece is None:
+                if my_z in (2, 4, 5) or (my_z == 0 and r2 != moving_piece.promo_rank):
+                    gets_evaporated = False
+                    if has_enemy_knights:
+                        for kr, kc in KNIGHT_ATTACKS_FROM[(r2, c2)]:
+                            kp = grid[kr][kc]
+                            if kp is not None and kp.z_idx == 1 and kp.color == opponent_turn:
+                                gets_evaporated = True
+                                break
+                    if not gets_evaporated:
+                        is_definitely_quiet = True
+
+            if is_definitely_quiet:
+                swing = 0
+                is_good_tactic = False
+            else:
+                swing, is_good_tactic = fast_approximate_material_swing(board, move, moving_piece, target_piece, ORDERING_VALUES)
 
             if move == hash_move:
                 score = self.BONUS_PV_MOVE
             elif is_good_tactic:
-                score = self.BONUS_CAPTURE + (swing * 100)
+                # Tiebreak equal swings by prioritizing cheaper attackers (MVV-LVA)
+                score = self.BONUS_CAPTURE + (swing * 100) + (5 - moving_piece.z_idx)
             elif move in killers:
                 score = 4_000_000 if move == killers[0] else 3_000_000
             elif move == counter_move:
@@ -1158,13 +1202,13 @@ class ChessBot:
         total_pawns = board.piece_counts['white'][Pawn] + board.piece_counts['black'][Pawn]
         if total_pawns > 0:
             for piece in board.white_pieces:
-                if type(piece) is Pawn:
-                    c, r = piece.pos[1], piece.pos[0]
+                if piece.z_idx == 0:
+                    r, c = piece.pos
                     white_pawn_files[c] = True
                     if r > white_pawn_max_row[c]: white_pawn_max_row[c] = r
             for piece in board.black_pieces:
-                if type(piece) is Pawn:
-                    c, r = piece.pos[1], piece.pos[0]
+                if piece.z_idx == 0:
+                    r, c = piece.pos
                     black_pawn_files[c] = True
                     if r < black_pawn_min_row[c]: black_pawn_min_row[c] = r
 
@@ -1299,15 +1343,17 @@ class ChessBot:
                     scores_eg[color_idx] += mobility * self.EVAL_MOBILITY_BISHOP
 
                 elif z == 1: # Knight
+                    has_attacked_king_zone = False
+                    ekr, ekc = enemy_king if enemy_king else (None, None)
                     for ar, ac in KNIGHT_ATTACKS_FROM[(r, c)]:
                         threatened = grid[ar][ac]
                         if threatened and threatened.z_idx != 5 and threatened.color != my_color_name:
                             scores_mg[color_idx] += KNIGHT_ACTIVITY_BONUS
                             scores_eg[color_idx] += KNIGHT_ACTIVITY_BONUS
-                    if enemy_king:
-                        for ar, ac in KNIGHT_ATTACKS_FROM[(r, c)]:
-                            if abs(ar - enemy_king[0]) <= 2 and abs(ac - enemy_king[1]) <= 2:
-                                king_zone_attacks[1 - color_idx] += 1; break
+                        if ekr is not None and not has_attacked_king_zone:
+                            if abs(ar - ekr) <= 2 and abs(ac - ekc) <= 2:
+                                king_zone_attacks[1 - color_idx] += 1
+                                has_attacked_king_zone = True
 
                 elif z == 4: # Queen
                     if enemy_king and (abs(r - enemy_king[0]) + abs(c - enemy_king[1]) <= 3):
