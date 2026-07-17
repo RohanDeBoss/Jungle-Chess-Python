@@ -1,4 +1,4 @@
-# AI.py (v117.1 Time management v3)
+# AI.py (v118 Order moves has cheap see)
 
 import json
 import os
@@ -1227,7 +1227,17 @@ class ChessBot:
             if move == hash_move:
                 score = self.BONUS_PV_MOVE
             elif is_good_tactic:
-                score = self.BONUS_CAPTURE + (swing * 100) + (5 - my_z)
+                ordering_swing = swing
+                if target_piece is not None and my_z != 4:  # Exclude Queens since they already self-destruct
+                    # Soft-SEE: if the destination square is defended by the
+                    # opponent, the moving piece will likely be recaptured.
+                    # This only affects move ORDERING — is_good_tactic (which
+                    # governs pruning/LMR safety elsewhere) is untouched, so a
+                    # losing-but-forcing capture still gets searched at full
+                    # depth, just later in the move list.
+                    if is_square_attacked(board, r2, c2, opponent_turn):
+                        ordering_swing = swing - ORDERING_VALUES[my_z]
+                score = self.BONUS_CAPTURE + (ordering_swing * 100) + (5 - my_z)
             elif move in killers:
                 score = 4_000_000 if move == killers[0] else 3_000_000
             elif move == counter_move:
