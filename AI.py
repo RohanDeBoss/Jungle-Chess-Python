@@ -811,6 +811,8 @@ class ChessBot:
             if self.cancellation_event.is_set() or (self.stop_time and time.time() > self.stop_time):
                 raise SearchCancelledException()
 
+        total_pieces = len(board.white_pieces) + len(board.black_pieces)
+
         # --- REPETITION CHECKS (must come before TB probe) ---
         hash_val = current_hash if current_hash is not None else board_hash(board, turn)
         if ply > 0:
@@ -819,7 +821,7 @@ class ChessBot:
             if hash_val in search_path:
                 return self.DRAW_SCORE
 
-        if len(board.white_pieces) + len(board.black_pieces) <= self.tb_probe_limit:
+        if total_pieces <= self.tb_probe_limit:
             tb_score_absolute = self.tb_manager.probe(board, turn)
             if tb_score_absolute is not None:
                 self.tb_hits += 1
@@ -863,7 +865,8 @@ class ChessBot:
 
         try:
             if (self.USE_NULL_MOVE_PRUNING and depth >= self.NMP_MIN_DEPTH and
-                    ply > 0 and not is_in_check_flag and abs(beta) < self.MATE_SCORE - 1000):
+                    ply > 0 and not is_in_check_flag and abs(beta) < self.MATE_SCORE - 1000
+                    and total_pieces > 6): # Disabled in endgame to prevent zugzwang blind spots
                 pc = board.piece_counts
                 if (pc['white'][Knight] + pc['white'][Bishop] + pc['white'][Rook] + pc['white'][Queen] > 0 and
                         pc['black'][Knight] + pc['black'][Bishop] + pc['black'][Rook] + pc['black'][Queen] > 0):
@@ -880,7 +883,7 @@ class ChessBot:
             # --- FORWARD FUTILITY PRUNING (Original Conservative Version) ---
             futility_prune = False
             if (self.USE_FUTILITY_PRUNING and depth == 1 and not is_in_check_flag and
-                    abs(alpha) < self.MATE_SCORE - 1000):
+                    abs(alpha) < self.MATE_SCORE - 1000 and total_pieces > 6): # Disabled in endgame
                 self.used_heuristic_eval = True
                 if static_eval is None:
                     static_eval = self.evaluate_board(board, turn)
@@ -936,6 +939,12 @@ class ChessBot:
                     
                     # 1. Base reduction with much gentler scaling
                     reduction = 1 + (depth // 7) + (legal_moves_count // 12)
+
+                    # 1b. Reduce scaling in the endgame so quiet mating nets
+                    # (which can be genuinely hard to see in Jungle Chess's
+                    # sparse late-game positions) aren't missed.
+                    if total_pieces <= 6:
+                        reduction = max(0, reduction - 1)
                     
                     # 2. Protect likely refutations
                     if (ply < len(self.killer_moves) and move in self.killer_moves[ply]) or move == c_move:
