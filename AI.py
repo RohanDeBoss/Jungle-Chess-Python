@@ -1,4 +1,4 @@
-# AI.py (v118.1 Order moves has cheap see + lmr = // 6)
+# AI.py (v118.2 qsearch in-check eval skip + z-count hot paths)
 
 import json
 import os
@@ -867,9 +867,9 @@ class ChessBot:
             if (self.USE_NULL_MOVE_PRUNING and depth >= self.NMP_MIN_DEPTH and
                     ply > 0 and not is_in_check_flag and abs(beta) < self.MATE_SCORE - 1000
                     and total_pieces > 6): # Disabled in endgame to prevent zugzwang blind spots
-                pc = board.piece_counts
-                if (pc['white'][Knight] + pc['white'][Bishop] + pc['white'][Rook] + pc['white'][Queen] > 0 and
-                        pc['black'][Knight] + pc['black'][Bishop] + pc['black'][Rook] + pc['black'][Queen] > 0):
+                pc = board.piece_counts_z
+                if (pc['white'][1] + pc['white'][2] + pc['white'][3] + pc['white'][4] > 0 and
+                        pc['black'][1] + pc['black'][2] + pc['black'][3] + pc['black'][4] > 0):
                     self.used_heuristic_eval = True
                     static_eval = self.evaluate_board(board, turn)
                     if static_eval >= beta:
@@ -1097,17 +1097,16 @@ class ChessBot:
             return score
 
         self.used_heuristic_eval = True
-        
-        if hash_val in self.eval_tt:
-            stand_pat = self.eval_tt[hash_val]
-        else:
-            stand_pat = self.evaluate_board(board, turn)
-            if len(self.eval_tt) > 5_000_000: self.eval_tt.clear()
-            self.eval_tt[hash_val] = stand_pat
-            
         is_in_check_flag = is_in_check(board, turn)
 
         if not is_in_check_flag:
+            if hash_val in self.eval_tt:
+                stand_pat = self.eval_tt[hash_val]
+            else:
+                stand_pat = self.evaluate_board(board, turn)
+                if len(self.eval_tt) > 5_000_000: self.eval_tt.clear()
+                self.eval_tt[hash_val] = stand_pat
+
             if stand_pat >= beta: return beta
             alpha = max(alpha, stand_pat)
 
@@ -1122,7 +1121,7 @@ class ChessBot:
         tt_move = tt_entry.best_move if tt_entry else None
         
         opponent_turn = 'black' if turn == 'white' else 'white'
-        has_enemy_knights = board.piece_counts[opponent_turn][Knight] > 0
+        has_enemy_knights = board.piece_counts_z[opponent_turn][1] > 0
 
         for move in promising_moves:
             (r1, c1), (r2, c2) = move
@@ -1196,7 +1195,7 @@ class ChessBot:
 
         grid = board.grid
         opponent_turn = 'black' if turn == 'white' else 'white'
-        has_enemy_knights = board.piece_counts[opponent_turn][Knight] > 0
+        has_enemy_knights = board.piece_counts_z[opponent_turn][1] > 0
 
         for move in moves:
             (r1, c1), (r2, c2) = move
@@ -1286,7 +1285,9 @@ class ChessBot:
         # Track the MAXIMUM row of white pawns per file.
         white_pawn_max_row = [-1] * COLS
 
-        total_pawns = board.piece_counts['white'][Pawn] + board.piece_counts['black'][Pawn]
+        pc_wz = board.piece_counts_z['white']
+        pc_bz = board.piece_counts_z['black']
+        total_pawns = pc_wz[0] + pc_bz[0]
         if total_pawns > 0:
             for piece in board.white_pieces:
                 if piece.z_idx == 0:
@@ -1301,14 +1302,11 @@ class ChessBot:
 
         scores_mg = [0, 0]; scores_eg = [0, 0]
 
-        pc_w = board.piece_counts['white']
-        pc_b = board.piece_counts['black']
-
-        pawn_counts   = [pc_w[Pawn], pc_b[Pawn]]
-        knight_counts = [pc_w[Knight], pc_b[Knight]]
-        bishop_counts = [pc_w[Bishop], pc_b[Bishop]]
-        rook_counts   = [pc_w[Rook], pc_b[Rook]]
-        queen_counts  = [pc_w[Queen], pc_b[Queen]]
+        pawn_counts   = [pc_wz[0], pc_bz[0]]
+        knight_counts = [pc_wz[1], pc_bz[1]]
+        bishop_counts = [pc_wz[2], pc_bz[2]]
+        rook_counts   = [pc_wz[3], pc_bz[3]]
+        queen_counts  = [pc_wz[4], pc_bz[4]]
 
         piece_counts = [
             knight_counts[0] + bishop_counts[0] + rook_counts[0] + queen_counts[0],

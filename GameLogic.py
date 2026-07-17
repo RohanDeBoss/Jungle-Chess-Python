@@ -1,4 +1,4 @@
-# GameLogic.py (v63 - Quick Breaking for pure performance gain)
+# GameLogic.py (v64 - z-indexed piece counts for hot paths)
 
 
 # -----------------------------------------------------------------------
@@ -266,6 +266,7 @@ class Board:
             'white': {Pawn: 0, Knight: 0, Bishop: 0, Rook: 0, Queen: 0, King: 0},
             'black': {Pawn: 0, Knight: 0, Bishop: 0, Rook: 0, Queen: 0, King: 0},
         }
+        self.piece_counts_z = {'white': [0] * 6, 'black': [0] * 6}
         if setup:
             self._setup_initial_board()
 
@@ -316,6 +317,7 @@ class Board:
         piece.pos       = (r, c)
         self._list_append(piece)
         self.piece_counts[piece.color][type(piece)] += 1
+        self.piece_counts_z[piece.color][piece.z_idx] += 1
         if type(piece) is King:
             if piece.color == 'white': self.white_king_pos = (r, c)
             else:                      self.black_king_pos = (r, c)
@@ -326,6 +328,7 @@ class Board:
             return
         self._list_remove(piece)
         self.piece_counts[piece.color][type(piece)] -= 1
+        self.piece_counts_z[piece.color][piece.z_idx] -= 1
         if type(piece) is King:
             if piece.color == 'white': self.white_king_pos = None
             else:                      self.black_king_pos = None
@@ -367,6 +370,11 @@ class Board:
         new_board.piece_counts = {
             'white': pc['white'].copy(),
             'black': pc['black'].copy(),
+        }
+        pcz = self.piece_counts_z
+        new_board.piece_counts_z = {
+            'white': pcz['white'].copy(),
+            'black': pcz['black'].copy(),
         }
         return new_board
 
@@ -475,6 +483,7 @@ class Board:
                 piece.pos = None
                 self._list_remove(piece)
                 self.piece_counts[piece.color][type(piece)] -= 1
+                self.piece_counts_z[piece.color][piece.z_idx] -= 1
 
         mp_pos = moving_piece.pos
         if mp_pos is not None:
@@ -489,6 +498,7 @@ class Board:
             moving_piece.pos = start
             self._list_append(moving_piece)
             self.piece_counts[moving_piece.color][type(moving_piece)] += 1
+            self.piece_counts_z[moving_piece.color][moving_piece.z_idx] += 1
             if moving_piece.z_idx == 5:
                 if moving_piece.color == 'white': self.white_king_pos = start
                 else:                             self.black_king_pos = start
@@ -500,6 +510,7 @@ class Board:
             piece.pos = (r, c)
             self._list_append(piece)
             self.piece_counts[piece.color][type(piece)] += 1
+            self.piece_counts_z[piece.color][piece.z_idx] += 1
             if piece.z_idx == 5:
                 if piece.color == 'white': self.white_king_pos = (r, c)
                 else:                      self.black_king_pos = (r, c)
@@ -547,15 +558,15 @@ def is_square_attacked(board, r, c, attacking_color):
     grid            = board.grid
     defending_color = 'black' if attacking_color == 'white' else 'white'
     attacking_pieces = board.white_pieces if attacking_color == 'white' else board.black_pieces
-    attacker_counts = board.piece_counts[attacking_color]
+    attacker_counts = board.piece_counts_z[attacking_color]
     attacking_king_pos = board.white_king_pos if attacking_color == 'white' else board.black_king_pos
 
-    if len(attacking_pieces) == attacker_counts[King]:
+    if len(attacking_pieces) == attacker_counts[5]:
         if attacking_king_pos:
             return _king_attacks_square(grid, attacking_king_pos[0], attacking_king_pos[1], r, c)
         return False
 
-    if attacker_counts[Knight] > 0:
+    if attacker_counts[1] > 0:
         for pr, pc in KNIGHT_ATTACKS_FROM[(r, c)]:
             p = grid[pr][pc]
             if p is not None:
@@ -567,7 +578,7 @@ def is_square_attacked(board, r, c, attacking_color):
                     if q is not None and q.z_idx == 1 and q.color == attacking_color:
                         return True
 
-    if attacker_counts[Queen] > 0:
+    if attacker_counts[4] > 0:
         for piece in attacking_pieces:
             if piece.z_idx == 4 and piece.pos:
                 qr, qc = piece.pos
@@ -581,7 +592,7 @@ def is_square_attacked(board, r, c, attacking_color):
                                     return True
                             break
 
-    has_rooks   = attacker_counts[Rook] > 0
+    has_rooks   = attacker_counts[3] > 0
     start_index = r * COLS + c
 
     for direction_idx, ray_path in enumerate(RAYS[start_index]):
@@ -630,7 +641,7 @@ def is_square_attacked(board, r, c, attacking_color):
         if _king_attacks_square(grid, attacking_king_pos[0], attacking_king_pos[1], r, c):
             return True
 
-    if attacker_counts[Bishop] > 0:
+    if attacker_counts[2] > 0:
         target_parity = (r + c) & 1
         for piece in attacking_pieces:
             pos = piece.pos
