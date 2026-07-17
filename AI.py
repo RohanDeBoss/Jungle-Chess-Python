@@ -1,4 +1,4 @@
-# AI.py (v118 Order moves has cheap see)
+# AI.py (v118.1 Order moves has cheap see + lmr = // 6)
 
 import json
 import os
@@ -937,8 +937,8 @@ class ChessBot:
                         legal_moves_count > self.LMR_MOVE_COUNT_THRESHOLD and
                         not is_in_check_flag and not is_good_tactic):
                     
-                    # 1. Base reduction with much gentler scaling
-                    reduction = 1 + (depth // 7) + (legal_moves_count // 12)
+                    # 1. Base reduction with gentler scaling
+                    reduction = 1 + (depth // 6) + (legal_moves_count // 12)
 
                     # 1b. Reduce scaling in the endgame so quiet mating nets
                     # (which can be genuinely hard to see in Jungle Chess's
