@@ -355,8 +355,8 @@ def main():
     parser = argparse.ArgumentParser(
         description="Compare old and new Jungle Chess tablebases using note files, full value diffs, and live probe checks."
     )
-    parser.add_argument("--old-dir", default="old tablebases")
-    parser.add_argument("--new-dir", default="tablebases")
+    parser.add_argument("--old-dir", default="tablebases")
+    parser.add_argument("--new-dir", default="TBs")
     parser.add_argument("--old-suffix", default=OLD_SUFFIX)
     parser.add_argument("--new-suffix", default=NEW_SUFFIX)
     parser.add_argument("--old-longest", default=OLD_LONGEST)

@@ -49,7 +49,7 @@ class TablebaseManager:
     def __init__(self):
         self.tables = {}
         self.full_wdl_tables = set()
-        self.tb_dir = "tablebases"
+        self.tb_dir = "TBs"
         self.pre_load_all()
 
     def pre_load_all(self):
