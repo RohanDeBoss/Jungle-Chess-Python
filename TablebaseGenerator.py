@@ -1,4 +1,4 @@
-# TablebaseGenerator.py (v21 - Bug fixes)
+# TablebaseGenerator.py (v22 - Bug fixes more)
 
 import os
 import time
@@ -266,11 +266,22 @@ def _make_temp_graph_paths(output_filename):
     tmp_w2b = os.path.join(TB_DIR, f"{run_prefix}_tmp_w2b.bin")
     return run_prefix, tmp_b2w, tmp_w2b
 
+def _sort_unsolved_flats(unsolved_flats):
+    """unsolved_flats arrives in arbitrary (imap_unordered) arrival order.
+    Sorts it ascending and returns the permutation needed to remap any
+    row-indexed array (state table, out-degree, promo idx arrays) and any
+    stored parent-index values in the edge files into the new order."""
+    unsolved_flats_np = np.frombuffer(unsolved_flats, dtype=np.uint32)
+    sort_idx = np.argsort(unsolved_flats_np)
+    old_to_new = np.empty_like(sort_idx)
+    old_to_new[sort_idx] = np.arange(len(sort_idx), dtype=sort_idx.dtype)
+    return unsolved_flats_np[sort_idx], sort_idx, old_to_new
+
 # ==============================================================================
 # DISK-BACKED ZERO-RAM CSR BUILDER & FLAT BFS
 # ==============================================================================
 
-def _build_csr_from_disk(unsolved_flats_np, edges_file, prefix):
+def _build_csr_from_disk(unsolved_flats_np, edges_file, prefix, old_to_new):
     """
     Reads a temporary binary file containing (cflat, parent_idx) uint32 pairs.
     Splits into bins, sorts in-memory sequentially, and writes to memmap.
@@ -293,7 +304,7 @@ def _build_csr_from_disk(unsolved_flats_np, edges_file, prefix):
             valid = (idxs < num_states) & (unsolved_flats_np[np.minimum(idxs, num_states-1)] == cflats)
             
             v_idx = idxs[valid]
-            v_par = parents[valid]
+            v_par = old_to_new[parents[valid]]
             
             if len(v_idx) == 0: continue
             
@@ -734,7 +745,7 @@ class Generator:
         done = 0
         with multiprocessing.Pool(processes=self.transition_workers, initializer=_init_transition_worker,
                                   initargs=(self.piece_name, self.queen_tb_file)) as pool:
-            for processed_count, results in pool.imap(_worker_3_chunk, chunks):
+            for processed_count, results in pool.imap_unordered(_worker_3_chunk, chunks):
                 for result in results:
                     flat, trans = result
                     i = len(unsolved_flats)
@@ -768,17 +779,23 @@ class Generator:
         print(); s2e = time.time() - s2
         print(f"[Stage 2] Cache built: {len(unsolved_flats):,} valid states | {_fmt_elapsed(s2e)} ({total/max(0.001,s2e):,.0f} st/s avg)", flush=True)
         
-        s3 = time.time(); print(f"[Stage 2b] Flattening reverse graph via Disk CSR...", flush=True)
-        unsolved_flats_np = np.frombuffer(unsolved_flats, dtype=np.uint32)
-        b2w_head, b2w_edges, b2w_file = _build_csr_from_disk(unsolved_flats_np, tmp_b2w, f"{run_prefix}_b2w")
-        w2b_head, w2b_edges, w2b_file = _build_csr_from_disk(unsolved_flats_np, tmp_w2b, f"{run_prefix}_w2b")
+        s3 = time.time(); print(f"[Stage 2b] Sorting states and flattening reverse graph via Disk CSR...", flush=True)
+        unsolved_flats_np, sort_idx, old_to_new = _sort_unsolved_flats(unsolved_flats)
+        init_table_np = np.frombuffer(init_table, dtype=TB_DTYPE)[sort_idx]
+        init_out_degree_np = np.frombuffer(init_out_degree, dtype=np.uint16)[sort_idx]
+        wtm_promo_idx_np = old_to_new[np.frombuffer(wtm_promo_idx, dtype=np.uint32)]
+        wtm_promo_val_np = np.frombuffer(wtm_promo_val, dtype=np.uint16)
+        btm_promo_idx_np = old_to_new[np.frombuffer(btm_promo_idx, dtype=np.uint32)]
+        btm_promo_val_np = np.frombuffer(btm_promo_val, dtype=np.uint16)
+        b2w_head, b2w_edges, b2w_file = _build_csr_from_disk(unsolved_flats_np, tmp_b2w, f"{run_prefix}_b2w", old_to_new)
+        w2b_head, w2b_edges, w2b_file = _build_csr_from_disk(unsolved_flats_np, tmp_w2b, f"{run_prefix}_w2b", old_to_new)
         print(f"[Stage 2b] Done | {_fmt_elapsed(time.time()-s3)}", flush=True)
         
         try:
             table_flat, max_dtm, decisive = _run_flat_bfs(
-                unsolved_flats_np, np.frombuffer(init_table, dtype=TB_DTYPE), np.frombuffer(init_out_degree, dtype=np.uint16),
-                np.frombuffer(wtm_promo_idx, dtype=np.uint32), np.frombuffer(wtm_promo_val, dtype=np.uint16),
-                np.frombuffer(btm_promo_idx, dtype=np.uint32), np.frombuffer(btm_promo_val, dtype=np.uint16),
+                unsolved_flats_np, init_table_np, init_out_degree_np,
+                wtm_promo_idx_np, wtm_promo_val_np,
+                btm_promo_idx_np, btm_promo_val_np,
                 b2w_head, b2w_edges, w2b_head, w2b_edges, start_time)
 
             _write_dense_table(self.filename, self.total_positions, unsolved_flats_np, table_flat)
@@ -964,7 +981,7 @@ class Generator4:
         done = 0
         with multiprocessing.Pool(processes=self.transition_workers, initializer=_init_transition_worker_4,
                                   initargs=(self.p1_name, self.p2_name, self.promo_tb_file)) as pool:
-            for processed_count, results in pool.imap(_worker_4_chunk, _get_chunks()):
+            for processed_count, results in pool.imap_unordered(_worker_4_chunk, _get_chunks()):
                 for result in results:
                     flat, trans = result
                     i = len(unsolved_flats)
@@ -998,17 +1015,23 @@ class Generator4:
         print(); s2e = time.time() - s2
         print(f"[Stage 2] Cache built: {len(unsolved_flats):,} valid states | {_fmt_elapsed(s2e)} ({total/max(0.001,s2e):,.0f} st/s avg)", flush=True)
         
-        s3 = time.time(); print(f"[Stage 2b] Flattening reverse graph via Disk CSR...", flush=True)
-        unsolved_flats_np = np.frombuffer(unsolved_flats, dtype=np.uint32)
-        b2w_head, b2w_edges, b2w_file = _build_csr_from_disk(unsolved_flats_np, tmp_b2w, f"{run_prefix}_b2w")
-        w2b_head, w2b_edges, w2b_file = _build_csr_from_disk(unsolved_flats_np, tmp_w2b, f"{run_prefix}_w2b")
+        s3 = time.time(); print(f"[Stage 2b] Sorting states and flattening reverse graph via Disk CSR...", flush=True)
+        unsolved_flats_np, sort_idx, old_to_new = _sort_unsolved_flats(unsolved_flats)
+        init_table_np = np.frombuffer(init_table, dtype=TB_DTYPE)[sort_idx]
+        init_out_degree_np = np.frombuffer(init_out_degree, dtype=np.uint16)[sort_idx]
+        wtm_promo_idx_np = old_to_new[np.frombuffer(wtm_promo_idx, dtype=np.uint32)]
+        wtm_promo_val_np = np.frombuffer(wtm_promo_val, dtype=np.uint16)
+        btm_promo_idx_np = old_to_new[np.frombuffer(btm_promo_idx, dtype=np.uint32)]
+        btm_promo_val_np = np.frombuffer(btm_promo_val, dtype=np.uint16)
+        b2w_head, b2w_edges, b2w_file = _build_csr_from_disk(unsolved_flats_np, tmp_b2w, f"{run_prefix}_b2w", old_to_new)
+        w2b_head, w2b_edges, w2b_file = _build_csr_from_disk(unsolved_flats_np, tmp_w2b, f"{run_prefix}_w2b", old_to_new)
         print(f"[Stage 2b] Done | {_fmt_elapsed(time.time()-s3)}", flush=True)
         
         try:
             table_flat, max_dtm, decisive = _run_flat_bfs(
-                unsolved_flats_np, np.frombuffer(init_table, dtype=TB_DTYPE), np.frombuffer(init_out_degree, dtype=np.uint16),
-                np.frombuffer(wtm_promo_idx, dtype=np.uint32), np.frombuffer(wtm_promo_val, dtype=np.uint16),
-                np.frombuffer(btm_promo_idx, dtype=np.uint32), np.frombuffer(btm_promo_val, dtype=np.uint16),
+                unsolved_flats_np, init_table_np, init_out_degree_np,
+                wtm_promo_idx_np, wtm_promo_val_np,
+                btm_promo_idx_np, btm_promo_val_np,
                 b2w_head, b2w_edges, w2b_head, w2b_edges, start_time)
 
             _write_dense_table(self.filename, self.total_positions, unsolved_flats_np, table_flat)
@@ -1258,7 +1281,7 @@ class Generator4Vs:
         done = 0
         with multiprocessing.Pool(processes=self.transition_workers, initializer=_init_transition_worker_4vs,
                                   initargs=(self.w_name, self.b_name)) as pool:
-            for processed_count, results in pool.imap(_worker_4vs_chunk, _get_chunks()):
+            for processed_count, results in pool.imap_unordered(_worker_4vs_chunk, _get_chunks()):
                 for result in results:
                     flat, trans = result
                     _append_full_wdl_state(flat, trans, unsolved_flats, init_table,
@@ -1273,18 +1296,21 @@ class Generator4Vs:
         print(); s2e = time.time() - s2
         print(f"[Stage 2] Cache built: {len(unsolved_flats):,} valid states | {_fmt_elapsed(s2e)} ({total/max(0.001,s2e):,.0f} st/s avg)", flush=True)
         
-        s3 = time.time(); print(f"[Stage 2b] Flattening reverse graph via Disk CSR...", flush=True)
-        unsolved_flats_np = np.frombuffer(unsolved_flats, dtype=np.uint32)
-        b2w_head, b2w_edges, b2w_file = _build_csr_from_disk(unsolved_flats_np, tmp_b2w, f"{run_prefix}_b2w")
-        w2b_head, w2b_edges, w2b_file = _build_csr_from_disk(unsolved_flats_np, tmp_w2b, f"{run_prefix}_w2b")
+        s3 = time.time(); print(f"[Stage 2b] Sorting states and flattening reverse graph via Disk CSR...", flush=True)
+        unsolved_flats_np, sort_idx, old_to_new = _sort_unsolved_flats(unsolved_flats)
+        init_table_np = np.frombuffer(init_table, dtype=TB_DTYPE)[sort_idx]
+        init_out_degree_np = np.frombuffer(init_out_degree, dtype=np.uint16)[sort_idx]
+        init_max_child_dtm_np = np.frombuffer(init_max_child_dtm, dtype=np.uint16)[sort_idx]
+        b2w_head, b2w_edges, b2w_file = _build_csr_from_disk(unsolved_flats_np, tmp_b2w, f"{run_prefix}_b2w", old_to_new)
+        w2b_head, w2b_edges, w2b_file = _build_csr_from_disk(unsolved_flats_np, tmp_w2b, f"{run_prefix}_w2b", old_to_new)
         print(f"[Stage 2b] Done | {_fmt_elapsed(time.time()-s3)}", flush=True)
         
         try:
             table_flat, max_dtm, decisive = _run_flat_bfs_full_wdl(
                 unsolved_flats_np,
-                np.frombuffer(init_table, dtype=TB_DTYPE),
-                np.frombuffer(init_out_degree, dtype=np.uint16),
-                np.frombuffer(init_max_child_dtm, dtype=np.uint16),
+                init_table_np,
+                init_out_degree_np,
+                init_max_child_dtm_np,
                 b2w_head, b2w_edges, w2b_head, w2b_edges, start_time)
 
             _write_dense_table(self.filename, self.total_positions, unsolved_flats_np, table_flat)
@@ -1516,7 +1542,7 @@ class Generator5:
             chunk_iter = _gen_valid_5same_indices_numpy(
                 self.total_positions, self.p1_name, self.p2_name, self.p3_name, self.has_pawn, chunk_size=chunk_size)
             
-            for processed_count, results in pool.imap(_worker_5_chunk, chunk_iter):
+            for processed_count, results in pool.imap_unordered(_worker_5_chunk, chunk_iter):
                 for result in results:
                     flat, trans = result
                     i = len(unsolved_flats)
@@ -1551,17 +1577,23 @@ class Generator5:
         print(); s2e = time.time() - s2
         print(f"[Stage 2] Cache built: {len(unsolved_flats):,} valid states | {_fmt_elapsed(s2e)} ({total/max(0.001,s2e):,.0f} st/s avg)", flush=True)
         
-        s3 = time.time(); print(f"[Stage 2b] Flattening reverse graph via Disk CSR...", flush=True)
-        unsolved_flats_np = np.frombuffer(unsolved_flats, dtype=np.uint32)
-        b2w_head, b2w_edges, b2w_file = _build_csr_from_disk(unsolved_flats_np, tmp_b2w, f"{run_prefix}_b2w")
-        w2b_head, w2b_edges, w2b_file = _build_csr_from_disk(unsolved_flats_np, tmp_w2b, f"{run_prefix}_w2b")
+        s3 = time.time(); print(f"[Stage 2b] Sorting states and flattening reverse graph via Disk CSR...", flush=True)
+        unsolved_flats_np, sort_idx, old_to_new = _sort_unsolved_flats(unsolved_flats)
+        init_table_np = np.frombuffer(init_table, dtype=TB_DTYPE)[sort_idx]
+        init_out_degree_np = np.frombuffer(init_out_degree, dtype=np.uint16)[sort_idx]
+        wtm_promo_idx_np = old_to_new[np.frombuffer(wtm_promo_idx, dtype=np.uint32)]
+        wtm_promo_val_np = np.frombuffer(wtm_promo_val, dtype=np.uint16)
+        btm_promo_idx_np = old_to_new[np.frombuffer(btm_promo_idx, dtype=np.uint32)]
+        btm_promo_val_np = np.frombuffer(btm_promo_val, dtype=np.uint16)
+        b2w_head, b2w_edges, b2w_file = _build_csr_from_disk(unsolved_flats_np, tmp_b2w, f"{run_prefix}_b2w", old_to_new)
+        w2b_head, w2b_edges, w2b_file = _build_csr_from_disk(unsolved_flats_np, tmp_w2b, f"{run_prefix}_w2b", old_to_new)
         print(f"[Stage 2b] Done | {_fmt_elapsed(time.time()-s3)}", flush=True)
         
         try:
             table_flat, max_dtm, decisive = _run_flat_bfs(
-                unsolved_flats_np, np.frombuffer(init_table, dtype=TB_DTYPE), np.frombuffer(init_out_degree, dtype=np.uint16),
-                np.frombuffer(wtm_promo_idx, dtype=np.uint32), np.frombuffer(wtm_promo_val, dtype=np.uint16),
-                np.frombuffer(btm_promo_idx, dtype=np.uint32), np.frombuffer(btm_promo_val, dtype=np.uint16),
+                unsolved_flats_np, init_table_np, init_out_degree_np,
+                wtm_promo_idx_np, wtm_promo_val_np,
+                btm_promo_idx_np, btm_promo_val_np,
                 b2w_head, b2w_edges, w2b_head, w2b_edges, start_time)
 
             _write_dense_table(self.filename, self.total_positions, unsolved_flats_np, table_flat)
@@ -1896,7 +1928,7 @@ class Generator5Vs:
                 self.total_positions, self.w1_name, self.w2_name,
                 self.b_name, self.has_pawn, self.same_wp, chunk_size=chunk_size)
             
-            for processed_count, results in pool.imap(_worker_5vs_chunk, chunk_iter):
+            for processed_count, results in pool.imap_unordered(_worker_5vs_chunk, chunk_iter):
                 for result in results:
                     flat, trans = result
                     _append_full_wdl_state(flat, trans, unsolved_flats, init_table,
@@ -1912,18 +1944,21 @@ class Generator5Vs:
         print(); s2e = time.time() - s2
         print(f"[Stage 2] Cache built: {len(unsolved_flats):,} valid states | {_fmt_elapsed(s2e)} ({total/max(0.001,s2e):,.0f} st/s avg)", flush=True)
         
-        s3 = time.time(); print(f"[Stage 2b] Flattening reverse graph via Disk CSR...", flush=True)
-        unsolved_flats_np = np.frombuffer(unsolved_flats, dtype=np.uint32)
-        b2w_head, b2w_edges, b2w_file = _build_csr_from_disk(unsolved_flats_np, tmp_b2w, f"{run_prefix}_b2w")
-        w2b_head, w2b_edges, w2b_file = _build_csr_from_disk(unsolved_flats_np, tmp_w2b, f"{run_prefix}_w2b")
+        s3 = time.time(); print(f"[Stage 2b] Sorting states and flattening reverse graph via Disk CSR...", flush=True)
+        unsolved_flats_np, sort_idx, old_to_new = _sort_unsolved_flats(unsolved_flats)
+        init_table_np = np.frombuffer(init_table, dtype=TB_DTYPE)[sort_idx]
+        init_out_degree_np = np.frombuffer(init_out_degree, dtype=np.uint16)[sort_idx]
+        init_max_child_dtm_np = np.frombuffer(init_max_child_dtm, dtype=np.uint16)[sort_idx]
+        b2w_head, b2w_edges, b2w_file = _build_csr_from_disk(unsolved_flats_np, tmp_b2w, f"{run_prefix}_b2w", old_to_new)
+        w2b_head, w2b_edges, w2b_file = _build_csr_from_disk(unsolved_flats_np, tmp_w2b, f"{run_prefix}_w2b", old_to_new)
         print(f"[Stage 2b] Done | {_fmt_elapsed(time.time()-s3)}", flush=True)
         
         try:
             table_flat, max_dtm, decisive = _run_flat_bfs_full_wdl(
                 unsolved_flats_np,
-                np.frombuffer(init_table, dtype=TB_DTYPE),
-                np.frombuffer(init_out_degree, dtype=np.uint16),
-                np.frombuffer(init_max_child_dtm, dtype=np.uint16),
+                init_table_np,
+                init_out_degree_np,
+                init_max_child_dtm_np,
                 b2w_head, b2w_edges, w2b_head, w2b_edges, start_time)
 
             _write_dense_table(self.filename, self.total_positions, unsolved_flats_np, table_flat)
