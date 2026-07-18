@@ -1,4 +1,4 @@
-# TablebaseGenerator.py (v22 - Bug fixes more)
+# TablebaseGenerator.py (v23.1 - Less Memory usage + Auto-Cleanup)
 
 import os
 import time
@@ -250,10 +250,11 @@ def _safe_record_longest_mate(table_key, max_dtm, decisive, remaining, elapsed_s
         print(f"[LongestMate] Warning: failed to update note file ({e})")
 
 def _write_dense_table(filename, total_positions, solved_flats_np, solved_values):
-    dense_table = np.zeros(total_positions, dtype=TB_DTYPE)
+    dense_table = np.memmap(filename, dtype=TB_DTYPE, mode='w+', shape=(total_positions,))
+    dense_table[:] = 0
     dense_table[solved_flats_np] = solved_values
-    with open(filename, 'wb') as f:
-        dense_table.tofile(f)
+    dense_table.flush()
+    del dense_table
 
 def _write_wdl_marker(filename):
     with open(filename + TB_WDL_MARKER_SUFFIX, "w", encoding="utf-8") as f:
@@ -267,14 +268,10 @@ def _make_temp_graph_paths(output_filename):
     return run_prefix, tmp_b2w, tmp_w2b
 
 def _sort_unsolved_flats(unsolved_flats):
-    """unsolved_flats arrives in arbitrary (imap_unordered) arrival order.
-    Sorts it ascending and returns the permutation needed to remap any
-    row-indexed array (state table, out-degree, promo idx arrays) and any
-    stored parent-index values in the edge files into the new order."""
     unsolved_flats_np = np.frombuffer(unsolved_flats, dtype=np.uint32)
-    sort_idx = np.argsort(unsolved_flats_np)
+    sort_idx = np.argsort(unsolved_flats_np).astype(np.uint32)
     old_to_new = np.empty_like(sort_idx)
-    old_to_new[sort_idx] = np.arange(len(sort_idx), dtype=sort_idx.dtype)
+    old_to_new[sort_idx] = np.arange(len(sort_idx), dtype=np.uint32)
     return unsolved_flats_np[sort_idx], sort_idx, old_to_new
 
 # ==============================================================================
@@ -787,6 +784,7 @@ class Generator:
         wtm_promo_val_np = np.frombuffer(wtm_promo_val, dtype=np.uint16)
         btm_promo_idx_np = old_to_new[np.frombuffer(btm_promo_idx, dtype=np.uint32)]
         btm_promo_val_np = np.frombuffer(btm_promo_val, dtype=np.uint16)
+        del unsolved_flats, init_table, init_out_degree, wtm_promo_idx, wtm_promo_val, btm_promo_idx, btm_promo_val, sort_idx
         b2w_head, b2w_edges, b2w_file = _build_csr_from_disk(unsolved_flats_np, tmp_b2w, f"{run_prefix}_b2w", old_to_new)
         w2b_head, w2b_edges, w2b_file = _build_csr_from_disk(unsolved_flats_np, tmp_w2b, f"{run_prefix}_w2b", old_to_new)
         print(f"[Stage 2b] Done | {_fmt_elapsed(time.time()-s3)}", flush=True)
@@ -1023,6 +1021,7 @@ class Generator4:
         wtm_promo_val_np = np.frombuffer(wtm_promo_val, dtype=np.uint16)
         btm_promo_idx_np = old_to_new[np.frombuffer(btm_promo_idx, dtype=np.uint32)]
         btm_promo_val_np = np.frombuffer(btm_promo_val, dtype=np.uint16)
+        del unsolved_flats, init_table, init_out_degree, wtm_promo_idx, wtm_promo_val, btm_promo_idx, btm_promo_val, sort_idx
         b2w_head, b2w_edges, b2w_file = _build_csr_from_disk(unsolved_flats_np, tmp_b2w, f"{run_prefix}_b2w", old_to_new)
         w2b_head, w2b_edges, w2b_file = _build_csr_from_disk(unsolved_flats_np, tmp_w2b, f"{run_prefix}_w2b", old_to_new)
         print(f"[Stage 2b] Done | {_fmt_elapsed(time.time()-s3)}", flush=True)
@@ -1301,6 +1300,7 @@ class Generator4Vs:
         init_table_np = np.frombuffer(init_table, dtype=TB_DTYPE)[sort_idx]
         init_out_degree_np = np.frombuffer(init_out_degree, dtype=np.uint16)[sort_idx]
         init_max_child_dtm_np = np.frombuffer(init_max_child_dtm, dtype=np.uint16)[sort_idx]
+        del unsolved_flats, init_table, init_out_degree, init_max_child_dtm, sort_idx
         b2w_head, b2w_edges, b2w_file = _build_csr_from_disk(unsolved_flats_np, tmp_b2w, f"{run_prefix}_b2w", old_to_new)
         w2b_head, w2b_edges, w2b_file = _build_csr_from_disk(unsolved_flats_np, tmp_w2b, f"{run_prefix}_w2b", old_to_new)
         print(f"[Stage 2b] Done | {_fmt_elapsed(time.time()-s3)}", flush=True)
@@ -1585,6 +1585,7 @@ class Generator5:
         wtm_promo_val_np = np.frombuffer(wtm_promo_val, dtype=np.uint16)
         btm_promo_idx_np = old_to_new[np.frombuffer(btm_promo_idx, dtype=np.uint32)]
         btm_promo_val_np = np.frombuffer(btm_promo_val, dtype=np.uint16)
+        del unsolved_flats, init_table, init_out_degree, wtm_promo_idx, wtm_promo_val, btm_promo_idx, btm_promo_val, sort_idx
         b2w_head, b2w_edges, b2w_file = _build_csr_from_disk(unsolved_flats_np, tmp_b2w, f"{run_prefix}_b2w", old_to_new)
         w2b_head, w2b_edges, w2b_file = _build_csr_from_disk(unsolved_flats_np, tmp_w2b, f"{run_prefix}_w2b", old_to_new)
         print(f"[Stage 2b] Done | {_fmt_elapsed(time.time()-s3)}", flush=True)
@@ -1949,6 +1950,7 @@ class Generator5Vs:
         init_table_np = np.frombuffer(init_table, dtype=TB_DTYPE)[sort_idx]
         init_out_degree_np = np.frombuffer(init_out_degree, dtype=np.uint16)[sort_idx]
         init_max_child_dtm_np = np.frombuffer(init_max_child_dtm, dtype=np.uint16)[sort_idx]
+        del unsolved_flats, init_table, init_out_degree, init_max_child_dtm, sort_idx
         b2w_head, b2w_edges, b2w_file = _build_csr_from_disk(unsolved_flats_np, tmp_b2w, f"{run_prefix}_b2w", old_to_new)
         w2b_head, w2b_edges, w2b_file = _build_csr_from_disk(unsolved_flats_np, tmp_w2b, f"{run_prefix}_w2b", old_to_new)
         print(f"[Stage 2b] Done | {_fmt_elapsed(time.time()-s3)}", flush=True)
@@ -1983,6 +1985,36 @@ class Generator5Vs:
 # ENTRY POINT
 # ==============================================================================
 
+def auto_cleanup_tb_directory():
+    if not os.path.exists(TB_DIR): return
+    print("[Auto-Cleanup] Scanning for orphaned temp files and incomplete tables...")
+    cleaned = 0
+    
+    for f in os.listdir(TB_DIR):
+        path = os.path.join(TB_DIR, f)
+        
+        # 1. Nuke any leftover temp files from crashes
+        if any(x in f for x in ("_tmp_", "_bin_", "_edges.")):
+            try:
+                os.remove(path)
+                cleaned += 1
+            except: pass
+            continue
+            
+        # 2. Check for incomplete cross-tables (missing WDL markers)
+        if f.endswith(TB_SUFFIX) and "_vs_" in f:
+            wdl_path = path + TB_WDL_MARKER_SUFFIX
+            if not os.path.exists(wdl_path):
+                print(f"  [!] Deleting incomplete cross-table: {f}")
+                try:
+                    os.remove(path)
+                    cleaned += 1
+                except: pass
+                continue
+                
+    if cleaned > 0:
+        print(f"[Auto-Cleanup] Removed {cleaned} leftover/incomplete files.\n")
+
 def is_possible(pieces):
     counts = {Queen: 0, Rook: 0, Bishop: 0, Knight: 0, Pawn: 0}
     for p in pieces: counts[p] += 1
@@ -1991,8 +2023,12 @@ def is_possible(pieces):
 
 if __name__ == "__main__":
     _install_main_interrupt_ignores()
+    
+    # Run the auto-cleanup routine before starting
+    auto_cleanup_tb_directory()
+    
     overall_start = time.time()
-    print("=== Tablebase Generator (v17.0 - Unified 16-bit Retrograde BFS) ===")
+    print("=== Tablebase Generator (v24 - Auto-Cleanup & Perfected RAM/DTM) ===")
 
     all_pieces = [Queen, Rook, Bishop, Knight, Pawn]
     all_gens = []
