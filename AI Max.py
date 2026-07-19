@@ -1,4 +1,4 @@
-# AI.py (Max Challenger v2)
+# AI.py (Max Challenger v2.1)
 
 import time
 import random
@@ -119,8 +119,9 @@ _TT_UPPER = 2
 # Piece values tuned for Jungle Chess:
 # Queen is kamikaze (dies on capture) so worth less than standard.
 # Rook pierces everything so worth more. Knight evaporates so volatile.
-_PV = [105, 390, 370, 720, 680, 0]  # P N B R Q K
-_PV_LIST = _PV  # alias for fast_approximate_material_swing
+# Jungle-tuned material (per user tuning: knights are devastating, queens die on capture)
+_PV = [100, 950, 600, 600, 1300, 20000]  # P N B R Q K
+_PV_LIST = _PV
 
 # Phase weights for tapered eval
 _PHASE_W = [0, 1, 1, 2, 3, 0]
@@ -423,16 +424,31 @@ class ChessBot:
         now = time.time()
         tl = max(0.01, float(self.time_left))
         inc = max(0.0, float(self.increment))
-        moves_left = max(8, 32 - self.ply_count // 2)
-        base = tl / (moves_left + 5)
-        alloc = base * 0.85 + inc * 0.80
-        if n_moves <= 4: alloc *= 0.7
-        elif n_moves >= 20: alloc *= 1.15
-        if tl < 2.0: alloc = min(alloc, 0.22 + inc * 0.55)
-        if tl < 0.8: alloc = min(alloc, 0.07 + inc * 0.45)
-        if tl < 0.3: alloc = min(alloc, 0.025 + inc * 0.3)
-        alloc = max(0.01, min(alloc, tl * 0.28))
-        hard = min(max(alloc * 2.5, alloc + 0.05), tl * 0.70)
+
+        # Estimate moves remaining in the game (more generous than v302/v303)
+        moves_left = max(12, 40 - self.ply_count // 3)
+        
+        # Base allocation: divide remaining time + banking on increment
+        alloc = (tl / moves_left) + inc * 0.85
+
+        # Complexity scaling
+        if n_moves <= 4:
+            alloc *= 0.75
+        elif n_moves >= 25:
+            alloc *= 1.20
+
+        # Emergency time controls — but MUCH less aggressive than v303
+        if tl < 3.0:
+            alloc = min(alloc, tl * 0.15 + inc * 0.8)
+        if tl < 1.0:
+            alloc = min(alloc, tl * 0.10 + inc * 0.6)
+        if tl < 0.3:
+            alloc = min(alloc, tl * 0.08 + inc * 0.4)
+
+        # Hard bounds — allow at least a real search
+        alloc = max(0.05, min(alloc, tl * 0.35))
+        hard = min(max(alloc * 3.0, alloc + 0.10), tl * 0.80)
+
         self.soft_stop = now + alloc
         self.stop_time = now + hard
 
@@ -792,9 +808,9 @@ class ChessBot:
         board = self.board
         grid = board.grid
         ci = 0 if turn == 'white' else 1
+        enemy_king = board.black_king_pos if turn == 'white' else board.white_king_pos
         k0, k1 = self.killers[ply] if ply < len(self.killers) else (None, None)
 
-        # Get counter-move
         cm = None
         if last_move is not None:
             lp = grid[last_move[1][0]][last_move[1][1]]
@@ -808,6 +824,7 @@ class ChessBot:
             piece = grid[s[0]][s[1]]
             if piece is None or piece.color != turn:
                 continue
+
             z = piece.z_idx
             target = grid[e[0]][e[1]]
             is_promo = (z == 0 and e[0] == piece.promo_rank)
@@ -817,39 +834,106 @@ class ChessBot:
             is_quiet = True
 
             if tt_move is not None and move == tt_move:
-                sc += 200000000
+                sc += 200_000_000
                 is_quiet = False
 
             if target is not None:
                 is_quiet = False
                 is_tactic = True
-                # MVV-LVA
-                sc += 30000000 + _PV[target.z_idx] * 16 - _PV[z]
+                sc += 30_000_000 + _PV[target.z_idx] * 16 - _PV[z]
 
             if is_promo:
                 is_quiet = False
                 is_tactic = True
-                sc += 28000000
+                sc += 28_000_000
 
-            # Check for AoE tactics via fast_approximate
-            if not is_tactic and z in (1, 3, 4):
+            # Detect AoE-based tactics: rook piercing, knight evap, queen blast
+            swing = 0
+            if target is not None or is_promo or z in (1, 3, 4):
                 swing, tact = fast_approximate_material_swing(board, move, piece, target, _PV_LIST)
-                if tact and swing > 0:
+                if tact:
                     is_tactic = True
                     is_quiet = False
-                    sc += 25000000 + swing * 8
+                    sc += 25_000_000 + swing * 8
+
+            # KING THREAT DETECTION — moves that check enemy king (including AoE checks!)
+            check_bonus = self._approx_check_bonus(move, piece, target, enemy_king)
+            if check_bonus:
+                sc += check_bonus
+                is_quiet = False
+
+            # KNIGHT LANDING NEAR ENEMY KING — evaporation check
+            if z == 1 and enemy_king is not None:
+                if enemy_king in KNIGHT_ATTACKS_FROM[e]:
+                    sc += 15_000_000  # Direct evap check — often mate!
+                    is_quiet = False
+
+            # QUEEN EXPLOSION ADJACENT TO KING
+            if z == 4 and target is not None and enemy_king is not None:
+                if abs(e[0] - enemy_king[0]) <= 1 and abs(e[1] - enemy_king[1]) <= 1:
+                    sc += 18_000_000  # Queen explodes next to king
+                    is_quiet = False
 
             if is_quiet:
-                if move == k0: sc += 9000000
-                elif move == k1: sc += 8000000
-                elif cm is not None and move == cm: sc += 7500000
+                if move == k0:
+                    sc += 9_000_000
+                elif move == k1:
+                    sc += 8_000_000
+                elif cm is not None and move == cm:
+                    sc += 7_500_000
                 sc += self.history[ci][z][e[0]][e[1]]
 
             result.append((sc, move, is_tactic, is_quiet, z))
 
         result.sort(key=lambda x: x[0], reverse=True)
         return result
+    
+    def _approx_check_bonus(self, move, piece, target, enemy_king):
+        """Return ordering bonus if this move puts enemy king in check."""
+        if enemy_king is None:
+            return 0
 
+        start, end = move
+        z = piece.z_idx
+
+        # Knight evaporation check
+        if z == 1:
+            if enemy_king in KNIGHT_ATTACKS_FROM[end]:
+                return 12_000_000
+            return 0
+
+        # Rook piercing check (shares rank/file with king)
+        if z == 3:
+            if end[0] == enemy_king[0] or end[1] == enemy_king[1]:
+                return 10_000_000
+            return 0
+
+        # Queen: explosion check or line check
+        if z == 4:
+            if target is not None and abs(end[0] - enemy_king[0]) <= 1 and abs(end[1] - enemy_king[1]) <= 1:
+                return 15_000_000
+            # Line check
+            if end[0] == enemy_king[0] or end[1] == enemy_king[1]:
+                return 5_000_000
+            if abs(end[0] - enemy_king[0]) == abs(end[1] - enemy_king[1]):
+                return 4_500_000
+            return 0
+
+        # Bishop diagonal check
+        if z == 2:
+            if abs(end[0] - enemy_king[0]) == abs(end[1] - enemy_king[1]):
+                return 3_000_000
+            return 0
+
+        # Pawn check
+        if z == 0:
+            direction = -1 if piece.color == 'white' else 1
+            if enemy_king[0] == end[0] + direction and abs(enemy_king[1] - end[1]) == 1:
+                return 2_000_000
+            return 0
+
+        return 0
+    
     # ------------------------------------------------------------------
     # EVALUATION
     # ------------------------------------------------------------------
