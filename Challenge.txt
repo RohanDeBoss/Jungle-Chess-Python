@@ -1,0 +1,1491 @@
+I have a unique engine-building challenge for you. I am developing a custom chess variant called Jungle Chess, and I need you to write an engine to compete against my baseline bot (OPAI) and defeat it in a 300-game match.
+The Game:
+I have attached the Zreadme.txt which contains the complete rules, and GameLogic.py which handles move generation and board state. Please read the readme carefully. The mechanics (like Queen explosions, Knight evaporation, Rook piercing, and King phasing) fundamentally alter board safety and piece valuation.
+The Challenge:
+I am attaching a template framework file called AI.py. I need you to design the search and evaluation logic within this file.
+The matches will be played at a strict 10+0.1 time control (10 seconds starting time, plus 0.1 seconds increment per move). You will need highly efficient time management and iterative deepening to avoid flagging.
+Constraints & Freedom:
+You are completely free to add new helper methods, classes, evaluation tables, and custom data structures inside AI.py. Be as creative as you like—I am looking for novel, variant-specific ideas, not just a standard chess engine clone.
+CRITICAL: Do not modify the __init__ signature of the ChessBot class, and leave the class-level attributes (search_depth) exactly as they are. My UI relies on these to boot properly.
+Do not modify GameLogic.py. Return only your completed AI.py code.
+To search fast enough, you must use self.board.make_move_track() and self.board.unmake_move(). Do not use board.clone() inside your search tree.
+You must frequently check if self.cancellation_event.is_set(): during your search to allow the UI to safely interrupt the thread.
+A few design hints for Jungle Chess:
+Since you are an expert, I won't tell you how to write an engine, but keep in mind that standard chess heuristics often fail here. An exploding Queen or an evaporating Knight creates massive, sudden material swings. A phasing King requires completely different mating nets. Standard pruning margins (like basic futility pruning) might be too tight and blind the engine to AoE tactics.
+The 5-piece tablebases and Opening Book are already wired into the framework for you. Focus your creativity on the search architecture, move ordering, and a deeply variant-aware evaluation function. Good luck!
+
+
+# Jungle Chess — Official Rules & Engine Notes
+## Jungle Chess is a chess variant where four of the six piece types have been
+given volatile, area-of-effect abilities. This document is the single source
+of truth for both **players** (rules) and **AI assistants / engine
+developers** (implementation invariants). If you are an AI reading this
+before touching the codebase, read the whole thing — the "Engine Invariants"
+section at the end exists specifically to stop you from re-deriving (and
+getting wrong) an argument that has already been settled.
+## 1. Objective
+## Checkmate the opponent's king, as in standard chess. You do **not** need to
+explode, evaporate, or pierce the enemy king to win — you win by putting your
+opponent in a position where they have **no legal move** on their turn. The
+game always ends exactly one ply before a king would actually be destroyed,
+so a king is never literally removed from the board during valid play. See
+Section 6 for why
+this is true by construction, not just by convention.
+## 2. Terminal Condition — No Legal Moves
+Having no legal moves is **always** an immediate loss for the side to move,
+regardless of whether that side is currently in check.
+No legal moves **while in check** → checkmate.
+No legal moves **while not in check** → this is extremely rare in
+  practice (see Section 5) but is
+  still a loss. Jungle Chess has no stalemate-as-draw rule.
+If your opponent has no legal moves, you win immediately. The game therefore
+behaves like a king-capture variant that stops one ply early — functionally
+identical in outcome, but the king is never actually taken off the board.
+## 3. Piece Changes
+### Queen
+Moves normally: any number of squares, any direction.
+**Explodes on capture.** When the queen captures a piece, it explodes,
+  removing all enemy pieces on the 8 squares surrounding the capture square.
+  The queen itself is also removed in the blast.
+The queen does **not** explode if it is the one being captured.
+### Rook
+Moves normally: any number of squares horizontally or vertically.
+**Piercing capture.** On a single move, a rook can travel to any square on
+  its rank or file regardless of enemy pieces in the way, destroying every
+  enemy piece it passes through. It is stopped only by a friendly piece.
+### Bishop
+Two movement modes:
+  1. **Normal diagonal** — slides any number of squares diagonally, cannot
+     jump over pieces.
+  2. **Zig-zag** — alternates between two diagonal directions each step
+     (forward, backward, or sideways zig-zags are all legal). Like normal
+     diagonal movement, it cannot jump over pieces — it stops (and may
+     capture) at the first piece it meets along the zig-zag path.
+### Knight
+Moves in the normal L-shape, but **can only land on empty squares.**
+**Passive evaporation.** At all times, a knight evaporates (removes) every
+  enemy piece sitting on a square it could jump to — this happens simply by
+  the knight existing there, not by landing on the target. This is why a
+  knight can only land on empty squares: anything else would already have
+  been evaporated.
+If two enemy knights are mutually within evaporation range and one of them
+  moves so as to trigger the exchange, **both knights are removed**, but any
+  other pieces caught in either evaporation zone are removed first.
+### Pawn
+Moves forward one square (two from its starting rank, unless blocked).
+Captures by stepping forward onto an enemy piece, or sideways onto an
+  adjacent enemy piece (never diagonally). May advance two squares onto an
+  enemy piece on its first move if the intervening square is empty.
+Promotes to a queen on the last rank — mandatory, no choice of piece.
+No en passant.
+### King
+Slides one **or two** squares horizontally, vertically, or diagonally,
+  blocked by any piece in its path.
+On a 2-square move, only the **landing square** must be safe — the king is
+  allowed to pass through an attacked square. This is intentional; it makes
+  the king meaningfully harder to checkmate than in standard chess.
+Still subject to check and checkmate.
+No castling.
+## 4. Check, Notation, and Casualty Lists
+**Definition of check:** a position is check if the side to move's king would
+be destroyed by *any* legal move available to the opponent on their next
+turn, including all of the special attacks below.
+**Explosive check** — your king sits adjacent to a piece (yours or theirs)
+  that an enemy queen could capture, because the resulting explosion would
+  reach your king. Example: an enemy queen attacks a pawn on f2; a king on e2
+  is in check, because Qxf2 would explode and kill it.
+**Evaporation check** — your king sits on a square an enemy knight could
+  jump to (even though the knight can only land on *empty* squares — it's
+  the landing threat, not an actual capture, that creates the check).
+**Railgun check** — your king shares a rank or file with an enemy rook, at
+  any distance, regardless of any pieces in between (because the rook
+  pierces through everything but a friendly blocker).
+Standard algebraic notation is used, with a comma separating each half-move
+and +/# for check/checkmate. Exact SAN formatting isn't a gameplay rule —
+any move that's clear and unambiguous is acceptable.
+**Casualty lists.** For any move that pierces, evaporates, or explodes
+multiple squares, list every affected square in parentheses after the move,
+sorted by lowest rank first, then lowest file:
+textNc6 (xe4 xg4) — knight evaporation
+Ne5 (xe5 xc6 xf7) — knight evaporation that also kills itself (self-target listed explicitly)
+Rxh1 (xh2) — rook piercing
+Qxf7 (xf7 xg7 xh7 xg8) — queen explosion (queen's own square is included)
+**Example game:**
+text1. e4, Nf6 (xe4)
+2. Bxf7+, Kxf7
+3. Nc3, Ne4 (xd2 xf2)
+## 5. Why Stalemate Almost Never Happens
+Because no-legal-moves is always a loss, it's tempting to worry about the
+engine accidentally "missing" a stalemate at the search horizon. In practice
+this concern doesn't apply:
+**Pawns can't lock a position.** A pawn captures forward, so a blocked pawn
+  chain can simply step onto the blocker — chains can never freeze the board
+  the way they sometimes threaten to in standard chess.
+**The king phases through attacks.** A 2-square king move only needs the
+  *landing* square to be safe, so boxing a king in without ever checking it
+  requires an unusually large, deliberate cage of pieces.
+**The tablebase owns the endgame.** Non-check stalemates are essentially an
+  endgame-only phenomenon (a near-empty, fully paralyzed board), and the
+  precomputed tablebase (5 pieces or fewer) resolves those positions exactly,
+  with no heuristics needed.
+## 6. Engine Invariants (read this before touching the code)
+This section exists because this exact question — *"couldn't the search
+actually capture a king, and does the tablebase need to account for
+unreachable positions?"* — has come up before, including from AI assistants
+reviewing this codebase, and it deserves a definitive answer so it doesn't
+get re-litigated (badly) every time.
+### 6.1 The core invariant
+**On every position the engine ever searches, the side *not* to move is
+never in check.**
+This holds for three independent reasons, all of which must remain true:
+**Legal self-play enforces it structurally.** generate_legal_moves_generator
+   in GameLogic.py filters out any candidate move that leaves the mover's
+   own king in check. A position reached by legal play can therefore never
+   have the side-not-to-move in check — if it were, that side would have had
+   no legal move available to escape it, and the game would already have
+   ended one ply earlier as a loss.
+**PGN replay reuses the same legal-move generator.** load_pgn_from_entry
+   matches typed notation against get_all_legal_moves output, so replayed
+   games inherit the same guarantee as live play.
+**FEN loading is explicitly validated.** load_fen_from_entry rejects any
+   position where the side not to move is in check:
+   python &nbsp;&nbsp;&nbsp;passive_color = "black" if self.turn == "white" else "white" &nbsp;&nbsp;&nbsp;if is_in_check(self.board, passive_color): &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;messagebox.showerror("Invalid FEN", "Illegal Position: the side not " &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;"to move is already in check/danger.") &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;self.reset_game(schedule_ai=False) &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;return &nbsp;&nbsp;&nbsp;
+   Before this check existed, a hand-typed FEN was the *only* way to hand the
+   engine a position that violated the invariant. With it in place, all three
+   entry points (self-play, PGN, FEN) now agree.
+### 6.2 Why the invariant makes king-capture code unreachable
+is_square_attacked in GameLogic.py computes "check" by directly
+projecting each volatile piece's *kill capability*, not just its normal move
+squares:
+A queen's explosive threat is checked by testing whether it can already
+  capture something adjacent to the king.
+A rook's railgun threat is checked by scanning through every piece on the
+  king's rank/file, since piercing ignores blockers.
+A knight's evaporation threat is checked with a **second-order lookup** —
+  for every empty square the knight could jump to, it also checks whether
+  *that* square's jump-set includes the king. This is what correctly flags
+  "the knight could move to an empty square and evaporate the king from
+  there" as check *right now*, before the knight has moved anywhere.
+Because of this, **any geometric arrangement capable of killing a king next
+turn is already classified as check on the current turn.** There's no piece
+type in this ruleset whose kill-capability is created by the same move that
+executes the kill — the capability (sightline, shared file, jump-adjacency)
+always pre-exists the move. Combined with the invariant in §6.1, this means:
+If it is White's turn, Black's king cannot be in a position where any
+White move would destroy it — because that would mean Black started their
+turn in check with no way to escape, which is a terminal loss that would
+have already ended the game.
+**Practical consequence:** code paths in AI.py/OPAI.py that check "did my
+move just remove the opponent's king" (find_king_pos(...) is None,
+not sim.find_king_pos(...), etc.) are checking for a condition that can
+never actually occur during normal search on a reachable position. They are
+not wrong to have — they're a cheap fast-path stand-in for the more
+expensive "did I deliver checkmate" computation, and they're harmless to
+leave in place — but removing them (as done in AI.py v118) is a safe,
+verified simplification, not a behavioral change. AI.py v117/v118 and
+OPAI.py are provably equivalent in every search decision on any position
+the UI will ever hand them.
+### 6.3 Where this *used* to be false, and why it isn't anymore
+Before the FEN-legality check in §6.1 existed, a hand-crafted FEN could
+violate the invariant (e.g. loading a position where Black's king is already
+in an unescapable evaporation threat, but it's recorded as White's move).
+That was the one gap where the "unreachable" argument didn't hold — a
+custom-loaded, non-self-play position could theoretically make the
+otherwise-dead king-capture code paths live for one move. That gap is now
+closed at the UI layer. If FEN loading is ever refactored, **this check must
+be preserved** or the invariant silently breaks again.
+### 6.4 Tablebases are unaffected by any of this
+The tablebase generator (TablebaseGenerator.py) enforces the same
+own-king-first ordering independently, in every transition worker (3-man,
+4-man same-side, 4-man cross, 5-man same-side, 5-man cross) — e.g.:
+Pythonif is_in_check(board, 'white'): board.unmake_move(record); continue # legality first
+...
+if not bkp or not has_legal_moves(board, 'black'):
+    immediate_win = True; ... # mate check second
+Tablebase files legitimately contain many positions that are *unreachable
+from the starting position of a real game* — that's normal and expected for
+any tablebase, chess or otherwise. What matters is that every stored
+position is **legal in isolation** (side not to move isn't in check, kings
+aren't overlapping/adjacent-illegally, pawns aren't on illegal ranks), which
+the generator guarantees independently of anything the live UI does. The
+tablebase was never at risk from the FEN-loading gap described in §6.3.
+### 6.5 Performance-sensitive rules
+**Stalemate is a loss, so don't add expensive legal-move checks to
+  qsearch.** The engine already starves the opponent naturally at the
+  horizon via static eval; there's no correctness gap to patch. The one
+  has_legal_moves() call that does exist in qsearch is safe to keep,
+  specifically *because* has_legal_moves short-circuits on the first legal
+  move found — it does not enumerate all moves, so it's effectively O(1) in
+  any position that isn't a genuine dead end.
+**Keep pruning conservative.** A single AoE knight or queen move can swing
+  material by 3000+ points. Standard-chess-tuned LMR/futility margins will
+  blind the engine to these tactics. Don't tighten pruning margins without
+  re-testing against OPAI.py.
+**Don't hand-roll 5-piece endgame heuristics.** The tablebase already
+  solves these exactly; heuristic code would only risk disagreeing with it.
+### 6.6 OPAI.py is a frozen baseline — do not edit its search/eval logic
+## OPAI.py exists solely as a stable comparison target for measuring whether
+changes to AI.py are actual improvements (via the "AI vs OP Series" mode)
+rather than illusory ones. Its search logic, evaluation function, and
+pruning constants must **never** be back-ported from AI.py, even for
+"harmless" cleanups — a frozen baseline is only useful if it stays bit-for-
+bit stable across comparison runs.
+The one category of exception is shared, non-heuristic infrastructure that
+both files import or duplicate for boilerplate reasons (e.g. constructor
+argument handling in a standalone dispatch function) — those may be aligned
+for consistency **only if** doing so cannot change OPAI's actual move
+selection or evaluation output. When in doubt, don't touch OPAI.py.
+## 7. Quick Reference for AI Assistants
+If you're reviewing or modifying this codebase, before proposing a change:
+Read §6 in full. If your review is about to raise "the king could get
+   captured" or "the tablebase might miss unreachable positions," it's
+   already answered above — check whether the FEN-legality guard (§6.1,
+   point 3) is intact before re-opening either question.
+Never edit OPAI.py's search or evaluation logic (§6.6).
+Don't propose adding legal-move enumeration to qsearch — it's already
+   there in the one place it's needed, and it's cheap (§6.5).
+Don't propose tightening pruning margins without flagging that it needs
+   an AI-vs-OP regression run — Jungle Chess's swing sizes break assumptions
+   pruning margins are normally tuned against.
+ 
+
+```python
+# GameLogic.py (v64 - z-indexed piece counts for hot paths)
+
+
+# -----------------------------------------------------------------------
+# Global constants
+# z_idx reference: 0=Pawn 1=Knight 2=Bishop 3=Rook 4=Queen(kamikaze) 5=King
+# -----------------------------------------------------------------------
+ROWS, COLS = 8, 8
+SQUARE_SIZE = 75
+BOARD_COLOR_1 = "#D2B48C"
+BOARD_COLOR_2 = "#8B5A2B"
+
+DIRECTIONS = {
+    'king':   ((-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (-1, 1), (1, -1), (1, 1)),
+    'queen':  ((-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (-1, 1), (1, -1), (1, 1)),
+    'rook':   ((0, 1), (0, -1), (1, 0), (-1, 0)),
+    'bishop': ((-1, -1), (-1, 1), (1, -1), (1, 1)),
+    'knight': ((2, 1), (2, -1), (-2, 1), (-2, -1), (1, 2), (1, -2), (-1, 2), (-1, -2)),
+}
+ADJACENT_DIRS = DIRECTIONS['king']
+
+BISHOP_ZIGZAG_DIRS = (
+    ((-1, 1), (-1, -1)), ((-1, -1), (-1, 1)),
+    ((1, 1),  (1, -1)),  ((1, -1),  (1, 1)),
+    ((-1, 1), (1, 1)),   ((1, 1),   (-1, 1)),
+    ((-1, -1), (1, -1)), ((1, -1),  (-1, -1)),
+)
+
+# Stored as tuples so CPython uses the faster tuple-iteration C path.
+KNIGHT_ATTACKS_FROM = {
+    (r, c): tuple(
+        (r + dr, c + dc) for dr, dc in DIRECTIONS['knight']
+        if 0 <= r + dr < ROWS and 0 <= c + dc < COLS
+    )
+    for r in range(ROWS) for c in range(COLS)
+}
+ADJACENT_SQUARES_MAP = {
+    (r, c): tuple(
+        (r + dr, c + dc) for dr, dc in ADJACENT_DIRS
+        if 0 <= r + dr < ROWS and 0 <= c + dc < COLS
+    )
+    for r in range(ROWS) for c in range(COLS)
+}
+
+# RAYS[sq_index][direction_index] — inner sequences are tuples (read-only)
+RAYS = [[None] * 8 for _ in range(64)]
+BISHOP_ZIGZAG_RAYS = [None] * 64
+
+def _init_rays():
+    dy_dx = [(-1, 0), (1, 0), (0, 1), (0, -1), (-1, 1), (-1, -1), (1, 1), (1, -1)]
+    tmp = [[[] for _ in range(8)] for _ in range(64)]
+    zigzag_tmp = [[[] for _ in range(len(BISHOP_ZIGZAG_DIRS))] for _ in range(64)]
+    for r in range(ROWS):
+        for c in range(COLS):
+            idx = r * COLS + c
+            for i, (dr, dc) in enumerate(dy_dx):
+                cr, cc = r + dr, c + dc
+                while 0 <= cr < ROWS and 0 <= cc < COLS:
+                    tmp[idx][i].append((cr, cc))
+                    cr += dr
+                    cc += dc
+            for i, (d1, d2) in enumerate(BISHOP_ZIGZAG_DIRS):
+                cr, cc, cd = r, c, d1
+                while True:
+                    cr += cd[0]
+                    cc += cd[1]
+                    if not (0 <= cr < ROWS and 0 <= cc < COLS):
+                        break
+                    zigzag_tmp[idx][i].append((cr, cc))
+                    cd = d2 if cd == d1 else d1
+    for sq in range(64):
+        RAYS[sq] = tuple(tuple(ray) for ray in tmp[sq])
+        BISHOP_ZIGZAG_RAYS[sq] = tuple(tuple(ray) for ray in zigzag_tmp[sq])
+
+_init_rays()
+
+
+def _clone_piece_fast(piece):
+    cls       = piece.__class__
+    new_piece = cls.__new__(cls)
+    new_piece.color          = piece.color
+    new_piece.opponent_color = piece.opponent_color
+    new_piece.pos            = piece.pos
+    new_piece._list_pos      = piece._list_pos   # preserve index in new board's list
+    if cls is Pawn:
+        new_piece.direction    = piece.direction
+        new_piece.starting_row = piece.starting_row
+        new_piece.promo_rank   = piece.promo_rank
+    return new_piece
+
+
+# -----------------------------------------------------------------------
+# Piece classes
+# -----------------------------------------------------------------------
+class Piece:
+    def __init__(self, color):
+        self.color          = color
+        self.opponent_color = "black" if color == "white" else "white"
+        self.pos            = None
+        self._list_pos      = -1   # index in Board.white_pieces / black_pieces
+
+    def clone(self):
+        new_piece     = self.__class__(self.color)
+        new_piece.pos = self.pos
+        return new_piece
+
+    def symbol(self):                        return "?"
+    def get_valid_moves(self, board, pos):   return []
+
+
+class King(Piece):
+    z_idx = 5
+    def symbol(self): return "♔" if self.color == "white" else "♚"
+
+    def get_valid_moves(self, board, pos):
+        moves = []
+        r_start, c_start = pos
+        opp = self.opponent_color
+        grid = board.grid
+        for dr, dc in DIRECTIONS['king']:
+            r1, c1 = r_start + dr, c_start + dc
+            if 0 <= r1 < ROWS and 0 <= c1 < COLS:
+                target = grid[r1][c1]
+                if target is None or target.color == opp:
+                    moves.append((pos, (r1, c1)))
+                    if target is None:
+                        r2, c2 = r1 + dr, c1 + dc
+                        if 0 <= r2 < ROWS and 0 <= c2 < COLS:
+                            t2 = grid[r2][c2]
+                            if t2 is None or t2.color == opp:
+                                moves.append((pos, (r2, c2)))
+        return moves
+
+
+class Queen(Piece):
+    z_idx = 4
+    def symbol(self): return "♕" if self.color == "white" else "♛"
+
+    def get_valid_moves(self, board, pos):
+        moves = []
+        grid = board.grid
+        start_index = pos[0] * COLS + pos[1]
+        for i in range(8):
+            for r, c in RAYS[start_index][i]:
+                target = grid[r][c]
+                if target is None:
+                    moves.append((pos, (r, c)))
+                else:
+                    if target.color != self.color:
+                        moves.append((pos, (r, c)))
+                    break
+        return moves
+
+
+class Rook(Piece):
+    z_idx = 3
+    def symbol(self): return "♖" if self.color == "white" else "♜"
+
+    def get_valid_moves(self, board, pos):
+        moves = []
+        grid = board.grid
+        start_index = pos[0] * COLS + pos[1]
+        for i in range(4):
+            for r, c in RAYS[start_index][i]:
+                target = grid[r][c]
+                if target and target.color == self.color:
+                    break
+                moves.append((pos, (r, c)))
+        return moves
+
+
+class Bishop(Piece):
+    z_idx = 2
+    def symbol(self): return "♗" if self.color == "white" else "♝"
+
+    def get_valid_moves(self, board, pos):
+        moves       = set()
+        grid        = board.grid
+        r_start, c_start = pos
+        start_index = r_start * COLS + c_start
+
+        for i in range(4, 8):
+            for r, c in RAYS[start_index][i]:
+                target = grid[r][c]
+                if target:
+                    if target.color != self.color:
+                        moves.add((pos, (r, c)))
+                    break
+                moves.add((pos, (r, c)))
+
+        for ray in BISHOP_ZIGZAG_RAYS[start_index]:
+            for r, c in ray:
+                target = grid[r][c]
+                if target:
+                    if target.color != self.color:
+                        moves.add((pos, (r, c)))
+                    break
+                moves.add((pos, (r, c)))
+
+        return sorted(moves, key=lambda m: m[1])
+
+
+class Knight(Piece):
+    z_idx = 1
+    def symbol(self): return "♘" if self.color == "white" else "♞"
+
+    def get_valid_moves(self, board, pos):
+        moves = []
+        grid = board.grid
+        for r, c in KNIGHT_ATTACKS_FROM[pos]:
+            if grid[r][c] is None:
+                moves.append((pos, (r, c)))
+        return moves
+
+
+class Pawn(Piece):
+    z_idx = 0
+    def __init__(self, color):
+        super().__init__(color)
+        self.direction    = -1 if color == "white" else 1
+        self.starting_row = 6  if color == "white" else 1
+        self.promo_rank   = 0  if color == "white" else ROWS - 1
+
+    def symbol(self): return "♙" if self.color == "white" else "♟"
+
+    def get_valid_moves(self, board, pos):
+        moves = []
+        r, c      = pos
+        direction = self.direction
+        grid      = board.grid
+        opp       = self.opponent_color
+
+        one_r = r + direction
+        if 0 <= one_r < ROWS:
+            target1 = grid[one_r][c]
+            if target1 is None or target1.color == opp:
+                moves.append((pos, (one_r, c)))
+                if r == self.starting_row and target1 is None:
+                    two_r   = r + (2 * direction)
+                    target2 = grid[two_r][c]
+                    if target2 is None or target2.color == opp:
+                        moves.append((pos, (two_r, c)))
+
+        if c > 0:
+            target = grid[r][c - 1]
+            if target and target.color == opp:
+                moves.append((pos, (r, c - 1)))
+        if c < COLS - 1:
+            target = grid[r][c + 1]
+            if target and target.color == opp:
+                moves.append((pos, (r, c + 1)))
+        return moves
+
+
+# -----------------------------------------------------------------------
+# Board
+# -----------------------------------------------------------------------
+class Board:
+    def __init__(self, setup=True):
+        self.grid           = [[None] * COLS for _ in range(ROWS)]
+        self.white_king_pos = None
+        self.black_king_pos = None
+        self.white_pieces   = []
+        self.black_pieces   = []
+        self.piece_counts   = {
+            'white': {Pawn: 0, Knight: 0, Bishop: 0, Rook: 0, Queen: 0, King: 0},
+            'black': {Pawn: 0, Knight: 0, Bishop: 0, Rook: 0, Queen: 0, King: 0},
+        }
+        self.piece_counts_z = {'white': [0] * 6, 'black': [0] * 6}
+        if setup:
+            self._setup_initial_board()
+
+    def _setup_initial_board(self):
+        pieces = {
+            0: [(0, Rook), (1, Knight), (2, Bishop), (3, Queen), (4, King),
+                (5, Bishop), (6, Knight), (7, Rook)],
+            1: [(i, Pawn) for i in range(8)],
+            6: [(i, Pawn) for i in range(8)],
+            7: [(0, Rook), (1, Knight), (2, Bishop), (3, Queen), (4, King),
+                (5, Bishop), (6, Knight), (7, Rook)],
+        }
+        for r, piece_list in pieces.items():
+            color = "black" if r < 2 else "white"
+            for c, piece_class in piece_list:
+                self.add_piece(piece_class(color), r, c)
+
+    # ---- O(1) piece-list helpers ------------------------------------------
+
+    def _list_append(self, piece):
+        """Append to the colour list and record the resulting index."""
+        lst             = self.white_pieces if piece.color == 'white' else self.black_pieces
+        piece._list_pos = len(lst)
+        lst.append(piece)
+
+    def _list_remove(self, piece):
+        """
+        O(1) swap-and-pop removal.  Swaps piece with the last element so the
+        list stays compact, then pops the tail.  Safe to call on a piece that
+        is already absent (_list_pos == -1) — treated as a no-op.
+        """
+        idx = piece._list_pos
+        if idx < 0:
+            return
+        lst            = self.white_pieces if piece.color == 'white' else self.black_pieces
+        last           = lst[-1]
+        lst[idx]       = last
+        last._list_pos = idx
+        lst.pop()
+        piece._list_pos = -1
+
+    # ---- Board mutation primitives ----------------------------------------
+
+    def add_piece(self, piece, r, c):
+        if self.grid[r][c] is not None:
+            self.remove_piece(r, c)
+        self.grid[r][c] = piece
+        piece.pos       = (r, c)
+        self._list_append(piece)
+        self.piece_counts[piece.color][type(piece)] += 1
+        self.piece_counts_z[piece.color][piece.z_idx] += 1
+        if type(piece) is King:
+            if piece.color == 'white': self.white_king_pos = (r, c)
+            else:                      self.black_king_pos = (r, c)
+
+    def remove_piece(self, r, c):
+        piece = self.grid[r][c]
+        if not piece:
+            return
+        self._list_remove(piece)
+        self.piece_counts[piece.color][type(piece)] -= 1
+        self.piece_counts_z[piece.color][piece.z_idx] -= 1
+        if type(piece) is King:
+            if piece.color == 'white': self.white_king_pos = None
+            else:                      self.black_king_pos = None
+        piece.pos       = None
+        self.grid[r][c] = None
+
+    def move_piece(self, start, end):
+        piece = self.grid[start[0]][start[1]]
+        if not piece:
+            return
+        piece.pos = end
+        if type(piece) is King:
+            if piece.color == 'white': self.white_king_pos = end
+            else:                      self.black_king_pos = end
+        self.grid[start[0]][start[1]] = None
+        self.grid[end[0]][end[1]]     = piece
+
+    def find_king_pos(self, color):
+        return self.white_king_pos if color == 'white' else self.black_king_pos
+
+    def clone(self):
+        new_board               = Board.__new__(Board)
+        new_board.grid          = [[None] * COLS for _ in range(ROWS)]
+        new_board.white_king_pos = self.white_king_pos
+        new_board.black_king_pos = self.black_king_pos
+
+        white_pieces = [_clone_piece_fast(p) for p in self.white_pieces]
+        black_pieces = [_clone_piece_fast(p) for p in self.black_pieces]
+        new_board.white_pieces = white_pieces
+        new_board.black_pieces = black_pieces
+
+        grid = new_board.grid
+        for p in white_pieces:
+            r, c = p.pos; grid[r][c] = p
+        for p in black_pieces:
+            r, c = p.pos; grid[r][c] = p
+
+        pc = self.piece_counts
+        new_board.piece_counts = {
+            'white': pc['white'].copy(),
+            'black': pc['black'].copy(),
+        }
+        pcz = self.piece_counts_z
+        new_board.piece_counts_z = {
+            'white': pcz['white'].copy(),
+            'black': pcz['black'].copy(),
+        }
+        return new_board
+
+    # -----------------------------------------------------------------------
+    # make_move  (UI path — delegates to make_move_track)
+    # -----------------------------------------------------------------------
+    def make_move(self, start, end):
+        self.make_move_track(start, end)
+
+    # -----------------------------------------------------------------------
+    # make_move_track / unmake_move  (search path — no cloning)
+    # -----------------------------------------------------------------------
+    def make_move_track(self, start, end):
+        moving_piece = self.grid[start[0]][start[1]]
+        removed = []
+        added = []
+        mc      = moving_piece.color
+        mp_z = moving_piece.z_idx
+
+        target_piece = self.grid[end[0]][end[1]]
+        is_capture = target_piece is not None
+
+        # ── 1. Rook piercing ──
+        if mp_z == 3:   # Rook
+            dr = (end[0] > start[0]) - (start[0] > end[0])
+            dc = (end[1] > start[1]) - (start[1] > end[1])
+            cr, cc = start[0] + dr, start[1] + dc
+            while (cr, cc) != end:
+                t = self.grid[cr][cc]
+                if t is not None and t.color != mc:
+                    removed.append((t, cr, cc))
+                    self.remove_piece(cr, cc)
+                cr += dr
+                cc += dc
+
+        # ── 2. Standard capture ──
+        if is_capture:
+            removed.append((target_piece, end[0], end[1]))
+            self.remove_piece(end[0], end[1])
+
+        # ── 3. Move ──
+        self.move_piece(start, end)
+
+        # ── 4. Queen AOE explosion ──
+        if mp_z == 4 and is_capture:   # Queen
+            removed.append((moving_piece, end[0], end[1]))
+            self.remove_piece(end[0], end[1])
+            for r, c in ADJACENT_SQUARES_MAP[end]:
+                adj = self.grid[r][c]
+                if adj is not None and adj.color != mc:
+                    removed.append((adj, r, c))
+                    self.remove_piece(r, c)
+
+        # ── 5. Pawn promotion ──
+        elif mp_z == 0 and end[0] == moving_piece.promo_rank:   # Pawn
+            removed.append((moving_piece, end[0], end[1]))
+            self.remove_piece(end[0], end[1])
+            new_queen = Queen(mc)
+            self.add_piece(new_queen, end[0], end[1])
+            added.append((new_queen, end[0], end[1]))
+
+        # ── 6. Knight AOE ──
+        grid = self.grid
+        if mp_z == 1:   # Knight
+            enemy_knight_coords = []
+            for r, c in KNIGHT_ATTACKS_FROM[end]:
+                target = grid[r][c]
+                if target is not None and target.color != mc:
+                    if target.z_idx == 1:
+                        enemy_knight_coords.append((r, c))
+            
+            for ek_r, ek_c in enemy_knight_coords:
+                for r, c in KNIGHT_ATTACKS_FROM[(ek_r, ek_c)]:
+                    target = grid[r][c]
+                    if target is not None and target.color == mc:
+                        removed.append((target, r, c))
+                        self.remove_piece(r, c)
+            
+            for r, c in KNIGHT_ATTACKS_FROM[end]:
+                target = grid[r][c]
+                if target is not None and target.color != mc:
+                    removed.append((target, r, c))
+                    self.remove_piece(r, c)
+        else:
+            # Passive evaporation check
+            victim = grid[end[0]][end[1]]
+            if victim is not None:
+                for r, c in KNIGHT_ATTACKS_FROM[end]:
+                    killer = grid[r][c]
+                    if killer is not None and killer.z_idx == 1 and killer.color != mc:
+                        removed.append((victim, end[0], end[1]))
+                        self.remove_piece(end[0], end[1])
+                        break
+
+        return (start, end, moving_piece, removed, added)
+
+    def unmake_move(self, record_tuple):
+        """Restore the board to the exact state before make_move_track()."""
+        start, end, moving_piece, removed, added = record_tuple
+        added_ids = {id(p) for p, _r, _c in added} if added else set()
+
+        # ── 1. Undo promoted pieces ──
+        for piece, r, c in reversed(added):
+            if piece.pos is not None:
+                self.grid[r][c] = None
+                piece.pos = None
+                self._list_remove(piece)
+                self.piece_counts[piece.color][type(piece)] -= 1
+                self.piece_counts_z[piece.color][piece.z_idx] -= 1
+
+        mp_pos = moving_piece.pos
+        if mp_pos is not None:
+            self.grid[mp_pos[0]][mp_pos[1]] = None
+            self.grid[start[0]][start[1]] = moving_piece
+            moving_piece.pos = start
+            if moving_piece.z_idx == 5:
+                if moving_piece.color == 'white': self.white_king_pos = start
+                else:                             self.black_king_pos = start
+        else:
+            self.grid[start[0]][start[1]] = moving_piece
+            moving_piece.pos = start
+            self._list_append(moving_piece)
+            self.piece_counts[moving_piece.color][type(moving_piece)] += 1
+            self.piece_counts_z[moving_piece.color][moving_piece.z_idx] += 1
+            if moving_piece.z_idx == 5:
+                if moving_piece.color == 'white': self.white_king_pos = start
+                else:                             self.black_king_pos = start
+
+        for piece, r, c in removed:
+            if piece is moving_piece:   continue
+            if id(piece) in added_ids:  continue
+            self.grid[r][c] = piece
+            piece.pos = (r, c)
+            self._list_append(piece)
+            self.piece_counts[piece.color][type(piece)] += 1
+            self.piece_counts_z[piece.color][piece.z_idx] += 1
+            if piece.z_idx == 5:
+                if piece.color == 'white': self.white_king_pos = (r, c)
+                else:                      self.black_king_pos = (r, c)
+
+
+# -----------------------------------------------------------------------
+# Global game logic
+# -----------------------------------------------------------------------
+def _bishop_attacks_square(board, start, tr, tc, bishop_color):
+    if ((start[0] + start[1] - tr - tc) & 1) != 0:
+        return False
+
+    grid = board.grid
+    start_index = start[0] * COLS + start[1]
+
+    for ray in RAYS[start_index][4:]:
+        for r, c in ray:
+            piece = grid[r][c]
+            if r == tr and c == tc:
+                return (piece is None) or (piece.color != bishop_color)
+            if piece is not None:
+                break
+
+    for ray in BISHOP_ZIGZAG_RAYS[start_index]:
+        for r, c in ray:
+            piece = grid[r][c]
+            if r == tr and c == tc:
+                return (piece is None) or (piece.color != bishop_color)
+            if piece is not None:
+                break
+    return False
+
+
+def _king_attacks_square(grid, kr, kc, r, c):
+    dr, dc = r - kr, c - kc
+    abs_dr, abs_dc = abs(dr), abs(dc)
+    m_dist = max(abs_dr, abs_dc)
+    if m_dist == 1:
+        return True
+    if m_dist == 2 and (abs_dr == abs_dc or abs_dr == 0 or abs_dc == 0):
+        return grid[kr + dr // 2][kc + dc // 2] is None
+    return False
+
+def is_square_attacked(board, r, c, attacking_color):
+    grid            = board.grid
+    defending_color = 'black' if attacking_color == 'white' else 'white'
+    attacking_pieces = board.white_pieces if attacking_color == 'white' else board.black_pieces
+    attacker_counts = board.piece_counts_z[attacking_color]
+    attacking_king_pos = board.white_king_pos if attacking_color == 'white' else board.black_king_pos
+
+    if len(attacking_pieces) == attacker_counts[5]:
+        if attacking_king_pos:
+            return _king_attacks_square(grid, attacking_king_pos[0], attacking_king_pos[1], r, c)
+        return False
+
+    if attacker_counts[1] > 0:
+        for pr, pc in KNIGHT_ATTACKS_FROM[(r, c)]:
+            p = grid[pr][pc]
+            if p is not None:
+                if p.z_idx == 1 and p.color == attacking_color:
+                    return True
+            else:
+                for qr, qc in KNIGHT_ATTACKS_FROM[(pr, pc)]:
+                    q = grid[qr][qc]
+                    if q is not None and q.z_idx == 1 and q.color == attacking_color:
+                        return True
+
+    if attacker_counts[4] > 0:
+        for piece in attacking_pieces:
+            if piece.z_idx == 4 and piece.pos:
+                qr, qc = piece.pos
+                q_idx  = qr * COLS + qc
+                for i in range(8):
+                    for cr, cc in RAYS[q_idx][i]:
+                        target = grid[cr][cc]
+                        if target is not None:
+                            if target.color == defending_color:
+                                if abs(cr - r) <= 1 and abs(cc - c) <= 1:
+                                    return True
+                            break
+
+    has_rooks   = attacker_counts[3] > 0
+    start_index = r * COLS + c
+
+    for direction_idx, ray_path in enumerate(RAYS[start_index]):
+        is_orthogonal = direction_idx < 4
+        for cr, cc in ray_path:
+            piece = grid[cr][cc]
+            if piece is None:
+                continue
+            p_z = piece.z_idx
+            if piece.color == attacking_color:
+                if is_orthogonal:
+                    if p_z == 3: # Rook
+                        return True
+                else:
+                    if p_z == 2: # Bishop (no defenders possible; we would have broken already)
+                        return True
+                break
+            else:
+                # We hit a defending piece (a blocker).
+                # Diagonals don't pierce. Orthogonals only pierce if Rooks are on the board.
+                if not is_orthogonal or not has_rooks:
+                    break
+
+    pawn_move_dir = -1 if attacking_color == 'white' else 1
+    pr = r - pawn_move_dir
+    if 0 <= pr < ROWS:
+        p = grid[pr][c]
+        if p is not None and p.color == attacking_color and p.z_idx == 0:
+            return True
+        elif p is None:
+            two_pr       = r - (2 * pawn_move_dir)
+            starting_row = 6 if attacking_color == 'white' else 1
+            if 0 <= two_pr < ROWS and two_pr == starting_row:
+                p2 = grid[two_pr][c]
+                if p2 is not None and p2.color == attacking_color and p2.z_idx == 0:
+                    return True
+
+    for dc_off in (-1, 1):
+        pc = c + dc_off
+        if 0 <= pc < COLS:
+            p = grid[r][pc]
+            if p is not None and p.color == attacking_color and p.z_idx == 0:
+                return True
+
+    if attacking_king_pos:
+        if _king_attacks_square(grid, attacking_king_pos[0], attacking_king_pos[1], r, c):
+            return True
+
+    if attacker_counts[2] > 0:
+        target_parity = (r + c) & 1
+        for piece in attacking_pieces:
+            pos = piece.pos
+            if piece.z_idx == 2 and pos and ((pos[0] + pos[1]) & 1) == target_parity:
+                if _bishop_attacks_square(board, pos, r, c, attacking_color):
+                    return True
+
+    return False
+
+
+def is_in_check(board, color):
+    king_pos = board.white_king_pos if color == 'white' else board.black_king_pos
+    if not king_pos:
+        return True
+    opponent_color = "black" if color == "white" else "white"
+    return is_square_attacked(board, king_pos[0], king_pos[1], opponent_color)
+
+
+def generate_legal_moves_generator(board, color, yield_boards=False):
+    opp_color = "black" if color == "white" else "white"
+    piece_list = list(board.white_pieces if color == 'white' else board.black_pieces)
+    for piece in piece_list:
+        if piece.pos is None: continue
+        for move in piece.get_valid_moves(board, piece.pos):
+            record   = board.make_move_track(move[0], move[1])
+
+            my_kp = board.white_king_pos if color == 'white' else board.black_king_pos
+            legal = (my_kp is not None and not is_square_attacked(board, my_kp[0], my_kp[1], opp_color))
+            
+            if legal and yield_boards:
+                result_board = board.clone()
+            board.unmake_move(record)
+            if legal:
+                if yield_boards: yield move, result_board
+                else: yield move
+
+
+def get_all_legal_moves(board, color):
+    return list(generate_legal_moves_generator(board, color))
+
+
+def get_all_pseudo_legal_moves(board, color):
+    moves = []
+    piece_list = board.white_pieces if color == 'white' else board.black_pieces
+    for piece in piece_list:
+        if piece.pos is not None:
+            moves.extend(piece.get_valid_moves(board, piece.pos))
+    return moves
+
+
+def has_legal_moves(board, color):
+    try:
+        next(generate_legal_moves_generator(board, color))
+        return True
+    except StopIteration:
+        return False
+
+
+def is_insufficient_material(board):
+    return (len(board.white_pieces) + len(board.black_pieces)) <= 2
+
+
+_board_hash_fn = None
+def _get_board_hash():
+    global _board_hash_fn
+    if _board_hash_fn is None:
+        from AI import board_hash
+        _board_hash_fn = board_hash
+    return _board_hash_fn
+
+def get_game_state(board, turn_to_move, position_counts, ply_count, max_moves):
+    if not has_legal_moves(board, turn_to_move):
+        winner = 'black' if turn_to_move == 'white' else 'white'
+        return ("checkmate", winner)
+
+    if is_insufficient_material(board):
+        return ("insufficient_material", None)
+
+    try:
+        bh_fn = _get_board_hash()
+        if position_counts.get(bh_fn(board, turn_to_move), 0) >= 3:
+            return ("repetition", None)
+    except ImportError:
+        pass
+
+    if ply_count >= max_moves:
+        return ("move_limit", None)
+
+    return "ongoing", None
+
+
+def is_draw(board, turn_to_move, position_counts, ply_count, max_moves):
+    state, _ = get_game_state(board, turn_to_move, position_counts, ply_count, max_moves)
+    return state in ("insufficient_material", "repetition", "move_limit")
+
+
+def fast_approximate_material_swing(board, move, moving_piece, target_piece, piece_values_list):
+    swing   = 0
+    is_tactic = False
+    my_z = moving_piece.z_idx
+    my_color = moving_piece.color
+
+    if target_piece is not None:
+        swing += piece_values_list[target_piece.z_idx]
+        is_tactic = True
+
+    if my_z == 0 and move[1][0] == moving_piece.promo_rank:
+        swing += piece_values_list[4] - piece_values_list[0]
+        is_tactic = True
+
+    if my_z == 4 and target_piece is not None:
+        swing -= piece_values_list[4]
+        for r, c in ADJACENT_SQUARES_MAP[move[1]]:
+            adj = board.grid[r][c]
+            if adj and adj.color != my_color:
+                swing += piece_values_list[adj.z_idx]
+                is_tactic = True
+        return swing, is_tactic
+
+    pierced_knights = []
+    if my_z == 3:
+        start, end = move
+        dr = (end[0] > start[0]) - (start[0] > end[0])
+        dc = (end[1] > start[1]) - (start[1] > end[1])
+        cr, cc = start[0] + dr, start[1] + dc
+        while (cr, cc) != end:
+            target = board.grid[cr][cc]
+            if target and target.color != my_color:
+                swing += piece_values_list[target.z_idx]
+                is_tactic = True
+                if target.z_idx == 1:
+                    pierced_knights.append((cr, cc))
+            cr += dr
+            cc += dc
+
+    if my_z == 1:
+        seen_passive = set()
+        for r, c in KNIGHT_ATTACKS_FROM[move[1]]:
+            target = board.grid[r][c]
+            if target and target.color != my_color:
+                swing += piece_values_list[target.z_idx]
+                is_tactic = True
+                if target.z_idx == 1:
+                    for pr, pc in KNIGHT_ATTACKS_FROM[(r, c)]:
+                        if (pr, pc) == move[1]:
+                            if 1 not in seen_passive: 
+                                swing -= piece_values_list[1]
+                                seen_passive.add(1)
+                        else:
+                            ptarget = board.grid[pr][pc]
+                            if ptarget and ptarget.color == my_color and ptarget.z_idx not in seen_passive:
+                                swing -= piece_values_list[ptarget.z_idx]
+                                seen_passive.add(ptarget.z_idx)
+        return swing, is_tactic
+
+    for r, c in KNIGHT_ATTACKS_FROM[move[1]]:
+        pk = board.grid[r][c]
+        if (pk and pk.z_idx == 1
+                and pk.color != my_color
+                and (r, c) not in pierced_knights):
+            evap_z = 4 if (my_z == 0 and move[1][0] == moving_piece.promo_rank) else my_z
+            swing -= piece_values_list[evap_z]
+            is_tactic = True
+            break
+
+    return swing, is_tactic
+
+
+def format_move(move):
+    if not move:
+        return "None"
+    (r1, c1), (r2, c2) = move
+    return f"{'abcdefgh'[c1]}{'87654321'[r1]}-{'abcdefgh'[c2]}{'87654321'[r2]}"
+
+
+def format_move_san(board_before, board_after, move):
+    if not move:
+        return "None"
+    start_pos, end_pos = move
+    moving_piece = board_before.grid[start_pos[0]][start_pos[1]]
+    if not moving_piece:
+        return format_move(move)
+
+    ptype = type(moving_piece)
+
+    is_capture = False
+    if ptype is not Knight:
+        is_capture = board_before.grid[end_pos[0]][end_pos[1]] is not None
+
+    def file_of(c):   return "abcdefgh"[c]
+    def rank_of(r):   return "87654321"[r]
+    def sq_name(pos): return file_of(pos[1]) + rank_of(pos[0])
+
+    # Disambiguation — O(n_pieces) piece-list scan instead of O(64) grid scan
+    disambig = ""
+    if ptype not in (Pawn, King):
+        others     = []
+        piece_list = (board_before.white_pieces if moving_piece.color == 'white'
+                      else board_before.black_pieces)
+        for p in piece_list:
+            if type(p) is ptype and p.pos != start_pos:
+                if any(m[1] == end_pos for m in p.get_valid_moves(board_before, p.pos)):
+                    others.append(p.pos)
+        if others:
+            same_file = any(pos[1] == start_pos[1] for pos in others)
+            same_rank = any(pos[0] == start_pos[0] for pos in others)
+            if not same_file:
+                disambig = file_of(start_pos[1])
+            elif not same_rank:
+                disambig = rank_of(start_pos[0])
+            else:
+                disambig = sq_name(start_pos)
+
+    if ptype is Pawn:
+        base_str = (file_of(start_pos[1]) + "x" + sq_name(end_pos)) if is_capture \
+                   else sq_name(end_pos)
+    else:
+        p_char   = {King: 'K', Queen: 'Q', Rook: 'R', Bishop: 'B', Knight: 'N'}[ptype]
+        cap_str  = "x" if is_capture else ""
+        base_str = p_char + disambig + cap_str + sq_name(end_pos)
+
+    if ptype is Pawn and end_pos[0] == moving_piece.promo_rank:
+        base_str += "=Q"
+
+    # Dead squares — O(n_pieces) piece-list scan (retained from v52)
+    after_grid   = board_after.grid
+    end_r, end_c = end_pos
+    dead_squares = []
+
+    if after_grid[end_r][end_c] is None:
+        dead_squares.append(end_pos)
+
+    for piece in board_before.white_pieces + board_before.black_pieces:
+        pr, pc = piece.pos
+        if (pr, pc) == start_pos or (pr, pc) == end_pos:
+            continue
+        if after_grid[pr][pc] is None:
+            dead_squares.append((pr, pc))
+
+    if dead_squares:
+        dead_squares.sort(key=lambda pos: (8 - pos[0], pos[1]))
+        cas_str   = " ".join(f"x{sq_name(pos)}" for pos in dead_squares)
+        base_str += f" ({cas_str})"
+
+    opp_color = "black" if moving_piece.color == "white" else "white"
+    is_mate   = not has_legal_moves(board_after, opp_color)
+
+    if is_mate:
+        base_str += "#"
+    elif is_in_check(board_after, opp_color):
+        base_str += "+"
+
+    return base_str
+
+# AI.py (Challenger Framework v2)
+# Note to Challenger: Please label your version number when returning the code.
+
+import time
+import random
+import os
+import json
+import glob
+from GameLogic import *
+from TablebaseManager import TablebaseManager
+
+# ==============================================================================
+# MODULE-LEVEL SETUP (DO NOT MODIFY)
+# The UI's multiprocessing worker relies on these exact function signatures.
+# ==============================================================================
+
+ZOBRIST_ARRAY = None
+ZOBRIST_TURN = None
+
+def initialize_zobrist_table():
+    global ZOBRIST_ARRAY, ZOBRIST_TURN
+    if ZOBRIST_ARRAY is not None: return
+    random.seed(42) 
+    ZOBRIST_ARRAY = [[[[random.getrandbits(64) for _ in range(8)] for _ in range(8)] for _ in range(6)] for _ in range(2)]
+    ZOBRIST_TURN = random.getrandbits(64)
+    random.seed() 
+
+initialize_zobrist_table()
+
+def board_hash(board, turn):
+    h = 0
+    arr = ZOBRIST_ARRAY
+    for piece in board.white_pieces:
+        r, c = piece.pos
+        h ^= arr[0][piece.z_idx][r][c]
+    for piece in board.black_pieces:
+        r, c = piece.pos
+        h ^= arr[1][piece.z_idx][r][c]
+    if turn == 'black':
+        h ^= ZOBRIST_TURN
+    return h
+
+def incremental_hash(parent_hash, record_tuple):
+    h = parent_hash ^ ZOBRIST_TURN
+    arr = ZOBRIST_ARRAY
+    start, end, mp, removed_pieces, added_pieces = record_tuple
+    c_idx = 0 if mp.color == 'white' else 1
+    p_idx = mp.z_idx
+    sr, sc = start; er, ec = end
+    h ^= arr[c_idx][p_idx][sr][sc]
+    mp_survived = True
+    for piece, r, c in removed_pieces:
+        if piece is mp: mp_survived = False
+        else: h ^= arr[0 if piece.color == 'white' else 1][piece.z_idx][r][c]
+    if mp_survived: h ^= arr[c_idx][p_idx][er][ec]
+    for piece, r, c in added_pieces:
+        h ^= arr[0 if piece.color == 'white' else 1][piece.z_idx][r][c]
+    return h
+
+# --- OPENING BOOK SETUP ---
+_CLS_TO_CHAR = {Pawn: 'P', Knight: 'N', Bishop: 'B', Rook: 'R', Queen: 'Q', King: 'K'}
+
+def board_to_fen(board, turn):
+    fen = ''
+    for r in range(ROWS):
+        empty = 0
+        for c in range(COLS):
+            piece = board.grid[r][c]
+            if piece is None: empty += 1
+            else:
+                if empty: fen += str(empty); empty = 0
+                ch = _CLS_TO_CHAR[type(piece)]
+                fen += ch if piece.color == 'white' else ch.lower()
+        if empty: fen += str(empty)
+        if r < ROWS - 1: fen += '/'
+    return fen + (' w' if turn == 'white' else ' b')
+
+OPENING_BOOK = {}
+def _find_opening_book_files():
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    patterns = (os.path.join(base_dir, "opening books", "opening_book*.json"),
+                os.path.join(base_dir, "opening_book*.json"))
+    seen = set(); matches = []
+    for pattern in patterns:
+        for path in glob.glob(pattern):
+            norm = os.path.normcase(os.path.abspath(path))
+            if norm not in seen:
+                seen.add(norm); matches.append(path)
+    return sorted(matches, key=lambda p: (os.path.getmtime(p), os.path.basename(p)), reverse=True)
+
+for _book_filename in _find_opening_book_files():
+    try:
+        with open(_book_filename, "r", encoding="utf-8") as f: OPENING_BOOK = json.load(f)
+        break
+    except Exception: pass
+
+def run_ai_process(board, color, position_counts, comm_queue, cancellation_event,
+                   bot_class, bot_name, search_depth, ply_count, game_mode,
+                   time_left=None, increment=None, use_opening_book=True, use_tablebase=True):
+    import inspect
+    accepted_params = set(inspect.signature(bot_class.__init__).parameters)
+    kwargs = {'time_left': time_left, 'increment': increment, 'use_opening_book': use_opening_book, 'use_tablebase': use_tablebase}
+    filtered_kwargs = {k: v for k, v in kwargs.items() if k in accepted_params}
+    bot = bot_class(board, color, position_counts, comm_queue, cancellation_event, bot_name, ply_count, game_mode, **filtered_kwargs)
+    bot.search_depth = search_depth
+    if search_depth == 99: bot.ponder_indefinitely()
+    else: bot.make_move()
+
+class SearchCancelledException(Exception): pass
+
+# ==============================================================================
+# CHESS BOT CLASS 
+# You may add new methods, classes, and variables to this file as needed.
+# ==============================================================================
+
+class ChessBot:
+    """
+    The main AI class.
+    """
+    # REQUIRED CLASS ATTRIBUTES - DO NOT REMOVE OR RENAME. 
+    # The UI will crash on boot if these are missing.
+    search_depth = 4  
+    MATE_SCORE = 1000000
+
+    def __init__(self, board, color, position_counts, comm_queue, cancellation_event,
+                 bot_name="Challenger AI", ply_count=0, game_mode="bot", max_moves=200,
+                 time_left=None, increment=None, use_opening_book=True, use_tablebase=True):
+        
+        self.board = board
+        self.color = color
+        self.opponent_color = 'black' if color == 'white' else 'white'
+        self.position_counts = position_counts
+        self.comm_queue = comm_queue
+        self.cancellation_event = cancellation_event
+        self.ply_count = ply_count
+        self.bot_name = bot_name
+        self.max_moves = max_moves
+        
+        # --- TIME MANAGEMENT (10+0.1) ---
+        self.time_left = time_left
+        self.increment = increment
+        self.stop_time = None
+        self.nodes_searched = 0
+
+        # --- DATABASE INTEGRATIONS ---
+        self.use_opening_book = use_opening_book
+        self.tb_manager = TablebaseManager()
+        if not use_tablebase:
+            self.tb_manager.probe = lambda b, t: None
+
+    # --- UI COMMUNICATION HELPERS (Do not modify) ---
+    def _report_log(self, message):   self.comm_queue.put(('log', message))
+    def _report_eval(self, score, depth): self.comm_queue.put(('eval', score if self.color == 'white' else -score, depth))
+    def _report_move(self, move):     self.comm_queue.put(('move', move))
+    
+    def _format_move(self, board_before, move):
+        if not move: return "None"
+        child = board_before.clone()
+        child.make_move(move[0], move[1])
+        return format_move_san(board_before, child, move)
+
+    # --- MAIN ENTRY POINT ---
+    def make_move(self):
+        try:
+            if self.use_opening_book and self.ply_count <= 12:
+                fen = board_to_fen(self.board, self.color)
+                if fen in OPENING_BOOK:
+                    chosen = random.choices(OPENING_BOOK[fen], weights=[opt["weight"] for opt in OPENING_BOOK[fen]], k=1)[0]
+                    move_tuple = (tuple(chosen["move"][0]), tuple(chosen["move"][1]))
+                    self._report_log(f"  > {self.bot_name} (Book): {chosen['san']}")
+                    self._report_eval(chosen['score'], "Book")
+                    self.comm_queue.put(('pv', chosen['score'], "Book", [chosen['san']], [move_tuple]))
+                    self._report_move(move_tuple)
+                    return
+
+            root_moves = get_all_legal_moves(self.board, self.color)
+            if not root_moves:
+                self._report_move(None)
+                return
+
+            if len(root_moves) == 1:
+                self.comm_queue.put(('pv', 0, "Forced", [self._format_move(self.board, root_moves[0])], [root_moves[0]]))
+                self._report_move(root_moves[0])
+                return
+
+            search_start_time = time.time()
+            if self.time_left is not None and self.increment is not None:
+                # Note: This is a highly simplified time allocation. 
+                # Feel free to replace this with a more sophisticated algorithm.
+                allocated_time = (self.time_left / 30.0) + (self.increment * 0.8) 
+                self.stop_time = search_start_time + allocated_time
+                target_depth = 100 
+            else:
+                self.stop_time = None
+                target_depth = self.search_depth
+
+            best_move_overall = root_moves[0]
+            root_hash = board_hash(self.board, self.color)
+
+            for current_depth in range(1, target_depth + 1):
+                iter_start_time = time.time()
+                self.nodes_searched = 0
+                
+                try:
+                    score, best_move_this_iter = self._search_root(current_depth, root_moves, root_hash)
+                except SearchCancelledException:
+                    break
+
+                if self.stop_time and time.time() > self.stop_time:
+                    break
+                
+                best_move_overall = best_move_this_iter
+                
+                iter_duration = time.time() - iter_start_time
+                knps = (self.nodes_searched / iter_duration / 1000) if iter_duration > 0 else 0
+                eval_ui = score if self.color == 'white' else -score
+                pv_san = self._format_move(self.board, best_move_overall)
+                
+                self._report_log(f"  > {self.bot_name} (D{current_depth}): {pv_san}, Eval={eval_ui/100:+.2f}, Nodes={self.nodes_searched}, KNPS={knps:.1f}, Time={iter_duration:.2f}s")
+                self._report_eval(score, current_depth)
+                self.comm_queue.put(('pv', eval_ui, current_depth, [pv_san], [best_move_overall]))
+
+                if score > self.MATE_SCORE - 1000: 
+                    break 
+
+            self._report_move(best_move_overall)
+
+        except Exception as e:
+            self._report_log(f"CRASH: {str(e)}")
+            self._report_move(root_moves[0] if root_moves else None)
+
+    def _search_root(self, depth, root_moves, root_hash):
+        best_score = -float('inf')
+        best_move = root_moves[0]
+        alpha = -float('inf')
+        beta = float('inf')
+
+        # Note: Move ordering is absent here. Given the AoE mechanics, consider 
+        # how you might prioritize high-impact tactical moves.
+
+        for move in root_moves:
+            if self.cancellation_event.is_set() or (self.stop_time and time.time() > self.stop_time):
+                raise SearchCancelledException()
+
+            record = self.board.make_move_track(move[0], move[1])
+            child_hash = incremental_hash(root_hash, record)
+
+            score = -self.negamax(depth - 1, -beta, -alpha, self.opponent_color, 1, child_hash)
+            
+            self.board.unmake_move(record)
+
+            if score > best_score:
+                best_score = score
+                best_move = move
+            alpha = max(alpha, best_score)
+
+        return best_score, best_move
+
+    def negamax(self, depth, alpha, beta, turn, ply, current_hash):
+        self.nodes_searched += 1
+        
+        if (self.nodes_searched & 1023) == 0:
+            if self.cancellation_event.is_set() or (self.stop_time and time.time() > self.stop_time):
+                raise SearchCancelledException()
+
+        # --- TABLEBASE PROBE ---
+        # The UI expects this logic to remain to gracefully handle exact endgame scores.
+        if len(self.board.white_pieces) + len(self.board.black_pieces) <= 5:
+            tb_score_absolute = self.tb_manager.probe(self.board, turn)
+            if tb_score_absolute is not None:
+                tb_score = tb_score_absolute if turn == 'white' else -tb_score_absolute
+                if tb_score >  self.MATE_SCORE - 1000: return tb_score - ply
+                elif tb_score < -self.MATE_SCORE + 1000: return tb_score + ply
+                return tb_score
+
+        if depth <= 0:
+            # Note: A quiescence search is highly recommended here, as AoE captures 
+            # and knight evaporations create immense horizon effects.
+            return self.evaluate_board(turn)
+
+        # Note: Pruning techniques (NMP, LMR) and a Transposition Table are strongly
+        # suggested to reach competitive depths.
+
+        moves = get_all_pseudo_legal_moves(self.board, turn)
+        opponent = 'black' if turn == 'white' else 'white'
+        legal_moves_count = 0
+
+        for move in moves:
+            record = self.board.make_move_track(move[0], move[1])
+            
+            if is_in_check(self.board, turn):
+                self.board.unmake_move(record)
+                continue
+                
+            legal_moves_count += 1
+            child_hash = incremental_hash(current_hash, record)
+
+            score = -self.negamax(depth - 1, -beta, -alpha, opponent, ply + 1, child_hash)
+            
+            self.board.unmake_move(record)
+
+            if score >= beta:
+                return beta 
+            alpha = max(alpha, score)
+
+        if legal_moves_count == 0:
+            if is_in_check(self.board, turn) or not has_legal_moves(self.board, turn):
+                return -self.MATE_SCORE + ply 
+
+        return alpha
+
+    def evaluate_board(self, turn_to_move):
+        """
+        Note: The current evaluation is a naive material counter. In Jungle Chess, 
+        the relative value of pieces changes drastically based on proximity, 
+        structural alignment, and AoE potential.
+        """
+        if is_insufficient_material(self.board):
+            return 0
+
+        score = 0
+        for p in self.board.white_pieces:
+            if type(p) == Queen: score += 900
+            elif type(p) == Rook: score += 500
+            elif type(p) == Bishop: score += 330
+            elif type(p) == Knight: score += 320
+            elif type(p) == Pawn: score += 100
+        for p in self.board.black_pieces:
+            if type(p) == Queen: score -= 900
+            elif type(p) == Rook: score -= 500
+            elif type(p) == Bishop: score -= 330
+            elif type(p) == Knight: score -= 320
+            elif type(p) == Pawn: score -= 100
+
+        return score if turn_to_move == 'white' else -score
+
+    def ponder_indefinitely(self):
+        """Called when UI depth slider is set to 99."""
+        while not self.cancellation_event.is_set():
+            time.sleep(0.1)
+```

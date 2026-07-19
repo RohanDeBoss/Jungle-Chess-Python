@@ -1,4 +1,4 @@
-# JungleChessUI.py (v15.6 - Analysis toggle fix)
+# JungleChessUI.py (v15.7 - Support for different ai frameworks)
 
 import tkinter as tk
 from tkinter import ttk, messagebox
@@ -1353,8 +1353,8 @@ class EnhancedChessApp:
                     print(msg[1])
                     if self.auto_save_stats_var.get() and self.game_mode.get() == GameMode.AI_VS_AI.value:
                         m = re.search(
-                            r'>\s*(.*?)\s*\(D(\d+|TB)\):.*?Eval=([+-][\d.]+).*?'
-                            r'NodesTotal=(\d+).*?KNPS=([\d.]+).*?Time=([\d.]+)s',
+                            r'>\s*(.*?)\s*\(D(\d+|TB)\):.*?Eval[=:]\s*([+-]?[\d.]+).*?'
+                            r'Nodes(?:Total)?[=:]\s*(\d+).*?KNPS[=:]\s*([\d.]+).*?Time[=:]\s*([\d.]+)s',
                             msg[1])
                         if m:
                             self._pending_move_stat[m.group(1)] = {
