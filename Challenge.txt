@@ -3,7 +3,7 @@ The Game:
 I have attached the Zreadme.txt which contains the complete rules, and GameLogic.py which handles move generation and board state. Please read the readme carefully. The mechanics (like Queen explosions, Knight evaporation, Rook piercing, and King phasing) fundamentally alter board safety and piece valuation.
 The Challenge:
 I am attaching a template framework file called AI.py. I need you to design the search and evaluation logic within this file.
-The matches will be played at a strict 10+0.1 time control (10 seconds starting time, plus 0.1 seconds increment per move). You will need highly efficient time management and iterative deepening to avoid flagging.
+The matches will be played at a strict 10+0.2 time control (10 seconds starting time, plus 0.1 seconds increment per move). You will need highly efficient time management and iterative deepening to avoid flagging.
 Constraints & Freedom:
 You are completely free to add new helper methods, classes, evaluation tables, and custom data structures inside AI.py. Be as creative as you like—I am looking for novel, variant-specific ideas, not just a standard chess engine clone.
 CRITICAL: Do not modify the __init__ signature of the ChessBot class, and leave the class-level attributes (search_depth) exactly as they are. My UI relies on these to boot properly.
@@ -11,7 +11,7 @@ Do not modify GameLogic.py. Return only your completed AI.py code.
 To search fast enough, you must use self.board.make_move_track() and self.board.unmake_move(). Do not use board.clone() inside your search tree.
 You must frequently check if self.cancellation_event.is_set(): during your search to allow the UI to safely interrupt the thread.
 A few design hints for Jungle Chess:
-Since you are an expert, I won't tell you how to write an engine, but keep in mind that standard chess heuristics often fail here. An exploding Queen or an evaporating Knight creates massive, sudden material swings. A phasing King requires completely different mating nets. Standard pruning margins (like basic futility pruning) might be too tight and blind the engine to AoE tactics.
+Since you are an expert, I won't tell you how to write an engine, but keep in mind that standard chess heuristics often fail here. OP Bot evaluates pieces as: Pawn=100, Knight=900, Bishop=600, Rook=600, Queen=1300 and uses about ~0.30 seconds per move. An exploding Queen or an evaporating Knight creates massive, sudden material swings. A phasing King requires completely different mating nets. Standard pruning margins (like basic futility pruning) might be too tight and blind the engine to AoE tactics.
 The 5-piece tablebases and Opening Book are already wired into the framework for you. Focus your creativity on the search architecture, move ordering, and a deeply variant-aware evaluation function. Good luck!
 
 
