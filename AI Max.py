@@ -1,4 +1,4 @@
-# AI.py (Max Challenger v2.1)
+# AI.py (Max Challenger v2.2)
 
 import time
 import random
@@ -369,7 +369,7 @@ class ChessBot:
 
                 try:
                     if depth >= 4:
-                        window = 55
+                        window = 200  # Jungle swings can be 1000+, tight windows waste re-searches
                         a, b = prev_score - window, prev_score + window
                         while True:
                             sc, bm, root_moves = self._search_root(depth, root_moves, root_hash, a, b)
@@ -556,6 +556,12 @@ class ChessBot:
         total_rep = self.position_counts.get(h, 0)
         if total_rep >= 3:
             return 0
+            
+        # 2-fold repetition penalty when we're winning — avoid draws
+        if total_rep >= 2 and ply > 0:
+            static = self._eval(turn)
+            if static > 50:  # We're winning, don't repeat
+                return -20
 
         # Move limit
         if self.ply_count + ply >= self.max_moves:
@@ -699,6 +705,9 @@ class ChessBot:
     # QUIESCENCE
     # ------------------------------------------------------------------
     def _qsearch(self, alpha, beta, turn, ply, h):
+        # Qsearch depth limit — prevent explosion
+        if ply > 20:
+            return self._eval(turn)
         self.nodes_searched += 1
         if (self.nodes_searched & 4095) == 0:
             self._check_abort()
@@ -763,8 +772,7 @@ class ChessBot:
                 tacticals.append((swing, move))
             else:
                 swing, _ = fast_approximate_material_swing(board, move, piece, target, _PV_LIST)
-                if not in_check and not is_promo and swing < -200:
-                    continue
+                        
                 sc = swing
                 if target is not None:
                     sc += _PV[target.z_idx] * 4
@@ -875,12 +883,15 @@ class ChessBot:
                     is_quiet = False
 
             if is_quiet:
-                if move == k0:
-                    sc += 9_000_000
-                elif move == k1:
-                    sc += 8_000_000
-                elif cm is not None and move == cm:
-                    sc += 7_500_000
+                # Tactical piece priority — knights are search-critical in Jungle
+                if z == 1:
+                    sc += 1000
+                elif z == 4:
+                    sc += 500
+
+                if move == k0: sc += 9000000
+                elif move == k1: sc += 8000000
+                elif cm is not None and move == cm: sc += 7500000
                 sc += self.history[ci][z][e[0]][e[1]]
 
             result.append((sc, move, is_tactic, is_quiet, z))
@@ -1039,11 +1050,13 @@ class ChessBot:
                     if dist <= 3:
                         score -= (4 - dist) * 12
 
-        # King safety: penalize open lines around king in middlegame
+        # King safety: penalize open lines and count attackers around king in middlegame
         if phase > 10:
             if w_king is not None:
+                score -= self._count_king_attackers(w_king, 'black') * phase // _MAX_PHASE
                 score -= self._king_exposure(w_king, 'white', grid) * phase // _MAX_PHASE
             if b_king is not None:
+                score += self._count_king_attackers(b_king, 'white') * phase // _MAX_PHASE
                 score += self._king_exposure(b_king, 'black', grid) * phase // _MAX_PHASE
 
         # Pawn advancement bonus (passed pawn approximation)
@@ -1064,6 +1077,38 @@ class ChessBot:
         # Return from perspective of turn
         signed = score if turn == 'white' else -score
         return signed + 10  # tempo
+
+    def _count_king_attackers(self, king_pos, attacker_color):
+        """Cheap count of enemy pieces attacking squares around the king."""
+        if king_pos is None:
+            return 0
+        board = self.board
+        grid = board.grid
+        weight = 0
+        
+        # Check knights attacking the 9-square king zone
+        for kr, kc in [king_pos] + list(ADJACENT_SQUARES_MAP[king_pos]):
+            for r, c in KNIGHT_ATTACKS_FROM[(kr, kc)]:
+                p = grid[r][c]
+                if p is not None and p.color == attacker_color and p.z_idx == 1:
+                    weight += 30
+                    break  # count each square once
+        
+        # Check queens and rooks near the king zone
+        kr, kc = king_pos
+        pieces = board.white_pieces if attacker_color == 'white' else board.black_pieces
+        for p in pieces:
+            if p.z_idx == 4:
+                qr, qc = p.pos
+                dist = max(abs(qr - kr), abs(qc - kc))
+                if dist <= 2:
+                    weight += (3 - dist) * 20
+            elif p.z_idx == 3:
+                rr, rc = p.pos
+                if rr == kr or rc == kc:
+                    weight += 25
+        
+        return weight
 
     def _king_exposure(self, kpos, color, grid):
         """Rough measure of how exposed the king is."""
