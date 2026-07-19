@@ -1,9 +1,10 @@
-# AI.py (Gemini v5)
+# AI.py (Gemini v7)
 import time
 import random
 import os
 import json
 import glob
+import re
 from GameLogic import *
 from TablebaseManager import TablebaseManager
 
@@ -110,7 +111,6 @@ class SearchCancelledException(Exception): pass
 # JUNGLE CHESS EVALUATION TABLES & CUSTOM STRUCTURES
 # ==============================================================================
 
-# Centralize Knights (Evaporation covers maximum squares in the middle)
 PST_KNIGHT = [
     [-40, -30, -20, -20, -20, -20, -30, -40],
     [-30,  -5,  10,  15,  15,  10,  -5, -30],
@@ -149,6 +149,9 @@ TT_EXACT = 0
 TT_LOWERBOUND = 1
 TT_UPPERBOUND = 2
 
+# We define a finite INFINITY specifically to prevent Python floating point bugs during PVS bounds shrinking
+INFINITY = 10000000
+
 class TranspositionTable:
     def __init__(self, size=1048576):
         self.size = size
@@ -166,17 +169,11 @@ class TranspositionTable:
             return self.entries[idx]
         return None
 
-
 # ==============================================================================
 # CHESS BOT CLASS 
 # ==============================================================================
 
 class ChessBot:
-    """
-    Jungle Chess Engine (Gemini v5)
-    Features AoE-Aware Move Ordering. Avoids double-penalizing explosive pieces,
-    maximizing search depth and tactical acuity.
-    """
     # REQUIRED CLASS ATTRIBUTES
     search_depth = 4  
     MATE_SCORE = 1000000
@@ -198,7 +195,6 @@ class ChessBot:
         # --- TIME MANAGEMENT ---
         self.time_left = time_left
         self.increment = increment
-        self.soft_time_limit = None
         self.stop_time = None
         self.nodes_searched = 0
 
@@ -209,13 +205,11 @@ class ChessBot:
             self.tb_manager.probe = lambda b, t: None
 
         # --- ENGINE COMPONENTS ---
-        # Matched exact OP Bot baseline
         self.PIECE_VALUES = [100, 900, 600, 600, 1300, 0] 
         self.tt = TranspositionTable(1048576)
         self.history_table = {}
         self.killer_moves = [[None, None] for _ in range(128)]
 
-    # --- UI COMMUNICATION HELPERS ---
     def _report_log(self, message):       self.comm_queue.put(('log', message))
     def _report_eval(self, score, depth): self.comm_queue.put(('eval', score if self.color == 'white' else -score, depth))
     def _report_move(self, move):         self.comm_queue.put(('move', move))
@@ -224,16 +218,17 @@ class ChessBot:
         if not move: return "None"
         child = board_before.clone()
         child.make_move(move[0], move[1])
-        return format_move_san(board_before, child, move)
+        san = format_move_san(board_before, child, move)
+        # Suppress the casualty squares to meet UI preferences, preserving +, # and =Q
+        san = re.sub(r' \([^)]+\)', '', san)
+        return san
 
     def check_time(self):
-        """Immediately interrupt thread when out of time or cancelled by UI."""
         if self.cancellation_event.is_set():
             raise SearchCancelledException()
         if self.stop_time and time.time() > self.stop_time:
             raise SearchCancelledException()
 
-    # --- MAIN ENTRY POINT ---
     def make_move(self):
         try:
             if self.use_opening_book and self.ply_count <= 12:
@@ -241,9 +236,13 @@ class ChessBot:
                 if fen in OPENING_BOOK:
                     chosen = random.choices(OPENING_BOOK[fen], weights=[opt["weight"] for opt in OPENING_BOOK[fen]], k=1)[0]
                     move_tuple = (tuple(chosen["move"][0]), tuple(chosen["move"][1]))
-                    self._report_log(f"  > {self.bot_name} (Book): {chosen['san']}")
+                    
+                    # Sanitize the opening book log strings as well
+                    san_cleaned = re.sub(r' \([^)]+\)', '', chosen['san'])
+                    
+                    self._report_log(f"  > {self.bot_name} (Book): {san_cleaned}")
                     self._report_eval(chosen['score'], "Book")
-                    self.comm_queue.put(('pv', chosen['score'], "Book", [chosen['san']], [move_tuple]))
+                    self.comm_queue.put(('pv', chosen['score'], "Book", [san_cleaned], [move_tuple]))
                     self._report_move(move_tuple)
                     return
 
@@ -260,11 +259,9 @@ class ChessBot:
             search_start_time = time.time()
             if self.time_left is not None and self.increment is not None:
                 base_time = (self.time_left / 20.0) + (self.increment * 0.8) 
-                self.soft_time_limit = search_start_time + base_time
                 self.stop_time = search_start_time + min(base_time * 2.5, max(0.05, self.time_left - 0.2))
                 target_depth = 100 
             else:
-                self.soft_time_limit = None
                 self.stop_time = None
                 target_depth = self.search_depth
 
@@ -281,7 +278,6 @@ class ChessBot:
                     break
                 
                 best_move_overall = best_move_this_iter
-                
                 iter_duration = time.time() - iter_start_time
                 knps = (self.nodes_searched / iter_duration / 1000) if iter_duration > 0 else 0
                 eval_ui = score if self.color == 'white' else -score
@@ -294,8 +290,11 @@ class ChessBot:
                 if score > self.MATE_SCORE - 1000 or score < -self.MATE_SCORE + 1000: 
                     break 
 
-                if self.soft_time_limit and time.time() > self.soft_time_limit:
-                    break
+                # User requested Time Helper Rule: Stop searching if the next depth will very likely flag us.
+                if self.stop_time:
+                    time_remaining = self.stop_time - time.time()
+                    if time_remaining < (iter_duration * 1.5):
+                        break
 
             self._report_move(best_move_overall)
 
@@ -304,7 +303,7 @@ class ChessBot:
             self._report_move(root_moves[0] if root_moves else None)
 
     def _score_moves(self, moves, tt_move, ply):
-        """O(1) AoE-Aware Move Ordering."""
+        """O(1) AoE-Aware Move Ordering with Capped History."""
         scored = []
         
         for move in moves:
@@ -317,19 +316,11 @@ class ChessBot:
             
             swing, is_tactic = fast_approximate_material_swing(self.board, move, mp, tp, self.PIECE_VALUES)
             if is_tactic:
-                # If Queen captures, she explodes. Her -1300 death is ALREADY in the `swing` variable.
-                # Do not double-penalize by subtracting her value again!
                 attacker_penalty = self.PIECE_VALUES[mp.z_idx] if mp.z_idx != 4 else 0
-                
                 if swing < 0:
-                    # Negative swing means sacrificing the piece (like a Queen) for garbage.
-                    # Ranks it ~498,000. It will be searched, but it triggers LMR.
                     score = 500000 + swing 
                 else:
-                    # Positive swing (Profitable Queen Bomb/Normal Capture).
-                    # Ranks ~1,000,000+. Exempt from LMR, highly prioritized.
                     score = 1000000 + (swing * 10) - attacker_penalty
-                    
                 scored.append((score, move))
             else:
                 score = 0
@@ -337,18 +328,18 @@ class ChessBot:
                     if move == self.killer_moves[ply][0]: score = 900000
                     elif move == self.killer_moves[ply][1]: score = 800000
                 if score == 0:
-                    score = self.history_table.get((mp.z_idx, move[1]), 0)
+                    score = min(self.history_table.get((mp.z_idx, move[1]), 0), 50000)
                 scored.append((score, move))
                 
         scored.sort(key=lambda x: x[0], reverse=True)
         return scored
 
     def _search_root(self, depth, root_moves, root_hash, best_move_overall):
-        alpha = -float('inf')
-        beta = float('inf')
+        alpha = -INFINITY
+        beta = INFINITY
 
         scored_moves = self._score_moves(root_moves, best_move_overall, 0)
-        best_score = -float('inf')
+        best_score = -INFINITY
         best_move = scored_moves[0][1]
 
         for i, (move_score, move) in enumerate(scored_moves):
@@ -356,7 +347,7 @@ class ChessBot:
             record = self.board.make_move_track(move[0], move[1])
             child_hash = incremental_hash(root_hash, record)
 
-            # Principal Variation Search (PVS)
+            # Principal Variation Search (PVS) with finite INFINITY to prevent math overflow bugs
             if i == 0:
                 score = -self.negamax(depth - 1, -beta, -alpha, self.opponent_color, 1, child_hash)
             else:
@@ -375,13 +366,12 @@ class ChessBot:
 
         return best_score, best_move
 
-    def negamax(self, depth, alpha, beta, turn, ply, current_hash):
+    def negamax(self, depth, alpha, beta, turn, ply, current_hash, is_null=False):
         self.nodes_searched += 1
         
         if (self.nodes_searched & 1023) == 0:
             self.check_time()
 
-        # --- Tablebase Probe ---
         if len(self.board.white_pieces) + len(self.board.black_pieces) <= 5:
             tb_score_absolute = self.tb_manager.probe(self.board, turn)
             if tb_score_absolute is not None:
@@ -392,13 +382,11 @@ class ChessBot:
 
         alpha_orig = alpha
         
-        # --- Transposition Table Lookup ---
         tt_entry = self.tt.lookup(current_hash)
         tt_move = None
         if tt_entry is not None:
             tt_depth, tt_score, tt_flag, tt_move = tt_entry
             
-            # Mate score ply alignment
             if tt_score > self.MATE_SCORE - 1000: tt_score -= ply
             elif tt_score < -self.MATE_SCORE + 1000: tt_score += ply
             
@@ -412,18 +400,28 @@ class ChessBot:
                 if alpha >= beta:
                     return tt_score
 
-        # --- Quiescence Horizon ---
         if depth <= 0:
             return self.qsearch(alpha, beta, turn, ply, current_hash)
 
         in_check = is_in_check(self.board, turn)
+        opponent = 'black' if turn == 'white' else 'white'
+
+        # --- Null Move Pruning (NMP) ---
+        if depth >= 3 and not in_check and ply > 0 and not is_null and beta < INFINITY - 1000:
+            pcz = self.board.piece_counts_z[turn]
+            npm = pcz[1]*900 + pcz[2]*600 + pcz[3]*600 + pcz[4]*1300
+            if npm > 0:
+                null_hash = current_hash ^ ZOBRIST_TURN
+                score = -self.negamax(depth - 1 - 2, -beta, -beta + 1, opponent, ply + 1, null_hash, is_null=True)
+                if score >= beta:
+                    return beta
+
         moves = get_all_pseudo_legal_moves(self.board, turn)
         scored_moves = self._score_moves(moves, tt_move, ply)
 
-        opponent = 'black' if turn == 'white' else 'white'
         legal_moves_count = 0
         best_move = None
-        best_score = -float('inf')
+        best_score = -INFINITY
 
         for move_score, move in scored_moves:
             record = self.board.make_move_track(move[0], move[1])
@@ -435,15 +433,11 @@ class ChessBot:
             legal_moves_count += 1
             child_hash = incremental_hash(current_hash, record)
 
-            # --- Smart Late Move Reductions (LMR) ---
-            # move_score > 500000 correctly identifies neutral/positive expected material swings.
-            # Suicidal explosions (< 500000) will be reduced here.
+            # --- Late Move Reductions (LMR) ---
             is_tactic = move_score > 500000
             reduction = 0
-            if depth >= 3 and legal_moves_count > 4 and not in_check and not is_tactic:
+            if depth >= 4 and legal_moves_count > 6 and not in_check and not is_tactic:
                 reduction = 1
-                if depth >= 5 and legal_moves_count > 10:
-                    reduction = 2
 
             # --- PVS Core ---
             if legal_moves_count == 1:
@@ -452,7 +446,9 @@ class ChessBot:
                 if reduction > 0:
                     score = -self.negamax(depth - 1 - reduction, -alpha - 1, -alpha, opponent, ply + 1, child_hash)
                     if score > alpha:
-                        score = -self.negamax(depth - 1, -beta, -alpha, opponent, ply + 1, child_hash)
+                        score = -self.negamax(depth - 1, -alpha - 1, -alpha, opponent, ply + 1, child_hash)
+                        if alpha < score < beta:
+                            score = -self.negamax(depth - 1, -beta, -alpha, opponent, ply + 1, child_hash)
                 else:
                     score = -self.negamax(depth - 1, -alpha - 1, -alpha, opponent, ply + 1, child_hash)
                     if alpha < score < beta: 
@@ -468,20 +464,18 @@ class ChessBot:
                 alpha = score
                 
             if alpha >= beta:
-                # History / Killer updates
                 if not is_tactic and ply < 128:
                     if move != self.killer_moves[ply][0]:
                         self.killer_moves[ply][1] = self.killer_moves[ply][0]
                         self.killer_moves[ply][0] = move
                     mp = self.board.grid[move[0][0]][move[0][1]]
                     if mp:
-                        self.history_table[(mp.z_idx, move[1])] = self.history_table.get((mp.z_idx, move[1]), 0) + depth * depth
+                        self.history_table[(mp.z_idx, move[1])] = min(self.history_table.get((mp.z_idx, move[1]), 0) + depth * depth, 50000)
                 break
 
         if legal_moves_count == 0:
             return -self.MATE_SCORE + ply 
 
-        # --- TT Store ---
         flag = TT_EXACT
         if best_score <= alpha_orig:
             flag = TT_UPPERBOUND
@@ -509,9 +503,14 @@ class ChessBot:
                 return beta
             if alpha < stand_pat:
                 alpha = stand_pat
+                
+            # Delta Pruning (Safe margins)
+            if stand_pat + 1600 < alpha:
+                return alpha
+            
             best_score = stand_pat
         else:
-            best_score = -float('inf')
+            best_score = -INFINITY
                 
         moves = get_all_pseudo_legal_moves(self.board, turn)
         tactical_moves = []
@@ -522,12 +521,6 @@ class ChessBot:
             
             swing, is_tactic = fast_approximate_material_swing(self.board, move, mp, tp, self.PIECE_VALUES)
             if in_check or is_tactic:
-                
-                # Futility Pruning for bad sacrifices: 
-                # If a Queen suicide results in a net negative material loss, ignore it.
-                if not in_check and swing < 0:
-                    continue
-                    
                 attacker_penalty = self.PIECE_VALUES[mp.z_idx] if mp.z_idx != 4 else 0
                 score = (swing * 10) - attacker_penalty
                 tactical_moves.append((score, move))
@@ -562,10 +555,6 @@ class ChessBot:
         return best_score
 
     def evaluate_board(self, turn_to_move):
-        """
-        Fast, integer-only evaluation. Evaluates precise material differential, 
-        and securely maps King Tropism logic when material significantly drops.
-        """
         if is_insufficient_material(self.board):
             return 0
 
@@ -574,14 +563,15 @@ class ChessBot:
         pcz_w = self.board.piece_counts_z['white']
         pcz_b = self.board.piece_counts_z['black']
         
-        # Base Material Balance
         score += (pcz_w[0] - pcz_b[0]) * 100
         score += (pcz_w[1] - pcz_b[1]) * 900
         score += (pcz_w[2] - pcz_b[2]) * 600
         score += (pcz_w[3] - pcz_b[3]) * 600
         score += (pcz_w[4] - pcz_b[4]) * 1300
         
-        # Positional Features
+        wk = self.board.white_king_pos
+        bk = self.board.black_king_pos
+        
         for p in self.board.white_pieces:
             r, c = p.pos
             z = p.z_idx
@@ -596,28 +586,26 @@ class ChessBot:
             elif z == 2 or z == 3 or z == 4: score -= PST_CENTER[r][c]
             elif z == 0: score -= PST_PAWN_BLACK[r][c]
 
-        # --- Integer-Only Endgame Mop-Up Logic ---
-        wk = self.board.white_king_pos
-        bk = self.board.black_king_pos
+        npm_w = pcz_w[1]*900 + pcz_w[2]*600 + pcz_w[3]*600 + pcz_w[4]*1300
+        npm_b = pcz_b[1]*900 + pcz_b[2]*600 + pcz_b[3]*600 + pcz_b[4]*1300
+        npm_total = npm_w + npm_b
         
-        if wk and bk:
-            # Lightweight Game Phase calculation (Total Non-Pawn Material)
-            npm = (pcz_w[1] + pcz_b[1])*900 + (pcz_w[2] + pcz_b[2])*600 + (pcz_w[3] + pcz_b[3])*600 + (pcz_w[4] + pcz_b[4])*1300
+        if npm_total > 4000:
+            if wk and wk[0] < 6: score -= 200
+            if bk and bk[0] > 1: score += 200
+
+        # --- Integer-Only Endgame Mop-Up Logic ---
+        if wk and bk and npm_total < 4000:
+            eg_weight = 1 + (4000 - npm_total) // 1000 
             
-            if npm < 4000:
-                # Linearly escalates from 1 to 5 as material drains
-                eg_weight = 1 + (4000 - npm) // 1000 
-                
-                # King Tropism: Drive enemy king out of safe zones
-                if score > 0:
-                    dist = abs(wk[0] - bk[0]) + abs(wk[1] - bk[1])
-                    score += (14 - dist) * 5 * eg_weight
-                elif score < 0:
-                    dist = abs(wk[0] - bk[0]) + abs(wk[1] - bk[1])
-                    score -= (14 - dist) * 5 * eg_weight
+            if score > 0:
+                dist = abs(wk[0] - bk[0]) + abs(wk[1] - bk[1])
+                score += (14 - dist) * 5 * eg_weight
+            elif score < 0:
+                dist = abs(wk[0] - bk[0]) + abs(wk[1] - bk[1])
+                score -= (14 - dist) * 5 * eg_weight
 
         # --- Mating Material Verification ---
-        # Checks if the dominant side has the required pieces to force a mate
         if score > 0:
             if pcz_w[0] == 0 and pcz_w[4] == 0 and pcz_w[3] == 0 and (pcz_w[1] + pcz_w[2]) < 2:
                 score //= 8
