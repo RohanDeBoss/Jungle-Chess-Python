@@ -1538,7 +1538,8 @@ class Generator5:
         done = 0
         with multiprocessing.Pool(processes=self.transition_workers, initializer=_init_transition_worker_5,
                                   initargs=(self.p1_name, self.p2_name, self.p3_name)) as pool:
-            chunk_size = 20_000
+            chunk_size = 4_000  # Reduced from 20,000: dense 3-piece combos (e.g. Bishop+Knight+Queen)
+                                 # can blow up per-chunk pickled result size and crash IPC
             chunk_iter = _gen_valid_5same_indices_numpy(
                 self.total_positions, self.p1_name, self.p2_name, self.p3_name, self.has_pawn, chunk_size=chunk_size)
             
@@ -1924,7 +1925,7 @@ class Generator5Vs:
         done = 0
         with multiprocessing.Pool(processes=self.transition_workers, initializer=_init_transition_worker_5vs,
                                   initargs=(self.w1_name, self.w2_name, self.b_name)) as pool:
-            chunk_size = 20_000
+            chunk_size = 4_000  # Reduced from 20,000: dense combos can blow up per-chunk pickled result size
             chunk_iter = _gen_valid_5vs_indices_numpy(
                 self.total_positions, self.w1_name, self.w2_name,
                 self.b_name, self.has_pawn, self.same_wp, chunk_size=chunk_size)

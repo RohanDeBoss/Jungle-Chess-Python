@@ -1,11 +1,13 @@
 Table                                   DTM        Decisive           Drawn         Min  Updated (UTC)       
 -------------------------------------------------------------------------------------------------------------
 regen_K_Bishop_Bishop_K                  10         482,043         149,635         0.5  2026-07-17 12:32:19 
+regen_K_Bishop_Bishop_Queen_K            14      35,150,467               0        23.2  2026-07-19 21:32:39 
 regen_K_Bishop_K                          9           1,017          51,229         0.0  2026-07-17 12:16:13 
 regen_K_Bishop_Knight_K                  32       2,569,194         204,657         2.6  2026-07-17 12:34:54 
 regen_K_Bishop_Pawn_K                    70       6,941,710         669,395         6.5  2026-07-17 13:18:09 
 regen_K_Bishop_Queen_K                   20       2,555,655         198,088         2.9  2026-07-17 12:23:34 
 regen_K_Bishop_Queen_Queen_K             14      74,113,405               0        92.2  2026-07-18 10:46:07 
+regen_K_Bishop_Queen_Rook_K              22     155,709,935           1,487       159.5  2026-07-19 19:16:26 
 regen_K_Bishop_Rook_K                    22       2,509,802         427,644         2.9  2026-07-17 12:29:49 
 regen_K_Bishop_vs_Bishop_K                9          11,679       2,532,707         2.9  2026-07-17 12:56:24 
 regen_K_Bishop_vs_Knight_K               33         448,853       2,101,981         2.3  2026-07-17 12:58:42 
@@ -17,6 +19,7 @@ regen_K_Knight_Knight_K                  32       1,387,352           6,490     
 regen_K_Knight_Pawn_K                    70       7,519,292          94,608         4.3  2026-07-17 13:22:28 
 regen_K_Knight_Queen_K                   32       2,770,151           6,490         2.2  2026-07-17 12:25:49 
 regen_K_Knight_Queen_Queen_K             12      74,748,319               0        66.1  2026-07-18 11:52:16 
+regen_K_Knight_Queen_Rook_K              28     156,399,919              39       112.9  2026-07-19 21:09:24 
 regen_K_Knight_Rook_K                    32       2,694,827         249,777         2.0  2026-07-17 12:31:49 
 regen_K_Knight_vs_Knight_K               44         511,693       2,042,076         1.5  2026-07-17 13:00:12 
 regen_K_Knight_vs_Pawn_K                 73       6,119,986       1,409,137         9.8  2026-07-17 13:50:32 
@@ -34,6 +37,7 @@ regen_K_Queen_Queen_K                    20       1,366,504               0     
 regen_K_Queen_Queen_Queen_K              10      24,464,874               0        41.2  2026-07-17 14:40:44 
 regen_K_Queen_Queen_Rook_K               14      76,951,052               0       124.4  2026-07-17 16:45:06 
 regen_K_Queen_Rook_K                     20       2,667,075         243,748         3.1  2026-07-17 12:20:39 
+regen_K_Queen_Rook_Rook_K                22      80,963,886               0       110.9  2026-07-18 14:39:02 
 regen_K_Queen_vs_Queen_K                 25         422,710       2,000,602         2.6  2026-07-17 12:38:13 
 regen_K_Queen_vs_Rook_K                  34         246,810       2,479,786         2.8  2026-07-17 12:40:59 
 regen_K_Rook_K                           15             986          55,475         0.0  2026-07-17 12:16:11 

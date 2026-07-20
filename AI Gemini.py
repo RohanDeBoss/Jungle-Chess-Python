@@ -1,10 +1,11 @@
-# AI.py (Gemini v7)
+# AI.py (Gemini v8)
 import time
 import random
 import os
 import json
 import glob
-import re
+from operator import itemgetter
+from collections import namedtuple
 from GameLogic import *
 from TablebaseManager import TablebaseManager
 
@@ -145,29 +146,9 @@ PST_PAWN_WHITE = [
 ]
 PST_PAWN_BLACK = PST_PAWN_WHITE[::-1]
 
-TT_EXACT = 0
-TT_LOWERBOUND = 1
-TT_UPPERBOUND = 2
-
-# We define a finite INFINITY specifically to prevent Python floating point bugs during PVS bounds shrinking
+TTEntry = namedtuple('TTEntry', ['score', 'depth', 'flag', 'best_move'])
+TT_FLAG_EXACT, TT_FLAG_LOWERBOUND, TT_FLAG_UPPERBOUND = 0, 1, 2
 INFINITY = 10000000
-
-class TranspositionTable:
-    def __init__(self, size=1048576):
-        self.size = size
-        self.keys = [None] * size
-        self.entries = [None] * size
-        
-    def store(self, key, depth, score, flag, move):
-        idx = key & (self.size - 1)
-        self.keys[idx] = key
-        self.entries[idx] = (depth, score, flag, move)
-        
-    def lookup(self, key):
-        idx = key & (self.size - 1)
-        if self.keys[idx] == key:
-            return self.entries[idx]
-        return None
 
 # ==============================================================================
 # CHESS BOT CLASS 
@@ -177,6 +158,12 @@ class ChessBot:
     # REQUIRED CLASS ATTRIBUTES
     search_depth = 4  
     MATE_SCORE = 1000000
+    DRAW_SCORE = 0
+    
+    ASP_WINDOW_INIT = 250
+    ASP_MAX_RETRIES = 3
+    MIN_MOVE_TIME = 0.03
+    TIME_BUFFER_SEC = 0.50
 
     def __init__(self, board, color, position_counts, comm_queue, cancellation_event,
                  bot_name="Challenger AI", ply_count=0, game_mode="bot", max_moves=200,
@@ -196,7 +183,12 @@ class ChessBot:
         self.time_left = time_left
         self.increment = increment
         self.stop_time = None
-        self.nodes_searched = 0
+        
+        if time_left:
+             allocated = (self.time_left / 30.0) + (self.increment * 0.8)
+             self.time_check_mask = self._calc_time_check_mask(allocated)
+        else:
+             self.time_check_mask = 511
 
         # --- DATABASE INTEGRATIONS ---
         self.use_opening_book = use_opening_book
@@ -206,22 +198,73 @@ class ChessBot:
 
         # --- ENGINE COMPONENTS ---
         self.PIECE_VALUES = [100, 900, 600, 600, 1300, 0] 
-        self.tt = TranspositionTable(1048576)
+        self.tt = {}
         self.history_table = {}
         self.killer_moves = [[None, None] for _ in range(128)]
+        self.nodes_searched = 0
+        self.tb_hits = 0
+
+    def _calc_time_check_mask(self, allocated):
+        if allocated <= 0.15: return 15
+        if allocated <= 0.30: return 31
+        if allocated <= 0.60: return 63
+        if allocated <= 1.20: return 127
+        if allocated <= 2.50: return 255
+        return 511
 
     def _report_log(self, message):       self.comm_queue.put(('log', message))
     def _report_eval(self, score, depth): self.comm_queue.put(('eval', score if self.color == 'white' else -score, depth))
     def _report_move(self, move):         self.comm_queue.put(('move', move))
-    
+
     def _format_move(self, board_before, move):
         if not move: return "None"
         child = board_before.clone()
         child.make_move(move[0], move[1])
-        san = format_move_san(board_before, child, move)
-        # Suppress the casualty squares to meet UI preferences, preserving +, # and =Q
-        san = re.sub(r' \([^)]+\)', '', san)
-        return san
+        return format_move_san(board_before, child, move)
+
+    def _store_tt(self, hash_val, score, depth, flag, move):
+        if len(self.tt) > 5000000:
+            self.tt.clear()
+        existing = self.tt.get(hash_val)
+        if not existing or depth >= existing.depth:
+            best_move = move if move is not None else (existing.best_move if existing else None)
+            self.tt[hash_val] = TTEntry(score, depth, flag, best_move)
+
+    def _get_pv_data(self, max_depth, root_move):
+        if not root_move: return [], []
+
+        pv_san  = []
+        pv_raw  = []
+        current_board = self.board.clone()
+        current_turn  = self.color
+        current_ply   = self.ply_count
+        seen_hashes = set()
+        move = root_move
+
+        for i in range(max_depth):
+            if not move: break
+            san      = self._format_move(current_board, move)
+            move_num = (current_ply // 2) + 1
+            if current_turn == 'white':
+                pv_san.append(f"{move_num}. {san}")
+            else:
+                pv_san.append(f"{move_num}... {san}" if i == 0 else san)
+
+            pv_raw.append(move)
+            current_board.make_move(move[0], move[1])
+            current_turn = 'black' if current_turn == 'white' else 'white'
+            current_ply += 1
+
+            h = board_hash(current_board, current_turn)
+            if h in seen_hashes: break
+            seen_hashes.add(h)
+
+            tt_entry = self.tt.get(h)
+            if not tt_entry or not tt_entry.best_move: break
+            if tt_entry.flag != TT_FLAG_EXACT: break
+            move = tt_entry.best_move
+
+        return pv_san, pv_raw
 
     def check_time(self):
         if self.cancellation_event.is_set():
@@ -236,13 +279,9 @@ class ChessBot:
                 if fen in OPENING_BOOK:
                     chosen = random.choices(OPENING_BOOK[fen], weights=[opt["weight"] for opt in OPENING_BOOK[fen]], k=1)[0]
                     move_tuple = (tuple(chosen["move"][0]), tuple(chosen["move"][1]))
-                    
-                    # Sanitize the opening book log strings as well
-                    san_cleaned = re.sub(r' \([^)]+\)', '', chosen['san'])
-                    
-                    self._report_log(f"  > {self.bot_name} (Book): {san_cleaned}")
+                    self._report_log(f"  > {self.bot_name} (Book): {chosen['san']}")
                     self._report_eval(chosen['score'], "Book")
-                    self.comm_queue.put(('pv', chosen['score'], "Book", [san_cleaned], [move_tuple]))
+                    self.comm_queue.put(('pv', chosen['score'], "Book", [chosen['san']], [move_tuple]))
                     self._report_move(move_tuple)
                     return
 
@@ -258,43 +297,89 @@ class ChessBot:
 
             search_start_time = time.time()
             if self.time_left is not None and self.increment is not None:
-                base_time = (self.time_left / 20.0) + (self.increment * 0.8) 
-                self.stop_time = search_start_time + min(base_time * 2.5, max(0.05, self.time_left - 0.2))
-                target_depth = 100 
+                buffer = max(self.TIME_BUFFER_SEC, self.time_left * 0.05, self.increment * 1.5)
+                clock_ceiling = max(0.0, self.time_left - buffer)
+                
+                buffer_health = max(0.0, min(1.0, clock_ceiling / max(0.1, self.time_left)))
+                divisor = 50 - (20 * buffer_health)
+
+                optimum_time = (self.time_left / divisor) + (self.increment * 0.8)
+                optimum_time = min(max(self.MIN_MOVE_TIME, optimum_time), clock_ceiling)
+
+                max_time = min(clock_ceiling, optimum_time * 3.5)
+                max_time = max(max_time, min(self.MIN_MOVE_TIME, clock_ceiling))
+
+                self.stop_time = search_start_time + max_time
+                target_depth = 100
             else:
                 self.stop_time = None
+                optimum_time = float('inf')
+                max_time = float('inf')
                 target_depth = self.search_depth
 
-            best_move_overall = root_moves[0]
-            root_hash = board_hash(self.board, self.color)
+            best_move_overall  = root_moves[0]
+            prev_iter_score    = None
+            prev_iter_duration = None
+            total_nodes        = 0
+            root_hash          = board_hash(self.board, self.color)
 
             for current_depth in range(1, target_depth + 1):
                 iter_start_time = time.time()
-                self.nodes_searched = 0
                 
                 try:
-                    score, best_move_this_iter = self._search_root(current_depth, root_moves, root_hash, best_move_overall)
+                    best_score_this_iter, best_move_this_iter = self._run_depth_iteration(
+                        current_depth, root_moves, root_hash, best_move_overall, prev_iter_score=prev_iter_score)
                 except SearchCancelledException:
                     break
-                
-                best_move_overall = best_move_this_iter
-                iter_duration = time.time() - iter_start_time
-                knps = (self.nodes_searched / iter_duration / 1000) if iter_duration > 0 else 0
-                eval_ui = score if self.color == 'white' else -score
-                pv_san = self._format_move(self.board, best_move_overall)
-                
-                self._report_log(f"  > {self.bot_name} (D{current_depth}): {pv_san}, Eval={eval_ui/100:+.2f}, Nodes={self.nodes_searched}, KNPS={knps:.1f}, Time={iter_duration:.2f}s")
-                self._report_eval(score, current_depth)
-                self.comm_queue.put(('pv', eval_ui, current_depth, [pv_san], [best_move_overall]))
 
-                if score > self.MATE_SCORE - 1000 or score < -self.MATE_SCORE + 1000: 
+                best_move_overall = best_move_this_iter
+                prev_iter_score   = best_score_this_iter
+                total_nodes      += self.nodes_searched
+                iter_duration     = time.time() - iter_start_time
+                knps              = (self.nodes_searched / iter_duration / 1000) if iter_duration > 0 else 0
+                
+                # Check Tablebases for accurate root eval reporting
+                root_tb_val = None
+                if len(self.board.white_pieces) + len(self.board.black_pieces) <= 5:
+                    root_tb_val = self.tb_manager.probe(self.board, self.color)
+
+                if root_tb_val is not None:
+                    self.tb_hits += 1
+                    depth_label = "TB"
+                    report_score = root_tb_val
+                else:
+                    depth_label = current_depth
+                    report_score = best_score_this_iter
+
+                eval_for_ui = report_score if self.color == 'white' else -report_score
+                self._report_log(f"  > {self.bot_name} (D{depth_label}): {self._format_move(self.board, best_move_this_iter)}, Eval={eval_for_ui/100:+.2f}, NodesTotal={total_nodes}, KNPS={knps:.1f}, TBhits={self.tb_hits}, Time={iter_duration:.2f}s")
+                self._report_eval(report_score, depth_label)
+
+                pv_str, pv_raw = self._get_pv_data(current_depth, best_move_this_iter)
+                self.comm_queue.put(('pv', eval_for_ui, depth_label, pv_str, pv_raw))
+
+                if report_score > self.MATE_SCORE - 2000 or report_score < -self.MATE_SCORE + 2000: 
                     break 
 
-                # User requested Time Helper Rule: Stop searching if the next depth will very likely flag us.
+                # OPAI Predictive Time Bound Check
                 if self.stop_time:
-                    time_remaining = self.stop_time - time.time()
-                    if time_remaining < (iter_duration * 1.5):
+                    time_used = time.time() - search_start_time
+                    if time_used > optimum_time:
                         break
+
+                    if prev_iter_duration and prev_iter_duration > 0:
+                        effective_branching = iter_duration / prev_iter_duration
+                        effective_branching = max(1.5, min(effective_branching, 8.0))
+                    else:
+                        effective_branching = 6.0
+
+                    predicted_next_duration = iter_duration * effective_branching
+                    time_remaining_to_max   = self.stop_time - time.time()
+
+                    if predicted_next_duration > time_remaining_to_max * 0.85:
+                        break
+
+                prev_iter_duration = iter_duration
 
             self._report_move(best_move_overall)
 
@@ -302,13 +387,47 @@ class ChessBot:
             self._report_log(f"CRASH: {str(e)}")
             self._report_move(root_moves[0] if root_moves else None)
 
+    def _run_depth_iteration(self, depth, root_moves, root_hash, pv_move, prev_iter_score=None):
+        self.nodes_searched = 0
+        use_aspiration = (prev_iter_score is not None and depth >= 2)
+
+        if use_aspiration:
+            window = self.ASP_WINDOW_INIT
+            alpha_bound = prev_iter_score - window
+            beta_bound  = prev_iter_score + window
+            retries = 0
+            
+            while True:
+                best_score, best_move = self._search_at_depth(
+                    depth, root_moves, root_hash, pv_move, alpha_bound, beta_bound)
+                
+                if self.cancellation_event.is_set() or (self.stop_time and time.time() > self.stop_time):
+                    raise SearchCancelledException()
+
+                if best_score <= alpha_bound:
+                    alpha_bound -= window; window *= 2; retries += 1
+                elif best_score >= beta_bound:
+                    beta_bound  += window; window *= 2; retries += 1
+                else:
+                    break
+
+                if retries >= self.ASP_MAX_RETRIES:
+                    best_score, best_move = self._search_at_depth(
+                        depth, root_moves, root_hash, pv_move, -INFINITY, INFINITY)
+                    break
+        else:
+            best_score, best_move = self._search_at_depth(
+                depth, root_moves, root_hash, pv_move, -INFINITY, INFINITY)
+
+        return best_score, best_move
+
     def _score_moves(self, moves, tt_move, ply):
-        """O(1) AoE-Aware Move Ordering with Capped History."""
+        """O(1) AoE-Aware Move Ordering."""
         scored = []
         
         for move in moves:
             if move == tt_move:
-                scored.append((10000000, move))
+                scored.append((20000000, move))
                 continue
                 
             mp = self.board.grid[move[0][0]][move[0][1]]
@@ -320,7 +439,7 @@ class ChessBot:
                 if swing < 0:
                     score = 500000 + swing 
                 else:
-                    score = 1000000 + (swing * 10) - attacker_penalty
+                    score = 10000000 + (swing * 10) - attacker_penalty
                 scored.append((score, move))
             else:
                 score = 0
@@ -331,50 +450,48 @@ class ChessBot:
                     score = min(self.history_table.get((mp.z_idx, move[1]), 0), 50000)
                 scored.append((score, move))
                 
-        scored.sort(key=lambda x: x[0], reverse=True)
+        scored.sort(key=itemgetter(0), reverse=True)
         return scored
 
-    def _search_root(self, depth, root_moves, root_hash, best_move_overall):
-        alpha = -INFINITY
-        beta = INFINITY
+    def _search_at_depth(self, depth, root_moves, root_hash, pv_move, alpha, beta):
+        best_score_this_iter = -INFINITY
+        best_move_this_iter = pv_move if pv_move in root_moves else (root_moves[0] if root_moves else None)
 
-        scored_moves = self._score_moves(root_moves, best_move_overall, 0)
-        best_score = -INFINITY
-        best_move = scored_moves[0][1]
+        scored_moves = self._score_moves(root_moves, pv_move, 0)
 
         for i, (move_score, move) in enumerate(scored_moves):
             self.check_time()
             record = self.board.make_move_track(move[0], move[1])
             child_hash = incremental_hash(root_hash, record)
 
-            # Principal Variation Search (PVS) with finite INFINITY to prevent math overflow bugs
+            # Principal Variation Search (PVS) 
             if i == 0:
                 score = -self.negamax(depth - 1, -beta, -alpha, self.opponent_color, 1, child_hash)
             else:
                 score = -self.negamax(depth - 1, -alpha - 1, -alpha, self.opponent_color, 1, child_hash)
-                if score > alpha: 
+                if score > alpha and score < beta: 
                     score = -self.negamax(depth - 1, -beta, -alpha, self.opponent_color, 1, child_hash)
             
             self.board.unmake_move(record)
 
-            if score > best_score:
-                best_score = score
-                best_move = move
+            if score > best_score_this_iter:
+                best_score_this_iter = score
+                best_move_this_iter = move
                 
             if score > alpha:
                 alpha = score
 
-        return best_score, best_move
+        return best_score_this_iter, best_move_this_iter
 
     def negamax(self, depth, alpha, beta, turn, ply, current_hash, is_null=False):
         self.nodes_searched += 1
-        
-        if (self.nodes_searched & 1023) == 0:
+        if (self.nodes_searched & self.time_check_mask) == 0:
             self.check_time()
 
         if len(self.board.white_pieces) + len(self.board.black_pieces) <= 5:
             tb_score_absolute = self.tb_manager.probe(self.board, turn)
             if tb_score_absolute is not None:
+                self.tb_hits += 1
                 tb_score = tb_score_absolute if turn == 'white' else -tb_score_absolute
                 if tb_score >  self.MATE_SCORE - 1000: return tb_score - ply
                 elif tb_score < -self.MATE_SCORE + 1000: return tb_score + ply
@@ -382,20 +499,21 @@ class ChessBot:
 
         alpha_orig = alpha
         
-        tt_entry = self.tt.lookup(current_hash)
+        tt_entry = self.tt.get(current_hash)
         tt_move = None
         if tt_entry is not None:
-            tt_depth, tt_score, tt_flag, tt_move = tt_entry
+            tt_score = tt_entry.score
+            tt_move = tt_entry.best_move
             
             if tt_score > self.MATE_SCORE - 1000: tt_score -= ply
             elif tt_score < -self.MATE_SCORE + 1000: tt_score += ply
             
-            if tt_depth >= depth:
-                if tt_flag == TT_EXACT:
+            if tt_entry.depth >= depth:
+                if tt_entry.flag == TT_FLAG_EXACT:
                     return tt_score
-                elif tt_flag == TT_LOWERBOUND:
+                elif tt_entry.flag == TT_FLAG_LOWERBOUND:
                     alpha = max(alpha, tt_score)
-                elif tt_flag == TT_UPPERBOUND:
+                elif tt_entry.flag == TT_FLAG_UPPERBOUND:
                     beta = min(beta, tt_score)
                 if alpha >= beta:
                     return tt_score
@@ -476,23 +594,23 @@ class ChessBot:
         if legal_moves_count == 0:
             return -self.MATE_SCORE + ply 
 
-        flag = TT_EXACT
+        flag = TT_FLAG_EXACT
         if best_score <= alpha_orig:
-            flag = TT_UPPERBOUND
+            flag = TT_FLAG_UPPERBOUND
         elif best_score >= beta:
-            flag = TT_LOWERBOUND
+            flag = TT_FLAG_LOWERBOUND
             
         stored_score = best_score
         if stored_score > self.MATE_SCORE - 1000: stored_score += ply
         elif stored_score < -self.MATE_SCORE + 1000: stored_score -= ply
             
-        self.tt.store(current_hash, depth, stored_score, flag, best_move)
+        self._store_tt(current_hash, stored_score, depth, flag, best_move)
         
         return best_score
 
     def qsearch(self, alpha, beta, turn, ply, current_hash):
         self.nodes_searched += 1
-        if (self.nodes_searched & 1023) == 0:
+        if (self.nodes_searched & self.time_check_mask) == 0:
             self.check_time()
             
         in_check = is_in_check(self.board, turn)
@@ -504,8 +622,8 @@ class ChessBot:
             if alpha < stand_pat:
                 alpha = stand_pat
                 
-            # Delta Pruning (Safe margins)
-            if stand_pat + 1600 < alpha:
+            # Delta Pruning
+            if stand_pat + 1300 < alpha:
                 return alpha
             
             best_score = stand_pat
@@ -525,7 +643,7 @@ class ChessBot:
                 score = (swing * 10) - attacker_penalty
                 tactical_moves.append((score, move))
                 
-        tactical_moves.sort(key=lambda x: x[0], reverse=True)
+        tactical_moves.sort(key=itemgetter(0), reverse=True)
         
         opponent = 'black' if turn == 'white' else 'white'
         legal_tactics_searched = 0
@@ -556,7 +674,7 @@ class ChessBot:
 
     def evaluate_board(self, turn_to_move):
         if is_insufficient_material(self.board):
-            return 0
+            return self.DRAW_SCORE
 
         score = 0
         
