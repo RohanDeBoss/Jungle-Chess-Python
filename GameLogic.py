@@ -1,4 +1,4 @@
-# GameLogic.py (v67.1 - precalculated knight rays with free performance)
+# GameLogic.py (v67.2 - bug fixxxx)
 
 
 # -----------------------------------------------------------------------
@@ -572,31 +572,6 @@ class Board:
 # -----------------------------------------------------------------------
 # Global game logic
 # -----------------------------------------------------------------------
-def _bishop_attacks_square(board, start, tr, tc, bishop_color):
-    if ((start[0] + start[1] - tr - tc) & 1) != 0:
-        return False
-
-    grid = board.grid
-    start_index = start[0] * COLS + start[1]
-
-    for ray in RAYS[start_index][4:]:
-        for r, c in ray:
-            piece = grid[r][c]
-            if r == tr and c == tc:
-                return (piece is None) or (piece.color != bishop_color)
-            if piece is not None:
-                break
-
-    for ray in BISHOP_ZIGZAG_RAYS[start_index]:
-        for r, c in ray:
-            piece = grid[r][c]
-            if r == tr and c == tc:
-                return (piece is None) or (piece.color != bishop_color)
-            if piece is not None:
-                break
-    return False
-
-
 def is_square_attacked(board, r, c, attacking_color):
     grid            = board.grid
     defending_color = 'black' if attacking_color == 'white' else 'white'
@@ -661,11 +636,12 @@ def is_square_attacked(board, r, c, attacking_color):
     if len(attacking_pieces) == attacker_counts[5]:
         return False
 
-    # 4. ROOKS & BISHOPS (Original Raycast - perfectly stable, but optimized layout)
+    # 4 & 5. ROOKS & BISHOPS (Symmetric Backward Raycasts)
     has_rooks = attacker_counts[3] > 0
     has_bishops = attacker_counts[2] > 0
     if has_rooks or has_bishops:
         start_index = r * 8 + c
+        
         if has_rooks:
             for i in range(4):
                 for cr, cc in RAYS[start_index][i]:
@@ -674,7 +650,9 @@ def is_square_attacked(board, r, c, attacking_color):
                         if piece.color == attacking_color:
                             if piece.z_idx == 3: return True
                             break
+                            
         if has_bishops:
+            # Regular Diagonals
             for i in range(4, 8):
                 for cr, cc in RAYS[start_index][i]:
                     piece = grid[cr][cc]
@@ -682,15 +660,14 @@ def is_square_attacked(board, r, c, attacking_color):
                         if piece.color == attacking_color and piece.z_idx == 2:
                             return True
                         break
-
-    # 5. BISHOP ZIG-ZAG
-    if has_bishops:
-        target_parity = (r + c) & 1
-        for piece in attacking_pieces:
-            if piece.z_idx == 2 and piece.pos:
-                if ((piece.pos[0] + piece.pos[1]) & 1) == target_parity:
-                    if _bishop_attacks_square(board, piece.pos, r, c, attacking_color):
-                        return True
+            # ZigZag Diagonals
+            for ray in BISHOP_ZIGZAG_RAYS[start_index]:
+                for cr, cc in ray:
+                    piece = grid[cr][cc]
+                    if piece is not None:
+                        if piece.color == attacking_color and piece.z_idx == 2:
+                            return True
+                        break
 
     # 6. QUEEN EXPLOSIONS (Original Raycast - perfectly stable, but optimized math)
     if attacker_counts[4] > 0:
