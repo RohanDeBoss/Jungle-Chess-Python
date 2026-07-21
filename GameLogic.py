@@ -1,4 +1,4 @@
-# GameLogic.py (v66 - squares are attacked more efficiently)
+# GameLogic.py (v67 - precalculated knight rays)
 
 
 # -----------------------------------------------------------------------
@@ -73,6 +73,8 @@ def _init_rays():
         BISHOP_ZIGZAG_RAYS[sq] = tuple(tuple(ray) for ray in zigzag_tmp[sq])
 
 _init_rays()
+
+
 # --- PRECOMPUTED KNIGHT EVAPORATION TABLE ---
 KNIGHT_EVAP_SQUARES = [[None] * 64 for _ in range(64)]
 
@@ -84,19 +86,22 @@ def _init_knight_evap():
             for r2 in range(8):
                 for c2 in range(8):
                     idx2 = r2 * 8 + c2
+                    if idx1 == idx2:
+                        continue
                     sq2 = (r2, c2)
                     
                     # 1. Direct threat (1 jump away)
                     if sq2 in jumps1:
                         KNIGHT_EVAP_SQUARES[idx1][idx2] = True
                     else:
-                        # 2. Indirect threat (2 jumps away - intentionally allows idx1==idx2 boomerang)
+                        # 2. Indirect threat (2 jumps away - precompute shared intermediate squares)
                         jumps2 = set(KNIGHT_ATTACKS_FROM[sq2])
                         shared = jumps1.intersection(jumps2)
                         if shared:
                             KNIGHT_EVAP_SQUARES[idx1][idx2] = tuple(shared)
 
 _init_knight_evap()
+
 
 def _clone_piece_fast(piece):
     cls       = piece.__class__
@@ -566,6 +571,7 @@ def _bishop_attacks_square(board, start, tr, tc, bishop_color):
                 break
     return False
 
+
 def is_square_attacked(board, r, c, attacking_color):
     grid            = board.grid
     defending_color = 'black' if attacking_color == 'white' else 'white'
@@ -573,7 +579,7 @@ def is_square_attacked(board, r, c, attacking_color):
     attacker_counts = board.piece_counts_z[attacking_color]
     attacking_king_pos = board.white_king_pos if attacking_color == 'white' else board.black_king_pos
 
-    # 1. PAWN ATTACKS
+    # 1. PAWN ATTACKS (Correct sideways and forward checks)
     pawn_move_dir = -1 if attacking_color == 'white' else 1
     pr = r - pawn_move_dir
     if 0 <= pr < 8:
@@ -597,7 +603,7 @@ def is_square_attacked(board, r, c, attacking_color):
         if p is not None and p.z_idx == 0 and p.color == attacking_color:
             return True
 
-    # 2. KNIGHT ATTACKS (O(1) Precomputed Table)
+    # 2. KNIGHT ATTACKS (Strictly Non-Functional, O(1) Precomputed Evaporation)
     if attacker_counts[1] > 0:
         target_idx = r * 8 + c
         for piece in attacking_pieces:
@@ -611,7 +617,7 @@ def is_square_attacked(board, r, c, attacking_color):
                         if grid[zr][zc] is None:
                             return True
 
-    # 3. KING ATTACKS (Inlined)
+    # 3. KING ATTACKS (Inlined, no abs() calls)
     if attacking_king_pos:
         kr, kc = attacking_king_pos
         dr = r - kr
@@ -629,7 +635,7 @@ def is_square_attacked(board, r, c, attacking_color):
     if len(attacking_pieces) == attacker_counts[5]:
         return False
 
-    # 4. ROOKS & BISHOPS
+    # 4. ROOKS & BISHOPS (Original Raycast - perfectly stable, but optimized layout)
     has_rooks = attacker_counts[3] > 0
     has_bishops = attacker_counts[2] > 0
     if has_rooks or has_bishops:
@@ -660,7 +666,7 @@ def is_square_attacked(board, r, c, attacking_color):
                     if _bishop_attacks_square(board, piece.pos, r, c, attacking_color):
                         return True
 
-    # 6. QUEEN EXPLOSIONS
+    # 6. QUEEN EXPLOSIONS (Original Raycast - perfectly stable, but optimized math)
     if attacker_counts[4] > 0:
         for piece in attacking_pieces:
             if piece.z_idx == 4 and piece.pos:
