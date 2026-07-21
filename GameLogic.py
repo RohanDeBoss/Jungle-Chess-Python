@@ -1,4 +1,4 @@
-# GameLogic.py (v68.2 - queens added to piece tracking)
+# GameLogic.py (v68.3 - nonfunc cleanup)
 
 
 # -----------------------------------------------------------------------
@@ -159,10 +159,6 @@ def _clone_piece_fast(piece):
         new_piece.direction    = piece.direction
         new_piece.starting_row = piece.starting_row
         new_piece.promo_rank   = piece.promo_rank
-    elif cls is Knight:
-        new_piece._knight_list_pos = getattr(piece, '_knight_list_pos', -1)
-    elif cls is Queen:
-        new_piece._queen_list_pos = getattr(piece, '_queen_list_pos', -1)
     return new_piece
 
 
@@ -175,6 +171,7 @@ class Piece:
         self.opponent_color = "black" if color == "white" else "white"
         self.pos            = None
         self._list_pos      = -1   # index in Board.white_pieces / black_pieces
+        self._z_list_pos    = -1   # index in Board.pieces_by_z
 
     def symbol(self):                        return "?"
     def get_valid_moves(self, board, pos):   return []
@@ -348,10 +345,7 @@ class Board:
         self.black_king_pos = None
         self.white_pieces   = []
         self.black_pieces   = []
-        self.white_knights  = []
-        self.black_knights  = []
-        self.white_queens   = []
-        self.black_queens   = []
+        self.pieces_by_z    = {'white': [[] for _ in range(6)], 'black': [[] for _ in range(6)]}
         self.piece_counts   = {
             'white': {Pawn: 0, Knight: 0, Bishop: 0, Rook: 0, Queen: 0, King: 0},
             'black': {Pawn: 0, Knight: 0, Bishop: 0, Rook: 0, Queen: 0, King: 0},
@@ -381,14 +375,10 @@ class Board:
         lst             = self.white_pieces if piece.color == 'white' else self.black_pieces
         piece._list_pos = len(lst)
         lst.append(piece)
-        if piece.z_idx == 1:
-            klst = self.white_knights if piece.color == 'white' else self.black_knights
-            piece._knight_list_pos = len(klst)
-            klst.append(piece)
-        elif piece.z_idx == 4:
-            qlst = self.white_queens if piece.color == 'white' else self.black_queens
-            piece._queen_list_pos = len(qlst)
-            qlst.append(piece)
+        
+        z_lst             = self.pieces_by_z[piece.color][piece.z_idx]
+        piece._z_list_pos = len(z_lst)
+        z_lst.append(piece)
 
     def _list_remove(self, piece):
         """
@@ -406,24 +396,13 @@ class Board:
         lst.pop()
         piece._list_pos = -1
         
-        if piece.z_idx == 1:
-            kidx = getattr(piece, '_knight_list_pos', -1)
-            if kidx >= 0:
-                klst = self.white_knights if piece.color == 'white' else self.black_knights
-                klast = klst[-1]
-                klst[kidx] = klast
-                klast._knight_list_pos = kidx
-                klst.pop()
-                piece._knight_list_pos = -1
-        elif piece.z_idx == 4:
-            qidx = getattr(piece, '_queen_list_pos', -1)
-            if qidx >= 0:
-                qlst = self.white_queens if piece.color == 'white' else self.black_queens
-                qlast = qlst[-1]
-                qlst[qidx] = qlast
-                qlast._queen_list_pos = qidx
-                qlst.pop()
-                piece._queen_list_pos = -1
+        z_idx          = piece._z_list_pos
+        z_lst          = self.pieces_by_z[piece.color][piece.z_idx]
+        z_last         = z_lst[-1]
+        z_lst[z_idx]   = z_last
+        z_last._z_list_pos = z_idx
+        z_lst.pop()
+        piece._z_list_pos = -1
 
     # ---- Board mutation primitives ----------------------------------------
 
@@ -477,19 +456,17 @@ class Board:
         new_board.white_pieces = white_pieces
         new_board.black_pieces = black_pieces
         
-        new_board.white_knights = [p for p in white_pieces if p.z_idx == 1]
-        for i, p in enumerate(new_board.white_knights):
-            p._knight_list_pos = i
-        new_board.black_knights = [p for p in black_pieces if p.z_idx == 1]
-        for i, p in enumerate(new_board.black_knights):
-            p._knight_list_pos = i
-
-        new_board.white_queens = [p for p in white_pieces if p.z_idx == 4]
-        for i, p in enumerate(new_board.white_queens):
-            p._queen_list_pos = i
-        new_board.black_queens = [p for p in black_pieces if p.z_idx == 4]
-        for i, p in enumerate(new_board.black_queens):
-            p._queen_list_pos = i
+        new_board.pieces_by_z = {'white': [[] for _ in range(6)], 'black': [[] for _ in range(6)]}
+        
+        for p in white_pieces:
+            z_lst = new_board.pieces_by_z['white'][p.z_idx]
+            p._z_list_pos = len(z_lst)
+            z_lst.append(p)
+            
+        for p in black_pieces:
+            z_lst = new_board.pieces_by_z['black'][p.z_idx]
+            p._z_list_pos = len(z_lst)
+            z_lst.append(p)
 
         grid = new_board.grid
         for p in white_pieces:
@@ -684,8 +661,7 @@ def is_square_attacked(board, r, c, attacking_color):
     # 2. KNIGHT ATTACKS (Strictly Non-Functional, O(1) Precomputed Evaporation)
     if attacker_counts[1] > 0:
         target_idx = r * 8 + c
-        attacking_knights = board.white_knights if attacking_color == 'white' else board.black_knights
-        for piece in attacking_knights:
+        for piece in board.pieces_by_z[attacking_color][1]:
             if piece.pos:
                 p_idx = piece.pos[0] * 8 + piece.pos[1]
                 evap = KNIGHT_EVAP_SQUARES[p_idx][target_idx]
@@ -749,8 +725,7 @@ def is_square_attacked(board, r, c, attacking_color):
 
     # 6. QUEEN EXPLOSIONS (Optimized O(1) target lookup)
     if attacker_counts[4] > 0:
-        attacking_queens = board.white_queens if attacking_color == 'white' else board.black_queens
-        for piece in attacking_queens:
+        for piece in board.pieces_by_z[attacking_color][4]:
             if piece.pos:
                 q_idx = piece.pos[0] * 8 + piece.pos[1]
                 for i in range(8):
