@@ -1,4 +1,4 @@
-# GameLogic.py (v64 - z-indexed piece counts for hot paths)
+# GameLogic.py (v65 - Zero-Allocation Material Swings and Inlined King Math)
 
 
 # -----------------------------------------------------------------------
@@ -545,9 +545,17 @@ def _bishop_attacks_square(board, start, tr, tc, bishop_color):
 
 
 def _king_attacks_square(grid, kr, kc, r, c):
-    dr, dc = r - kr, c - kc
-    abs_dr, abs_dc = abs(dr), abs(dc)
-    m_dist = max(abs_dr, abs_dc)
+    dr = r - kr
+    dc = c - kc
+    abs_dr = dr if dr >= 0 else -dr
+    abs_dc = dc if dc >= 0 else -dc
+    
+    # Fast short-circuit: Kings never attack beyond 2 squares
+    if abs_dr > 2 or abs_dc > 2:
+        return False
+        
+    m_dist = abs_dr if abs_dr > abs_dc else abs_dc
+    
     if m_dist == 1:
         return True
     if m_dist == 2 and (abs_dr == abs_dc or abs_dr == 0 or abs_dc == 0):
@@ -761,7 +769,7 @@ def fast_approximate_material_swing(board, move, moving_piece, target_piece, pie
                 is_tactic = True
         return swing, is_tactic
 
-    pierced_knights = []
+    pierced_knights_mask = 0
     if my_z == 3:
         start, end = move
         dr = (end[0] > start[0]) - (start[0] > end[0])
@@ -773,12 +781,12 @@ def fast_approximate_material_swing(board, move, moving_piece, target_piece, pie
                 swing += piece_values_list[target.z_idx]
                 is_tactic = True
                 if target.z_idx == 1:
-                    pierced_knights.append((cr, cc))
+                    pierced_knights_mask |= (1 << (cr * 8 + cc))
             cr += dr
             cc += dc
 
     if my_z == 1:
-        seen_passive = set()
+        seen_passive_mask = 0
         for r, c in KNIGHT_ATTACKS_FROM[move[1]]:
             target = board.grid[r][c]
             if target and target.color != my_color:
@@ -787,21 +795,24 @@ def fast_approximate_material_swing(board, move, moving_piece, target_piece, pie
                 if target.z_idx == 1:
                     for pr, pc in KNIGHT_ATTACKS_FROM[(r, c)]:
                         if (pr, pc) == move[1]:
-                            if 1 not in seen_passive: 
+                            if not (seen_passive_mask & 2): # 1 << 1 (Knight z_idx is 1)
                                 swing -= piece_values_list[1]
-                                seen_passive.add(1)
+                                seen_passive_mask |= 2
                         else:
                             ptarget = board.grid[pr][pc]
-                            if ptarget and ptarget.color == my_color and ptarget.z_idx not in seen_passive:
-                                swing -= piece_values_list[ptarget.z_idx]
-                                seen_passive.add(ptarget.z_idx)
+                            if ptarget and ptarget.color == my_color:
+                                pz = ptarget.z_idx
+                                bit = 1 << pz
+                                if not (seen_passive_mask & bit):
+                                    swing -= piece_values_list[pz]
+                                    seen_passive_mask |= bit
         return swing, is_tactic
 
     for r, c in KNIGHT_ATTACKS_FROM[move[1]]:
         pk = board.grid[r][c]
         if (pk and pk.z_idx == 1
                 and pk.color != my_color
-                and (r, c) not in pierced_knights):
+                and not (pierced_knights_mask & (1 << (r * 8 + c)))):
             evap_z = 4 if (my_z == 0 and move[1][0] == moving_piece.promo_rank) else my_z
             swing -= piece_values_list[evap_z]
             is_tactic = True
