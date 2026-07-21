@@ -1,4 +1,4 @@
-# GameLogic.py (v67.2 - bug fixxxx)
+# GameLogic.py (v68 - performance and cleanup)
 
 
 # -----------------------------------------------------------------------
@@ -75,6 +75,50 @@ def _init_rays():
 _init_rays()
 
 
+# --- PRECOMPUTED KING & PAWN MOVEMENT TABLES ---
+KING_PATHS = [None] * 64
+PAWN_FORWARD_SQUARES = {'white': [None] * 64, 'black': [None] * 64}
+PAWN_SIDEWAYS_SQUARES = [None] * 64
+
+def _init_piece_movement_tables():
+    for r in range(ROWS):
+        for c in range(COLS):
+            idx = r * COLS + c
+            
+            # --- KING PATHS ---
+            k_paths = []
+            for dr, dc in DIRECTIONS['king']:
+                r1, c1 = r + dr, c + dc
+                if 0 <= r1 < ROWS and 0 <= c1 < COLS:
+                    path = [(r1, c1)]
+                    r2, c2 = r1 + dr, c1 + dc
+                    if 0 <= r2 < ROWS and 0 <= c2 < COLS:
+                        path.append((r2, c2))
+                    k_paths.append(tuple(path))
+            KING_PATHS[idx] = tuple(k_paths)
+            
+            # --- PAWN SIDEWAYS SQUARES ---
+            side = []
+            if c > 0: side.append((r, c - 1))
+            if c < COLS - 1: side.append((r, c + 1))
+            PAWN_SIDEWAYS_SQUARES[idx] = tuple(side)
+            
+            # --- PAWN FORWARD PATHS ---
+            for color, direction, start_row in [('white', -1, 6), ('black', 1, 1)]:
+                one_r = r + direction
+                if 0 <= one_r < ROWS:
+                    f_path = [(one_r, c)]
+                    if r == start_row:
+                        two_r = r + (2 * direction)
+                        if 0 <= two_r < ROWS:
+                            f_path.append((two_r, c))
+                    PAWN_FORWARD_SQUARES[color][idx] = tuple(f_path)
+                else:
+                    PAWN_FORWARD_SQUARES[color][idx] = ()
+
+_init_piece_movement_tables()
+
+
 # --- PRECOMPUTED KNIGHT EVAPORATION TABLE ---
 KNIGHT_EVAP_SQUARES = [[None] * 64 for _ in range(64)]
 
@@ -129,11 +173,6 @@ class Piece:
         self.pos            = None
         self._list_pos      = -1   # index in Board.white_pieces / black_pieces
 
-    def clone(self):
-        new_piece     = self.__class__(self.color)
-        new_piece.pos = self.pos
-        return new_piece
-
     def symbol(self):                        return "?"
     def get_valid_moves(self, board, pos):   return []
 
@@ -144,21 +183,20 @@ class King(Piece):
 
     def get_valid_moves(self, board, pos):
         moves = []
-        r_start, c_start = pos
         opp = self.opponent_color
         grid = board.grid
-        for dr, dc in DIRECTIONS['king']:
-            r1, c1 = r_start + dr, c_start + dc
-            if 0 <= r1 < ROWS and 0 <= c1 < COLS:
-                target = grid[r1][c1]
-                if target is None or target.color == opp:
-                    moves.append((pos, (r1, c1)))
-                    if target is None:
-                        r2, c2 = r1 + dr, c1 + dc
-                        if 0 <= r2 < ROWS and 0 <= c2 < COLS:
-                            t2 = grid[r2][c2]
-                            if t2 is None or t2.color == opp:
-                                moves.append((pos, (r2, c2)))
+        start_idx = pos[0] * COLS + pos[1]
+        
+        for path in KING_PATHS[start_idx]:
+            r1, c1 = path[0]
+            target1 = grid[r1][c1]
+            if target1 is None or target1.color == opp:
+                moves.append((pos, (r1, c1)))
+                if target1 is None and len(path) == 2:
+                    r2, c2 = path[1]
+                    target2 = grid[r2][c2]
+                    if target2 is None or target2.color == opp:
+                        moves.append((pos, (r2, c2)))
         return moves
 
 
@@ -204,28 +242,44 @@ class Bishop(Piece):
     def symbol(self): return "♗" if self.color == "white" else "♝"
 
     def get_valid_moves(self, board, pos):
-        moves       = set()
-        grid        = board.grid
-        r_start, c_start = pos
-        start_index = r_start * COLS + c_start
+        moves = []
+        grid = board.grid
+        start_index = pos[0] * COLS + pos[1]
+        seen_mask = 0
 
         for i in range(4, 8):
             for r, c in RAYS[start_index][i]:
                 target = grid[r][c]
                 if target:
                     if target.color != self.color:
-                        moves.add((pos, (r, c)))
+                        idx = r * 8 + c
+                        bit = 1 << idx
+                        if not (seen_mask & bit):
+                            seen_mask |= bit
+                            moves.append((pos, (r, c)))
                     break
-                moves.add((pos, (r, c)))
+                idx = r * 8 + c
+                bit = 1 << idx
+                if not (seen_mask & bit):
+                    seen_mask |= bit
+                    moves.append((pos, (r, c)))
 
         for ray in BISHOP_ZIGZAG_RAYS[start_index]:
             for r, c in ray:
                 target = grid[r][c]
                 if target:
                     if target.color != self.color:
-                        moves.add((pos, (r, c)))
+                        idx = r * 8 + c
+                        bit = 1 << idx
+                        if not (seen_mask & bit):
+                            seen_mask |= bit
+                            moves.append((pos, (r, c)))
                     break
-                moves.add((pos, (r, c)))
+                idx = r * 8 + c
+                bit = 1 << idx
+                if not (seen_mask & bit):
+                    seen_mask |= bit
+                    moves.append((pos, (r, c)))
 
         return sorted(moves, key=lambda m: m[1])
 
@@ -255,30 +309,29 @@ class Pawn(Piece):
 
     def get_valid_moves(self, board, pos):
         moves = []
-        r, c      = pos
-        direction = self.direction
-        grid      = board.grid
-        opp       = self.opponent_color
+        grid = board.grid
+        opp = self.opponent_color
+        start_idx = pos[0] * COLS + pos[1]
 
-        one_r = r + direction
-        if 0 <= one_r < ROWS:
-            target1 = grid[one_r][c]
+        # Precomputed Forward Steps
+        f_sqs = PAWN_FORWARD_SQUARES[self.color][start_idx]
+        if f_sqs:
+            s1 = f_sqs[0]
+            target1 = grid[s1[0]][s1[1]]
             if target1 is None or target1.color == opp:
-                moves.append((pos, (one_r, c)))
-                if r == self.starting_row and target1 is None:
-                    two_r   = r + (2 * direction)
-                    target2 = grid[two_r][c]
+                moves.append((pos, s1))
+                if target1 is None and len(f_sqs) == 2:
+                    s2 = f_sqs[1]
+                    target2 = grid[s2[0]][s2[1]]
                     if target2 is None or target2.color == opp:
-                        moves.append((pos, (two_r, c)))
+                        moves.append((pos, s2))
 
-        if c > 0:
-            target = grid[r][c - 1]
+        # Precomputed Sideways Captures
+        for s in PAWN_SIDEWAYS_SQUARES[start_idx]:
+            target = grid[s[0]][s[1]]
             if target and target.color == opp:
-                moves.append((pos, (r, c - 1)))
-        if c < COLS - 1:
-            target = grid[r][c + 1]
-            if target and target.color == opp:
-                moves.append((pos, (r, c + 1)))
+                moves.append((pos, s))
+
         return moves
 
 
@@ -767,11 +820,6 @@ def get_game_state(board, turn_to_move, position_counts, ply_count, max_moves):
         return ("move_limit", None)
 
     return "ongoing", None
-
-
-def is_draw(board, turn_to_move, position_counts, ply_count, max_moves):
-    state, _ = get_game_state(board, turn_to_move, position_counts, ply_count, max_moves)
-    return state in ("insufficient_material", "repetition", "move_limit")
 
 
 def fast_approximate_material_swing(board, move, moving_piece, target_piece, piece_values_list):
