@@ -1,4 +1,4 @@
-# GameLogic.py (v68.1 - performance and cleanup 2)
+# GameLogic.py (v68.2 - queens added to piece tracking)
 
 
 # -----------------------------------------------------------------------
@@ -161,6 +161,8 @@ def _clone_piece_fast(piece):
         new_piece.promo_rank   = piece.promo_rank
     elif cls is Knight:
         new_piece._knight_list_pos = getattr(piece, '_knight_list_pos', -1)
+    elif cls is Queen:
+        new_piece._queen_list_pos = getattr(piece, '_queen_list_pos', -1)
     return new_piece
 
 
@@ -348,6 +350,8 @@ class Board:
         self.black_pieces   = []
         self.white_knights  = []
         self.black_knights  = []
+        self.white_queens   = []
+        self.black_queens   = []
         self.piece_counts   = {
             'white': {Pawn: 0, Knight: 0, Bishop: 0, Rook: 0, Queen: 0, King: 0},
             'black': {Pawn: 0, Knight: 0, Bishop: 0, Rook: 0, Queen: 0, King: 0},
@@ -381,6 +385,10 @@ class Board:
             klst = self.white_knights if piece.color == 'white' else self.black_knights
             piece._knight_list_pos = len(klst)
             klst.append(piece)
+        elif piece.z_idx == 4:
+            qlst = self.white_queens if piece.color == 'white' else self.black_queens
+            piece._queen_list_pos = len(qlst)
+            qlst.append(piece)
 
     def _list_remove(self, piece):
         """
@@ -407,6 +415,15 @@ class Board:
                 klast._knight_list_pos = kidx
                 klst.pop()
                 piece._knight_list_pos = -1
+        elif piece.z_idx == 4:
+            qidx = getattr(piece, '_queen_list_pos', -1)
+            if qidx >= 0:
+                qlst = self.white_queens if piece.color == 'white' else self.black_queens
+                qlast = qlst[-1]
+                qlst[qidx] = qlast
+                qlast._queen_list_pos = qidx
+                qlst.pop()
+                piece._queen_list_pos = -1
 
     # ---- Board mutation primitives ----------------------------------------
 
@@ -466,6 +483,13 @@ class Board:
         new_board.black_knights = [p for p in black_pieces if p.z_idx == 1]
         for i, p in enumerate(new_board.black_knights):
             p._knight_list_pos = i
+
+        new_board.white_queens = [p for p in white_pieces if p.z_idx == 4]
+        for i, p in enumerate(new_board.white_queens):
+            p._queen_list_pos = i
+        new_board.black_queens = [p for p in black_pieces if p.z_idx == 4]
+        for i, p in enumerate(new_board.black_queens):
+            p._queen_list_pos = i
 
         grid = new_board.grid
         for p in white_pieces:
@@ -723,19 +747,18 @@ def is_square_attacked(board, r, c, attacking_color):
                             return True
                         break
 
-    # 6. QUEEN EXPLOSIONS (Original Raycast - perfectly stable, but optimized math)
+    # 6. QUEEN EXPLOSIONS (Optimized O(1) target lookup)
     if attacker_counts[4] > 0:
-        for piece in attacking_pieces:
-            if piece.z_idx == 4 and piece.pos:
+        attacking_queens = board.white_queens if attacking_color == 'white' else board.black_queens
+        for piece in attacking_queens:
+            if piece.pos:
                 q_idx = piece.pos[0] * 8 + piece.pos[1]
                 for i in range(8):
                     for cr, cc in RAYS[q_idx][i]:
                         target = grid[cr][cc]
                         if target is not None:
                             if target.color == defending_color:
-                                dr = cr - r
-                                dc = cc - c
-                                if (dr >= -1 and dr <= 1) and (dc >= -1 and dc <= 1):
+                                if -1 <= cr - r <= 1 and -1 <= cc - c <= 1:
                                     return True
                             break
                             
