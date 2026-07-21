@@ -1,4 +1,4 @@
-# AI.py (v118.4 Q_MARGIN_MAX = 1100)
+# AI.py (v118.2 qsearch in-check eval skip + z-count hot paths)
 
 import json
 import os
@@ -200,7 +200,7 @@ class ChessBot:
     DRAW_SCORE = 0
 
     MAX_Q_SEARCH_DEPTH = 10
-    Q_MARGIN_MAX = 1100
+    Q_MARGIN_MAX = 950
     Q_MARGIN_MIN = 250
 
     LMR_DEPTH_THRESHOLD = 3

@@ -1,4 +1,4 @@
-# AI.py (Gemini v8)
+# AI.py (Gemini v9)
 import time
 import random
 import os
@@ -109,42 +109,119 @@ class SearchCancelledException(Exception): pass
 
 
 # ==============================================================================
-# JUNGLE CHESS EVALUATION TABLES & CUSTOM STRUCTURES
+# JUNGLE CHESS EVALUATION TABLES & CUSTOM STRUCTURES (Synced from OPAI)
 # ==============================================================================
 
-PST_KNIGHT = [
-    [-40, -30, -20, -20, -20, -20, -30, -40],
-    [-30,  -5,  10,  15,  15,  10,  -5, -30],
-    [-20,  10,  30,  40,  40,  30,  10, -20],
-    [-20,  15,  40,  55,  55,  40,  15, -20],
-    [-20,  15,  40,  55,  55,  40,  15, -20],
-    [-20,  10,  30,  40,  40,  30,  10, -20],
-    [-30,  -5,  10,  15,  15,  10,  -5, -30],
-    [-40, -30, -20, -20, -20, -20, -30, -40]
+MG_PIECE_VALUES = [100, 950, 600, 600, 1300, 20000]
+EG_PIECE_VALUES = [100, 950, 700, 750, 1000, 20000]
+INITIAL_PHASE_MATERIAL = (600 * 4 + 950 * 4 + 600 * 4 + 1300 * 2)
+
+pawn_pst = [
+    [   0,    0,    0,    0,    0,    0,    0,    0],
+    [  90,   90,   90,   90,   90,   90,   90,   90],
+    [  50,   50,   50,   50,   55,   50,   50,   50],
+    [  25,   30,   30,   45,   50,   30,   30,   25],
+    [  15,   15,   20,   30,   35,   20,   15,   15],
+    [  10,   10,   20,   25,   30,   20,   10,   10],
+    [   0,    0,    0,   -5,  -10,   10,    0,    0],
+    [   0,    0,    0,    0,    0,    0,    0,    0]
 ]
 
-PST_CENTER = [
-    [-20, -10, -10, -10, -10, -10, -10, -20],
-    [-10,   0,   0,   0,   0,   0,   0, -10],
-    [-10,   0,  10,  15,  15,  10,   0, -10],
-    [-10,   0,  15,  20,  20,  15,   0, -10],
-    [-10,   0,  15,  20,  20,  15,   0, -10],
-    [-10,   0,  10,  15,  15,  10,   0, -10],
-    [-10,   0,   0,   0,   0,   0,   0, -10],
-    [-20, -10, -10, -10, -10, -10, -10, -20]
+pawn_endgame_pst = [
+    [   0,    0,    0,    0,    0,    0,    0,    0],
+    [ 160,  160,  160,  160,  160,  160,  160,  160],
+    [  80,   85,   85,   85,   85,   85,   85,   80],
+    [  45,   50,   50,   55,   55,   50,   50,   45],
+    [  25,   30,   30,   35,   35,   30,   30,   25],
+    [  10,   15,   15,   20,   20,   15,   15,   10],
+    [   0,    5,    5,    5,    5,   15,    5,    0],
+    [   0,    0,    0,    0,    0,    0,    0,    0]
 ]
 
-PST_PAWN_WHITE = [
-    [  0,   0,   0,   0,   0,   0,   0,   0],
-    [150, 150, 150, 150, 150, 150, 150, 150],
-    [ 50,  50,  60,  70,  70,  60,  50,  50],
-    [ 30,  30,  40,  50,  50,  40,  30,  30],
-    [ 15,  15,  20,  30,  30,  20,  15,  15],
-    [  5,   5,  10,  15,  15,  10,   5,   5],
-    [  0,   0,   0, -15, -15,   0,   0,   0],
-    [  0,   0,   0,   0,   0,   0,   0,   0]
+knight_pst = [
+    [-120,  -80,  -60,  -50,  -50,  -60,  -80, -120],
+    [ -50,  -10,   30,   40,   40,   30,  -10,  -50],
+    [   0,   10,   40,   60,   60,   40,   10,    0],
+    [  10,   20,   60,   90,   90,   60,   20,   10],
+    [  30,   20,   70,   90,   90,   70,   20,   30],
+    [   0,   10,   60,   40,   40,   60,   10,    0],
+    [ -80,  -40,   10,   20,   20,   10,  -40,  -80],
+    [-120,  -80,  -60,  -60,  -60,  -60,  -80, -120]
 ]
-PST_PAWN_BLACK = PST_PAWN_WHITE[::-1]
+
+bishop_pst = [
+    [ -30,  -15,  -15,  -15,  -15,  -15,  -15,  -30],
+    [ -15,    0,    0,    0,    0,    0,    0,  -15],
+    [ -15,    0,    8,   15,   15,    8,    0,  -15],
+    [ -15,    8,    8,   15,   15,    8,    8,  -15],
+    [ -15,    8,   22,   15,   15,   22,    8,  -15],
+    [ -15,   15,   15,    8,    8,   15,   15,  -15],
+    [ -15,    8,    0,    0,    0,    0,    8,  -15],
+    [ -30,  -15,  -15,  -22,  -22,  -15,  -15,  -30]
+]
+
+rook_pst = [
+    [  15,   15,   15,   22,   22,   15,   15,   15],
+    [  22,   22,   22,   30,   30,   22,   22,   22],
+    [   8,    0,    0,    8,    8,    0,    0,    8],
+    [   8,    0,    0,    8,    8,    0,    0,    8],
+    [   8,    0,    0,    8,    8,    0,    0,    8],
+    [   8,    0,    0,    8,    8,    0,    0,    8],
+    [   0,    0,    0,    8,    8,    0,    0,    0],
+    [  10,   -5,    0,   15,   15,    0,   -5,   10]
+]
+
+queen_pst = [
+    [ -45,  -30,  -15,  -15,  -15,  -15,  -30,  -45],
+    [ -30,    0,    0,    0,    0,    0,    0,  -30],
+    [ -15,    0,    8,   15,   15,    8,    0,  -15],
+    [  -8,   15,   30,   45,   45,   30,   15,   -8],
+    [  -8,    8,   30,   45,   45,   30,    8,   -8],
+    [ -15,    8,   22,   22,   22,   22,    8,  -15],
+    [ -30,  -15,    0,    8,    8,    0,  -15,  -30],
+    [ -45,  -30,  -30,  -15,  -30,  -30,  -30,  -45]
+]
+
+king_midgame_pst = [
+    [ -90,  -85,  -85,  -85,  -85,  -85,  -85,  -90],
+    [ -70,  -75,  -75,  -90,  -90,  -75,  -75,  -70],
+    [ -60,  -75,  -75,  -80,  -80,  -75,  -75,  -60],
+    [ -60,  -75,  -75,  -80,  -80,  -75,  -75,  -60],
+    [ -45,  -60,  -60,  -60,  -60,  -60,  -60,  -45],
+    [ -15,  -15,  -30,  -30,  -30,  -30,  -15,  -15],
+    [  -8,    0,    8,    8,    8,    8,    0,   -8],
+    [ -30,   15,   15,   15,   30,   15,   15,  -30]
+]
+
+king_endgame_pst = [
+    [ -60,  -45,  -45,  -45,  -45,  -45,  -45,  -60],
+    [ -45,  -15,    0,    0,    0,    0,  -15,  -45],
+    [ -45,    0,   15,   30,   30,   15,    0,  -45],
+    [ -45,    8,   30,   30,   30,   30,    8,  -45],
+    [ -45,    8,   22,   30,   30,   22,    8,  -45],
+    [ -45,    0,   15,   15,   15,   15,    0,  -45],
+    [ -45,    0,    8,    8,    8,    8,    0,  -45],
+    [ -60,  -45,  -15,  -15,  -15,  -15,  -45,  -60]
+]
+
+# Fast Pre-Calculated Flattened PSTs
+FLAT_PST_MG_WHITE = [[0]*64 for _ in range(6)]
+FLAT_PST_MG_BLACK = [[0]*64 for _ in range(6)]
+FLAT_PST_EG_WHITE = [[0]*64 for _ in range(6)]
+FLAT_PST_EG_BLACK = [[0]*64 for _ in range(6)]
+
+tables_mg = [pawn_pst, knight_pst, bishop_pst, rook_pst, queen_pst, king_midgame_pst]
+tables_eg = [pawn_endgame_pst, knight_pst, bishop_pst, rook_pst, queen_pst, king_endgame_pst]
+
+for z in range(6):
+    for r in range(8):
+        for c in range(8):
+            sq_w = r * 8 + c
+            sq_b = (7 - r) * 8 + c
+            FLAT_PST_MG_WHITE[z][sq_w] = MG_PIECE_VALUES[z] + tables_mg[z][r][c]
+            FLAT_PST_MG_BLACK[z][sq_b] = MG_PIECE_VALUES[z] + tables_mg[z][r][c]
+            FLAT_PST_EG_WHITE[z][sq_w] = EG_PIECE_VALUES[z] + tables_eg[z][r][c]
+            FLAT_PST_EG_BLACK[z][sq_b] = EG_PIECE_VALUES[z] + tables_eg[z][r][c]
 
 TTEntry = namedtuple('TTEntry', ['score', 'depth', 'flag', 'best_move'])
 TT_FLAG_EXACT, TT_FLAG_LOWERBOUND, TT_FLAG_UPPERBOUND = 0, 1, 2
@@ -155,7 +232,6 @@ INFINITY = 10000000
 # ==============================================================================
 
 class ChessBot:
-    # REQUIRED CLASS ATTRIBUTES
     search_depth = 4  
     MATE_SCORE = 1000000
     DRAW_SCORE = 0
@@ -179,7 +255,6 @@ class ChessBot:
         self.bot_name = bot_name
         self.max_moves = max_moves
         
-        # --- TIME MANAGEMENT ---
         self.time_left = time_left
         self.increment = increment
         self.stop_time = None
@@ -190,17 +265,19 @@ class ChessBot:
         else:
              self.time_check_mask = 511
 
-        # --- DATABASE INTEGRATIONS ---
         self.use_opening_book = use_opening_book
         self.tb_manager = TablebaseManager()
         if not use_tablebase:
             self.tb_manager.probe = lambda b, t: None
 
-        # --- ENGINE COMPONENTS ---
-        self.PIECE_VALUES = [100, 900, 600, 600, 1300, 0] 
+        # --- OPAI DATA STRUCTURES ---
         self.tt = {}
+        self.eval_tt = {} # Evaluation Cache
         self.history_table = {}
         self.killer_moves = [[None, None] for _ in range(128)]
+        # Continuation History: 5D array [color][prev_z][prev_to][my_z][my_to]
+        self.continuation_history = [[[[[0] * 64 for _ in range(6)] for _ in range(64)] for _ in range(6)] for _ in range(2)]
+        
         self.nodes_searched = 0
         self.tb_hits = 0
 
@@ -220,6 +297,7 @@ class ChessBot:
         if not move: return "None"
         child = board_before.clone()
         child.make_move(move[0], move[1])
+        # Reverted the hacky regex. Native casualty string rendering is allowed.
         return format_move_san(board_before, child, move)
 
     def _store_tt(self, hash_val, score, depth, flag, move):
@@ -338,7 +416,6 @@ class ChessBot:
                 iter_duration     = time.time() - iter_start_time
                 knps              = (self.nodes_searched / iter_duration / 1000) if iter_duration > 0 else 0
                 
-                # Check Tablebases for accurate root eval reporting
                 root_tb_val = None
                 if len(self.board.white_pieces) + len(self.board.black_pieces) <= 5:
                     root_tb_val = self.tb_manager.probe(self.board, self.color)
@@ -361,7 +438,6 @@ class ChessBot:
                 if report_score > self.MATE_SCORE - 2000 or report_score < -self.MATE_SCORE + 2000: 
                     break 
 
-                # OPAI Predictive Time Bound Check
                 if self.stop_time:
                     time_used = time.time() - search_start_time
                     if time_used > optimum_time:
@@ -421,34 +497,44 @@ class ChessBot:
 
         return best_score, best_move
 
-    def _score_moves(self, moves, tt_move, ply):
-        """O(1) AoE-Aware Move Ordering."""
+    def _score_moves(self, moves, tt_move, ply, turn, prev_move_tuple=None):
         scored = []
+        c_idx = 0 if turn == 'white' else 1
         
         for move in moves:
             if move == tt_move:
-                scored.append((20000000, move))
+                scored.append((20000000, move, False, None))
                 continue
                 
             mp = self.board.grid[move[0][0]][move[0][1]]
             tp = self.board.grid[move[1][0]][move[1][1]]
             
-            swing, is_tactic = fast_approximate_material_swing(self.board, move, mp, tp, self.PIECE_VALUES)
+            swing, is_tactic = fast_approximate_material_swing(self.board, move, mp, tp, MG_PIECE_VALUES)
             if is_tactic:
-                attacker_penalty = self.PIECE_VALUES[mp.z_idx] if mp.z_idx != 4 else 0
+                attacker_penalty = MG_PIECE_VALUES[mp.z_idx] if mp.z_idx != 4 else 0
                 if swing < 0:
                     score = 500000 + swing 
                 else:
                     score = 10000000 + (swing * 10) - attacker_penalty
-                scored.append((score, move))
+                scored.append((score, move, True, mp))
             else:
                 score = 0
                 if ply < 128:
                     if move == self.killer_moves[ply][0]: score = 900000
                     elif move == self.killer_moves[ply][1]: score = 800000
                 if score == 0:
+                    # Continuation History lookup
+                    if prev_move_tuple:
+                        prev_move, prev_pt_idx = prev_move_tuple
+                        pr, pc = prev_move[1]
+                        prev_to_sq = pr * 8 + pc
+                        to_sq = move[1][0] * 8 + move[1][1]
+                        ch_score = self.continuation_history[c_idx][prev_pt_idx][prev_to_sq][mp.z_idx][to_sq]
+                        if ch_score > 1000:
+                            score = 700000 + ch_score
+                if score == 0:
                     score = min(self.history_table.get((mp.z_idx, move[1]), 0), 50000)
-                scored.append((score, move))
+                scored.append((score, move, False, mp))
                 
         scored.sort(key=itemgetter(0), reverse=True)
         return scored
@@ -457,20 +543,20 @@ class ChessBot:
         best_score_this_iter = -INFINITY
         best_move_this_iter = pv_move if pv_move in root_moves else (root_moves[0] if root_moves else None)
 
-        scored_moves = self._score_moves(root_moves, pv_move, 0)
+        scored_moves = self._score_moves(root_moves, pv_move, 0, self.color)
 
-        for i, (move_score, move) in enumerate(scored_moves):
+        for i, (move_score, move, is_tactic, mp) in enumerate(scored_moves):
             self.check_time()
             record = self.board.make_move_track(move[0], move[1])
             child_hash = incremental_hash(root_hash, record)
+            next_prev_tuple = (move, mp.z_idx) if mp else None
 
-            # Principal Variation Search (PVS) 
             if i == 0:
-                score = -self.negamax(depth - 1, -beta, -alpha, self.opponent_color, 1, child_hash)
+                score = -self.negamax(depth - 1, -beta, -alpha, self.opponent_color, 1, child_hash, False, next_prev_tuple)
             else:
-                score = -self.negamax(depth - 1, -alpha - 1, -alpha, self.opponent_color, 1, child_hash)
+                score = -self.negamax(depth - 1, -alpha - 1, -alpha, self.opponent_color, 1, child_hash, False, next_prev_tuple)
                 if score > alpha and score < beta: 
-                    score = -self.negamax(depth - 1, -beta, -alpha, self.opponent_color, 1, child_hash)
+                    score = -self.negamax(depth - 1, -beta, -alpha, self.opponent_color, 1, child_hash, False, next_prev_tuple)
             
             self.board.unmake_move(record)
 
@@ -483,7 +569,7 @@ class ChessBot:
 
         return best_score_this_iter, best_move_this_iter
 
-    def negamax(self, depth, alpha, beta, turn, ply, current_hash, is_null=False):
+    def negamax(self, depth, alpha, beta, turn, ply, current_hash, is_null=False, prev_move_tuple=None):
         self.nodes_searched += 1
         if (self.nodes_searched & self.time_check_mask) == 0:
             self.check_time()
@@ -527,21 +613,21 @@ class ChessBot:
         # --- Null Move Pruning (NMP) ---
         if depth >= 3 and not in_check and ply > 0 and not is_null and beta < INFINITY - 1000:
             pcz = self.board.piece_counts_z[turn]
-            npm = pcz[1]*900 + pcz[2]*600 + pcz[3]*600 + pcz[4]*1300
+            npm = pcz[1]*950 + pcz[2]*600 + pcz[3]*600 + pcz[4]*1300
             if npm > 0:
                 null_hash = current_hash ^ ZOBRIST_TURN
-                score = -self.negamax(depth - 1 - 2, -beta, -beta + 1, opponent, ply + 1, null_hash, is_null=True)
+                score = -self.negamax(depth - 1 - 2, -beta, -beta + 1, opponent, ply + 1, null_hash, True, None)
                 if score >= beta:
                     return beta
 
         moves = get_all_pseudo_legal_moves(self.board, turn)
-        scored_moves = self._score_moves(moves, tt_move, ply)
+        scored_moves = self._score_moves(moves, tt_move, ply, turn, prev_move_tuple)
 
         legal_moves_count = 0
         best_move = None
         best_score = -INFINITY
 
-        for move_score, move in scored_moves:
+        for move_score, move, is_tactic, mp in scored_moves:
             record = self.board.make_move_track(move[0], move[1])
             
             if is_in_check(self.board, turn):
@@ -550,27 +636,48 @@ class ChessBot:
                 
             legal_moves_count += 1
             child_hash = incremental_hash(current_hash, record)
+            next_prev_tuple = (move, mp.z_idx) if mp else None
 
-            # --- Late Move Reductions (LMR) ---
-            is_tactic = move_score > 500000
+            # --- Jungle-Aware Late Move Reductions (LMR) ---
             reduction = 0
-            if depth >= 4 and legal_moves_count > 6 and not in_check and not is_tactic:
-                reduction = 1
+            if depth >= 3 and legal_moves_count > 4 and not in_check and not is_tactic:
+                reduction = 1 + (depth // 7) + (legal_moves_count // 12)
+                
+                # Protect King's safety by refusing to reduce Knights and attacking Queens
+                if mp.z_idx == 1:
+                    reduction -= 1
+                elif mp.z_idx == 4:
+                    attacks_enemy = False
+                    grid_ref = self.board.grid
+                    t_sq = move[1][0] * 8 + move[1][1]
+                    for ray in RAYS[t_sq]:
+                        for cr, cc in ray:
+                            target = grid_ref[cr][cc]
+                            if target is not None:
+                                if target.color == opponent:
+                                    attacks_enemy = True
+                                break
+                        if attacks_enemy:
+                            break
+                    if attacks_enemy:
+                        reduction -= 1
+                        
+                reduction = max(0, min(reduction, depth - 2))
 
             # --- PVS Core ---
             if legal_moves_count == 1:
-                score = -self.negamax(depth - 1, -beta, -alpha, opponent, ply + 1, child_hash)
+                score = -self.negamax(depth - 1, -beta, -alpha, opponent, ply + 1, child_hash, False, next_prev_tuple)
             else:
                 if reduction > 0:
-                    score = -self.negamax(depth - 1 - reduction, -alpha - 1, -alpha, opponent, ply + 1, child_hash)
+                    score = -self.negamax(depth - 1 - reduction, -alpha - 1, -alpha, opponent, ply + 1, child_hash, False, next_prev_tuple)
                     if score > alpha:
-                        score = -self.negamax(depth - 1, -alpha - 1, -alpha, opponent, ply + 1, child_hash)
+                        score = -self.negamax(depth - 1, -alpha - 1, -alpha, opponent, ply + 1, child_hash, False, next_prev_tuple)
                         if alpha < score < beta:
-                            score = -self.negamax(depth - 1, -beta, -alpha, opponent, ply + 1, child_hash)
+                            score = -self.negamax(depth - 1, -beta, -alpha, opponent, ply + 1, child_hash, False, next_prev_tuple)
                 else:
-                    score = -self.negamax(depth - 1, -alpha - 1, -alpha, opponent, ply + 1, child_hash)
+                    score = -self.negamax(depth - 1, -alpha - 1, -alpha, opponent, ply + 1, child_hash, False, next_prev_tuple)
                     if alpha < score < beta: 
-                        score = -self.negamax(depth - 1, -beta, -alpha, opponent, ply + 1, child_hash)
+                        score = -self.negamax(depth - 1, -beta, -alpha, opponent, ply + 1, child_hash, False, next_prev_tuple)
             
             self.board.unmake_move(record)
 
@@ -586,9 +693,20 @@ class ChessBot:
                     if move != self.killer_moves[ply][0]:
                         self.killer_moves[ply][1] = self.killer_moves[ply][0]
                         self.killer_moves[ply][0] = move
-                    mp = self.board.grid[move[0][0]][move[0][1]]
                     if mp:
-                        self.history_table[(mp.z_idx, move[1])] = min(self.history_table.get((mp.z_idx, move[1]), 0) + depth * depth, 50000)
+                        bonus = depth * depth
+                        # Base History Update
+                        self.history_table[(mp.z_idx, move[1])] = min(self.history_table.get((mp.z_idx, move[1]), 0) + bonus, 50000)
+                        
+                        # Continuation History Update
+                        if prev_move_tuple:
+                            c_idx = 0 if turn == 'white' else 1
+                            prev_move, prev_pt_idx = prev_move_tuple
+                            pr, pc = prev_move[1]
+                            prev_to_sq = pr * 8 + pc
+                            to_sq = move[1][0] * 8 + move[1][1]
+                            ch_table = self.continuation_history[c_idx][prev_pt_idx][prev_to_sq][mp.z_idx]
+                            ch_table[to_sq] = min(ch_table[to_sq] + bonus, 50000)
                 break
 
         if legal_moves_count == 0:
@@ -616,7 +734,14 @@ class ChessBot:
         in_check = is_in_check(self.board, turn)
         
         if not in_check:
-            stand_pat = self.evaluate_board(turn)
+            # Eval TT check
+            if current_hash in self.eval_tt:
+                stand_pat = self.eval_tt[current_hash]
+            else:
+                stand_pat = self.evaluate_board(turn)
+                if len(self.eval_tt) > 5000000: self.eval_tt.clear()
+                self.eval_tt[current_hash] = stand_pat
+                
             if stand_pat >= beta:
                 return beta
             if alpha < stand_pat:
@@ -632,20 +757,36 @@ class ChessBot:
                 
         moves = get_all_pseudo_legal_moves(self.board, turn)
         tactical_moves = []
+        opponent = 'black' if turn == 'white' else 'white'
+        has_enemy_knights = self.board.piece_counts[opponent][Knight] > 0
+        grid = self.board.grid
         
         for move in moves:
-            mp = self.board.grid[move[0][0]][move[0][1]]
-            tp = self.board.grid[move[1][0]][move[1][1]]
+            (r1, c1), (r2, c2) = move
+            mp = grid[r1][c1]
+            tp = grid[r2][c2]
             
-            swing, is_tactic = fast_approximate_material_swing(self.board, move, mp, tp, self.PIECE_VALUES)
+            # Fast pass check for quiet moves exactly like OPAI
+            if not in_check and tp is None:
+                if mp.z_idx in (2, 4, 5) or (mp.z_idx == 0 and r2 != mp.promo_rank):
+                    gets_evaporated = False
+                    if has_enemy_knights:
+                        for kr, kc in KNIGHT_ATTACKS_FROM[(r2, c2)]:
+                            kp = grid[kr][kc]
+                            if kp is not None and kp.z_idx == 1 and kp.color == opponent:
+                                gets_evaporated = True
+                                break
+                    if not gets_evaporated:
+                        continue
+            
+            swing, is_tactic = fast_approximate_material_swing(self.board, move, mp, tp, MG_PIECE_VALUES)
             if in_check or is_tactic:
-                attacker_penalty = self.PIECE_VALUES[mp.z_idx] if mp.z_idx != 4 else 0
+                attacker_penalty = MG_PIECE_VALUES[mp.z_idx] if mp.z_idx != 4 else 0
                 score = (swing * 10) - attacker_penalty
                 tactical_moves.append((score, move))
                 
         tactical_moves.sort(key=itemgetter(0), reverse=True)
         
-        opponent = 'black' if turn == 'white' else 'white'
         legal_tactics_searched = 0
         
         for swing, move in tactical_moves:
@@ -676,62 +817,65 @@ class ChessBot:
         if is_insufficient_material(self.board):
             return self.DRAW_SCORE
 
-        score = 0
+        scores_mg = [0, 0]
+        scores_eg = [0, 0]
         
         pcz_w = self.board.piece_counts_z['white']
         pcz_b = self.board.piece_counts_z['black']
         
-        score += (pcz_w[0] - pcz_b[0]) * 100
-        score += (pcz_w[1] - pcz_b[1]) * 900
-        score += (pcz_w[2] - pcz_b[2]) * 600
-        score += (pcz_w[3] - pcz_b[3]) * 600
-        score += (pcz_w[4] - pcz_b[4]) * 1300
+        phase_material = (pcz_w[1]+pcz_b[1])*950 + (pcz_w[2]+pcz_b[2])*600 + (pcz_w[3]+pcz_b[3])*600 + (pcz_w[4]+pcz_b[4])*1300
+        phase = min(256, (phase_material * 256) // INITIAL_PHASE_MATERIAL) if INITIAL_PHASE_MATERIAL > 0 else 0
+        inv_phase = 256 - phase
         
-        wk = self.board.white_king_pos
-        bk = self.board.black_king_pos
-        
-        for p in self.board.white_pieces:
-            r, c = p.pos
-            z = p.z_idx
-            if z == 1: score += PST_KNIGHT[r][c]
-            elif z == 2 or z == 3 or z == 4: score += PST_CENTER[r][c]
-            elif z == 0: score += PST_PAWN_WHITE[r][c]
-                
-        for p in self.board.black_pieces:
-            r, c = p.pos
-            z = p.z_idx
-            if z == 1: score -= PST_KNIGHT[r][c]
-            elif z == 2 or z == 3 or z == 4: score -= PST_CENTER[r][c]
-            elif z == 0: score -= PST_PAWN_BLACK[r][c]
+        king_zone_attacks = [0, 0]
+        king_pos = [self.board.white_king_pos, self.board.black_king_pos]
 
-        npm_w = pcz_w[1]*900 + pcz_w[2]*600 + pcz_w[3]*600 + pcz_w[4]*1300
-        npm_b = pcz_b[1]*900 + pcz_b[2]*600 + pcz_b[3]*600 + pcz_b[4]*1300
-        npm_total = npm_w + npm_b
-        
-        if npm_total > 4000:
-            if wk and wk[0] < 6: score -= 200
-            if bk and bk[0] > 1: score += 200
-
-        # --- Integer-Only Endgame Mop-Up Logic ---
-        if wk and bk and npm_total < 4000:
-            eg_weight = 1 + (4000 - npm_total) // 1000 
+        for color_idx in (0, 1):
+            pieces = self.board.white_pieces if color_idx == 0 else self.board.black_pieces
+            my_color_name = 'white' if color_idx == 0 else 'black'
+            enemy_king = king_pos[1 - color_idx]
+            pst_mg = FLAT_PST_MG_WHITE if color_idx == 0 else FLAT_PST_MG_BLACK
+            pst_eg = FLAT_PST_EG_WHITE if color_idx == 0 else FLAT_PST_EG_BLACK
             
-            if score > 0:
-                dist = abs(wk[0] - bk[0]) + abs(wk[1] - bk[1])
-                score += (14 - dist) * 5 * eg_weight
-            elif score < 0:
-                dist = abs(wk[0] - bk[0]) + abs(wk[1] - bk[1])
-                score -= (14 - dist) * 5 * eg_weight
+            for piece in pieces:
+                z = piece.z_idx
+                r, c = piece.pos
+                sq = r * 8 + c
+                
+                scores_mg[color_idx] += pst_mg[z][sq]
+                scores_eg[color_idx] += pst_eg[z][sq]
+                
+                if z == 1: # Knight
+                    ekr, ekc = enemy_king if enemy_king else (None, None)
+                    if ekr is not None:
+                        for ar, ac in KNIGHT_ATTACKS_FROM[(r, c)]:
+                            if abs(ar - ekr) <= 2 and abs(ac - ekc) <= 2:
+                                king_zone_attacks[1 - color_idx] += 1
+                                break
+                                
+                elif z == 4: # Queen
+                    if enemy_king and (abs(r - enemy_king[0]) + abs(c - enemy_king[1]) <= 3):
+                        king_zone_attacks[1 - color_idx] += 2
+                        
+        for i in (0, 1):
+            if king_zone_attacks[i] > 0:
+                mg_penalty = (king_zone_attacks[i] * 50 * phase) >> 8
+                scores_mg[i] -= mg_penalty
+
+        mg_score = scores_mg[0] - scores_mg[1]
+        eg_score = scores_eg[0] - scores_eg[1]
+        final_score = (mg_score * phase + eg_score * inv_phase) >> 8
 
         # --- Mating Material Verification ---
-        if score > 0:
-            if pcz_w[0] == 0 and pcz_w[4] == 0 and pcz_w[3] == 0 and (pcz_w[1] + pcz_w[2]) < 2:
-                score //= 8
-        elif score < 0:
-            if pcz_b[0] == 0 and pcz_b[4] == 0 and pcz_b[3] == 0 and (pcz_b[1] + pcz_b[2]) < 2:
-                score //= 8
+        can_force_mate = [True, True]
+        for i, pcz in enumerate([pcz_w, pcz_b]):
+            if pcz[0] == 0 and pcz[4] == 0 and pcz[3] == 0 and (pcz[1] + pcz[2]) < 2:
+                can_force_mate[i] = False
 
-        return score if turn_to_move == 'white' else -score
+        if final_score > 0 and not can_force_mate[0]: final_score //= 8
+        elif final_score < 0 and not can_force_mate[1]: final_score //= 8
+
+        return final_score if turn_to_move == 'white' else -final_score
 
     def ponder_indefinitely(self):
         while not self.cancellation_event.is_set():

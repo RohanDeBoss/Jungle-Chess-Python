@@ -1,4 +1,4 @@
-# TablebaseViewer.py (v1.2 - Updated for unified 16-bit tables)
+# TablebaseViewer.py (v1.4 - Four independent DTM/turn panels)
 
 import os
 import numpy as np
@@ -7,7 +7,7 @@ from tkinter import ttk, messagebox
 from GameLogic import Board, King, Queen, Rook, Bishop, Knight, Pawn, is_in_check
 
 # --- CONFIGURATION ---
-TB_DIR = "tablebases"
+TB_DIR = "TBs"
 TB_SUFFIX = "_tb16.bin"
 SQUARE_SIZE = 60
 BOARD_COLOR_1 = "#D2B48C"
@@ -26,6 +26,16 @@ UNICODE_PIECES = {
     'K': '♔', 'Q': '♕', 'R': '♖', 'B': '♗', 'N': '♘', 'P': '♙',
     'k': '♚', 'q': '♛', 'r': '♜', 'b': '♝', 'n': '♞', 'p': '♟'
 }
+
+# Bucket definitions: key -> (display title, winner_label, turn_value_for_decode)
+BUCKET_ORDER = ("ww_wtm", "ww_btm", "bw_wtm", "bw_btm")
+BUCKET_TITLES = {
+    "ww_wtm": "White Wins  •  White to Move",
+    "ww_btm": "White Wins  •  Black to Move",
+    "bw_wtm": "Black Wins  •  White to Move",
+    "bw_btm": "Black Wins  •  Black to Move",
+}
+QUARTER_CAP = 25  # 4 buckets x 25 = 100 total, one full quota per winner/turn combo
 
 # --- SML COMPRESSION ARRAYS ---
 PAWN_WK_SQUARES = [r*8+c for r in range(8) for c in range(4)]
@@ -74,13 +84,15 @@ class TBViewerApp:
     def __init__(self, root):
         self.root = root
         self.root.title("Jungle Chess Tablebase Explorer")
-        self.root.geometry("900x650")
+        self.root.geometry("1280x780")
+        self.root.minsize(1100, 680)
         self.root.configure(bg="#1a1a2e")
 
         self.fens = []
-        self.current_fens = []
+        self.bucket_fens = {key: [] for key in BUCKET_ORDER}   # key -> [(dtm, fen), ...]
+        self.bucket_listboxes = {}                              # key -> Listbox
         self.categorized_files = {category: [] for category in CATEGORY_ORDER}
-        
+
         self.setup_styles()
         self.build_ui()
         self.load_file_list()
@@ -91,12 +103,15 @@ class TBViewerApp:
         style.configure('TFrame', background="#1a1a2e")
         style.configure('TLabel', background="#1a1a2e", foreground="#ffffff", font=('Helvetica', 11))
         style.configure('Header.TLabel', font=('Helvetica', 14, 'bold'))
+        style.configure('BucketTitle.TLabel', font=('Helvetica', 10, 'bold'), foreground="#e94560")
         style.configure('TButton', background="#e94560", foreground="#ffffff", font=('Helvetica', 11, 'bold'))
         style.map('TButton', background=[('active', '#d13550')])
+        style.configure('Bucket.TFrame', background="#16213e", relief='flat')
+        style.configure('BucketHeader.TFrame', background="#0f1729")
 
     def build_ui(self):
         top_frame = ttk.Frame(self.root)
-        top_frame.pack(side=tk.TOP, fill=tk.X, padx=10, pady=10)
+        top_frame.pack(side=tk.TOP, fill=tk.X, padx=14, pady=(14, 8))
 
         ttk.Label(top_frame, text="Category:").pack(side=tk.LEFT, padx=(0, 5))
         self.category_combo = ttk.Combobox(top_frame, state="readonly", width=20, font=('Helvetica', 11))
@@ -106,47 +121,74 @@ class TBViewerApp:
         ttk.Label(top_frame, text="Tablebase:").pack(side=tk.LEFT, padx=(10, 5))
         self.file_combo = ttk.Combobox(top_frame, state="readonly", width=30, font=('Helvetica', 11))
         self.file_combo.pack(side=tk.LEFT, padx=5)
-        
+
         self.load_btn = ttk.Button(top_frame, text="Extract Verified Longest Mates", command=self.load_tablebase)
         self.load_btn.pack(side=tk.LEFT, padx=10)
 
         content_frame = ttk.Frame(self.root)
-        content_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        content_frame.pack(fill=tk.BOTH, expand=True, padx=14, pady=(0, 14))
 
+        # --- LEFT: 2x2 grid of bucket panels ---
         left_frame = ttk.Frame(content_frame)
-        left_frame.pack(side=tk.LEFT, fill=tk.Y, padx=(0, 20))
+        left_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=False, padx=(0, 16))
 
-        ttk.Label(left_frame, text="Verified Positions (Max 100):").pack(anchor=tk.W)
-        
-        self.listbox = tk.Listbox(left_frame, width=45, height=25, bg="#16213e", fg="#ffffff", 
-                                  font=('Consolas', 10), selectbackground="#e94560", selectforeground="#ffffff")
-        self.listbox.pack(side=tk.LEFT, fill=tk.Y)
-        self.listbox.bind('<<ListboxSelect>>', self.on_select_fen)
+        grid_frame = ttk.Frame(left_frame)
+        grid_frame.pack(fill=tk.BOTH, expand=True)
 
-        scrollbar = ttk.Scrollbar(left_frame, orient=tk.VERTICAL, command=self.listbox.yview)
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        self.listbox.config(yscrollcommand=scrollbar.set)
+        for i, key in enumerate(BUCKET_ORDER):
+            row, col = divmod(i, 2)
+            self._build_bucket_panel(grid_frame, key, row, col)
 
+        grid_frame.grid_columnconfigure(0, weight=1)
+        grid_frame.grid_columnconfigure(1, weight=1)
+        grid_frame.grid_rowconfigure(0, weight=1)
+        grid_frame.grid_rowconfigure(1, weight=1)
+
+        # --- RIGHT: board + info + FEN ---
         right_frame = ttk.Frame(content_frame)
         right_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
-        self.canvas = tk.Canvas(right_frame, width=8 * SQUARE_SIZE + 40, height=8 * SQUARE_SIZE + 40, 
+        self.canvas = tk.Canvas(right_frame, width=8 * SQUARE_SIZE + 40, height=8 * SQUARE_SIZE + 40,
                                 bg="#1a1a2e", highlightthickness=0)
         self.canvas.pack(pady=10)
-        
+
         self.info_label = ttk.Label(right_frame, text="Select a position to view", font=('Helvetica', 12, 'italic'))
         self.info_label.pack(pady=5)
 
         fen_frame = ttk.Frame(right_frame)
         fen_frame.pack(fill=tk.X, pady=10)
-        
+
         ttk.Label(fen_frame, text="FEN:").pack(side=tk.LEFT)
         self.fen_entry = ttk.Entry(fen_frame, font=('Consolas', 11))
         self.fen_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=10)
-        
+
         ttk.Button(fen_frame, text="Copy FEN", command=self.copy_fen).pack(side=tk.RIGHT)
 
         self.draw_empty_board()
+
+    def _build_bucket_panel(self, parent, key, row, col):
+        panel = ttk.Frame(parent, style='Bucket.TFrame')
+        panel.grid(row=row, column=col, sticky="nsew", padx=6, pady=6)
+
+        header = ttk.Frame(panel, style='BucketHeader.TFrame')
+        header.pack(fill=tk.X)
+        ttk.Label(header, text=BUCKET_TITLES[key], style='BucketTitle.TLabel',
+                  background="#0f1729").pack(anchor=tk.W, padx=8, pady=6)
+
+        body = ttk.Frame(panel, style='Bucket.TFrame')
+        body.pack(fill=tk.BOTH, expand=True, padx=6, pady=(0, 6))
+
+        listbox = tk.Listbox(body, width=32, height=11, bg="#16213e", fg="#ffffff",
+                             font=('Consolas', 9), selectbackground="#e94560", selectforeground="#ffffff",
+                             borderwidth=0, highlightthickness=0, activestyle='none')
+        listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        listbox.bind('<<ListboxSelect>>', lambda e, k=key: self.on_select_fen(k))
+
+        scrollbar = ttk.Scrollbar(body, orient=tk.VERTICAL, command=listbox.yview)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        listbox.config(yscrollcommand=scrollbar.set)
+
+        self.bucket_listboxes[key] = listbox
 
     def load_file_list(self):
         if not os.path.exists(TB_DIR): os.makedirs(TB_DIR)
@@ -158,7 +200,7 @@ class TBViewerApp:
             if metadata is None:
                 continue
             self.categorized_files[metadata["category"]].append(f)
-        
+
         available_categories = [category for category in CATEGORY_ORDER if self.categorized_files[category]]
         self.category_combo['values'] = available_categories
         if self.category_combo['values']:
@@ -175,26 +217,26 @@ class TBViewerApp:
         """Verifies no overlapping pieces and that the passive player is not in check."""
         board = Board(setup=False)
         pos_set = set()
-        
+
         for char, pos in placements:
             if pos in pos_set: return False # Pieces overlapping
             pos_set.add(pos)
-            
+
             r, c = pos // 8, pos % 8
             color = 'white' if char.isupper() else 'black'
             piece_class = PIECE_CLASSES[char.upper()]
             board.add_piece(piece_class(color), r, c)
-            
+
         passive_color = 'black' if turn == 0 else 'white'
         if is_in_check(board, passive_color):
             return False # Passive player is in check (Illegal starting state)
-            
+
         return True
 
     def load_tablebase(self):
         filename = self.file_combo.get()
         if not filename: return
-        
+
         filepath = os.path.join(TB_DIR, filename)
         metadata = parse_tablebase_filename(filename)
         if metadata is None:
@@ -206,41 +248,66 @@ class TBViewerApp:
             data = np.memmap(filepath, dtype=np.int16, mode='r')
             data_flat = data.reshape(-1)
             abs_data = np.abs(data_flat)
-            
-            unique_dtms = np.unique(abs_data)
-            unique_dtms = sorted(unique_dtms[unique_dtms > 0], reverse=True)
 
-            self.current_fens = []
-            self.listbox.delete(0, tk.END)
+            n = len(data_flat)
+            turn0 = np.zeros(n, dtype=bool)   # True where flat index is even -> White to move
+            turn0[0::2] = True
+            turn1 = ~turn0
 
-            count = 0
-            for dtm_val in unique_dtms:
-                if count >= 100: break
-                
-                indices = np.where(abs_data == dtm_val)[0]
-                for idx in indices:
-                    if count >= 100: break
-                    
+            decisive_mask = abs_data > 0
+            white_wins_mask = decisive_mask & (((data_flat > 0) & turn0) | ((data_flat < 0) & turn1))
+            black_wins_mask = decisive_mask & ~white_wins_mask & decisive_mask
+
+            for key in self.bucket_fens:
+                self.bucket_fens[key] = []
+                self.bucket_listboxes[key].delete(0, tk.END)
+
+            bucket_masks = {
+                "ww_wtm": white_wins_mask & turn0,
+                "ww_btm": white_wins_mask & turn1,
+                "bw_wtm": black_wins_mask & turn0,
+                "bw_btm": black_wins_mask & turn1,
+            }
+
+            any_found = False
+
+            for key in BUCKET_ORDER:
+                mask = bucket_masks[key]
+                side_indices = np.where(mask)[0]
+                if len(side_indices) == 0:
+                    continue
+                order = np.argsort(-abs_data[side_indices])
+                ranked_indices = side_indices[order]
+
+                bucket_count = 0
+                listbox = self.bucket_listboxes[key]
+                for idx in ranked_indices:
+                    if bucket_count >= QUARTER_CAP:
+                        break
+                    idx = int(idx)
                     placements, turn = self.decode_placements(idx, metadata, has_pawn)
                     if not placements: continue
-                    
-                    # --- CRITICAL FIX: Ghost State Filter ---
-                    if not self._is_position_legal(placements, turn):
-                        continue 
-                        
-                    fen = self.build_fen(placements, turn)
-                    self.current_fens.append((dtm_val, fen))
-                    turn_char = "W" if turn == 0 else "B"
-                    winner = "White Wins" if (turn == 0 and data_flat[idx] > 0) or (turn == 1 and data_flat[idx] < 0) else "Black Wins"
-                    self.listbox.insert(tk.END, f"#{count+1} DTM {dtm_val} ({winner}) [{turn_char} to move]")
-                    count += 1
 
-            if not self.current_fens:
+                    if not self._is_position_legal(placements, turn):
+                        continue
+
+                    fen = self.build_fen(placements, turn)
+                    dtm_val = int(abs_data[idx])
+                    self.bucket_fens[key].append((dtm_val, fen))
+                    listbox.insert(tk.END, f"#{bucket_count+1}  DTM {dtm_val}")
+                    bucket_count += 1
+                    any_found = True
+
+            if not any_found:
                 messagebox.showinfo("Result", "No decisive, legal positions found.")
                 return
-                
-            self.listbox.selection_set(0)
-            self.on_select_fen(None)
+
+            # Auto-select the first available entry across buckets, in display order
+            for key in BUCKET_ORDER:
+                if self.bucket_fens[key]:
+                    self.bucket_listboxes[key].selection_set(0)
+                    self.on_select_fen(key)
+                    break
 
         except Exception as e:
             messagebox.showerror("Error", f"Failed to parse tablebase:\n{e}")
@@ -327,13 +394,22 @@ class TBViewerApp:
 
         return "/".join(fen_rows) + f" {'w' if turn == 0 else 'b'} - - 0 1"
 
-    def on_select_fen(self, event):
-        if not self.listbox.curselection(): return
-        idx = self.listbox.curselection()[0]
-        dtm, fen = self.current_fens[idx]
+    def on_select_fen(self, key):
+        listbox = self.bucket_listboxes[key]
+        if not listbox.curselection(): return
+
+        # Deselect the other three panels so it's always clear which one is active
+        for other_key, other_box in self.bucket_listboxes.items():
+            if other_key != key:
+                other_box.selection_clear(0, tk.END)
+
+        idx = listbox.curselection()[0]
+        dtm, fen = self.bucket_fens[key][idx]
         self.fen_entry.delete(0, tk.END)
         self.fen_entry.insert(0, fen)
-        self.info_label.config(text=f"Verified Longest Mate: {dtm} plies ({(dtm + 1)//2} moves)")
+        self.info_label.config(
+            text=f"{BUCKET_TITLES[key]}  —  Verified Longest Mate: {dtm} plies ({(dtm + 1)//2} moves)"
+        )
         self.draw_board_from_fen(fen)
 
     def draw_empty_board(self):
@@ -366,6 +442,7 @@ class TBViewerApp:
         if fen:
             self.root.clipboard_clear()
             self.root.clipboard_append(fen)
+            self.root.update()  # force an eager clipboard write so it survives app close
             messagebox.showinfo("Copied", "FEN copied to clipboard!")
 
 if __name__ == "__main__":
