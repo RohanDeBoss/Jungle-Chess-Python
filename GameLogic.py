@@ -1,4 +1,4 @@
-# GameLogic.py (v65 - Zero-Allocation Material Swings and Inlined King Math)
+# GameLogic.py (v66 - squares are attacked more efficiently)
 
 
 # -----------------------------------------------------------------------
@@ -73,7 +73,30 @@ def _init_rays():
         BISHOP_ZIGZAG_RAYS[sq] = tuple(tuple(ray) for ray in zigzag_tmp[sq])
 
 _init_rays()
+# --- PRECOMPUTED KNIGHT EVAPORATION TABLE ---
+KNIGHT_EVAP_SQUARES = [[None] * 64 for _ in range(64)]
 
+def _init_knight_evap():
+    for r1 in range(8):
+        for c1 in range(8):
+            idx1 = r1 * 8 + c1
+            jumps1 = set(KNIGHT_ATTACKS_FROM[(r1, c1)])
+            for r2 in range(8):
+                for c2 in range(8):
+                    idx2 = r2 * 8 + c2
+                    sq2 = (r2, c2)
+                    
+                    # 1. Direct threat (1 jump away)
+                    if sq2 in jumps1:
+                        KNIGHT_EVAP_SQUARES[idx1][idx2] = True
+                    else:
+                        # 2. Indirect threat (2 jumps away - intentionally allows idx1==idx2 boomerang)
+                        jumps2 = set(KNIGHT_ATTACKS_FROM[sq2])
+                        shared = jumps1.intersection(jumps2)
+                        if shared:
+                            KNIGHT_EVAP_SQUARES[idx1][idx2] = tuple(shared)
+
+_init_knight_evap()
 
 def _clone_piece_fast(piece):
     cls       = piece.__class__
@@ -543,25 +566,6 @@ def _bishop_attacks_square(board, start, tr, tc, bishop_color):
                 break
     return False
 
-
-def _king_attacks_square(grid, kr, kc, r, c):
-    dr = r - kr
-    dc = c - kc
-    abs_dr = dr if dr >= 0 else -dr
-    abs_dc = dc if dc >= 0 else -dc
-    
-    # Fast short-circuit: Kings never attack beyond 2 squares
-    if abs_dr > 2 or abs_dc > 2:
-        return False
-        
-    m_dist = abs_dr if abs_dr > abs_dc else abs_dc
-    
-    if m_dist == 1:
-        return True
-    if m_dist == 2 and (abs_dr == abs_dc or abs_dr == 0 or abs_dc == 0):
-        return grid[kr + dr // 2][kc + dc // 2] is None
-    return False
-
 def is_square_attacked(board, r, c, attacking_color):
     grid            = board.grid
     defending_color = 'black' if attacking_color == 'white' else 'white'
@@ -569,94 +573,109 @@ def is_square_attacked(board, r, c, attacking_color):
     attacker_counts = board.piece_counts_z[attacking_color]
     attacking_king_pos = board.white_king_pos if attacking_color == 'white' else board.black_king_pos
 
+    # 1. PAWN ATTACKS
+    pawn_move_dir = -1 if attacking_color == 'white' else 1
+    pr = r - pawn_move_dir
+    if 0 <= pr < 8:
+        p = grid[pr][c]
+        if p is not None and p.z_idx == 0 and p.color == attacking_color:
+            return True
+        if p is None:
+            two_pr = r - (2 * pawn_move_dir)
+            starting_row = 6 if attacking_color == 'white' else 1
+            if two_pr == starting_row:
+                p2 = grid[two_pr][c]
+                if p2 is not None and p2.z_idx == 0 and p2.color == attacking_color:
+                    return True
+                    
+    if c > 0:
+        p = grid[r][c - 1]
+        if p is not None and p.z_idx == 0 and p.color == attacking_color:
+            return True
+    if c < 7:
+        p = grid[r][c + 1]
+        if p is not None and p.z_idx == 0 and p.color == attacking_color:
+            return True
+
+    # 2. KNIGHT ATTACKS (O(1) Precomputed Table)
+    if attacker_counts[1] > 0:
+        target_idx = r * 8 + c
+        for piece in attacking_pieces:
+            if piece.z_idx == 1 and piece.pos:
+                p_idx = piece.pos[0] * 8 + piece.pos[1]
+                evap = KNIGHT_EVAP_SQUARES[p_idx][target_idx]
+                if evap is True:
+                    return True
+                elif evap is not None:
+                    for zr, zc in evap:
+                        if grid[zr][zc] is None:
+                            return True
+
+    # 3. KING ATTACKS (Inlined)
+    if attacking_king_pos:
+        kr, kc = attacking_king_pos
+        dr = r - kr
+        dc = c - kc
+        abs_dr = dr if dr >= 0 else -dr
+        abs_dc = dc if dc >= 0 else -dc
+        if abs_dr <= 2 and abs_dc <= 2:
+            m_dist = abs_dr if abs_dr > abs_dc else abs_dc
+            if m_dist == 1:
+                return True
+            if m_dist == 2 and (abs_dr == abs_dc or abs_dr == 0 or abs_dc == 0):
+                if grid[kr + dr // 2][kc + dc // 2] is None:
+                    return True
+                    
     if len(attacking_pieces) == attacker_counts[5]:
-        if attacking_king_pos:
-            return _king_attacks_square(grid, attacking_king_pos[0], attacking_king_pos[1], r, c)
         return False
 
-    if attacker_counts[1] > 0:
-        for pr, pc in KNIGHT_ATTACKS_FROM[(r, c)]:
-            p = grid[pr][pc]
-            if p is not None:
-                if p.z_idx == 1 and p.color == attacking_color:
-                    return True
-            else:
-                for qr, qc in KNIGHT_ATTACKS_FROM[(pr, pc)]:
-                    q = grid[qr][qc]
-                    if q is not None and q.z_idx == 1 and q.color == attacking_color:
+    # 4. ROOKS & BISHOPS
+    has_rooks = attacker_counts[3] > 0
+    has_bishops = attacker_counts[2] > 0
+    if has_rooks or has_bishops:
+        start_index = r * 8 + c
+        if has_rooks:
+            for i in range(4):
+                for cr, cc in RAYS[start_index][i]:
+                    piece = grid[cr][cc]
+                    if piece is not None:
+                        if piece.color == attacking_color:
+                            if piece.z_idx == 3: return True
+                            break
+        if has_bishops:
+            for i in range(4, 8):
+                for cr, cc in RAYS[start_index][i]:
+                    piece = grid[cr][cc]
+                    if piece is not None:
+                        if piece.color == attacking_color and piece.z_idx == 2:
+                            return True
+                        break
+
+    # 5. BISHOP ZIG-ZAG
+    if has_bishops:
+        target_parity = (r + c) & 1
+        for piece in attacking_pieces:
+            if piece.z_idx == 2 and piece.pos:
+                if ((piece.pos[0] + piece.pos[1]) & 1) == target_parity:
+                    if _bishop_attacks_square(board, piece.pos, r, c, attacking_color):
                         return True
 
+    # 6. QUEEN EXPLOSIONS
     if attacker_counts[4] > 0:
         for piece in attacking_pieces:
             if piece.z_idx == 4 and piece.pos:
-                qr, qc = piece.pos
-                q_idx  = qr * COLS + qc
+                q_idx = piece.pos[0] * 8 + piece.pos[1]
                 for i in range(8):
                     for cr, cc in RAYS[q_idx][i]:
                         target = grid[cr][cc]
                         if target is not None:
                             if target.color == defending_color:
-                                if abs(cr - r) <= 1 and abs(cc - c) <= 1:
+                                dr = cr - r
+                                dc = cc - c
+                                if (dr >= -1 and dr <= 1) and (dc >= -1 and dc <= 1):
                                     return True
                             break
-
-    has_rooks   = attacker_counts[3] > 0
-    start_index = r * COLS + c
-
-    for direction_idx, ray_path in enumerate(RAYS[start_index]):
-        is_orthogonal = direction_idx < 4
-        for cr, cc in ray_path:
-            piece = grid[cr][cc]
-            if piece is None:
-                continue
-            p_z = piece.z_idx
-            if piece.color == attacking_color:
-                if is_orthogonal:
-                    if p_z == 3: # Rook
-                        return True
-                else:
-                    if p_z == 2: # Bishop (no defenders possible; we would have broken already)
-                        return True
-                break
-            else:
-                # We hit a defending piece (a blocker).
-                # Diagonals don't pierce. Orthogonals only pierce if Rooks are on the board.
-                if not is_orthogonal or not has_rooks:
-                    break
-
-    pawn_move_dir = -1 if attacking_color == 'white' else 1
-    pr = r - pawn_move_dir
-    if 0 <= pr < ROWS:
-        p = grid[pr][c]
-        if p is not None and p.color == attacking_color and p.z_idx == 0:
-            return True
-        elif p is None:
-            two_pr       = r - (2 * pawn_move_dir)
-            starting_row = 6 if attacking_color == 'white' else 1
-            if 0 <= two_pr < ROWS and two_pr == starting_row:
-                p2 = grid[two_pr][c]
-                if p2 is not None and p2.color == attacking_color and p2.z_idx == 0:
-                    return True
-
-    for dc_off in (-1, 1):
-        pc = c + dc_off
-        if 0 <= pc < COLS:
-            p = grid[r][pc]
-            if p is not None and p.color == attacking_color and p.z_idx == 0:
-                return True
-
-    if attacking_king_pos:
-        if _king_attacks_square(grid, attacking_king_pos[0], attacking_king_pos[1], r, c):
-            return True
-
-    if attacker_counts[2] > 0:
-        target_parity = (r + c) & 1
-        for piece in attacking_pieces:
-            pos = piece.pos
-            if piece.z_idx == 2 and pos and ((pos[0] + pos[1]) & 1) == target_parity:
-                if _bishop_attacks_square(board, pos, r, c, attacking_color):
-                    return True
-
+                            
     return False
 
 
