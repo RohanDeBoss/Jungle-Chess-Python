@@ -1,4 +1,4 @@
-# GameLogic.py (v68 - performance and cleanup)
+# GameLogic.py (v68.1 - performance and cleanup 2)
 
 
 # -----------------------------------------------------------------------
@@ -9,6 +9,7 @@ ROWS, COLS = 8, 8
 SQUARE_SIZE = 75
 BOARD_COLOR_1 = "#D2B48C"
 BOARD_COLOR_2 = "#8B5A2B"
+OPPONENT_COLOR = {'white': 'black', 'black': 'white'}
 
 DIRECTIONS = {
     'king':   ((-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (-1, 1), (1, -1), (1, 1)),
@@ -252,13 +253,13 @@ class Bishop(Piece):
                 target = grid[r][c]
                 if target:
                     if target.color != self.color:
-                        idx = r * 8 + c
+                        idx = r * COLS + c
                         bit = 1 << idx
                         if not (seen_mask & bit):
                             seen_mask |= bit
                             moves.append((pos, (r, c)))
                     break
-                idx = r * 8 + c
+                idx = r * COLS + c
                 bit = 1 << idx
                 if not (seen_mask & bit):
                     seen_mask |= bit
@@ -269,13 +270,13 @@ class Bishop(Piece):
                 target = grid[r][c]
                 if target:
                     if target.color != self.color:
-                        idx = r * 8 + c
+                        idx = r * COLS + c
                         bit = 1 << idx
                         if not (seen_mask & bit):
                             seen_mask |= bit
                             moves.append((pos, (r, c)))
                     break
-                idx = r * 8 + c
+                idx = r * COLS + c
                 bit = 1 << idx
                 if not (seen_mask & bit):
                     seen_mask |= bit
@@ -745,20 +746,16 @@ def is_in_check(board, color):
     king_pos = board.white_king_pos if color == 'white' else board.black_king_pos
     if not king_pos:
         return True
-    opponent_color = "black" if color == "white" else "white"
-    return is_square_attacked(board, king_pos[0], king_pos[1], opponent_color)
+    return is_square_attacked(board, king_pos[0], king_pos[1], OPPONENT_COLOR[color])
 
 
 def generate_legal_moves_generator(board, color, yield_boards=False):
-    opp_color = "black" if color == "white" else "white"
     piece_list = list(board.white_pieces if color == 'white' else board.black_pieces)
     for piece in piece_list:
         if piece.pos is None: continue
         for move in piece.get_valid_moves(board, piece.pos):
-            record   = board.make_move_track(move[0], move[1])
-
-            my_kp = board.white_king_pos if color == 'white' else board.black_king_pos
-            legal = (my_kp is not None and not is_square_attacked(board, my_kp[0], my_kp[1], opp_color))
+            record = board.make_move_track(move[0], move[1])
+            legal = not is_in_check(board, color)
             
             if legal and yield_boards:
                 result_board = board.clone()
