@@ -1,4 +1,4 @@
-# GameLogic.py (v67 - precalculated knight rays)
+# GameLogic.py (v67.1 - precalculated knight rays with free performance)
 
 
 # -----------------------------------------------------------------------
@@ -114,6 +114,8 @@ def _clone_piece_fast(piece):
         new_piece.direction    = piece.direction
         new_piece.starting_row = piece.starting_row
         new_piece.promo_rank   = piece.promo_rank
+    elif cls is Knight:
+        new_piece._knight_list_pos = getattr(piece, '_knight_list_pos', -1)
     return new_piece
 
 
@@ -290,6 +292,8 @@ class Board:
         self.black_king_pos = None
         self.white_pieces   = []
         self.black_pieces   = []
+        self.white_knights  = []
+        self.black_knights  = []
         self.piece_counts   = {
             'white': {Pawn: 0, Knight: 0, Bishop: 0, Rook: 0, Queen: 0, King: 0},
             'black': {Pawn: 0, Knight: 0, Bishop: 0, Rook: 0, Queen: 0, King: 0},
@@ -319,6 +323,10 @@ class Board:
         lst             = self.white_pieces if piece.color == 'white' else self.black_pieces
         piece._list_pos = len(lst)
         lst.append(piece)
+        if piece.z_idx == 1:
+            klst = self.white_knights if piece.color == 'white' else self.black_knights
+            piece._knight_list_pos = len(klst)
+            klst.append(piece)
 
     def _list_remove(self, piece):
         """
@@ -335,6 +343,16 @@ class Board:
         last._list_pos = idx
         lst.pop()
         piece._list_pos = -1
+        
+        if piece.z_idx == 1:
+            kidx = getattr(piece, '_knight_list_pos', -1)
+            if kidx >= 0:
+                klst = self.white_knights if piece.color == 'white' else self.black_knights
+                klast = klst[-1]
+                klst[kidx] = klast
+                klast._knight_list_pos = kidx
+                klst.pop()
+                piece._knight_list_pos = -1
 
     # ---- Board mutation primitives ----------------------------------------
 
@@ -387,6 +405,13 @@ class Board:
         black_pieces = [_clone_piece_fast(p) for p in self.black_pieces]
         new_board.white_pieces = white_pieces
         new_board.black_pieces = black_pieces
+        
+        new_board.white_knights = [p for p in white_pieces if p.z_idx == 1]
+        for i, p in enumerate(new_board.white_knights):
+            p._knight_list_pos = i
+        new_board.black_knights = [p for p in black_pieces if p.z_idx == 1]
+        for i, p in enumerate(new_board.black_knights):
+            p._knight_list_pos = i
 
         grid = new_board.grid
         for p in white_pieces:
@@ -606,8 +631,9 @@ def is_square_attacked(board, r, c, attacking_color):
     # 2. KNIGHT ATTACKS (Strictly Non-Functional, O(1) Precomputed Evaporation)
     if attacker_counts[1] > 0:
         target_idx = r * 8 + c
-        for piece in attacking_pieces:
-            if piece.z_idx == 1 and piece.pos:
+        attacking_knights = board.white_knights if attacking_color == 'white' else board.black_knights
+        for piece in attacking_knights:
+            if piece.pos:
                 p_idx = piece.pos[0] * 8 + piece.pos[1]
                 evap = KNIGHT_EVAP_SQUARES[p_idx][target_idx]
                 if evap is True:
