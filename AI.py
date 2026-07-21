@@ -1,4 +1,4 @@
-# AI.py (v119 Eval caching in Negamax)
+# AI.py (v120 Inline Min/Max for free performance)
 
 import json
 import os
@@ -815,7 +815,8 @@ class ChessBot:
             if score > best_score_this_iter:
                 best_score_this_iter = score
                 best_move_this_iter  = move
-            alpha = max(alpha, best_score_this_iter)
+            if best_score_this_iter > alpha:
+                alpha = best_score_this_iter
 
         return best_score_this_iter, best_move_this_iter
 
@@ -856,9 +857,12 @@ class ChessBot:
 
             self.used_heuristic_eval = True
 
-            if tt_entry.flag == TT_FLAG_EXACT:       return tt_score
-            elif tt_entry.flag == TT_FLAG_LOWERBOUND: alpha = max(alpha, tt_score)
-            elif tt_entry.flag == TT_FLAG_UPPERBOUND: beta  = min(beta,  tt_score)
+            if tt_entry.flag == TT_FLAG_EXACT:
+                return tt_score
+            elif tt_entry.flag == TT_FLAG_LOWERBOUND:
+                if tt_score > alpha: alpha = tt_score
+            elif tt_entry.flag == TT_FLAG_UPPERBOUND:
+                if tt_score < beta: beta = tt_score
             if alpha >= beta: return tt_score
 
         if depth <= 0: return self.qsearch(board, alpha, beta, turn, ply, current_hash=hash_val)
@@ -1104,25 +1108,15 @@ class ChessBot:
 
         if ply >= self.MAX_Q_SEARCH_DEPTH:
             self.used_heuristic_eval = True
-            if hash_val in self.eval_tt: return self.eval_tt[hash_val]
-            score = self.evaluate_board(board, turn)
-            if len(self.eval_tt) > 5_000_000: self.eval_tt.clear()
-            self.eval_tt[hash_val] = score
-            return score
+            return self._get_cached_static_eval(board, turn, hash_val)
 
         self.used_heuristic_eval = True
         is_in_check_flag = is_in_check(board, turn)
 
         if not is_in_check_flag:
-            if hash_val in self.eval_tt:
-                stand_pat = self.eval_tt[hash_val]
-            else:
-                stand_pat = self.evaluate_board(board, turn)
-                if len(self.eval_tt) > 5_000_000: self.eval_tt.clear()
-                self.eval_tt[hash_val] = stand_pat
-
+            stand_pat = self._get_cached_static_eval(board, turn, hash_val)
             if stand_pat >= beta: return beta
-            alpha = max(alpha, stand_pat)
+            if stand_pat > alpha: alpha = stand_pat
 
         if ply <= 4:
             current_margin = self.Q_MARGIN_MAX
@@ -1187,7 +1181,7 @@ class ChessBot:
             board.unmake_move(record)
 
             if search_score >= beta: return beta
-            alpha = max(alpha, search_score)
+            if search_score > alpha: alpha = search_score
 
         # NOTE: has_legal_moves() here looks like it violates "no legal move checks in
         # qsearch," but it short-circuits on the first legal move found, so it's ~O(1) in
