@@ -1,4 +1,4 @@
-# AI.py (v118.2 qsearch in-check eval skip + z-count hot paths)
+# AI.py (v119 Eval caching in Negamax)
 
 import json
 import os
@@ -307,6 +307,20 @@ class ChessBot:
         self.counter_moves = [[[None for _ in range(64)] for _ in range(64)] for _ in range(2)]
         # [color][prev_piece_type][prev_to_sq][my_piece_type][my_to_sq]
         self.continuation_history = [[[[[0] * 64 for _ in range(6)] for _ in range(64)] for _ in range(6)] for _ in range(2)]
+
+    def _get_cached_static_eval(self, board, turn, hash_val):
+        """
+        Static eval is purely a function of (board, turn) — no depth or alpha/beta
+        dependence — so it's safe to cache and reuse across any node that
+        transposes to the same position, exactly like qsearch's stand_pat cache.
+        """
+        cached = self.eval_tt.get(hash_val)
+        if cached is not None:
+            return cached
+        val = self.evaluate_board(board, turn)
+        if len(self.eval_tt) > 5_000_000: self.eval_tt.clear()
+        self.eval_tt[hash_val] = val
+        return val
 
     def _store_tt(self, hash_val, score, depth, flag, move):
         existing = self.tt.get(hash_val)
@@ -871,7 +885,7 @@ class ChessBot:
                 if (pc['white'][1] + pc['white'][2] + pc['white'][3] + pc['white'][4] > 0 and
                         pc['black'][1] + pc['black'][2] + pc['black'][3] + pc['black'][4] > 0):
                     self.used_heuristic_eval = True
-                    static_eval = self.evaluate_board(board, turn)
+                    static_eval = self._get_cached_static_eval(board, turn, hash_val)
                     if static_eval >= beta:
                         reduction  = self.NMP_BASE_REDUCTION + (depth // self.NMP_DEPTH_DIVISOR)
                         null_hash  = hash_val ^ ZOBRIST_TURN
@@ -886,7 +900,7 @@ class ChessBot:
                     abs(alpha) < self.MATE_SCORE - 1000 and total_pieces > 6): # Disabled in endgame
                 self.used_heuristic_eval = True
                 if static_eval is None:
-                    static_eval = self.evaluate_board(board, turn)
+                    static_eval = self._get_cached_static_eval(board, turn, hash_val)
                 if static_eval + self.FUTILITY_MARGIN < alpha:
                     futility_prune = True
 
