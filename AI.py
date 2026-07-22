@@ -1,4 +1,4 @@
-# AI.py (v121.1 precomputed slices)
+# AI.py (v121.3 Unrolling pawns + Hoisting)
 
 import json
 import os
@@ -1129,7 +1129,13 @@ class ChessBot:
         tt_move = tt_entry.best_move if tt_entry else None
         
         opponent_turn = 'black' if turn == 'white' else 'white'
-        has_enemy_knights = board.piece_counts_z[opponent_turn][1] > 0
+        
+        # HOIST: Precompute enemy knight 1D indices outside the move loop
+        enemy_knight_indices = []
+        if board.piece_counts_z[opponent_turn][1] > 0:
+            for k in board.pieces_by_z[opponent_turn][1]:
+                if k.pos:
+                    enemy_knight_indices.append(k.pos[0] * 8 + k.pos[1])
 
         for move in promising_moves:
             (r1, c1), (r2, c2) = move
@@ -1141,9 +1147,10 @@ class ChessBot:
             if not is_in_check_flag and target_piece is None:
                 if my_z in (2, 4, 5) or (my_z == 0 and r2 != moving_piece.promo_rank):
                     gets_evaporated = False
-                    if has_enemy_knights:
-                        for knight in board.pieces_by_z[opponent_turn][1]:
-                            if knight.pos and (r2, c2) in KNIGHT_ATTACKS_FROM[knight.pos]:
+                    if enemy_knight_indices:
+                        target_idx = r2 * 8 + c2
+                        for kp_idx in enemy_knight_indices:
+                            if KNIGHT_EVAP_SQUARES[kp_idx][target_idx] is True:
                                 gets_evaporated = True
                                 break
                     if not gets_evaporated:
@@ -1202,7 +1209,13 @@ class ChessBot:
 
         grid = board.grid
         opponent_turn = 'black' if turn == 'white' else 'white'
-        has_enemy_knights = board.piece_counts_z[opponent_turn][1] > 0
+        
+        # HOIST: Precompute enemy knight 1D indices outside the move loop
+        enemy_knight_indices = []
+        if board.piece_counts_z[opponent_turn][1] > 0:
+            for k in board.pieces_by_z[opponent_turn][1]:
+                if k.pos:
+                    enemy_knight_indices.append(k.pos[0] * 8 + k.pos[1])
 
         for move in moves:
             (r1, c1), (r2, c2) = move
@@ -1215,9 +1228,10 @@ class ChessBot:
             if target_piece is None:
                 if my_z in (2, 4, 5) or (my_z == 0 and r2 != moving_piece.promo_rank):
                     gets_evaporated = False
-                    if has_enemy_knights:
-                        for knight in board.pieces_by_z[opponent_turn][1]:
-                            if knight.pos and (r2, c2) in KNIGHT_ATTACKS_FROM[knight.pos]:
+                    if enemy_knight_indices:
+                        target_idx = r2 * 8 + c2
+                        for kp_idx in enemy_knight_indices:
+                            if KNIGHT_EVAP_SQUARES[kp_idx][target_idx] is True:
                                 gets_evaporated = True
                                 break
                     if not gets_evaporated:
@@ -1282,28 +1296,22 @@ class ChessBot:
 
         grid = board.grid
 
-        white_pawn_files = [False] * COLS
-        black_pawn_files = [False] * COLS
-        # For white pawn (moving toward row 0) to be passed, need no black pawn at row < r.
-        # Track the MINIMUM row of black pawns per file.
-        black_pawn_min_row = [8] * COLS
-        # For black pawn (moving toward row 7) to be passed, need no white pawn at row > r.
-        # Track the MAXIMUM row of white pawns per file.
-        white_pawn_max_row = [-1] * COLS
+        black_pawn_min_row = [8, 8, 8, 8, 8, 8, 8, 8]
+        white_pawn_max_row = [-1, -1, -1, -1, -1, -1, -1, -1]
 
         pc_wz = board.piece_counts_z['white']
         pc_bz = board.piece_counts_z['black']
-        total_pawns = pc_wz[0] + pc_bz[0]
-        if total_pawns > 0:
+        
+        # Kept board.white_pieces to avoid dictionary/hash overhead
+        if pc_wz[0] > 0:
             for piece in board.white_pieces:
                 if piece.z_idx == 0:
                     r, c = piece.pos
-                    white_pawn_files[c] = True
                     if r > white_pawn_max_row[c]: white_pawn_max_row[c] = r
+        if pc_bz[0] > 0:
             for piece in board.black_pieces:
                 if piece.z_idx == 0:
                     r, c = piece.pos
-                    black_pawn_files[c] = True
                     if r < black_pawn_min_row[c]: black_pawn_min_row[c] = r
 
         scores_mg = [0, 0]; scores_eg = [0, 0]
@@ -1371,21 +1379,19 @@ class ChessBot:
 
                     is_passed = True
                     if is_white:
-                        for pc in (c - 1, c, c + 1):
-                            if 0 <= pc < COLS and black_pawn_files[pc]:
-                                # Same file: enemy pawn must be strictly ahead (< r)
-                                if pc == c and black_pawn_min_row[pc] < r:
-                                    is_passed = False; break
-                                # Adjacent file: enemy pawn can capture sideways if on the same rank (<= r)
-                                elif pc != c and black_pawn_min_row[pc] <= r:
-                                    is_passed = False; break
+                        if black_pawn_min_row[c] < r:
+                            is_passed = False
+                        elif c > 0 and black_pawn_min_row[c - 1] <= r:
+                            is_passed = False
+                        elif c < 7 and black_pawn_min_row[c + 1] <= r:
+                            is_passed = False
                     else:
-                        for pc in (c - 1, c, c + 1):
-                            if 0 <= pc < COLS and white_pawn_files[pc]:
-                                if pc == c and white_pawn_max_row[pc] > r:
-                                    is_passed = False; break
-                                elif pc != c and white_pawn_max_row[pc] >= r:
-                                    is_passed = False; break
+                        if white_pawn_max_row[c] > r:
+                            is_passed = False
+                        elif c > 0 and white_pawn_max_row[c - 1] >= r:
+                            is_passed = False
+                        elif c < 7 and white_pawn_max_row[c + 1] >= r:
+                            is_passed = False
                                     
                     if is_passed:
                         advance = max(0, (6 - r) if is_white else (r - 1))
@@ -1394,8 +1400,9 @@ class ChessBot:
                 elif z == 3: # Rook
                     if enemy_king and (r == enemy_king[0] or c == enemy_king[1]):
                         scores_mg[color_idx] += ROOK_ALIGNMENT_BONUS
-                    my_pawn_files = white_pawn_files if is_white else black_pawn_files
-                    if not my_pawn_files[c]:
+                        
+                    has_pawn = (white_pawn_max_row[c] != -1) if is_white else (black_pawn_min_row[c] != 8)
+                    if not has_pawn:
                         scores_mg[color_idx] += ROOK_OPEN_FILE_BONUS_MG
                         scores_eg[color_idx] += ROOK_OPEN_FILE_BONUS_EG
 
