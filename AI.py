@@ -1,4 +1,4 @@
-# AI.py (v120 Inline Min/Max for free performance)
+# AI.py (v121 Optimized Evaporation Check)
 
 import json
 import os
@@ -1142,9 +1142,8 @@ class ChessBot:
                 if my_z in (2, 4, 5) or (my_z == 0 and r2 != moving_piece.promo_rank):
                     gets_evaporated = False
                     if has_enemy_knights:
-                        for kr, kc in KNIGHT_ATTACKS_FROM[(r2, c2)]:
-                            kp = grid[kr][kc]
-                            if kp is not None and kp.z_idx == 1 and kp.color == opponent_turn:
+                        for knight in board.pieces_by_z[opponent_turn][1]:
+                            if knight.pos and (r2, c2) in KNIGHT_ATTACKS_FROM[knight.pos]:
                                 gets_evaporated = True
                                 break
                     if not gets_evaporated:
@@ -1217,9 +1216,8 @@ class ChessBot:
                 if my_z in (2, 4, 5) or (my_z == 0 and r2 != moving_piece.promo_rank):
                     gets_evaporated = False
                     if has_enemy_knights:
-                        for kr, kc in KNIGHT_ATTACKS_FROM[(r2, c2)]:
-                            kp = grid[kr][kc]
-                            if kp is not None and kp.z_idx == 1 and kp.color == opponent_turn:
+                        for knight in board.pieces_by_z[opponent_turn][1]:
+                            if knight.pos and (r2, c2) in KNIGHT_ATTACKS_FROM[knight.pos]:
                                 gets_evaporated = True
                                 break
                     if not gets_evaporated:
