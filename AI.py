@@ -1,4 +1,4 @@
-# AI.py (v121 Optimized Evaporation Check)
+# AI.py (v121.1 precomputed slices)
 
 import json
 import os
@@ -1401,7 +1401,7 @@ class ChessBot:
 
                     # --- JUNGLE-NATIVE MOBILITY (Piercing) ---
                     mobility = 0
-                    for ray in RAYS[sq][:4]: # Orthogonal rays
+                    for ray in RAYS_ORTHOGONAL[sq]: # Orthogonal rays
                         for cr, cc in ray:
                             target = grid[cr][cc]
                             if target is not None:
@@ -1414,7 +1414,7 @@ class ChessBot:
                 elif z == 2: # Bishop
                     # --- JUNGLE-NATIVE MOBILITY (Sliding & Zigzag) ---
                     mobility = 0
-                    for ray in RAYS[sq][4:]: # Diagonal rays
+                    for ray in RAYS_DIAGONAL[sq]: # Diagonal rays
                         for cr, cc in ray:
                             target = grid[cr][cc]
                             if target is not None:
@@ -1442,7 +1442,7 @@ class ChessBot:
                             scores_mg[color_idx] += KNIGHT_ACTIVITY_BONUS
                             scores_eg[color_idx] += KNIGHT_ACTIVITY_BONUS
                         if ekr is not None and not has_attacked_king_zone:
-                            if abs(ar - ekr) <= 2 and abs(ac - ekc) <= 2:
+                            if -2 <= ar - ekr <= 2 and -2 <= ac - ekc <= 2:
                                 king_zone_attacks[1 - color_idx] += 1
                                 has_attacked_king_zone = True
 
@@ -1510,7 +1510,9 @@ class ChessBot:
                 scores_eg[i] -= vuln_penalty
 
         if king_pos[0] and king_pos[1]:
-            dist = abs(king_pos[0][0] - king_pos[1][0]) + abs(king_pos[0][1] - king_pos[1][1])
+            dr = king_pos[0][0] - king_pos[1][0]
+            dc = king_pos[0][1] - king_pos[1][1]
+            dist = (dr if dr >= 0 else -dr) + (dc if dc >= 0 else -dc)
             tropism_penalty = (dist * dist * inv_phase * 50) // 50176
             if scores_eg[0] > scores_eg[1]: scores_eg[0] -= tropism_penalty
             elif scores_eg[1] > scores_eg[0]: scores_eg[1] -= tropism_penalty

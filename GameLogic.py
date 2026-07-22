@@ -1,4 +1,4 @@
-# GameLogic.py (v68.3 - nonfunc cleanup)
+# GameLogic.py (v68.4 - precomputes slices support)
 
 
 # -----------------------------------------------------------------------
@@ -45,6 +45,8 @@ ADJACENT_SQUARES_MAP = {
 
 # RAYS[sq_index][direction_index] — inner sequences are tuples (read-only)
 RAYS = [[None] * 8 for _ in range(64)]
+RAYS_ORTHOGONAL = [None] * 64
+RAYS_DIAGONAL = [None] * 64
 BISHOP_ZIGZAG_RAYS = [None] * 64
 
 def _init_rays():
@@ -71,6 +73,8 @@ def _init_rays():
                     cd = d2 if cd == d1 else d1
     for sq in range(64):
         RAYS[sq] = tuple(tuple(ray) for ray in tmp[sq])
+        RAYS_ORTHOGONAL[sq] = RAYS[sq][:4]
+        RAYS_DIAGONAL[sq] = RAYS[sq][4:]
         BISHOP_ZIGZAG_RAYS[sq] = tuple(tuple(ray) for ray in zigzag_tmp[sq])
 
 _init_rays()
