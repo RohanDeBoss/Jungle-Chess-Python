@@ -63,14 +63,16 @@ initialize_zobrist_table()
 
 def run_ai_process(board, color, position_counts, comm_queue, cancellation_event,
                    bot_class, bot_name, search_depth, ply_count, game_mode,
-                   time_left=None, increment=None, use_opening_book=True, use_tablebase=True):
+                   time_left=None, increment=None, use_opening_book=True, use_tablebase=True,
+                   show_tt_fullness=False):
     import inspect
     accepted_params = set(inspect.signature(bot_class.__init__).parameters)
     kwargs = {
         'time_left': time_left,
         'increment': increment,
         'use_opening_book': use_opening_book,
-        'use_tablebase': use_tablebase
+        'use_tablebase': use_tablebase,
+        'show_tt_fullness': show_tt_fullness
     }
     filtered_kwargs = {k: v for k, v in kwargs.items() if k in accepted_params}
 
@@ -255,7 +257,9 @@ class ChessBot:
 
     def __init__(self, board, color, position_counts, comm_queue, cancellation_event,
                  bot_name=None, ply_count=0, game_mode="bot", max_moves=200,
-                 time_left=None, increment=None, use_opening_book=True, use_tablebase=True):
+                 time_left=None, increment=None, use_opening_book=True, use_tablebase=True,
+                 show_tt_fullness=False):
+        self.show_tt_fullness = show_tt_fullness
 
         self.board = board
         self.color = color
@@ -638,7 +642,8 @@ class ChessBot:
                     report_score = best_score_this_iter
 
                 eval_for_ui = report_score if self.color == 'white' else -report_score
-                self._report_log(f"  > {self.bot_name} (D{depth_label}): {self._format_move(self.board, best_move_this_iter)}, Eval={eval_for_ui/100:+.2f}, NodesTotal={total_nodes}, KNPS={knps:.1f}, TBhits={self.tb_hits}, Time={iter_duration:.2f}s")
+                tt_str = f", TT={int((len(self.tt) / self.TT_MAX_SIZE) * 1000)}/1000" if getattr(self, 'show_tt_fullness', False) else ""
+                self._report_log(f"  > {self.bot_name} (D{depth_label}): {self._format_move(self.board, best_move_this_iter)}, Eval={eval_for_ui/100:+.2f}, NodesTotal={total_nodes}, KNPS={knps:.1f}, TBhits={self.tb_hits}{tt_str}, Time={iter_duration:.2f}s")
                 self._report_eval(report_score, depth_label)
 
                 ui_eval        = report_score if self.color == 'white' else -report_score
@@ -741,7 +746,8 @@ class ChessBot:
                         report_score = best_score_this_iter
 
                     eval_for_ui = report_score if self.color == 'white' else -report_score
-                    self._report_log(f"  > {self.bot_name} (D{depth_label}): {self._format_move(self.board, best_move_this_iter)}, Eval={eval_for_ui/100:+.2f}, NodesTotal={total_nodes}, KNPS={knps:.1f}, TBhits={self.tb_hits}, Time={iter_duration:.2f}s")
+                    tt_str = f", TT={int((len(self.tt) / self.TT_MAX_SIZE) * 1000)}/1000" if getattr(self, 'show_tt_fullness', False) else ""
+                    self._report_log(f"  > {self.bot_name} (D{depth_label}): {self._format_move(self.board, best_move_this_iter)}, Eval={eval_for_ui/100:+.2f}, NodesTotal={total_nodes}, KNPS={knps:.1f}, TBhits={self.tb_hits}{tt_str}, Time={iter_duration:.2f}s")
                     self._report_eval(report_score, depth_label)
 
                     ui_eval        = report_score if self.color == 'white' else -report_score

@@ -1,4 +1,4 @@
-# JungleChessUI.py (v15.7 - Support for different ai frameworks)
+# JungleChessUI.py (v15.8- TT Fullness Display)
 
 import tkinter as tk
 from tkinter import ttk, messagebox
@@ -61,7 +61,8 @@ def persistent_worker(work_queue, comm_queue, cancel_event, bot_class):
                 'time_left': task.get('time_left'),
                 'increment': task.get('increment'),
                 'use_opening_book': task.get('use_opening_book', True),
-                'use_tablebase': task.get('use_tablebase', True)
+                'use_tablebase': task.get('use_tablebase', True),
+                'show_tt_fullness': task.get('show_tt_fullness', False)
             }
             filtered_kwargs = {k: v for k, v in kwargs.items() if k in accepted_params}
             
@@ -153,6 +154,7 @@ class EnhancedChessApp:
         self.use_opening_book_var = tk.BooleanVar(value=True)
         self.use_tablebase_var    = tk.BooleanVar(value=True)
         self.auto_adjudicate_var  = tk.BooleanVar(value=True)
+        self.show_tt_fullness_var = tk.BooleanVar(value=False)
 
         self.current_pv_raw  = []
         self.current_pv_san  = []
@@ -446,6 +448,7 @@ class EnhancedChessApp:
             ("Analysis Mode (H-vs-H)",     self.analysis_mode_var,    self._update_analysis_after_state_change),
             ("Auto-save Depth Stats",      self.auto_save_stats_var,  None),
             ("Show Engine Lines (PV)",     self.show_pv_var,          self._render_pv),
+            ("Show TT Fullness",           self.show_tt_fullness_var, None),
             ("Long Notation (Casualties)", self.long_notation_var,    self._on_notation_toggle),
         ]:
             kw = {'command': cmd} if cmd else {}
@@ -460,6 +463,8 @@ class EnhancedChessApp:
         self.game_info_label.pack(anchor=tk.W)
         self.turn_label = ttk.Label(info, text="WHITE'S TURN", style='Status.TLabel')
         self.turn_label.pack(fill=tk.X, pady=(5, 5))
+        self.tt_fullness_label = ttk.Label(info, text="", style='SmallHeader.TLabel')
+        self.tt_fullness_label.pack(anchor=tk.W, pady=(2, 2))
         ttk.Checkbutton(info, text="Use Clock", variable=self.use_clock_var,
                         command=self._toggle_clock).pack(anchor=tk.W, pady=(2, 2))
 
@@ -1351,6 +1356,12 @@ class EnhancedChessApp:
                     continue
                 if kind == 'log':
                     print(msg[1])
+                    tt_m = re.search(r'TT=(\d+/1000)', msg[1])
+                    if tt_m and self.show_tt_fullness_var.get():
+                        self.tt_fullness_label.config(text=f"TT Occupancy: {tt_m.group(1)}")
+                    elif not self.show_tt_fullness_var.get():
+                        self.tt_fullness_label.config(text="")
+
                     if self.auto_save_stats_var.get() and self.game_mode.get() == GameMode.AI_VS_AI.value:
                         m = re.search(
                             r'>\s*(.*?)\s*\(D(\d+|TB)\):.*?Eval[=:]\s*([+-]?[\d.]+).*?'
@@ -1443,6 +1454,7 @@ class EnhancedChessApp:
             'increment':        inc,
             'use_opening_book': self.use_opening_book_var.get(),
             'use_tablebase':    self.use_tablebase_var.get(),
+            'show_tt_fullness': self.show_tt_fullness_var.get(),
             'task_id':          self.current_task_id  # Pass it to the worker
         }
 
