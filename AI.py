@@ -1,4 +1,4 @@
-# AI.py (v121.3 Unrolling pawns + Hoisting)
+# AI.py (v121.4 Unrolling pawns + Hoisting + line cleanup)
 
 import json
 import os
@@ -1134,8 +1134,7 @@ class ChessBot:
         enemy_knight_indices = []
         if board.piece_counts_z[opponent_turn][1] > 0:
             for k in board.pieces_by_z[opponent_turn][1]:
-                if k.pos:
-                    enemy_knight_indices.append(k.pos[0] * 8 + k.pos[1])
+                enemy_knight_indices.append(k.pos[0] * 8 + k.pos[1])
 
         for move in promising_moves:
             (r1, c1), (r2, c2) = move
