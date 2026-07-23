@@ -1,4 +1,4 @@
-# AI.py (v121.4 Unrolling pawns + Hoisting + line cleanup)
+# AI.py (v122 - TT Maintains across moves)
 
 import json
 import os
@@ -189,7 +189,7 @@ for _book_filename in _find_opening_book_files():
 # --------------------------
 
 # --- SEARCH STRUCTURES ---
-TTEntry = namedtuple('TTEntry', ['score', 'depth', 'flag', 'best_move'])
+TTEntry = namedtuple('TTEntry', ['score', 'depth', 'flag', 'best_move', 'age'])
 TT_FLAG_EXACT, TT_FLAG_LOWERBOUND, TT_FLAG_UPPERBOUND = 0, 1, 2
 
 class SearchCancelledException(Exception): pass
@@ -303,6 +303,7 @@ class ChessBot:
     def _initialize_search_state(self):
         self.tt = {}
         self.eval_tt = {}
+        self.current_age = 0
         self.nodes_searched = 0
         self.used_heuristic_eval = False
         self.tb_hits = 0
@@ -311,6 +312,31 @@ class ChessBot:
         self.counter_moves = [[[None for _ in range(64)] for _ in range(64)] for _ in range(2)]
         # [color][prev_piece_type][prev_to_sq][my_piece_type][my_to_sq]
         self.continuation_history = [[[[[0] * 64 for _ in range(6)] for _ in range(64)] for _ in range(6)] for _ in range(2)]
+
+    def update_state(self, board, color, position_counts, comm_queue, cancellation_event, bot_name, ply_count, game_mode, **kwargs):
+        """Called by the persistent worker to update the bot's state for the next turn without wiping memory."""
+        self.board = board
+        self.color = color
+        self.opponent_color = 'black' if color == 'white' else 'white'
+        self.position_counts = position_counts
+        self.comm_queue = comm_queue
+        self.cancellation_event = cancellation_event
+        self.bot_name = bot_name
+        self.ply_count = ply_count
+        self.game_mode = game_mode
+        
+        self.time_left = kwargs.get('time_left')
+        self.increment = kwargs.get('increment')
+        self.use_opening_book = kwargs.get('use_opening_book', True)
+        self.show_tt_fullness = kwargs.get('show_tt_fullness', False)
+        
+        if self.time_left:
+             allocated = (self.time_left / 30.0) + (self.increment * 0.8)
+             self.time_check_mask = self._calc_time_check_mask(allocated)
+        else:
+             self.time_check_mask = 511
+             
+        self.current_age += 1 # Advance TT generation
 
     def _get_cached_static_eval(self, board, turn, hash_val):
         """
@@ -330,9 +356,12 @@ class ChessBot:
         existing = self.tt.get(hash_val)
         if len(self.tt) > self.TT_MAX_SIZE:
             self.tt.clear()
-        if not existing or depth >= existing.depth:
+            existing = None
+            
+        # Age-based replacement: Overwrite if slot is empty, from an older turn, or searched deeper
+        if not existing or existing.age < self.current_age or depth >= existing.depth:
             best_move = move if move is not None else (existing.best_move if existing else None)
-            self.tt[hash_val] = TTEntry(score, depth, flag, best_move)
+            self.tt[hash_val] = TTEntry(score, depth, flag, best_move, self.current_age)
 
     def _report_log(self, message):   self.comm_queue.put(('log', message))
     def _report_eval(self, score, depth): self.comm_queue.put(('eval', score if self.color == 'white' else -score, depth))

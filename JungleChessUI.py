@@ -1,4 +1,4 @@
-# JungleChessUI.py (v15.8- TT Fullness Display)
+# JungleChessUI.py (v16 - TT Maintains across moves for AI)
 
 import tkinter as tk
 from tkinter import ttk, messagebox
@@ -39,17 +39,18 @@ class TaskQueueWrapper:
 
 def persistent_worker(work_queue, comm_queue, cancel_event, bot_class):
     """
-    Sits in a loop waiting for task dicts. Each task dict contains everything
-    the bot needs. Sending None shuts the worker down.
+    Sits in a loop waiting for task dicts. The worker keeps the bot instance alive 
+    across turns to persist TT and History tables, unless a reset is requested.
     """
     import inspect
+    bot = None
+    
     while True:
         task = work_queue.get()          # blocks until a task arrives
         if task is None:                 # shutdown signal
             break
 
         # The worker clears the event AFTER receiving the task. 
-        # This prevents the UI from accidentally "un-cancelling" an aborting task.
         cancel_event.clear()             
 
         task_id = task.get('task_id', -1)
@@ -66,11 +67,22 @@ def persistent_worker(work_queue, comm_queue, cancel_event, bot_class):
             }
             filtered_kwargs = {k: v for k, v in kwargs.items() if k in accepted_params}
             
-            bot = bot_class(
-                task['board'], task['color'], task['position_counts'],
-                wrapped_comm, cancel_event, task['bot_name'], 
-                task['ply_count'], task['game_mode'], **filtered_kwargs
-            )
+            # OPAI is hardcoded to recreate every move to preserve its strict baseline state.
+            # AI.py persists and uses update_state() to keep TT/History alive.
+            force_recreate = task.get('clear_hash', False) or bot_class.__name__ == 'OpponentAI'
+            
+            if bot is None or force_recreate:
+                bot = bot_class(
+                    task['board'], task['color'], task['position_counts'],
+                    wrapped_comm, cancel_event, task['bot_name'], 
+                    task['ply_count'], task['game_mode'], **filtered_kwargs
+                )
+            else:
+                bot.update_state(
+                    task['board'], task['color'], task['position_counts'],
+                    wrapped_comm, cancel_event, task['bot_name'], 
+                    task['ply_count'], task['game_mode'], **filtered_kwargs
+                )
 
             bot.search_depth = task['search_depth']
             if task['search_depth'] == 99:
@@ -79,7 +91,6 @@ def persistent_worker(work_queue, comm_queue, cancel_event, bot_class):
                 bot.make_move()
                 
         except Exception as e:
-            # Prevents a silent crash from locking up the UI forever
             import traceback
             traceback.print_exc()
             wrapped_comm.put(('move', None))
@@ -425,8 +436,9 @@ class EnhancedChessApp:
         cf.pack(fill=tk.X, pady=5)
         self.controls_frame = cf
         for txt, cmd in [("NEW GAME",        self.reset_game),
-                          ("SWAP SIDES",      self.swap_sides),
-                          ("AI vs OP Series", self.start_ai_series)]:
+                         ("SWAP SIDES",      self.swap_sides),
+                         ("CLEAR HASH",      self.clear_hash_manually),
+                         ("AI vs OP Series", self.start_ai_series)]:
             ttk.Button(cf, text=txt, command=cmd, style='Control.TButton').pack(fill=tk.X, pady=3)
         self.flip_view_btn = ttk.Button(cf, text="FLIP VIEW",
                                         command=self.toggle_board_view, style='Control.TButton')
@@ -1129,7 +1141,15 @@ class EnhancedChessApp:
                 capstyle=tk.ROUND, joinstyle=tk.ROUND, tags=tags)
 
     # ------------------------------------------------------------------ resets and modes
+    def clear_hash_manually(self):
+        self._force_clear_hash = True
+        self._stop_ai_process(invalidate_task=True)
+        print("--- Transposition Table & History Cleared ---")
+        if self.analysis_mode_var.get() and self.game_mode.get() == GameMode.HUMAN_VS_HUMAN.value:
+            self._update_analysis_after_state_change()
+
     def reset_game(self, schedule_ai=True):
+        self._force_clear_hash = True
         if self.game_mode.get() != GameMode.AI_VS_AI.value:
             self.ai_series_running = False
         self._stop_ai_process()
@@ -1455,8 +1475,10 @@ class EnhancedChessApp:
             'use_opening_book': self.use_opening_book_var.get(),
             'use_tablebase':    self.use_tablebase_var.get(),
             'show_tt_fullness': self.show_tt_fullness_var.get(),
-            'task_id':          self.current_task_id  # Pass it to the worker
+            'clear_hash':       getattr(self, '_force_clear_hash', False),
+            'task_id':          self.current_task_id
         }
+        self._force_clear_hash = False  # Reset flag after consuming
 
         self.analysis_thinking = (bot_name == self.ANALYSIS_AI_NAME)
 
