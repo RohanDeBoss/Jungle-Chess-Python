@@ -1,11 +1,11 @@
-AI Series Results  |  Clock (10s + 0.2s inc)  |  90 / 300 games
-AI Bot 43  OP Bot 22  Draws 25
+AI Series Results  |  Clock (10s + 0.2s inc)  |  94 / 300 games
+AI Bot 41  OP Bot 27  Draws 26
 
 	AI Bot	OP Bot	Diff
-Moves	3,188	3,154	
-Avg depth (68%)	4.1	3.8	+0.3
-Max depth	100	100	0
-Avg nodes	11,328	10,470	+858
-Avg time (s)	0.231	0.222	+0.009
-Max time (s)	1.320	1.420	-0.100
-Avg KNPS	45.2	41.3	+3.9
+Moves	3,211	3,177	
+Avg depth (68%)	4.2	3.9	+0.3
+Max depth	13	14	-1
+Avg nodes	12,140	11,122	+1,019
+Avg time (s)	0.234	0.226	+0.008
+Max time (s)	1.580	1.270	+0.310
+Avg KNPS	48.5	43.7	+4.9

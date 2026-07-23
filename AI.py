@@ -348,7 +348,8 @@ class ChessBot:
         if cached is not None:
             return cached
         val = self.evaluate_board(board, turn)
-        if len(self.eval_tt) > 5_000_000: self.eval_tt.clear()
+        limit = getattr(self, 'EVAL_TT_MAX_SIZE', 5_000_000)
+        if len(self.eval_tt) > limit: self.eval_tt.clear()
         self.eval_tt[hash_val] = val
         return val
 

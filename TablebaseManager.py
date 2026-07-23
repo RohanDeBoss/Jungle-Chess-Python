@@ -1,4 +1,4 @@
-# TablebaseManager.py (v10)
+# TablebaseManager.py (v11 - Fast probing with lookup table)
 
 import os
 import numpy as np
@@ -49,6 +49,7 @@ class TablebaseManager:
     def __init__(self):
         self.tables = {}
         self.full_wdl_tables = set()
+        self.signature_map = {}
         self.tb_dir = "TBs"
         self.pre_load_all()
 
@@ -113,6 +114,25 @@ class TablebaseManager:
             self.tables[base_name] = np.memmap(filename, dtype=TB_DTYPE, mode='r', shape=shape)
             if os.path.exists(filename + TB_WDL_MARKER_SUFFIX):
                 self.full_wdl_tables.add(base_name)
+                
+            # Register O(1) Material Signatures
+            middle = base_name[2:-2]
+            if "_vs_" in middle:
+                w_str, b_str = middle.split("_vs_")
+                w_pieces, b_pieces = w_str.split("_"), b_str.split("_")
+            else:
+                w_pieces, b_pieces = middle.split("_"), []
+                
+            w_sig, b_sig = [0]*5, [0]*5
+            name_to_idx = {"Pawn": 0, "Knight": 1, "Bishop": 2, "Rook": 3, "Queen": 4}
+            for p in w_pieces: w_sig[name_to_idx[p]] += 1
+            for p in b_pieces: b_sig[name_to_idx[p]] += 1
+            
+            sig_normal = tuple(w_sig + b_sig)
+            sig_flipped = tuple(b_sig + w_sig)
+            self.signature_map[sig_normal] = base_name
+            self.signature_map[sig_flipped] = base_name
+            
             return True
         except Exception as e:
             print(f"[TablebaseManager] Failed to memmap {base_name}: {e}")
@@ -218,19 +238,30 @@ class TablebaseManager:
             return (best[0], best[1], best[2], best[3], best[4], turn)
 
     def probe(self, board, turn_to_move):
+        w_z = board.piece_counts_z['white']
+        b_z = board.piece_counts_z['black']
+        
+        # O(1) Material Signature Filter
+        sig = (w_z[0], w_z[1], w_z[2], w_z[3], w_z[4],
+               b_z[0], b_z[1], b_z[2], b_z[3], b_z[4])
+               
+        if sig not in self.signature_map:
+            return None
+            
         w_objs = [p for p in board.white_pieces if not isinstance(p, King)]
         b_objs = [p for p in board.black_pieces if not isinstance(p, King)]
         if not board.white_king_pos or not board.black_king_pos: return None
 
-        # Same-color bishop blindspot fix
-        for objs in (w_objs, b_objs):
-            bishops = [p for p in objs if type(p).__name__ == "Bishop"]
-            if len(bishops) >= 2:
-                for i in range(len(bishops)):
-                    for j in range(i + 1, len(bishops)):
-                        sq1, sq2 = bishops[i].pos, bishops[j].pos
-                        if ((sq1[0] + sq1[1]) % 2) == ((sq2[0] + sq2[1]) % 2):
-                            return None 
+        # Same-color bishop blindspot fix (only run if 2+ bishops exist)
+        if w_z[2] >= 2 or b_z[2] >= 2:
+            for objs in (w_objs, b_objs):
+                bishops = [p for p in objs if type(p).__name__ == "Bishop"]
+                if len(bishops) >= 2:
+                    for i in range(len(bishops)):
+                        for j in range(i + 1, len(bishops)):
+                            sq1, sq2 = bishops[i].pos, bishops[j].pos
+                            if ((sq1[0] + sq1[1]) % 2) == ((sq2[0] + sq2[1]) % 2):
+                                return None 
 
         wk = board.white_king_pos[0] * 8 + board.white_king_pos[1]
         bk = board.black_king_pos[0] * 8 + board.black_king_pos[1]
