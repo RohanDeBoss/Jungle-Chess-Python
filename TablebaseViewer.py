@@ -1,4 +1,4 @@
-# TablebaseViewer.py (v1.4 - Four independent DTM/turn panels)
+# TablebaseViewer.py (v1.6 - Vectorized Draw Filtering & Instant Inspection)
 
 import os
 import numpy as np
@@ -27,15 +27,8 @@ UNICODE_PIECES = {
     'k': '♚', 'q': '♛', 'r': '♜', 'b': '♝', 'n': '♞', 'p': '♟'
 }
 
-# Bucket definitions: key -> (display title, winner_label, turn_value_for_decode)
-BUCKET_ORDER = ("ww_wtm", "ww_btm", "bw_wtm", "bw_btm")
-BUCKET_TITLES = {
-    "ww_wtm": "White Wins  •  White to Move",
-    "ww_btm": "White Wins  •  Black to Move",
-    "bw_wtm": "Black Wins  •  White to Move",
-    "bw_btm": "Black Wins  •  Black to Move",
-}
-QUARTER_CAP = 25  # 4 buckets x 25 = 100 total, one full quota per winner/turn combo
+PANEL_KEYS = ("panel_1", "panel_2", "panel_3", "panel_4")
+QUARTER_CAP = 50  # Up to 50 positions per panel
 
 # --- SML COMPRESSION ARRAYS ---
 PAWN_WK_SQUARES = [r*8+c for r in range(8) for c in range(4)]
@@ -80,6 +73,73 @@ def parse_tablebase_filename(filename):
         "black_pieces": black_pieces,
     }
 
+
+def filter_valid_candidate_indices(side_indices, category, has_pawn):
+    """Uses C-speed NumPy vector math to instantly strip out tens of millions of overlapping-piece zeroes."""
+    if len(side_indices) == 0:
+        return side_indices
+
+    wk_squares = np.array(PAWN_WK_SQUARES if has_pawn else NON_PAWN_WK_SQUARES)
+
+    valid_chunks = []
+    chunk_size = 5_000_000
+
+    for i in range(0, len(side_indices), chunk_size):
+        chunk = side_indices[i:i + chunk_size]
+        rest = chunk // 2
+
+        if category == "3-Man":
+            bk = rest % 64
+            p1 = (rest // 64) % 64
+            wk_idx = rest // 4096
+            wk = wk_squares[wk_idx]
+            mask = (wk != p1) & (wk != bk) & (p1 != bk)
+
+        elif category == "4-Man Same-Side":
+            bk = rest % 64
+            p2 = (rest // 64) % 64
+            p1 = (rest // 4096) % 64
+            wk_idx = rest // 262144
+            wk = wk_squares[wk_idx]
+            mask = (wk != p1) & (wk != p2) & (wk != bk) & (p1 != p2) & (p1 != bk) & (p2 != bk)
+
+        elif category == "4-Man Cross":
+            bp = rest % 64
+            bk = (rest // 64) % 64
+            wp = (rest // 4096) % 64
+            wk_idx = rest // 262144
+            wk = wk_squares[wk_idx]
+            mask = (wk != wp) & (wk != bk) & (wk != bp) & (wp != bk) & (wp != bp) & (bk != bp)
+
+        elif category == "5-Man Same-Side":
+            bk = rest % 64
+            p3 = (rest // 64) % 64
+            p2 = (rest // 4096) % 64
+            p1 = (rest // 262144) % 64
+            wk_idx = rest // 16777216
+            wk = wk_squares[wk_idx]
+            mask = ((wk != p1) & (wk != p2) & (wk != p3) & (wk != bk) &
+                    (p1 != p2) & (p1 != p3) & (p1 != bk) &
+                    (p2 != p3) & (p2 != bk) & (p3 != bk))
+
+        elif category == "5-Man Cross":
+            bp = rest % 64
+            bk = (rest // 64) % 64
+            wp2 = (rest // 4096) % 64
+            wp1 = (rest // 262144) % 64
+            wk_idx = rest // 16777216
+            wk = wk_squares[wk_idx]
+            mask = ((wk != wp1) & (wk != wp2) & (wk != bk) & (wk != bp) &
+                    (wp1 != wp2) & (wp1 != bk) & (wp1 != bp) &
+                    (wp2 != bk) & (wp2 != bp) & (bk != bp))
+        else:
+            return chunk
+
+        valid_chunks.append(chunk[mask])
+
+    return np.concatenate(valid_chunks) if valid_chunks else np.array([], dtype=np.int64)
+
+
 class TBViewerApp:
     def __init__(self, root):
         self.root = root
@@ -88,9 +148,9 @@ class TBViewerApp:
         self.root.minsize(1100, 680)
         self.root.configure(bg="#1a1a2e")
 
-        self.fens = []
-        self.bucket_fens = {key: [] for key in BUCKET_ORDER}   # key -> [(dtm, fen), ...]
-        self.bucket_listboxes = {}                              # key -> Listbox
+        self.bucket_fens = {key: [] for key in PANEL_KEYS}   # key -> [(dtm, fen), ...]
+        self.bucket_listboxes = {}                           # key -> Listbox
+        self.bucket_title_labels = {}                        # key -> Label
         self.categorized_files = {category: [] for category in CATEGORY_ORDER}
 
         self.setup_styles()
@@ -114,15 +174,22 @@ class TBViewerApp:
         top_frame.pack(side=tk.TOP, fill=tk.X, padx=14, pady=(14, 8))
 
         ttk.Label(top_frame, text="Category:").pack(side=tk.LEFT, padx=(0, 5))
-        self.category_combo = ttk.Combobox(top_frame, state="readonly", width=20, font=('Helvetica', 11))
+        self.category_combo = ttk.Combobox(top_frame, state="readonly", width=18, font=('Helvetica', 11))
         self.category_combo.pack(side=tk.LEFT, padx=5)
         self.category_combo.bind('<<ComboboxSelected>>', self.on_select_category)
 
         ttk.Label(top_frame, text="Tablebase:").pack(side=tk.LEFT, padx=(10, 5))
-        self.file_combo = ttk.Combobox(top_frame, state="readonly", width=30, font=('Helvetica', 11))
+        self.file_combo = ttk.Combobox(top_frame, state="readonly", width=28, font=('Helvetica', 11))
         self.file_combo.pack(side=tk.LEFT, padx=5)
 
-        self.load_btn = ttk.Button(top_frame, text="Extract Verified Longest Mates", command=self.load_tablebase)
+        ttk.Label(top_frame, text="Filter:").pack(side=tk.LEFT, padx=(10, 5))
+        self.mode_combo = ttk.Combobox(top_frame, state="readonly", width=18, font=('Helvetica', 11),
+                                       values=["Decisive Mates", "Drawn Positions"])
+        self.mode_combo.current(0)
+        self.mode_combo.pack(side=tk.LEFT, padx=5)
+        self.mode_combo.bind('<<ComboboxSelected>>', lambda e: self.load_tablebase())
+
+        self.load_btn = ttk.Button(top_frame, text="Inspect Positions", command=self.load_tablebase)
         self.load_btn.pack(side=tk.LEFT, padx=10)
 
         content_frame = ttk.Frame(self.root)
@@ -135,7 +202,7 @@ class TBViewerApp:
         grid_frame = ttk.Frame(left_frame)
         grid_frame.pack(fill=tk.BOTH, expand=True)
 
-        for i, key in enumerate(BUCKET_ORDER):
+        for i, key in enumerate(PANEL_KEYS):
             row, col = divmod(i, 2)
             self._build_bucket_panel(grid_frame, key, row, col)
 
@@ -172,8 +239,9 @@ class TBViewerApp:
 
         header = ttk.Frame(panel, style='BucketHeader.TFrame')
         header.pack(fill=tk.X)
-        ttk.Label(header, text=BUCKET_TITLES[key], style='BucketTitle.TLabel',
-                  background="#0f1729").pack(anchor=tk.W, padx=8, pady=6)
+        title_label = ttk.Label(header, text="", style='BucketTitle.TLabel', background="#0f1729")
+        title_label.pack(anchor=tk.W, padx=8, pady=6)
+        self.bucket_title_labels[key] = title_label
 
         body = ttk.Frame(panel, style='Bucket.TFrame')
         body.pack(fill=tk.BOTH, expand=True, padx=6, pady=(0, 6))
@@ -191,8 +259,9 @@ class TBViewerApp:
         self.bucket_listboxes[key] = listbox
 
     def load_file_list(self):
-        if not os.path.exists(TB_DIR): os.makedirs(TB_DIR)
-        files = [f for f in os.listdir(TB_DIR) if f.endswith(TB_SUFFIX)]
+        tb_path = "TBs" if os.path.exists("TBs") else "tablebases"
+        if not os.path.exists(tb_path): os.makedirs(tb_path)
+        files = [f for f in os.listdir(tb_path) if f.endswith(TB_SUFFIX)]
         if not files: return
 
         for f in sorted(files):
@@ -237,12 +306,15 @@ class TBViewerApp:
         filename = self.file_combo.get()
         if not filename: return
 
-        filepath = os.path.join(TB_DIR, filename)
+        tb_dir = "TBs" if os.path.exists("TBs") else "tablebases"
+        filepath = os.path.join(tb_dir, filename)
         metadata = parse_tablebase_filename(filename)
         if metadata is None:
             messagebox.showerror("Error", f"Could not parse tablebase name:\n{filename}")
             return
         has_pawn = "Pawn" in filename
+        category = metadata["category"]
+        view_mode = self.mode_combo.get()
 
         try:
             data = np.memmap(filepath, dtype=np.int16, mode='r')
@@ -254,30 +326,46 @@ class TBViewerApp:
             turn0[0::2] = True
             turn1 = ~turn0
 
-            decisive_mask = abs_data > 0
-            white_wins_mask = decisive_mask & (((data_flat > 0) & turn0) | ((data_flat < 0) & turn1))
-            black_wins_mask = decisive_mask & ~white_wins_mask & decisive_mask
-
-            for key in self.bucket_fens:
+            for key in PANEL_KEYS:
                 self.bucket_fens[key] = []
                 self.bucket_listboxes[key].delete(0, tk.END)
 
-            bucket_masks = {
-                "ww_wtm": white_wins_mask & turn0,
-                "ww_btm": white_wins_mask & turn1,
-                "bw_wtm": black_wins_mask & turn0,
-                "bw_btm": black_wins_mask & turn1,
-            }
+            if view_mode == "Decisive Mates":
+                decisive_mask = abs_data > 0
+                white_wins_mask = decisive_mask & (((data_flat > 0) & turn0) | ((data_flat < 0) & turn1))
+                black_wins_mask = decisive_mask & ~white_wins_mask & decisive_mask
+
+                bucket_config = {
+                    "panel_1": ("White Wins  •  White to Move", white_wins_mask & turn0),
+                    "panel_2": ("White Wins  •  Black to Move", white_wins_mask & turn1),
+                    "panel_3": ("Black Wins  •  White to Move", black_wins_mask & turn0),
+                    "panel_4": ("Black Wins  •  Black to Move", black_wins_mask & turn1),
+                }
+            else: # Drawn Positions
+                drawn_mask = abs_data == 0
+                bucket_config = {
+                    "panel_1": ("Drawn  •  White to Move", drawn_mask & turn0),
+                    "panel_2": ("Drawn  •  Black to Move", drawn_mask & turn1),
+                    "panel_3": ("N/A", np.zeros(n, dtype=bool)),
+                    "panel_4": ("N/A", np.zeros(n, dtype=bool)),
+                }
 
             any_found = False
 
-            for key in BUCKET_ORDER:
-                mask = bucket_masks[key]
+            for key in PANEL_KEYS:
+                title, mask = bucket_config[key]
+                self.bucket_title_labels[key].config(text=title)
+
                 side_indices = np.where(mask)[0]
                 if len(side_indices) == 0:
                     continue
-                order = np.argsort(-abs_data[side_indices])
-                ranked_indices = side_indices[order]
+
+                if view_mode == "Decisive Mates":
+                    order = np.argsort(-abs_data[side_indices])
+                    ranked_indices = side_indices[order]
+                else:
+                    # Instantly strip out tens of millions of overlapping-piece zeroes in vector C speed
+                    ranked_indices = filter_valid_candidate_indices(side_indices, category, has_pawn)
 
                 bucket_count = 0
                 listbox = self.bucket_listboxes[key]
@@ -294,16 +382,18 @@ class TBViewerApp:
                     fen = self.build_fen(placements, turn)
                     dtm_val = int(abs_data[idx])
                     self.bucket_fens[key].append((dtm_val, fen))
-                    listbox.insert(tk.END, f"#{bucket_count+1}  DTM {dtm_val}")
+
+                    label = f"#{bucket_count+1}  DTM {dtm_val}" if view_mode == "Decisive Mates" else f"#{bucket_count+1}  Draw"
+                    listbox.insert(tk.END, label)
                     bucket_count += 1
                     any_found = True
 
             if not any_found:
-                messagebox.showinfo("Result", "No decisive, legal positions found.")
+                messagebox.showinfo("Result", f"No legal {view_mode.lower()} found.")
                 return
 
-            # Auto-select the first available entry across buckets, in display order
-            for key in BUCKET_ORDER:
+            # Auto-select the first available entry across buckets
+            for key in PANEL_KEYS:
                 if self.bucket_fens[key]:
                     self.bucket_listboxes[key].selection_set(0)
                     self.on_select_fen(key)
@@ -398,7 +488,6 @@ class TBViewerApp:
         listbox = self.bucket_listboxes[key]
         if not listbox.curselection(): return
 
-        # Deselect the other three panels so it's always clear which one is active
         for other_key, other_box in self.bucket_listboxes.items():
             if other_key != key:
                 other_box.selection_clear(0, tk.END)
@@ -407,9 +496,14 @@ class TBViewerApp:
         dtm, fen = self.bucket_fens[key][idx]
         self.fen_entry.delete(0, tk.END)
         self.fen_entry.insert(0, fen)
-        self.info_label.config(
-            text=f"{BUCKET_TITLES[key]}  —  Verified Longest Mate: {dtm} plies ({(dtm + 1)//2} moves)"
-        )
+        
+        title = self.bucket_title_labels[key].cget("text")
+        if dtm > 0:
+            info_text = f"{title}  —  Verified Longest Mate: {dtm} plies ({(dtm + 1)//2} moves)"
+        else:
+            info_text = f"{title}  —  Theoretical Draw / Perpetual Defense"
+
+        self.info_label.config(text=info_text)
         self.draw_board_from_fen(fen)
 
     def draw_empty_board(self):
@@ -442,7 +536,7 @@ class TBViewerApp:
         if fen:
             self.root.clipboard_clear()
             self.root.clipboard_append(fen)
-            self.root.update()  # force an eager clipboard write so it survives app close
+            self.root.update()
             messagebox.showinfo("Copied", "FEN copied to clipboard!")
 
 if __name__ == "__main__":
