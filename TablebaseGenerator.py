@@ -1,4 +1,4 @@
-# TablebaseGenerator.py (v23.1 - Less Memory usage + Auto-Cleanup)
+# TablebaseGenerator.py (v24 - Kill class-keyed piece_counts dict (nonfunc))
 
 import os
 import time
@@ -28,14 +28,6 @@ _PIECE_CANONICAL_ORDER = {Bishop: 0, Knight: 1, Pawn: 2, Queen: 3, Rook: 4}
 _CONSOLE_INTERRUPT_SIGNALS = [signal.SIGINT]
 if hasattr(signal, "SIGBREAK"):
     _CONSOLE_INTERRUPT_SIGNALS.append(signal.SIGBREAK)
-
-def _sync_piece_counts_z(board):
-    pcz = board.piece_counts_z
-    pc = board.piece_counts
-    for color in ('white', 'black'):
-        counts = pcz[color]
-        for cls in (Pawn, Knight, Bishop, Rook, Queen, King):
-            counts[cls.z_idx] = pc[color][cls]
 
 # ==============================================================================
 # FAST SYMMETRY MAPPINGS
@@ -323,20 +315,30 @@ def _build_csr_from_disk(unsolved_flats_np, edges_file, prefix, old_to_new):
     with open(edges_out_file, "wb") as f_out:
         for b in range(num_bins):
             bin_path = os.path.join(TB_DIR, f"{prefix}_bin_{b}.bin")
-            data = np.fromfile(bin_path, dtype=np.uint32).reshape(-1, 2)
-            if len(data) > 0:
-                v_idx = data[:, 0]
-                v_par = data[:, 1]
-                
-                sort_i = np.argsort(v_idx)
-                v_idx = v_idx[sort_i]
-                v_par = v_par[sort_i]
-                
-                unique_idx, counts = np.unique(v_idx, return_counts=True)
-                head[unique_idx + 1] = counts
-                
-                f_out.write(v_par.tobytes())
-            os.remove(bin_path)
+            if os.path.exists(bin_path):
+                with open(bin_path, "rb") as f_bin:
+                    data = np.fromfile(f_bin, dtype=np.uint32).reshape(-1, 2)
+                if len(data) > 0:
+                    v_idx = data[:, 0]
+                    v_par = data[:, 1]
+                    
+                    sort_i = np.argsort(v_idx)
+                    v_idx = v_idx[sort_i]
+                    v_par = v_par[sort_i]
+                    
+                    unique_idx, counts = np.unique(v_idx, return_counts=True)
+                    head[unique_idx + 1] = counts
+                    
+                    f_out.write(v_par.tobytes())
+                del data
+                try:
+                    os.remove(bin_path)
+                except Exception:
+                    time.sleep(0.02)
+                    try:
+                        os.remove(bin_path)
+                    except Exception:
+                        pass
             
     np.cumsum(head, out=head)
     if os.path.getsize(edges_out_file) == 0:
@@ -634,6 +636,19 @@ def _run_flat_bfs_full_wdl(unsolved_flats_np, init_table_np,
 _W_PIECE_NAME = None; _W_HAS_PAWN = False; _W_QUEEN_TABLE = None
 _W3_BOARD = None; _W3_WK_OBJ = None; _W3_WP_OBJ = None; _W3_BK_OBJ = None
 
+def _sync_board_z_lists(board):
+    pbz = board.pieces_by_z
+    pbz['white'] = [[] for _ in range(6)]
+    pbz['black'] = [[] for _ in range(6)]
+    for p in board.white_pieces:
+        z_lst = pbz['white'][p.z_idx]
+        p._z_list_pos = len(z_lst)
+        z_lst.append(p)
+    for p in board.black_pieces:
+        z_lst = pbz['black'][p.z_idx]
+        p._z_list_pos = len(z_lst)
+        z_lst.append(p)
+
 def _init_transition_worker(piece_name, queen_tb_file):
     _install_worker_interrupt_ignores()
     global _W_PIECE_NAME, _W_HAS_PAWN, _W_QUEEN_TABLE, _W3_BOARD, _W3_WK_OBJ, _W3_WP_OBJ, _W3_BK_OBJ
@@ -641,8 +656,9 @@ def _init_transition_worker(piece_name, queen_tb_file):
     _W_QUEEN_TABLE = _load_3man_table_file(queen_tb_file) if (_W_HAS_PAWN and queen_tb_file) else None
     _W3_BOARD = Board(setup=False)
     _W3_WK_OBJ, _W3_WP_OBJ, _W3_BK_OBJ = King('white'), PIECE_CLASS_BY_NAME[piece_name]('white'), King('black')
-    pc = _W3_BOARD.piece_counts; pc['white'][King] = pc['black'][King] = 1; pc['white'][type(_W3_WP_OBJ)] += 1
-    _sync_piece_counts_z(_W3_BOARD)
+    _W3_BOARD.white_pieces[:] = [_W3_WK_OBJ, _W3_WP_OBJ]; _W3_BOARD.black_pieces[:] = [_W3_BK_OBJ]
+    pcz = _W3_BOARD.piece_counts_z; pcz['white'][King.z_idx] = pcz['black'][King.z_idx] = 1; pcz['white'][_W3_WP_OBJ.z_idx] += 1
+    _sync_board_z_lists(_W3_BOARD)
 
 def _worker_3_chunk(flats):
     return len(flats), [r for f in flats if (r := _build_transition_worker(f)) is not None]
@@ -660,7 +676,6 @@ def _build_transition_worker(flat):
     g[wk[0]][wk[1]], g[p1[0]][p1[1]], g[bk[0]][bk[1]] = _W3_WK_OBJ, _W3_WP_OBJ, _W3_BK_OBJ
     board.white_king_pos, board.black_king_pos = wk, bk
     board.white_pieces[:] = [_W3_WK_OBJ, _W3_WP_OBJ]; board.black_pieces[:] = [_W3_BK_OBJ]
-    _sync_piece_counts_z(board)
     if is_in_check(board, 'black' if turn_is_white else 'white'): return None
     moves = get_all_pseudo_legal_moves(board, 'white' if turn_is_white else 'black')
     if turn_is_white:
@@ -833,9 +848,10 @@ def _init_transition_worker_4(p1_name, p2_name, promo_tb_file):
     if promo_tb_file and os.path.exists(promo_tb_file): _W4_PROMO_TABLE = _load_4man_table_file(promo_tb_file)
     _W4_BOARD = Board(setup=False)
     _W4_WK_OBJ, _W4_P1_OBJ, _W4_P2_OBJ, _W4_BK_OBJ = King('white'), PIECE_CLASS_BY_NAME[p1_name]('white'), PIECE_CLASS_BY_NAME[p2_name]('white'), King('black')
-    pc = _W4_BOARD.piece_counts; pc['white'][King] = pc['black'][King] = 1
-    pc['white'][type(_W4_P1_OBJ)] += 1; pc['white'][type(_W4_P2_OBJ)] += 1
-    _sync_piece_counts_z(_W4_BOARD)
+    _W4_BOARD.white_pieces[:] = [_W4_WK_OBJ, _W4_P1_OBJ, _W4_P2_OBJ]; _W4_BOARD.black_pieces[:] = [_W4_BK_OBJ]
+    pcz = _W4_BOARD.piece_counts_z; pcz['white'][King.z_idx] = pcz['black'][King.z_idx] = 1
+    pcz['white'][_W4_P1_OBJ.z_idx] += 1; pcz['white'][_W4_P2_OBJ.z_idx] += 1
+    _sync_board_z_lists(_W4_BOARD)
 
 def _worker_4_chunk(flats):
     return len(flats), [r for f in flats if (r := _build_transition_worker_4(f)) is not None]
@@ -853,7 +869,6 @@ def _build_transition_worker_4(flat):
     g[wk[0]][wk[1]],g[p1[0]][p1[1]],g[p2[0]][p2[1]],g[bk[0]][bk[1]] = _W4_WK_OBJ,_W4_P1_OBJ,_W4_P2_OBJ,_W4_BK_OBJ
     board.white_king_pos, board.black_king_pos = wk, bk
     board.white_pieces[:] = [_W4_WK_OBJ, _W4_P1_OBJ, _W4_P2_OBJ]; board.black_pieces[:] = [_W4_BK_OBJ]
-    _sync_piece_counts_z(board)
     if is_in_check(board, 'black' if turn_is_white else 'white'): return None
     moves = get_all_pseudo_legal_moves(board, 'white' if turn_is_white else 'black')
     if turn_is_white:
@@ -1078,9 +1093,10 @@ def _init_transition_worker_4vs(w_name, b_name):
     _W4V_BOARD = Board(setup=False)
     _W4V_WK_OBJ, _W4V_WP_OBJ = King('white'), PIECE_CLASS_BY_NAME[_W4V_W_NAME]('white')
     _W4V_BK_OBJ, _W4V_BP_OBJ = King('black'), PIECE_CLASS_BY_NAME[_W4V_B_NAME]('black')
-    pc = _W4V_BOARD.piece_counts; pc['white'][King] = pc['black'][King] = 1
-    pc['white'][type(_W4V_WP_OBJ)] += 1; pc['black'][type(_W4V_BP_OBJ)] += 1
-    _sync_piece_counts_z(_W4V_BOARD)
+    _W4V_BOARD.white_pieces[:] = [_W4V_WK_OBJ, _W4V_WP_OBJ]; _W4V_BOARD.black_pieces[:] = [_W4V_BK_OBJ, _W4V_BP_OBJ]
+    pcz = _W4V_BOARD.piece_counts_z; pcz['white'][King.z_idx] = pcz['black'][King.z_idx] = 1
+    pcz['white'][_W4V_WP_OBJ.z_idx] += 1; pcz['black'][_W4V_BP_OBJ.z_idx] += 1
+    _sync_board_z_lists(_W4V_BOARD)
 
 def _w4v_white_win_dtm_3man(piece_name, wk, p, bk, turn_idx, is_white_piece):
     tb = _W4V_3MAN_TABLES.get(piece_name)
@@ -1183,7 +1199,6 @@ def _build_transition_worker_4vs(flat):
     g[wk[0]][wk[1]],g[wp[0]][wp[1]] = _W4V_WK_OBJ,_W4V_WP_OBJ; g[bk[0]][bk[1]],g[bp[0]][bp[1]] = _W4V_BK_OBJ,_W4V_BP_OBJ
     board.white_king_pos,board.black_king_pos = wk,bk
     board.white_pieces[:] = [_W4V_WK_OBJ,_W4V_WP_OBJ]; board.black_pieces[:] = [_W4V_BK_OBJ,_W4V_BP_OBJ]
-    _sync_piece_counts_z(board)
     if is_in_check(board, 'black' if turn_is_white else 'white'): return None
     turn = 'white' if turn_is_white else 'black'
     opponent = 'black' if turn_is_white else 'white'
@@ -1374,9 +1389,10 @@ def _init_transition_worker_5(p1_name, p2_name, p3_name):
         _W5_WK_OBJ = King('white'); _W5_P1_OBJ = PIECE_CLASS_BY_NAME[p1_name]('white')
         _W5_P2_OBJ = PIECE_CLASS_BY_NAME[p2_name]('white'); _W5_P3_OBJ = PIECE_CLASS_BY_NAME[p3_name]('white')
         _W5_BK_OBJ = King('black')
-        pc = _W5_BOARD.piece_counts; pc['white'][King] = pc['black'][King] = 1
-        pc['white'][type(_W5_P1_OBJ)] += 1; pc['white'][type(_W5_P2_OBJ)] += 1; pc['white'][type(_W5_P3_OBJ)] += 1
-        _sync_piece_counts_z(_W5_BOARD)
+        _W5_BOARD.white_pieces[:] = [_W5_WK_OBJ, _W5_P1_OBJ, _W5_P2_OBJ, _W5_P3_OBJ]; _W5_BOARD.black_pieces[:] = [_W5_BK_OBJ]
+        pcz = _W5_BOARD.piece_counts_z; pcz['white'][King.z_idx] = pcz['black'][King.z_idx] = 1
+        pcz['white'][_W5_P1_OBJ.z_idx] += 1; pcz['white'][_W5_P2_OBJ.z_idx] += 1; pcz['white'][_W5_P3_OBJ.z_idx] += 1
+        _sync_board_z_lists(_W5_BOARD)
     except Exception as e:
         import traceback
         print(f"\n[Worker Init Error] 5-man worker failed to start: {e}", flush=True)
@@ -1423,7 +1439,6 @@ def _build_transition_worker_5(flat):
     g[p3[0]][p3[1]],g[bk[0]][bk[1]] = _W5_P3_OBJ,_W5_BK_OBJ
     board.white_king_pos,board.black_king_pos = wk,bk
     board.white_pieces[:] = [_W5_WK_OBJ,_W5_P1_OBJ,_W5_P2_OBJ,_W5_P3_OBJ]; board.black_pieces[:] = [_W5_BK_OBJ]
-    _sync_piece_counts_z(board)
     if is_in_check(board, 'black' if turn_is_white else 'white'): return None
     moves = get_all_pseudo_legal_moves(board, 'white' if turn_is_white else 'black')
     if turn_is_white:
@@ -1537,9 +1552,8 @@ class Generator5:
         
         done = 0
         with multiprocessing.Pool(processes=self.transition_workers, initializer=_init_transition_worker_5,
-                                  initargs=(self.p1_name, self.p2_name, self.p3_name)) as pool:
-            chunk_size = 4_000  # Reduced from 20,000: dense 3-piece combos (e.g. Bishop+Knight+Queen)
-                                 # can blow up per-chunk pickled result size and crash IPC
+                                  initargs=(self.p1_name, self.p2_name, self.p3_name), maxtasksperchild=500) as pool:
+            chunk_size = 10_000  # 10k reduces IPC pipe messages, preventing Windows send_bytes collisions
             chunk_iter = _gen_valid_5same_indices_numpy(
                 self.total_positions, self.p1_name, self.p2_name, self.p3_name, self.has_pawn, chunk_size=chunk_size)
             
@@ -1670,12 +1684,13 @@ def _init_transition_worker_5vs(w1_name, w2_name, b_name):
                 path = os.path.join(TB_DIR, tb_name)
                 if os.path.exists(path) and os.path.exists(path + TB_WDL_MARKER_SUFFIX):
                     _W5V_PROMO_TABLES[("b", (w1_name, w2_name), "Queen")] = _load_5man_table_file(path)
-        _W5V_BOARD = Board(setup=False)
+                _W5V_BOARD = Board(setup=False)
         _W5V_WK_OBJ = King('white'); _W5V_WP1_OBJ = PIECE_CLASS_BY_NAME[w1_name]('white'); _W5V_WP2_OBJ = PIECE_CLASS_BY_NAME[w2_name]('white')
         _W5V_BK_OBJ = King('black'); _W5V_BP_OBJ = PIECE_CLASS_BY_NAME[b_name]('black')
-        pc = _W5V_BOARD.piece_counts; pc['white'][King] = pc['black'][King] = 1
-        pc['white'][type(_W5V_WP1_OBJ)] += 1; pc['white'][type(_W5V_WP2_OBJ)] += 1; pc['black'][type(_W5V_BP_OBJ)] += 1
-        _sync_piece_counts_z(_W5V_BOARD)
+        _W5V_BOARD.white_pieces[:] = [_W5V_WK_OBJ, _W5V_WP1_OBJ, _W5V_WP2_OBJ]; _W5V_BOARD.black_pieces[:] = [_W5V_BK_OBJ, _W5V_BP_OBJ]
+        pcz = _W5V_BOARD.piece_counts_z; pcz['white'][King.z_idx] = pcz['black'][King.z_idx] = 1
+        pcz['white'][_W5V_WP1_OBJ.z_idx] += 1; pcz['white'][_W5V_WP2_OBJ.z_idx] += 1; pcz['black'][_W5V_BP_OBJ.z_idx] += 1
+        _sync_board_z_lists(_W5V_BOARD)
     except Exception as e:
         import traceback
         print(f"\n[Worker Init Error] 5-man cross worker failed to start: {e}", flush=True)
@@ -1822,7 +1837,6 @@ def _build_transition_worker_5vs(flat):
     g[bk[0]][bk[1]],g[bp[0]][bp[1]] = _W5V_BK_OBJ,_W5V_BP_OBJ
     board.white_king_pos,board.black_king_pos = wk,bk
     board.white_pieces[:] = [_W5V_WK_OBJ,_W5V_WP1_OBJ,_W5V_WP2_OBJ]; board.black_pieces[:] = [_W5V_BK_OBJ,_W5V_BP_OBJ]
-    _sync_piece_counts_z(board)
     if is_in_check(board, 'black' if turn_is_white else 'white'): return None
     turn = 'white' if turn_is_white else 'black'
     opponent = 'black' if turn_is_white else 'white'
@@ -1924,8 +1938,8 @@ class Generator5Vs:
         
         done = 0
         with multiprocessing.Pool(processes=self.transition_workers, initializer=_init_transition_worker_5vs,
-                                  initargs=(self.w1_name, self.w2_name, self.b_name)) as pool:
-            chunk_size = 4_000  # Reduced from 20,000: dense combos can blow up per-chunk pickled result size
+                                  initargs=(self.w1_name, self.w2_name, self.b_name), maxtasksperchild=500) as pool:
+            chunk_size = 10_000  # 10k reduces IPC pipe messages, preventing Windows send_bytes collisions
             chunk_iter = _gen_valid_5vs_indices_numpy(
                 self.total_positions, self.w1_name, self.w2_name,
                 self.b_name, self.has_pawn, self.same_wp, chunk_size=chunk_size)

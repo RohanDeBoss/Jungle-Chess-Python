@@ -1,4 +1,4 @@
-# Tests.py (v6 - include z-count consistency checks)
+# Tests.py (v7 - Kill class-keyed piece_counts dict)
 
 import sys
 import os
@@ -123,15 +123,11 @@ def board_state_signature(board):
             piece = board.grid[r][c]
             if piece is not None:
                 grid_sig[(r, c)] = (piece.color, type(piece).__name__)
-    piece_counts = {
-        "white": {cls.__name__: board.piece_counts["white"][cls] for cls in (Pawn, Knight, Bishop, Rook, Queen, King)},
-        "black": {cls.__name__: board.piece_counts["black"][cls] for cls in (Pawn, Knight, Bishop, Rook, Queen, King)},
-    }
     piece_counts_z = {
         "white": tuple(board.piece_counts_z["white"]),
         "black": tuple(board.piece_counts_z["black"]),
     }
-    return (grid_sig, board.white_king_pos, board.black_king_pos, piece_counts, piece_counts_z)
+    return (grid_sig, board.white_king_pos, board.black_king_pos, piece_counts_z)
 
 
 def board_identity_snapshot(board):
@@ -147,8 +143,6 @@ def board_identity_snapshot(board):
         sorted(id(p) for p in board.black_pieces),
         board.white_king_pos,
         board.black_king_pos,
-        {cls.__name__: board.piece_counts["white"][cls] for cls in (Pawn, Knight, Bishop, Rook, Queen, King)},
-        {cls.__name__: board.piece_counts["black"][cls] for cls in (Pawn, Knight, Bishop, Rook, Queen, King)},
         tuple(board.piece_counts_z["white"]),
         tuple(board.piece_counts_z["black"]),
     )
@@ -215,12 +209,6 @@ def assert_board_consistent(board, label):
                 f"{label}: {color} piece_counts_z mismatch. "
                 f"Expected {expected_z[color]}, got {board.piece_counts_z[color]}."
             )
-        for cls in (Pawn, Knight, Bishop, Rook, Queen, King):
-            if board.piece_counts[color][cls] != expected_z[color][cls.z_idx]:
-                raise AssertionError(
-                    f"{label}: {color} piece_counts[{cls.__name__}] mismatch. "
-                    f"Expected {expected_z[color][cls.z_idx]}, got {board.piece_counts[color][cls]}."
-                )
 
 
 def make_board(pieces):
@@ -977,6 +965,9 @@ def case_regression_tb_5man_cross_probe():
     table_name = "K_Queen_Rook_vs_Knight_K"
     manager.tables[table_name] = np.zeros((10, 64, 64, 64, 64, 2), dtype=np.int16)
     manager.full_wdl_tables.add(table_name)
+    # Register material signature: White(0P, 0N, 0B, 1R, 1Q) vs Black(0P, 1N, 0B, 0R, 0Q)
+    manager.signature_map[(0, 0, 0, 1, 1, 0, 1, 0, 0, 0)] = table_name
+    manager.signature_map[(0, 1, 0, 0, 0, 0, 0, 0, 1, 1)] = table_name
 
     result = manager.probe(board, "white")
     details = [

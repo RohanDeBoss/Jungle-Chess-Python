@@ -11,9 +11,9 @@ from GameLogic import Board, King, Queen, Rook, Bishop, Knight, Pawn, is_in_chec
 from TablebaseManager import TablebaseManager
 
 
-OLD_SUFFIX = "_xsml.bin"
+OLD_SUFFIX = "_tb16.bin"
 NEW_SUFFIX = "_tb16.bin"
-OLD_LONGEST = "longest_mates_xsml.tsv"
+OLD_LONGEST = "longest_mates_tb16.tsv"
 NEW_LONGEST = "longest_mates_tb16.tsv"
 PIECE_CLASSES = {
     "King": King,
@@ -355,8 +355,8 @@ def main():
     parser = argparse.ArgumentParser(
         description="Compare old and new Jungle Chess tablebases using note files, full value diffs, and live probe checks."
     )
-    parser.add_argument("--old-dir", default="tablebases")
-    parser.add_argument("--new-dir", default="TBs")
+    parser.add_argument("--old-dir", default="TBs")
+    parser.add_argument("--new-dir", default="TBbbs")
     parser.add_argument("--old-suffix", default=OLD_SUFFIX)
     parser.add_argument("--new-suffix", default=NEW_SUFFIX)
     parser.add_argument("--old-longest", default=OLD_LONGEST)

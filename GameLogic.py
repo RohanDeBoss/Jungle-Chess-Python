@@ -1,4 +1,4 @@
-# GameLogic.py (v68.4 - precomputes slices support)
+# GameLogic.py (v69 - Kill class-keyed piece_counts dict)
 
 
 # -----------------------------------------------------------------------
@@ -350,10 +350,6 @@ class Board:
         self.white_pieces   = []
         self.black_pieces   = []
         self.pieces_by_z    = {'white': [[] for _ in range(6)], 'black': [[] for _ in range(6)]}
-        self.piece_counts   = {
-            'white': {Pawn: 0, Knight: 0, Bishop: 0, Rook: 0, Queen: 0, King: 0},
-            'black': {Pawn: 0, Knight: 0, Bishop: 0, Rook: 0, Queen: 0, King: 0},
-        }
         self.piece_counts_z = {'white': [0] * 6, 'black': [0] * 6}
         if setup:
             self._setup_initial_board()
@@ -400,13 +396,15 @@ class Board:
         lst.pop()
         piece._list_pos = -1
         
-        z_idx          = piece._z_list_pos
-        z_lst          = self.pieces_by_z[piece.color][piece.z_idx]
-        z_last         = z_lst[-1]
-        z_lst[z_idx]   = z_last
-        z_last._z_list_pos = z_idx
-        z_lst.pop()
-        piece._z_list_pos = -1
+        z_idx = piece._z_list_pos
+        if z_idx >= 0:
+            z_lst = self.pieces_by_z[piece.color][piece.z_idx]
+            if z_lst:
+                z_last = z_lst[-1]
+                z_lst[z_idx] = z_last
+                z_last._z_list_pos = z_idx
+                z_lst.pop()
+            piece._z_list_pos = -1
 
     # ---- Board mutation primitives ----------------------------------------
 
@@ -416,7 +414,6 @@ class Board:
         self.grid[r][c] = piece
         piece.pos       = (r, c)
         self._list_append(piece)
-        self.piece_counts[piece.color][type(piece)] += 1
         self.piece_counts_z[piece.color][piece.z_idx] += 1
         if type(piece) is King:
             if piece.color == 'white': self.white_king_pos = (r, c)
@@ -427,7 +424,6 @@ class Board:
         if not piece:
             return
         self._list_remove(piece)
-        self.piece_counts[piece.color][type(piece)] -= 1
         self.piece_counts_z[piece.color][piece.z_idx] -= 1
         if type(piece) is King:
             if piece.color == 'white': self.white_king_pos = None
@@ -478,11 +474,6 @@ class Board:
         for p in black_pieces:
             r, c = p.pos; grid[r][c] = p
 
-        pc = self.piece_counts
-        new_board.piece_counts = {
-            'white': pc['white'].copy(),
-            'black': pc['black'].copy(),
-        }
         pcz = self.piece_counts_z
         new_board.piece_counts_z = {
             'white': pcz['white'].copy(),
@@ -594,7 +585,6 @@ class Board:
                 self.grid[r][c] = None
                 piece.pos = None
                 self._list_remove(piece)
-                self.piece_counts[piece.color][type(piece)] -= 1
                 self.piece_counts_z[piece.color][piece.z_idx] -= 1
 
         mp_pos = moving_piece.pos
@@ -609,7 +599,6 @@ class Board:
             self.grid[start[0]][start[1]] = moving_piece
             moving_piece.pos = start
             self._list_append(moving_piece)
-            self.piece_counts[moving_piece.color][type(moving_piece)] += 1
             self.piece_counts_z[moving_piece.color][moving_piece.z_idx] += 1
             if moving_piece.z_idx == 5:
                 if moving_piece.color == 'white': self.white_king_pos = start
@@ -621,7 +610,6 @@ class Board:
             self.grid[r][c] = piece
             piece.pos = (r, c)
             self._list_append(piece)
-            self.piece_counts[piece.color][type(piece)] += 1
             self.piece_counts_z[piece.color][piece.z_idx] += 1
             if piece.z_idx == 5:
                 if piece.color == 'white': self.white_king_pos = (r, c)

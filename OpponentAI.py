@@ -1,4 +1,4 @@
-# OPAI.py (v117.1 Standard Baseline)
+# OpponentAI.py (v122 - New Baseline)
 
 import json
 import os
@@ -63,14 +63,16 @@ initialize_zobrist_table()
 
 def run_ai_process(board, color, position_counts, comm_queue, cancellation_event,
                    bot_class, bot_name, search_depth, ply_count, game_mode,
-                   time_left=None, increment=None, use_opening_book=True, use_tablebase=True):
+                   time_left=None, increment=None, use_opening_book=True, use_tablebase=True,
+                   show_tt_fullness=False):
     import inspect
     accepted_params = set(inspect.signature(bot_class.__init__).parameters)
     kwargs = {
         'time_left': time_left,
         'increment': increment,
         'use_opening_book': use_opening_book,
-        'use_tablebase': use_tablebase
+        'use_tablebase': use_tablebase,
+        'show_tt_fullness': show_tt_fullness
     }
     filtered_kwargs = {k: v for k, v in kwargs.items() if k in accepted_params}
 
@@ -187,7 +189,7 @@ for _book_filename in _find_opening_book_files():
 # --------------------------
 
 # --- SEARCH STRUCTURES ---
-TTEntry = namedtuple('TTEntry', ['score', 'depth', 'flag', 'best_move'])
+TTEntry = namedtuple('TTEntry', ['score', 'depth', 'flag', 'best_move', 'age'])
 TT_FLAG_EXACT, TT_FLAG_LOWERBOUND, TT_FLAG_UPPERBOUND = 0, 1, 2
 
 class SearchCancelledException(Exception): pass
@@ -255,7 +257,9 @@ class OpponentAI:
 
     def __init__(self, board, color, position_counts, comm_queue, cancellation_event,
                  bot_name=None, ply_count=0, game_mode="bot", max_moves=200,
-                 time_left=None, increment=None, use_opening_book=True, use_tablebase=True):
+                 time_left=None, increment=None, use_opening_book=True, use_tablebase=True,
+                 show_tt_fullness=False):
+        self.show_tt_fullness = show_tt_fullness
 
         self.board = board
         self.color = color
@@ -299,6 +303,7 @@ class OpponentAI:
     def _initialize_search_state(self):
         self.tt = {}
         self.eval_tt = {}
+        self.current_age = 0
         self.nodes_searched = 0
         self.used_heuristic_eval = False
         self.tb_hits = 0
@@ -308,13 +313,56 @@ class OpponentAI:
         # [color][prev_piece_type][prev_to_sq][my_piece_type][my_to_sq]
         self.continuation_history = [[[[[0] * 64 for _ in range(6)] for _ in range(64)] for _ in range(6)] for _ in range(2)]
 
+    def update_state(self, board, color, position_counts, comm_queue, cancellation_event, bot_name, ply_count, game_mode, **kwargs):
+        """Called by the persistent worker to update the bot's state for the next turn without wiping memory."""
+        self.board = board
+        self.color = color
+        self.opponent_color = 'black' if color == 'white' else 'white'
+        self.position_counts = position_counts
+        self.comm_queue = comm_queue
+        self.cancellation_event = cancellation_event
+        self.bot_name = bot_name
+        self.ply_count = ply_count
+        self.game_mode = game_mode
+        
+        self.time_left = kwargs.get('time_left')
+        self.increment = kwargs.get('increment')
+        self.use_opening_book = kwargs.get('use_opening_book', True)
+        self.show_tt_fullness = kwargs.get('show_tt_fullness', False)
+        
+        if self.time_left:
+             allocated = (self.time_left / 30.0) + (self.increment * 0.8)
+             self.time_check_mask = self._calc_time_check_mask(allocated)
+        else:
+             self.time_check_mask = 511
+             
+        self.current_age += 1 # Advance TT generation
+
+    def _get_cached_static_eval(self, board, turn, hash_val):
+        """
+        Static eval is purely a function of (board, turn) — no depth or alpha/beta
+        dependence — so it's safe to cache and reuse across any node that
+        transposes to the same position, exactly like qsearch's stand_pat cache.
+        """
+        cached = self.eval_tt.get(hash_val)
+        if cached is not None:
+            return cached
+        val = self.evaluate_board(board, turn)
+        limit = getattr(self, 'EVAL_TT_MAX_SIZE', 5_000_000)
+        if len(self.eval_tt) > limit: self.eval_tt.clear()
+        self.eval_tt[hash_val] = val
+        return val
+
     def _store_tt(self, hash_val, score, depth, flag, move):
         existing = self.tt.get(hash_val)
         if len(self.tt) > self.TT_MAX_SIZE:
             self.tt.clear()
-        if not existing or depth >= existing.depth:
+            existing = None
+            
+        # Age-based replacement: Overwrite if slot is empty, from an older turn, or searched deeper
+        if not existing or existing.age < self.current_age or depth >= existing.depth:
             best_move = move if move is not None else (existing.best_move if existing else None)
-            self.tt[hash_val] = TTEntry(score, depth, flag, best_move)
+            self.tt[hash_val] = TTEntry(score, depth, flag, best_move, self.current_age)
 
     def _report_log(self, message):   self.comm_queue.put(('log', message))
     def _report_eval(self, score, depth): self.comm_queue.put(('eval', score if self.color == 'white' else -score, depth))
@@ -624,7 +672,8 @@ class OpponentAI:
                     report_score = best_score_this_iter
 
                 eval_for_ui = report_score if self.color == 'white' else -report_score
-                self._report_log(f"  > {self.bot_name} (D{depth_label}): {self._format_move(self.board, best_move_this_iter)}, Eval={eval_for_ui/100:+.2f}, NodesTotal={total_nodes}, KNPS={knps:.1f}, TBhits={self.tb_hits}, Time={iter_duration:.2f}s")
+                tt_str = f", TT={int((len(self.tt) / self.TT_MAX_SIZE) * 1000)}/1000" if getattr(self, 'show_tt_fullness', False) else ""
+                self._report_log(f"  > {self.bot_name} (D{depth_label}): {self._format_move(self.board, best_move_this_iter)}, Eval={eval_for_ui/100:+.2f}, NodesTotal={total_nodes}, KNPS={knps:.1f}, TBhits={self.tb_hits}{tt_str}, Time={iter_duration:.2f}s")
                 self._report_eval(report_score, depth_label)
 
                 ui_eval        = report_score if self.color == 'white' else -report_score
@@ -727,7 +776,8 @@ class OpponentAI:
                         report_score = best_score_this_iter
 
                     eval_for_ui = report_score if self.color == 'white' else -report_score
-                    self._report_log(f"  > {self.bot_name} (D{depth_label}): {self._format_move(self.board, best_move_this_iter)}, Eval={eval_for_ui/100:+.2f}, NodesTotal={total_nodes}, KNPS={knps:.1f}, TBhits={self.tb_hits}, Time={iter_duration:.2f}s")
+                    tt_str = f", TT={int((len(self.tt) / self.TT_MAX_SIZE) * 1000)}/1000" if getattr(self, 'show_tt_fullness', False) else ""
+                    self._report_log(f"  > {self.bot_name} (D{depth_label}): {self._format_move(self.board, best_move_this_iter)}, Eval={eval_for_ui/100:+.2f}, NodesTotal={total_nodes}, KNPS={knps:.1f}, TBhits={self.tb_hits}{tt_str}, Time={iter_duration:.2f}s")
                     self._report_eval(report_score, depth_label)
 
                     ui_eval        = report_score if self.color == 'white' else -report_score
@@ -801,7 +851,8 @@ class OpponentAI:
             if score > best_score_this_iter:
                 best_score_this_iter = score
                 best_move_this_iter  = move
-            alpha = max(alpha, best_score_this_iter)
+            if best_score_this_iter > alpha:
+                alpha = best_score_this_iter
 
         return best_score_this_iter, best_move_this_iter
 
@@ -842,9 +893,12 @@ class OpponentAI:
 
             self.used_heuristic_eval = True
 
-            if tt_entry.flag == TT_FLAG_EXACT:       return tt_score
-            elif tt_entry.flag == TT_FLAG_LOWERBOUND: alpha = max(alpha, tt_score)
-            elif tt_entry.flag == TT_FLAG_UPPERBOUND: beta  = min(beta,  tt_score)
+            if tt_entry.flag == TT_FLAG_EXACT:
+                return tt_score
+            elif tt_entry.flag == TT_FLAG_LOWERBOUND:
+                if tt_score > alpha: alpha = tt_score
+            elif tt_entry.flag == TT_FLAG_UPPERBOUND:
+                if tt_score < beta: beta = tt_score
             if alpha >= beta: return tt_score
 
         if depth <= 0: return self.qsearch(board, alpha, beta, turn, ply, current_hash=hash_val)
@@ -867,11 +921,11 @@ class OpponentAI:
             if (self.USE_NULL_MOVE_PRUNING and depth >= self.NMP_MIN_DEPTH and
                     ply > 0 and not is_in_check_flag and abs(beta) < self.MATE_SCORE - 1000
                     and total_pieces > 6): # Disabled in endgame to prevent zugzwang blind spots
-                pc = board.piece_counts
-                if (pc['white'][Knight] + pc['white'][Bishop] + pc['white'][Rook] + pc['white'][Queen] > 0 and
-                        pc['black'][Knight] + pc['black'][Bishop] + pc['black'][Rook] + pc['black'][Queen] > 0):
+                pc = board.piece_counts_z
+                if (pc['white'][1] + pc['white'][2] + pc['white'][3] + pc['white'][4] > 0 and
+                        pc['black'][1] + pc['black'][2] + pc['black'][3] + pc['black'][4] > 0):
                     self.used_heuristic_eval = True
-                    static_eval = self.evaluate_board(board, turn)
+                    static_eval = self._get_cached_static_eval(board, turn, hash_val)
                     if static_eval >= beta:
                         reduction  = self.NMP_BASE_REDUCTION + (depth // self.NMP_DEPTH_DIVISOR)
                         null_hash  = hash_val ^ ZOBRIST_TURN
@@ -886,7 +940,7 @@ class OpponentAI:
                     abs(alpha) < self.MATE_SCORE - 1000 and total_pieces > 6): # Disabled in endgame
                 self.used_heuristic_eval = True
                 if static_eval is None:
-                    static_eval = self.evaluate_board(board, turn)
+                    static_eval = self._get_cached_static_eval(board, turn, hash_val)
                 if static_eval + self.FUTILITY_MARGIN < alpha:
                     futility_prune = True
 
@@ -937,8 +991,8 @@ class OpponentAI:
                         legal_moves_count > self.LMR_MOVE_COUNT_THRESHOLD and
                         not is_in_check_flag and not is_good_tactic):
                     
-                    # 1. Base reduction with much gentler scaling
-                    reduction = 1 + (depth // 7) + (legal_moves_count // 12)
+                    # 1. Base reduction with gentler scaling
+                    reduction = 1 + (depth // 6) + (legal_moves_count // 12)
 
                     # 1b. Reduce scaling in the endgame so quiet mating nets
                     # (which can be genuinely hard to see in Jungle Chess's
@@ -1090,26 +1144,15 @@ class OpponentAI:
 
         if ply >= self.MAX_Q_SEARCH_DEPTH:
             self.used_heuristic_eval = True
-            if hash_val in self.eval_tt: return self.eval_tt[hash_val]
-            score = self.evaluate_board(board, turn)
-            if len(self.eval_tt) > 5_000_000: self.eval_tt.clear()
-            self.eval_tt[hash_val] = score
-            return score
+            return self._get_cached_static_eval(board, turn, hash_val)
 
         self.used_heuristic_eval = True
-        
-        if hash_val in self.eval_tt:
-            stand_pat = self.eval_tt[hash_val]
-        else:
-            stand_pat = self.evaluate_board(board, turn)
-            if len(self.eval_tt) > 5_000_000: self.eval_tt.clear()
-            self.eval_tt[hash_val] = stand_pat
-            
         is_in_check_flag = is_in_check(board, turn)
 
         if not is_in_check_flag:
+            stand_pat = self._get_cached_static_eval(board, turn, hash_val)
             if stand_pat >= beta: return beta
-            alpha = max(alpha, stand_pat)
+            if stand_pat > alpha: alpha = stand_pat
 
         if ply <= 4:
             current_margin = self.Q_MARGIN_MAX
@@ -1122,7 +1165,12 @@ class OpponentAI:
         tt_move = tt_entry.best_move if tt_entry else None
         
         opponent_turn = 'black' if turn == 'white' else 'white'
-        has_enemy_knights = board.piece_counts[opponent_turn][Knight] > 0
+        
+        # HOIST: Precompute enemy knight 1D indices outside the move loop
+        enemy_knight_indices = []
+        if board.piece_counts_z[opponent_turn][1] > 0:
+            for k in board.pieces_by_z[opponent_turn][1]:
+                enemy_knight_indices.append(k.pos[0] * 8 + k.pos[1])
 
         for move in promising_moves:
             (r1, c1), (r2, c2) = move
@@ -1134,10 +1182,10 @@ class OpponentAI:
             if not is_in_check_flag and target_piece is None:
                 if my_z in (2, 4, 5) or (my_z == 0 and r2 != moving_piece.promo_rank):
                     gets_evaporated = False
-                    if has_enemy_knights:
-                        for kr, kc in KNIGHT_ATTACKS_FROM[(r2, c2)]:
-                            kp = grid[kr][kc]
-                            if kp is not None and kp.z_idx == 1 and kp.color == opponent_turn:
+                    if enemy_knight_indices:
+                        target_idx = r2 * 8 + c2
+                        for kp_idx in enemy_knight_indices:
+                            if KNIGHT_EVAP_SQUARES[kp_idx][target_idx] is True:
                                 gets_evaporated = True
                                 break
                     if not gets_evaporated:
@@ -1174,7 +1222,7 @@ class OpponentAI:
             board.unmake_move(record)
 
             if search_score >= beta: return beta
-            alpha = max(alpha, search_score)
+            if search_score > alpha: alpha = search_score
 
         # NOTE: has_legal_moves() here looks like it violates "no legal move checks in
         # qsearch," but it short-circuits on the first legal move found, so it's ~O(1) in
@@ -1196,7 +1244,13 @@ class OpponentAI:
 
         grid = board.grid
         opponent_turn = 'black' if turn == 'white' else 'white'
-        has_enemy_knights = board.piece_counts[opponent_turn][Knight] > 0
+        
+        # HOIST: Precompute enemy knight 1D indices outside the move loop
+        enemy_knight_indices = []
+        if board.piece_counts_z[opponent_turn][1] > 0:
+            for k in board.pieces_by_z[opponent_turn][1]:
+                if k.pos:
+                    enemy_knight_indices.append(k.pos[0] * 8 + k.pos[1])
 
         for move in moves:
             (r1, c1), (r2, c2) = move
@@ -1209,10 +1263,10 @@ class OpponentAI:
             if target_piece is None:
                 if my_z in (2, 4, 5) or (my_z == 0 and r2 != moving_piece.promo_rank):
                     gets_evaporated = False
-                    if has_enemy_knights:
-                        for kr, kc in KNIGHT_ATTACKS_FROM[(r2, c2)]:
-                            kp = grid[kr][kc]
-                            if kp is not None and kp.z_idx == 1 and kp.color == opponent_turn:
+                    if enemy_knight_indices:
+                        target_idx = r2 * 8 + c2
+                        for kp_idx in enemy_knight_indices:
+                            if KNIGHT_EVAP_SQUARES[kp_idx][target_idx] is True:
                                 gets_evaporated = True
                                 break
                     if not gets_evaporated:
@@ -1227,7 +1281,17 @@ class OpponentAI:
             if move == hash_move:
                 score = self.BONUS_PV_MOVE
             elif is_good_tactic:
-                score = self.BONUS_CAPTURE + (swing * 100) + (5 - my_z)
+                ordering_swing = swing
+                if target_piece is not None and my_z != 4:  # Exclude Queens since they already self-destruct
+                    # Soft-SEE: if the destination square is defended by the
+                    # opponent, the moving piece will likely be recaptured.
+                    # This only affects move ORDERING — is_good_tactic (which
+                    # governs pruning/LMR safety elsewhere) is untouched, so a
+                    # losing-but-forcing capture still gets searched at full
+                    # depth, just later in the move list.
+                    if is_square_attacked(board, r2, c2, opponent_turn):
+                        ordering_swing = swing - ORDERING_VALUES[my_z]
+                score = self.BONUS_CAPTURE + (ordering_swing * 100) + (5 - my_z)
             elif move in killers:
                 score = 4_000_000 if move == killers[0] else 3_000_000
             elif move == counter_move:
@@ -1267,38 +1331,31 @@ class OpponentAI:
 
         grid = board.grid
 
-        white_pawn_files = [False] * COLS
-        black_pawn_files = [False] * COLS
-        # For white pawn (moving toward row 0) to be passed, need no black pawn at row < r.
-        # Track the MINIMUM row of black pawns per file.
-        black_pawn_min_row = [8] * COLS
-        # For black pawn (moving toward row 7) to be passed, need no white pawn at row > r.
-        # Track the MAXIMUM row of white pawns per file.
-        white_pawn_max_row = [-1] * COLS
+        black_pawn_min_row = [8, 8, 8, 8, 8, 8, 8, 8]
+        white_pawn_max_row = [-1, -1, -1, -1, -1, -1, -1, -1]
 
-        total_pawns = board.piece_counts['white'][Pawn] + board.piece_counts['black'][Pawn]
-        if total_pawns > 0:
+        pc_wz = board.piece_counts_z['white']
+        pc_bz = board.piece_counts_z['black']
+        
+        # Kept board.white_pieces to avoid dictionary/hash overhead
+        if pc_wz[0] > 0:
             for piece in board.white_pieces:
                 if piece.z_idx == 0:
                     r, c = piece.pos
-                    white_pawn_files[c] = True
                     if r > white_pawn_max_row[c]: white_pawn_max_row[c] = r
+        if pc_bz[0] > 0:
             for piece in board.black_pieces:
                 if piece.z_idx == 0:
                     r, c = piece.pos
-                    black_pawn_files[c] = True
                     if r < black_pawn_min_row[c]: black_pawn_min_row[c] = r
 
         scores_mg = [0, 0]; scores_eg = [0, 0]
 
-        pc_w = board.piece_counts['white']
-        pc_b = board.piece_counts['black']
-
-        pawn_counts   = [pc_w[Pawn], pc_b[Pawn]]
-        knight_counts = [pc_w[Knight], pc_b[Knight]]
-        bishop_counts = [pc_w[Bishop], pc_b[Bishop]]
-        rook_counts   = [pc_w[Rook], pc_b[Rook]]
-        queen_counts  = [pc_w[Queen], pc_b[Queen]]
+        pawn_counts   = [pc_wz[0], pc_bz[0]]
+        knight_counts = [pc_wz[1], pc_bz[1]]
+        bishop_counts = [pc_wz[2], pc_bz[2]]
+        rook_counts   = [pc_wz[3], pc_bz[3]]
+        queen_counts  = [pc_wz[4], pc_bz[4]]
 
         piece_counts = [
             knight_counts[0] + bishop_counts[0] + rook_counts[0] + queen_counts[0],
@@ -1357,21 +1414,19 @@ class OpponentAI:
 
                     is_passed = True
                     if is_white:
-                        for pc in (c - 1, c, c + 1):
-                            if 0 <= pc < COLS and black_pawn_files[pc]:
-                                # Same file: enemy pawn must be strictly ahead (< r)
-                                if pc == c and black_pawn_min_row[pc] < r:
-                                    is_passed = False; break
-                                # Adjacent file: enemy pawn can capture sideways if on the same rank (<= r)
-                                elif pc != c and black_pawn_min_row[pc] <= r:
-                                    is_passed = False; break
+                        if black_pawn_min_row[c] < r:
+                            is_passed = False
+                        elif c > 0 and black_pawn_min_row[c - 1] <= r:
+                            is_passed = False
+                        elif c < 7 and black_pawn_min_row[c + 1] <= r:
+                            is_passed = False
                     else:
-                        for pc in (c - 1, c, c + 1):
-                            if 0 <= pc < COLS and white_pawn_files[pc]:
-                                if pc == c and white_pawn_max_row[pc] > r:
-                                    is_passed = False; break
-                                elif pc != c and white_pawn_max_row[pc] >= r:
-                                    is_passed = False; break
+                        if white_pawn_max_row[c] > r:
+                            is_passed = False
+                        elif c > 0 and white_pawn_max_row[c - 1] >= r:
+                            is_passed = False
+                        elif c < 7 and white_pawn_max_row[c + 1] >= r:
+                            is_passed = False
                                     
                     if is_passed:
                         advance = max(0, (6 - r) if is_white else (r - 1))
@@ -1380,14 +1435,15 @@ class OpponentAI:
                 elif z == 3: # Rook
                     if enemy_king and (r == enemy_king[0] or c == enemy_king[1]):
                         scores_mg[color_idx] += ROOK_ALIGNMENT_BONUS
-                    my_pawn_files = white_pawn_files if is_white else black_pawn_files
-                    if not my_pawn_files[c]:
+                        
+                    has_pawn = (white_pawn_max_row[c] != -1) if is_white else (black_pawn_min_row[c] != 8)
+                    if not has_pawn:
                         scores_mg[color_idx] += ROOK_OPEN_FILE_BONUS_MG
                         scores_eg[color_idx] += ROOK_OPEN_FILE_BONUS_EG
 
                     # --- JUNGLE-NATIVE MOBILITY (Piercing) ---
                     mobility = 0
-                    for ray in RAYS[sq][:4]: # Orthogonal rays
+                    for ray in RAYS_ORTHOGONAL[sq]: # Orthogonal rays
                         for cr, cc in ray:
                             target = grid[cr][cc]
                             if target is not None:
@@ -1400,7 +1456,7 @@ class OpponentAI:
                 elif z == 2: # Bishop
                     # --- JUNGLE-NATIVE MOBILITY (Sliding & Zigzag) ---
                     mobility = 0
-                    for ray in RAYS[sq][4:]: # Diagonal rays
+                    for ray in RAYS_DIAGONAL[sq]: # Diagonal rays
                         for cr, cc in ray:
                             target = grid[cr][cc]
                             if target is not None:
@@ -1428,7 +1484,7 @@ class OpponentAI:
                             scores_mg[color_idx] += KNIGHT_ACTIVITY_BONUS
                             scores_eg[color_idx] += KNIGHT_ACTIVITY_BONUS
                         if ekr is not None and not has_attacked_king_zone:
-                            if abs(ar - ekr) <= 2 and abs(ac - ekc) <= 2:
+                            if -2 <= ar - ekr <= 2 and -2 <= ac - ekc <= 2:
                                 king_zone_attacks[1 - color_idx] += 1
                                 has_attacked_king_zone = True
 
@@ -1496,7 +1552,9 @@ class OpponentAI:
                 scores_eg[i] -= vuln_penalty
 
         if king_pos[0] and king_pos[1]:
-            dist = abs(king_pos[0][0] - king_pos[1][0]) + abs(king_pos[0][1] - king_pos[1][1])
+            dr = king_pos[0][0] - king_pos[1][0]
+            dc = king_pos[0][1] - king_pos[1][1]
+            dist = (dr if dr >= 0 else -dr) + (dc if dc >= 0 else -dc)
             tropism_penalty = (dist * dist * inv_phase * 50) // 50176
             if scores_eg[0] > scores_eg[1]: scores_eg[0] -= tropism_penalty
             elif scores_eg[1] > scores_eg[0]: scores_eg[1] -= tropism_penalty

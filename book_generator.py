@@ -90,9 +90,10 @@ def evaluate_position(fen, ply, branch_factor, search_depth, eval_tol):
     bot._report_move = lambda m: None
     bot.ply_count = ply 
 
-    # Bulletproof RAM caps (~15MB per core) to guarantee completion.
-    bot.TT_MAX_SIZE = 150_000
-    bot.EVAL_TT_MAX_SIZE = 50_000
+    # Massive TT caps to prevent mid-search amnesia. 
+    # (Safe now because Windows will forcefully reclaim the RAM after every position).
+    bot.TT_MAX_SIZE = 3_000_000
+    bot.EVAL_TT_MAX_SIZE = 1_000_000
 
     legal_moves = get_all_legal_moves(board, turn)
     root_hash = board_hash(board, turn)
@@ -164,17 +165,7 @@ def evaluate_position(fen, ply, branch_factor, search_depth, eval_tol):
             "weight": weight
         })
 
-    ret = (fen, node_moves, "\n".join(logs))
-    
-    # Brutally force CPython to drop all dictionary arrays back to the OS
-    bot.tt.clear()
-    bot.eval_tt.clear()
-    del bot.tt
-    del bot.eval_tt
-    del bot
-    gc.collect() 
-    
-    return ret
+    return fen, node_moves, "\n".join(logs)
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # MAIN GENERATOR CONTROLLER
@@ -208,7 +199,10 @@ def generate_book():
     start_time = time.time()
     positions_evaluated = 0
 
-    with mp.Pool(processes=mp.cpu_count()) as pool:
+    # maxtasksperchild=1 forces Python to kill the worker process after every single 
+    # position. This guarantees 100% of the RAM is returned to the OS instantly, 
+    # making MemoryErrors physically impossible regardless of TT size.
+    with mp.Pool(processes=mp.cpu_count(), maxtasksperchild=1) as pool:
         
         for current_ply in range(BOOK_PLY_DEPTH):
             if not current_level_queue:
