@@ -1,4 +1,4 @@
-# AI.py (v122 - TT Maintains across moves)
+# AI.py (v123 - Fail Soft)
 
 import json
 import os
@@ -959,6 +959,7 @@ class ChessBot:
             legal_moves_count  = 0
             quiet_moves_tried  = []
             history_table      = self.history_heuristic_table[0 if turn == 'white' else 1]
+            best_score         = -float('inf')
 
             for move, meta in ordered_entries:
                 is_good_tactic, moving_piece = meta
@@ -1047,10 +1048,12 @@ class ChessBot:
 
                 board.unmake_move(record)
 
-                if score > alpha:
-                    alpha, best_move_for_node = score, move
+                if score > best_score:
+                    best_score = score
+                    if score > alpha:
+                        alpha, best_move_for_node = score, move
 
-                if alpha >= beta:
+                if best_score >= beta:
                     if not is_good_tactic:
                         if ply < len(self.killer_moves) and self.killer_moves[ply][0] != move:
                             self.killer_moves[ply][1], self.killer_moves[ply][0] = \
@@ -1094,21 +1097,21 @@ class ChessBot:
                                         ch_table = self.continuation_history[c_idx][prev_pt_idx][prev_to_sq][f_mp_idx]
                                         ch_table[ft] -= bonus + (ch_table[ft] * bonus) // 64_000
 
-                    sto = beta
-                    if sto >  self.MATE_SCORE - 1000: sto = beta + ply
-                    elif sto < -self.MATE_SCORE + 1000: sto = beta - ply
+                    sto = best_score
+                    if sto >  self.MATE_SCORE - 1000: sto = best_score + ply
+                    elif sto < -self.MATE_SCORE + 1000: sto = best_score - ply
                     self._store_tt(hash_val, sto, depth, TT_FLAG_LOWERBOUND, move)
-                    return beta
+                    return best_score
 
             if legal_moves_count == 0:
                 return -self.MATE_SCORE + ply
 
-            sto = alpha
-            if sto >  self.MATE_SCORE - 1000: sto = alpha + ply
-            elif sto < -self.MATE_SCORE + 1000: sto = alpha - ply
-            flag = TT_FLAG_EXACT if alpha > original_alpha else TT_FLAG_UPPERBOUND
+            sto = best_score
+            if sto >  self.MATE_SCORE - 1000: sto = best_score + ply
+            elif sto < -self.MATE_SCORE + 1000: sto = best_score - ply
+            flag = TT_FLAG_EXACT if best_score > original_alpha else TT_FLAG_UPPERBOUND
             self._store_tt(hash_val, sto, depth, flag, best_move_for_node)
-            return alpha
+            return best_score
 
         finally:
             if path_added: search_path.discard(hash_val)
@@ -1148,10 +1151,12 @@ class ChessBot:
 
         self.used_heuristic_eval = True
         is_in_check_flag = is_in_check(board, turn)
+        best_score = -float('inf')
 
         if not is_in_check_flag:
             stand_pat = self._get_cached_static_eval(board, turn, hash_val)
-            if stand_pat >= beta: return beta
+            best_score = stand_pat
+            if stand_pat >= beta: return stand_pat
             if stand_pat > alpha: alpha = stand_pat
 
         if ply <= 4:
@@ -1221,8 +1226,10 @@ class ChessBot:
             search_score = -self.qsearch(board, -beta, -alpha, opponent_turn, ply + 1, current_hash=child_hash)
             board.unmake_move(record)
 
-            if search_score >= beta: return beta
-            if search_score > alpha: alpha = search_score
+            if search_score > best_score:
+                best_score = search_score
+                if search_score > alpha: alpha = search_score
+            if best_score >= beta: return best_score
 
         # NOTE: has_legal_moves() here looks like it violates "no legal move checks in
         # qsearch," but it short-circuits on the first legal move found, so it's ~O(1) in
@@ -1232,7 +1239,7 @@ class ChessBot:
         if legal_moves_count == 0 and (is_in_check_flag or not has_legal_moves(board, turn)):
             return -self.MATE_SCORE + ply
 
-        return alpha
+        return best_score
     
     def order_moves(self, board, moves, ply, hash_move, turn, return_meta=False, counter_move=None, prev_move_tuple=None):
         if not moves: return []
