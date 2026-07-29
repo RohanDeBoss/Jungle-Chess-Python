@@ -1,4 +1,4 @@
-# AI.py (v123 - Fail Soft)
+# AI.py (v123.1 - Fail Soft + IIR)
 
 import json
 import os
@@ -215,6 +215,9 @@ class ChessBot:
 
     USE_FUTILITY_PRUNING = True
     FUTILITY_MARGIN = 1000 # Lowered for speed at the cost of some tactical loss
+
+    USE_IIR = True
+    IIR_MIN_DEPTH = 4
 
     TT_MAX_SIZE = 10_000_000 #Lots of entries
 
@@ -946,6 +949,13 @@ class ChessBot:
 
             pseudo_moves = get_all_pseudo_legal_moves(board, turn)
             hash_move    = tt_entry.best_move if tt_entry else None
+            
+            # --- INTERNAL ITERATIVE REDUCTION (IIR) ---
+            # If we don't have a TT move to guide us, move ordering will be suboptimal.
+            # We artificially reduce the depth to do a cheaper "reconnaissance" search.
+            # This fills the TT with a good hash move for when the node is inevitably re-searched.
+            if self.USE_IIR and depth >= self.IIR_MIN_DEPTH and not hash_move and not is_in_check_flag:
+                depth -= 1
             
             if prev_move_tuple:
                 (pr1, pc1), (pr2, pc2) = prev_move_tuple[0]
