@@ -1,4 +1,4 @@
-# AI.py (v123.2 - Fail Soft everywhere + IIR)
+# AI.py (v124.2 - New move ordering bonuses + logic fix + asymmetry fix)
 
 import json
 import os
@@ -315,6 +315,8 @@ class ChessBot:
         self.counter_moves = [[[None for _ in range(64)] for _ in range(64)] for _ in range(2)]
         # [color][prev_piece_type][prev_to_sq][my_piece_type][my_to_sq]
         self.continuation_history = [[[[[0] * 64 for _ in range(6)] for _ in range(64)] for _ in range(6)] for _ in range(2)]
+        # [color][my_piece_type][captured_piece_type][my_to_sq]
+        self.capture_history = [[[[0 for _ in range(64)] for _ in range(6)] for _ in range(6)] for _ in range(2)]
 
     def update_state(self, board, color, position_counts, comm_queue, cancellation_event, bot_name, ply_count, game_mode, **kwargs):
         """Called by the persistent worker to update the bot's state for the next turn without wiping memory."""
@@ -971,11 +973,12 @@ class ChessBot:
             best_move_for_node = None
             legal_moves_count  = 0
             quiet_moves_tried  = []
+            tactic_moves_tried = []
             history_table      = self.history_heuristic_table[0 if turn == 'white' else 1]
             best_score         = -float('inf')
 
             for move, meta in ordered_entries:
-                is_good_tactic, moving_piece = meta
+                is_good_tactic, moving_piece, victim_z = meta
                 f_sq = move[0][0] * 8 + move[0][1]
                 t_sq = move[1][0] * 8 + move[1][1]
 
@@ -990,7 +993,7 @@ class ChessBot:
 
                 legal_moves_count += 1
                 if not is_good_tactic: quiet_moves_tried.append((move, moving_piece))
-
+                else: tactic_moves_tried.append((move, moving_piece, victim_z))
                 if futility_prune and not is_good_tactic and legal_moves_count > 1:
                     # SAFETY GUARD: Never prune a quiet move that delivers check.
                     # Thanks to the highly optimized is_square_attacked in GameLogic,
@@ -1067,19 +1070,20 @@ class ChessBot:
                         alpha, best_move_for_node = score, move
 
                 if best_score >= beta:
+                    c_idx = 0 if turn == 'white' else 1
+                    bonus = depth * depth
+
                     if not is_good_tactic:
                         if ply < len(self.killer_moves) and self.killer_moves[ply][0] != move:
                             self.killer_moves[ply][1], self.killer_moves[ply][0] = \
                                 self.killer_moves[ply][0], move
                         if prev_move_tuple:
                             (pr1, pc1), (pr2, pc2) = prev_move_tuple[0]
-                            self.counter_moves[0 if turn == 'white' else 1][pr1 * 8 + pc1][pr2 * 8 + pc2] = move
+                            self.counter_moves[c_idx][pr1 * 8 + pc1][pr2 * 8 + pc2] = move
                         
                         # --- CALIBRATED HISTORY UPDATES ---
                         if moving_piece:
-                            c_idx = 0 if turn == 'white' else 1
-                            bonus = depth * depth
-                            ht    = self.history_heuristic_table[c_idx]
+                            ht = self.history_heuristic_table[c_idx]
                             
                             # Gravity update for the successful move
                             ht[f_sq][t_sq] += bonus - (ht[f_sq][t_sq] * bonus) // 2_000_000
@@ -1109,7 +1113,23 @@ class ChessBot:
                                         f_mp_idx = f_mp.z_idx
                                         ch_table = self.continuation_history[c_idx][prev_pt_idx][prev_to_sq][f_mp_idx]
                                         ch_table[ft] -= bonus + (ch_table[ft] * bonus) // 64_000
+                    else:
+                        # --- CAPTURE HISTORY UPDATE (mirrors quiet history above) ---
+                        t_z = victim_z if victim_z is not None else 0
+                        cap_table = self.capture_history[c_idx][moving_piece.z_idx][t_z]
+                        cap_table[t_sq] += bonus - (cap_table[t_sq] * bonus) // 2_000_000
 
+                    # Gravity penalty for failed tactics — applies regardless of
+                    # whether the cutoff move itself was a tactic or a quiet move.
+                    # A quiet cutoff means every tactic tried before it at this
+                    # node already failed to cut off and must be punished too.
+                    for f_move, f_mp, f_vz in tactic_moves_tried:
+                        if f_move != move:
+                            (fr1, fc1), (fr2, fc2) = f_move
+                            ft   = fr2 * 8 + fc2
+                            f_tz = f_vz if f_vz is not None else 0
+                            f_cap_table = self.capture_history[c_idx][f_mp.z_idx][f_tz]
+                            f_cap_table[ft] -= bonus + (f_cap_table[ft] * bonus) // 2_000_000
                     sto = best_score
                     if sto >  self.MATE_SCORE - 1000: sto = best_score + ply
                     elif sto < -self.MATE_SCORE + 1000: sto = best_score - ply
@@ -1253,6 +1273,49 @@ class ChessBot:
             return -self.MATE_SCORE + ply
 
         return best_score
+
+    def _capture_history_victim_z(self, board, move, moving_piece, target_piece):
+        """
+        Determines which enemy piece type a tactical move actually destroys,
+        for indexing self.capture_history. target_piece (the pre-move occupant
+        of the landing square) is only correct for DIRECT captures. It is
+        always None for Knight moves (which only land on empty squares —
+        victims are evaporated, never captured on the landing square) and can
+        be None for Rook piercing moves that kill along the path while landing
+        on an empty square. Both cases previously fell through to a hardcoded
+        Pawn (z_idx 0) bucket, silently mislabeling the two most
+        Jungle-Chess-specific tactics.
+        """
+        if target_piece is not None:
+            return target_piece.z_idx
+
+        my_z = moving_piece.z_idx
+        my_color = moving_piece.color
+        grid = board.grid
+
+        if my_z == 1:  # Knight — victims are evaporated, never on the landing square
+            best_z = -1
+            for r, c in KNIGHT_ATTACKS_FROM[move[1]]:
+                p = grid[r][c]
+                if p is not None and p.color != my_color and p.z_idx > best_z:
+                    best_z = p.z_idx
+            return best_z if best_z >= 0 else None
+
+        if my_z == 3:  # Rook — piercing victims lie strictly between start and end
+            start, end = move
+            dr = (end[0] > start[0]) - (start[0] > end[0])
+            dc = (end[1] > start[1]) - (start[1] > end[1])
+            cr, cc = start[0] + dr, start[1] + dc
+            best_z = -1
+            while (cr, cc) != end:
+                p = grid[cr][cc]
+                if p is not None and p.color != my_color and p.z_idx > best_z:
+                    best_z = p.z_idx
+                cr += dr
+                cc += dc
+            return best_z if best_z >= 0 else None
+
+        return None
     
     def order_moves(self, board, moves, ply, hash_move, turn, return_meta=False, counter_move=None, prev_move_tuple=None):
         if not moves: return []
@@ -1278,6 +1341,7 @@ class ChessBot:
             target_piece = grid[r2][c2]
             
             my_z = moving_piece.z_idx
+            victim_z = None
 
             is_definitely_quiet = False
             if target_piece is None:
@@ -1311,7 +1375,10 @@ class ChessBot:
                     # depth, just later in the move list.
                     if is_square_attacked(board, r2, c2, opponent_turn):
                         ordering_swing = swing - ORDERING_VALUES[my_z]
-                score = self.BONUS_CAPTURE + (ordering_swing * 100) + (5 - my_z)
+                victim_z = self._capture_history_victim_z(board, move, moving_piece, target_piece)
+                t_z = victim_z if victim_z is not None else 0
+                ch_bonus = self.capture_history[c_idx][my_z][t_z][r2 * 8 + c2]
+                score = self.BONUS_CAPTURE + (ordering_swing * 100) + (ch_bonus // 100) + (5 - my_z)
             elif move in killers:
                 score = 4_000_000 if move == killers[0] else 3_000_000
             elif move == counter_move:
@@ -1335,13 +1402,13 @@ class ChessBot:
             if is_opening: 
                 score += self._opening_development_bonus(move, moving_piece)
             
-            scored_moves.append((score, move, is_good_tactic, moving_piece))
+            scored_moves.append((score, move, is_good_tactic, moving_piece, victim_z))
 
         # C-optimized sorting that preserves stable order
         scored_moves.sort(key=itemgetter(0), reverse=True)
 
         if return_meta:
-            return [(item[1], (item[2], item[3])) for item in scored_moves]
+            return [(item[1], (item[2], item[3], item[4])) for item in scored_moves]
         else:
             return [item[1] for item in scored_moves]
 
