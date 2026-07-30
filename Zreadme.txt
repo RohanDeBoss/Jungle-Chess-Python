@@ -304,4 +304,4 @@ If you're reviewing or modifying this codebase, before proposing a change:
    there in the one place it's needed, and it's cheap (§6.5).
 4. Don't propose tightening pruning margins without flagging that it needs
    an AI-vs-OP regression run — Jungle Chess's swing sizes break assumptions
-   pruning margins are normally tuned against.
+   pruning margins are normally tuned against. Tests shown to lose elo: LMP.

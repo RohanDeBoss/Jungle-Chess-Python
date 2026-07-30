@@ -1,4 +1,4 @@
-# OPAI.py (v123.1 - Fail Soft + IIR)
+# OPAI.py (v123.2 - New baseline)
 
 import json
 import os
@@ -935,7 +935,10 @@ class OpponentAI:
                         score = -self.negamax(board, depth - 1 - reduction, -beta, -beta + 1,
                                             opponent_turn, ply + 1, search_path,
                                             null_hash, None, extensions)
-                        if score >= beta: return beta
+                        if score >= beta: 
+                            # Fail-soft return, but clamp false mate scores
+                            # (skipping a turn creates hallucinated mate distances)
+                            return score if score < self.MATE_SCORE - 1000 else beta
 
             # --- FORWARD FUTILITY PRUNING (Original Conservative Version) ---
             futility_prune = False
