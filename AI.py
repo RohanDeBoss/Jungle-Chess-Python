@@ -1,4 +1,4 @@
-# AI.py (v124.2 - New move ordering bonuses + logic fix + asymmetry fix)
+# AI.py (v124.3 - Age all continuation histories)
 
 import json
 import os
@@ -500,10 +500,24 @@ class ChessBot:
         return best_score, best_move
 
     def _age_history_table(self):
-        for color_idx in range(2):
-            for from_sq in range(ROWS * COLS):
-                for to_sq in range(ROWS * COLS):
-                    self.history_heuristic_table[color_idx][from_sq][to_sq] //= 2
+        for c_idx in range(2):
+            # 1. Age basic quiet history
+            for from_sq in range(64):
+                for to_sq in range(64):
+                    self.history_heuristic_table[c_idx][from_sq][to_sq] //= 2
+                    
+            # 2. Age capture history
+            for z1 in range(6):
+                for z2 in range(6):
+                    for sq in range(64):
+                        self.capture_history[c_idx][z1][z2][sq] //= 2
+                        
+            # 3. Age continuation history
+            for pt1 in range(6):
+                for sq1 in range(64):
+                    for pt2 in range(6):
+                        for sq2 in range(64):
+                            self.continuation_history[c_idx][pt1][sq1][pt2][sq2] //= 2
 
     def _get_pv_data(self, max_depth, root_move):
         if not root_move: return [], []
