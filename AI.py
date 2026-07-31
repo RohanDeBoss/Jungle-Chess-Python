@@ -1,4 +1,4 @@
-# AI.py (v125 - RFP conservative)
+# AI.py (v124.2 - New move ordering bonuses + logic fix + asymmetry fix)
 
 import json
 import os
@@ -216,12 +216,6 @@ class ChessBot:
     USE_FUTILITY_PRUNING = True
     FUTILITY_MARGIN = 1000 # Lowered for speed at the cost of some tactical loss
 
-    # LAZY RFP TUNED: Restrict to leaf nodes (D1) with a massive Queen+ margin 
-    # to prevent Aspiration Window re-search explosions.
-    USE_REVERSE_FUTILITY_PRUNING = True
-    RFP_MAX_DEPTH = 1           
-    RFP_MARGIN_PER_DEPTH = 1500
-
     USE_IIR = True
     IIR_MIN_DEPTH = 4
 
@@ -321,6 +315,8 @@ class ChessBot:
         self.counter_moves = [[[None for _ in range(64)] for _ in range(64)] for _ in range(2)]
         # [color][prev_piece_type][prev_to_sq][my_piece_type][my_to_sq]
         self.continuation_history = [[[[[0] * 64 for _ in range(6)] for _ in range(64)] for _ in range(6)] for _ in range(2)]
+        # [color][my_piece_type][captured_piece_type][my_to_sq]
+        self.capture_history = [[[[0 for _ in range(64)] for _ in range(6)] for _ in range(6)] for _ in range(2)]
         # [color][my_piece_type][captured_piece_type][my_to_sq]
         self.capture_history = [[[[0 for _ in range(64)] for _ in range(6)] for _ in range(6)] for _ in range(2)]
 
@@ -506,24 +502,10 @@ class ChessBot:
         return best_score, best_move
 
     def _age_history_table(self):
-        for c_idx in range(2):
-            # 1. Age basic quiet history
-            for from_sq in range(64):
-                for to_sq in range(64):
-                    self.history_heuristic_table[c_idx][from_sq][to_sq] //= 2
-                    
-            # 2. Age capture history
-            for z1 in range(6):
-                for z2 in range(6):
-                    for sq in range(64):
-                        self.capture_history[c_idx][z1][z2][sq] //= 2
-                        
-            # 3. Age continuation history
-            for pt1 in range(6):
-                for sq1 in range(64):
-                    for pt2 in range(6):
-                        for sq2 in range(64):
-                            self.continuation_history[c_idx][pt1][sq1][pt2][sq2] //= 2
+        for color_idx in range(2):
+            for from_sq in range(ROWS * COLS):
+                for to_sq in range(ROWS * COLS):
+                    self.history_heuristic_table[color_idx][from_sq][to_sq] //= 2
 
     def _get_pv_data(self, max_depth, root_move):
         if not root_move: return [], []
@@ -930,8 +912,7 @@ class ChessBot:
 
         opponent_turn    = 'black' if turn == 'white' else 'white'
         is_in_check_flag = is_in_check(board, turn)
-        # PEEK AT THE CACHE: Get the eval if it exists, otherwise leave it as None
-        static_eval      = self.eval_tt.get(hash_val)
+        static_eval      = None
 
         # --- CHECK EXTENSION with absolute ceiling ---
         if is_in_check_flag and ply < self.MAX_EXTENSION_DEPTH:
@@ -944,18 +925,6 @@ class ChessBot:
             path_added = True
 
         try:
-            # --- LAZY REVERSE FUTILITY PRUNING (Python-Optimized) ---
-            # Instead of calling evaluate_board() and tanking KNPS, we ONLY prune
-            # if the static eval was already computed and cached in the TT.
-            # This provides the Elo benefits of RFP at literally zero CPU cost.
-            if (self.USE_REVERSE_FUTILITY_PRUNING and depth <= self.RFP_MAX_DEPTH and
-                    not is_in_check_flag and ply > 0 and abs(beta) < self.MATE_SCORE - 1000
-                    and total_pieces > 6):
-                if static_eval is not None:
-                    rfp_margin = self.RFP_MARGIN_PER_DEPTH * depth
-                    if static_eval - rfp_margin >= beta:
-                        return static_eval - rfp_margin
-
             if (self.USE_NULL_MOVE_PRUNING and depth >= self.NMP_MIN_DEPTH and
                     ply > 0 and not is_in_check_flag and abs(beta) < self.MATE_SCORE - 1000
                     and total_pieces > 6): # Disabled in endgame to prevent zugzwang blind spots
