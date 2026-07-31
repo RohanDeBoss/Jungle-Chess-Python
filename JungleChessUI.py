@@ -1,4 +1,4 @@
-# JungleChessUI.py (v16 - TT Maintains across moves for AI)
+# JungleChessUI.py (v16.1 - TT Maintains across moves for AI and OPAI)
 
 import tkinter as tk
 from tkinter import ttk, messagebox
@@ -67,9 +67,15 @@ def persistent_worker(work_queue, comm_queue, cancel_event, bot_class):
             }
             filtered_kwargs = {k: v for k, v in kwargs.items() if k in accepted_params}
             
-            # OPAI is hardcoded to recreate every move to preserve its strict baseline state.
-            # AI.py persists and uses update_state() to keep TT/History alive.
-            force_recreate = task.get('clear_hash', False) or bot_class.__name__ == 'OpponentAI'
+            # Both bots persist state across moves within a game and are only
+            # recreated on an explicit hash-clear request. OpponentAI is a
+            # class-renamed copy of ChessBot and already has update_state(),
+            # so it should be treated identically here. The previous special
+            # case rebuilt OpponentAI from scratch every move while ChessBot
+            # persisted — a large, unmeasured structural advantage for
+            # ChessBot in every AI-vs-OP comparison, independent of whatever
+            # search/eval change was actually being tested.
+            force_recreate = task.get('clear_hash', False)
             
             if bot is None or force_recreate:
                 bot = bot_class(
