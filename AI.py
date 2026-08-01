@@ -1,4 +1,4 @@
-# AI.py (v123.7 - TT Repetition Guard optimised)
+# AI.py (v126.1 - Linear History Combining fixed)
 
 import json
 import os
@@ -566,8 +566,6 @@ class ChessBot:
 
     def make_move(self):
         try:
-            self._age_history_table()
-
             # 1. Check Tablebases
             if len(self.board.white_pieces) + len(self.board.black_pieces) <= self.tb_probe_limit:
                 tb_move, tb_eval = self._get_best_tablebase_move_with_eval()
@@ -1359,7 +1357,9 @@ class ChessBot:
             elif move == counter_move:
                 score = 2_000_000
             else:
-                score = 0
+                # Linearly combine Main History and Continuation History.
+                # Main is bounded at [-2M, 2M]. Continuation is bounded at [-64k, 64k].
+                score = history_table[r1 * 8 + c1][r2 * 8 + c2]
                 if prev_move_tuple:
                     prev_move, prev_pt_idx = prev_move_tuple
                     pr, pc = prev_move[1]
@@ -1368,11 +1368,13 @@ class ChessBot:
                     to_sq       = r2 * 8 + c2
                     
                     ch_score = self.continuation_history[c_idx][prev_pt_idx][prev_to_sq][mp_idx][to_sq]
-                    if ch_score > 1000:
-                        score = self.BONUS_CONTINUATION + ch_score
-                
-                if score == 0:
-                    score = history_table[r1 * 8 + c1][r2 * 8 + c2]
+                    
+                    # Only give the 2.5M tier bonus to POSITIVE continuations so they beat counter moves.
+                    # Negative continuations simply penalize the base history score.
+                    if ch_score > 0:
+                        score += self.BONUS_CONTINUATION + (ch_score * 16)
+                    else:
+                        score += (ch_score * 16)
 
             if is_opening: 
                 score += self._opening_development_bonus(move, moving_piece)
