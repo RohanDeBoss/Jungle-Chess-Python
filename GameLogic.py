@@ -1,4 +1,4 @@
-# GameLogic.py (v69 - Kill class-keyed piece_counts dict)
+# GameLogic.py (v70 - King attack tables)
 
 
 # -----------------------------------------------------------------------
@@ -122,6 +122,27 @@ def _init_piece_movement_tables():
                     PAWN_FORWARD_SQUARES[color][idx] = ()
 
 _init_piece_movement_tables()
+
+# --- PRECOMPUTED KING ATTACK TABLE ---
+KING_ATTACK_CHECK = [[False] * 64 for _ in range(64)]
+
+def _init_king_attack_table():
+    for kr in range(8):
+        for kc in range(8):
+            k_sq = kr * 8 + kc
+            for r in range(8):
+                for c in range(8):
+                    t_sq = r * 8 + c
+                    dr, dc = r - kr, c - kc
+                    abs_dr, abs_dc = abs(dr), abs(dc)
+                    if abs_dr <= 2 and abs_dc <= 2:
+                        m_dist = max(abs_dr, abs_dc)
+                        if m_dist == 1:
+                            KING_ATTACK_CHECK[k_sq][t_sq] = True
+                        elif m_dist == 2 and (abs_dr == abs_dc or abs_dr == 0 or abs_dc == 0):
+                            KING_ATTACK_CHECK[k_sq][t_sq] = (kr + dr // 2, kc + dc // 2)
+
+_init_king_attack_table()
 
 
 # --- PRECOMPUTED KNIGHT EVAPORATION TABLE ---
@@ -664,20 +685,14 @@ def is_square_attacked(board, r, c, attacking_color):
                         if grid[zr][zc] is None:
                             return True
 
-    # 3. KING ATTACKS (Inlined, no abs() calls)
+    # 3. KING ATTACKS (O(1) Table Lookup)
     if attacking_king_pos:
-        kr, kc = attacking_king_pos
-        dr = r - kr
-        dc = c - kc
-        abs_dr = dr if dr >= 0 else -dr
-        abs_dc = dc if dc >= 0 else -dc
-        if abs_dr <= 2 and abs_dc <= 2:
-            m_dist = abs_dr if abs_dr > abs_dc else abs_dc
-            if m_dist == 1:
+        k_check = KING_ATTACK_CHECK[attacking_king_pos[0] * 8 + attacking_king_pos[1]][r * 8 + c]
+        if k_check is True:
+            return True
+        elif k_check:
+            if grid[k_check[0]][k_check[1]] is None:
                 return True
-            if m_dist == 2 and (abs_dr == abs_dc or abs_dr == 0 or abs_dc == 0):
-                if grid[kr + dr // 2][kc + dc // 2] is None:
-                    return True
                     
     if len(attacking_pieces) == attacker_counts[5]:
         return False
