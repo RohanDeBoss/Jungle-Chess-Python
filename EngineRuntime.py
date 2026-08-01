@@ -1,4 +1,4 @@
-# EngineRuntime.py v1.1 - shared backend/runtime plumbing for Jungle Chess engines with more work
+# EngineRuntime.py v1.2 - shared backend/runtime plumbing for Jungle Chess engines with more work
 
 import gc
 import glob
@@ -440,3 +440,42 @@ def write_series_stats_file(out_path, move_stats, series_stats, main_name, op_na
             row("Avg KNPS", f"{ma['kn']:.1f}", f"{oa['kn']:.1f}", diff_str(ma['kn'], oa['kn'], ".1f"))
     except Exception as e:
         print(f"Failed to save stats: {e}")
+
+
+def build_flat_pst_tables(mg_values, eg_values, piece_square_tables):
+    """Pre-flattens 8x8 piece-square tables + material values into 1D 64-element lookup arrays for Black and White."""
+    flat_mg_w = [None] * 6
+    flat_mg_b = [None] * 6
+    flat_eg_w = [None] * 6
+    flat_eg_b = [None] * 6
+
+    for pt in [Pawn, Knight, Bishop, Rook, Queen, King]:
+        z = pt.z_idx
+        flat_mg_w[z] = [0] * 64
+        flat_mg_b[z] = [0] * 64
+        flat_eg_w[z] = [0] * 64
+        flat_eg_b[z] = [0] * 64
+
+        mg_val = mg_values[pt]
+        eg_val = eg_values[pt]
+
+        if pt == Pawn:
+            mg_table = piece_square_tables[Pawn]
+            eg_table = piece_square_tables['pawn_endgame']
+        elif pt == King:
+            mg_table = piece_square_tables['king_midgame']
+            eg_table = piece_square_tables['king_endgame']
+        else:
+            mg_table = piece_square_tables[pt]
+            eg_table = piece_square_tables[pt]
+
+        for r in range(8):
+            for c in range(8):
+                sq_w = r * 8 + c
+                sq_b = (7 - r) * 8 + c
+                flat_mg_w[z][sq_w] = mg_val + mg_table[r][c]
+                flat_mg_b[z][sq_b] = mg_val + mg_table[r][c]
+                flat_eg_w[z][sq_w] = eg_val + eg_table[r][c]
+                flat_eg_b[z][sq_b] = eg_val + eg_table[r][c]
+
+    return flat_mg_w, flat_mg_b, flat_eg_w, flat_eg_b

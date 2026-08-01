@@ -1,4 +1,4 @@
-# AI.py (v126.21 - Memory reduced in TT + safety check in _get_pv_data + new EngineRuntime framework)
+# AI.py (v126.21 - Memory reduced in TT + safety check in _get_pv_data + new EngineRuntime framework v1.2)
 
 import time
 import random
@@ -12,6 +12,7 @@ from EngineRuntime import (
     SearchCancelledException,
     board_hash,
     board_to_fen,
+    build_flat_pst_tables,
     calc_time_check_mask,
     configure_tablebase,
     incremental_hash,
@@ -1555,36 +1556,6 @@ PIECE_SQUARE_TABLES = {
     'king_endgame': king_endgame_pst,
 }
 
-FLAT_PST_MG_WHITE = [None] * 6
-FLAT_PST_MG_BLACK = [None] * 6
-FLAT_PST_EG_WHITE = [None] * 6
-FLAT_PST_EG_BLACK = [None] * 6
-
-for pt in [Pawn, Knight, Bishop, Rook, Queen, King]:
-    z = pt.z_idx
-    FLAT_PST_MG_WHITE[z] = [0] * 64
-    FLAT_PST_MG_BLACK[z] = [0] * 64
-    FLAT_PST_EG_WHITE[z] = [0] * 64
-    FLAT_PST_EG_BLACK[z] = [0] * 64
-    
-    mg_val = MG_PIECE_VALUES[pt]
-    eg_val = EG_PIECE_VALUES[pt]
-    
-    if pt == Pawn:
-        mg_table = PIECE_SQUARE_TABLES[Pawn]
-        eg_table = PIECE_SQUARE_TABLES['pawn_endgame']
-    elif pt == King:
-        mg_table = PIECE_SQUARE_TABLES['king_midgame']
-        eg_table = PIECE_SQUARE_TABLES['king_endgame']
-    else:
-        mg_table = PIECE_SQUARE_TABLES[pt]
-        eg_table = PIECE_SQUARE_TABLES[pt]
-        
-    for r in range(8):
-        for c in range(8):
-            sq_w = r * 8 + c
-            sq_b = (7 - r) * 8 + c
-            FLAT_PST_MG_WHITE[z][sq_w] = mg_val + mg_table[r][c]
-            FLAT_PST_MG_BLACK[z][sq_b] = mg_val + mg_table[r][c]
-            FLAT_PST_EG_WHITE[z][sq_w] = eg_val + eg_table[r][c]
-            FLAT_PST_EG_BLACK[z][sq_b] = eg_val + eg_table[r][c]
+FLAT_PST_MG_WHITE, FLAT_PST_MG_BLACK, FLAT_PST_EG_WHITE, FLAT_PST_EG_BLACK = build_flat_pst_tables(
+    MG_PIECE_VALUES, EG_PIECE_VALUES, PIECE_SQUARE_TABLES
+)
