@@ -1,4 +1,4 @@
-# OPAI.py (v123.2 - Fail Soft everywhere + IIR)
+# OPAI.py (v123.5 - Fail Soft + IIR + conservative RFP)
 
 import json
 import os
@@ -215,6 +215,12 @@ class OpponentAI:
 
     USE_FUTILITY_PRUNING = True
     FUTILITY_MARGIN = 1000 # Lowered for speed at the cost of some tactical loss
+
+    # LAZY RFP TUNED: Restrict to leaf nodes (D1) with a massive Queen+ margin 
+    # to prevent Aspiration Window re-search explosions.
+    USE_REVERSE_FUTILITY_PRUNING = True
+    RFP_MAX_DEPTH = 1           
+    RFP_MARGIN_PER_DEPTH = 1500
 
     USE_IIR = True
     IIR_MIN_DEPTH = 4
@@ -908,7 +914,8 @@ class OpponentAI:
 
         opponent_turn    = 'black' if turn == 'white' else 'white'
         is_in_check_flag = is_in_check(board, turn)
-        static_eval      = None
+        # PEEK AT THE CACHE: Get the eval if it exists, otherwise leave it as None
+        static_eval      = self.eval_tt.get(hash_val)
 
         # --- CHECK EXTENSION with absolute ceiling ---
         if is_in_check_flag and ply < self.MAX_EXTENSION_DEPTH:
@@ -921,6 +928,18 @@ class OpponentAI:
             path_added = True
 
         try:
+            # --- LAZY REVERSE FUTILITY PRUNING (Python-Optimized) ---
+            # Instead of calling evaluate_board() and tanking KNPS, we ONLY prune
+            # if the static eval was already computed and cached in the TT.
+            # This provides the Elo benefits of RFP at literally zero CPU cost.
+            if (self.USE_REVERSE_FUTILITY_PRUNING and depth <= self.RFP_MAX_DEPTH and
+                    not is_in_check_flag and ply > 0 and abs(beta) < self.MATE_SCORE - 1000
+                    and total_pieces > 6):
+                if static_eval is not None:
+                    rfp_margin = self.RFP_MARGIN_PER_DEPTH * depth
+                    if static_eval - rfp_margin >= beta:
+                        return static_eval - rfp_margin
+
             if (self.USE_NULL_MOVE_PRUNING and depth >= self.NMP_MIN_DEPTH and
                     ply > 0 and not is_in_check_flag and abs(beta) < self.MATE_SCORE - 1000
                     and total_pieces > 6): # Disabled in endgame to prevent zugzwang blind spots
