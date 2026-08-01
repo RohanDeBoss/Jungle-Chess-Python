@@ -1,19 +1,24 @@
-# OPAI.py (v123.7 - TT Repetition Guard optimised)
+# OPAI.py (v123.71 - TT Repetition Guard optimised + new EngineRuntime framework)
 
-import json
-import os
 import time
 import random
-import glob
 from collections import namedtuple
 from GameLogic import *
 from TablebaseManager import TablebaseManager
 from operator import itemgetter
-
-# --- TIME CONSTANTS ---
-TIME_BUFFER_SEC = 0.50
-TIME_BUFFER_PCT = 0.05
-MIN_MOVE_TIME   = 0.03
+from EngineRuntime import (
+    OPENING_BOOK,
+    ZOBRIST_TURN,
+    SearchCancelledException,
+    board_hash,
+    board_to_fen,
+    calc_time_check_mask,
+    configure_tablebase,
+    incremental_hash,
+    run_ai_process,
+    search_time_budget,
+    update_bot_runtime_state,
+)
 
 # --- EVALUATION CONSTANTS (Tuned) ---
 MG_PIECE_VALUES = {
@@ -47,152 +52,9 @@ ORDERING_VALUES = [
 INITIAL_PHASE_MATERIAL = (MG_PIECE_VALUES[Rook] * 4 + MG_PIECE_VALUES[Knight] * 4 +
                           MG_PIECE_VALUES[Bishop] * 4 + MG_PIECE_VALUES[Queen] * 2)
 
-# --- ZOBRIST HASHING ---
-ZOBRIST_ARRAY = None
-ZOBRIST_TURN = None
-
-def initialize_zobrist_table():
-    global ZOBRIST_ARRAY, ZOBRIST_TURN
-    if ZOBRIST_ARRAY is not None: return
-    random.seed(42) # Set seed for stable Zobrist keys
-    ZOBRIST_ARRAY = [[[[random.getrandbits(64) for _ in range(8)] for _ in range(8)] for _ in range(6)] for _ in range(2)]
-    ZOBRIST_TURN = random.getrandbits(64)
-    random.seed() # Restore true randomness for move selection
-
-initialize_zobrist_table()
-
-def run_ai_process(board, color, position_counts, comm_queue, cancellation_event,
-                   bot_class, bot_name, search_depth, ply_count, game_mode,
-                   time_left=None, increment=None, use_opening_book=True, use_tablebase=True,
-                   show_tt_fullness=False):
-    import inspect
-    accepted_params = set(inspect.signature(bot_class.__init__).parameters)
-    kwargs = {
-        'time_left': time_left,
-        'increment': increment,
-        'use_opening_book': use_opening_book,
-        'use_tablebase': use_tablebase,
-        'show_tt_fullness': show_tt_fullness
-    }
-    filtered_kwargs = {k: v for k, v in kwargs.items() if k in accepted_params}
-
-    bot = bot_class(board, color, position_counts, comm_queue, cancellation_event,
-                    bot_name, ply_count, game_mode, **filtered_kwargs)
-
-    bot.search_depth = search_depth
-    if search_depth == 99:
-        bot.ponder_indefinitely()
-    else:
-        bot.make_move()
-
-def board_hash(board, turn):
-    h = 0
-    arr = ZOBRIST_ARRAY
-
-    for piece in board.white_pieces:
-        r, c = piece.pos
-        h ^= arr[0][piece.z_idx][r][c]
-    for piece in board.black_pieces:
-        r, c = piece.pos
-        h ^= arr[1][piece.z_idx][r][c]
-
-    if turn == 'black':
-        h ^= ZOBRIST_TURN
-    return h
-
-def incremental_hash(parent_hash, record_tuple):
-    h = parent_hash ^ ZOBRIST_TURN
-    arr = ZOBRIST_ARRAY
-
-    start, end, mp, removed_pieces, added_pieces = record_tuple
-    
-    c_idx  = 0 if mp.color == 'white' else 1
-    p_idx  = mp.z_idx
-    sr, sc = start
-    er, ec = end
-
-    h ^= arr[c_idx][p_idx][sr][sc]
-    
-    mp_survived = True
-    for piece, r, c in removed_pieces:
-        if piece is mp:
-            mp_survived = False
-        else:
-            pc_idx = 0 if piece.color == 'white' else 1
-            h ^= arr[pc_idx][piece.z_idx][r][c]
-
-    if mp_survived:
-        h ^= arr[c_idx][p_idx][er][ec]
-
-    for piece, r, c in added_pieces:
-        pc_idx = 0 if piece.color == 'white' else 1
-        h ^= arr[pc_idx][piece.z_idx][r][c]
-
-    return h
-
-# --- OPENING BOOK SETUP ---
-_CLS_TO_CHAR = {Pawn: 'P', Knight: 'N', Bishop: 'B', Rook: 'R', Queen: 'Q', King: 'K'}
-
-def board_to_fen(board, turn):
-    fen = ''
-    for r in range(ROWS):
-        empty = 0
-        for c in range(COLS):
-            piece = board.grid[r][c]
-            if piece is None:
-                empty += 1
-            else:
-                if empty:
-                    fen += str(empty)
-                    empty = 0
-                ch = _CLS_TO_CHAR[type(piece)]
-                fen += ch if piece.color == 'white' else ch.lower()
-        if empty:
-            fen += str(empty)
-        if r < ROWS - 1:
-            fen += '/'
-    return fen + (' w' if turn == 'white' else ' b')
-
-OPENING_BOOK = {}
-
-
-def _find_opening_book_files():
-    base_dir = os.path.dirname(os.path.abspath(__file__))
-    patterns = (
-        os.path.join(base_dir, "opening books", "opening_book*.json"),
-        os.path.join(base_dir, "opening_book*.json"),
-    )
-    seen = set()
-    matches = []
-    for pattern in patterns:
-        for path in glob.glob(pattern):
-            norm = os.path.normcase(os.path.abspath(path))
-            if norm in seen:
-                continue
-            seen.add(norm)
-            matches.append(path)
-    return sorted(
-        matches,
-        key=lambda path: (os.path.getmtime(path), os.path.basename(path)),
-        reverse=True,
-    )
-
-
-for _book_filename in _find_opening_book_files():
-    try:
-        with open(_book_filename, "r", encoding="utf-8") as f:
-            OPENING_BOOK = json.load(f)
-        # print(f"Loaded Opening Book with {len(OPENING_BOOK)} positions from {_book_filename}.")
-        break
-    except Exception as e:
-        print(f"Opening book not found or invalid at {_book_filename}: {e}")
-# --------------------------
-
 # --- SEARCH STRUCTURES ---
 TTEntry = namedtuple('TTEntry', ['score', 'depth', 'flag', 'best_move', 'age'])
 TT_FLAG_EXACT, TT_FLAG_LOWERBOUND, TT_FLAG_UPPERBOUND = 0, 1, 2
-
-class SearchCancelledException(Exception): pass
 
 
 class OpponentAI:
@@ -296,11 +158,7 @@ class OpponentAI:
         self.use_opening_book = use_opening_book
 
         self.tb_manager = TablebaseManager()
-
-        if not use_tablebase:
-            # Neuter the probe method so it does nothing and returns None,
-            # causing the engine to fall back to its own search.
-            self.tb_manager.probe = lambda b, t: None
+        configure_tablebase(self, use_tablebase)
 
         if bot_name is None:
             self.bot_name = "OP Bot" if self.__class__.__name__ == "OpponentAI" else "AI Bot"
@@ -324,28 +182,10 @@ class OpponentAI:
 
     def update_state(self, board, color, position_counts, comm_queue, cancellation_event, bot_name, ply_count, game_mode, **kwargs):
         """Called by the persistent worker to update the bot's state for the next turn without wiping memory."""
-        self.board = board
-        self.color = color
-        self.opponent_color = 'black' if color == 'white' else 'white'
-        self.position_counts = position_counts
-        self.comm_queue = comm_queue
-        self.cancellation_event = cancellation_event
-        self.bot_name = bot_name
-        self.ply_count = ply_count
-        self.game_mode = game_mode
-        
-        self.time_left = kwargs.get('time_left')
-        self.increment = kwargs.get('increment')
-        self.use_opening_book = kwargs.get('use_opening_book', True)
-        self.show_tt_fullness = kwargs.get('show_tt_fullness', False)
-        
-        if self.time_left:
-             allocated = (self.time_left / 30.0) + (self.increment * 0.8)
-             self.time_check_mask = self._calc_time_check_mask(allocated)
-        else:
-             self.time_check_mask = 511
-             
-        self.current_age += 1 # Advance TT generation
+        update_bot_runtime_state(
+            self, board, color, position_counts, comm_queue, cancellation_event,
+            bot_name, ply_count, game_mode, **kwargs
+        )
 
     def _get_cached_static_eval(self, board, turn, hash_val):
         """
@@ -378,12 +218,7 @@ class OpponentAI:
     def _report_move(self, move):     self.comm_queue.put(('move', move))
 
     def _calc_time_check_mask(self, allocated):
-        if allocated <= 0.15: return 15
-        if allocated <= 0.30: return 31
-        if allocated <= 0.60: return 63
-        if allocated <= 1.20: return 127
-        if allocated <= 2.50: return 255
-        return 511
+        return calc_time_check_mask(allocated)
 
     def _format_move(self, board_before, move):
         if not move: return "None"
@@ -610,34 +445,7 @@ class OpponentAI:
             # --- TIME ALLOCATION STRATEGY (Optimum / Max split) ---
             search_start_time = time.time()
             if self.time_left is not None and self.increment is not None:
-                buffer = max(TIME_BUFFER_SEC, self.time_left * TIME_BUFFER_PCT, self.increment * 1.5)
-                clock_ceiling = max(0.0, self.time_left - buffer)
-
-                # --- URGENCY-AWARE DIVISOR ---
-                # Base assumption: ~30 moves of game left. As the *buffer itself*
-                # gets thin relative to the raw clock, shrink the divisor so the
-                # engine claws back more time per move instead of a flat 1/30th
-                # regardless of how much debt has built up. This is what makes
-                # an overrun get repaid gradually rather than compounding.
-                if self.time_left > 0:
-                    buffer_health = max(0.0, min(1.0, clock_ceiling / self.time_left))
-                else:
-                    buffer_health = 0.0
-                
-                # CORRECTED MATH: 
-                # buffer_health near 1.0 (healthy clock) -> divisor ~30
-                # buffer_health near 0.0 (panic mode)    -> divisor ~50 (play faster to bank increment!)
-                divisor = 50 - (20 * buffer_health)
-
-                optimum_time = (self.time_left / divisor) + (self.increment * 0.8)
-                optimum_time = max(MIN_MOVE_TIME, optimum_time)
-                # Hard clamp: optimum can never exceed the true ceiling, so the
-                # soft bound below is never a no-op even when time is short.
-                optimum_time = min(optimum_time, clock_ceiling)
-
-                max_time = min(clock_ceiling, optimum_time * 3.5)
-                max_time = max(max_time, min(MIN_MOVE_TIME, clock_ceiling))
-
+                optimum_time, max_time = search_time_budget(self.time_left, self.increment)
                 self.stop_time = search_start_time + max_time
                 target_depth = 100
             else:
