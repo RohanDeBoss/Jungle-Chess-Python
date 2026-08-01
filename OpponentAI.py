@@ -1,4 +1,4 @@
-# OPAI.py (v123.5 - Fail Soft + IIR + conservative RFP)
+# OPAI.py (v123.7 - TT Repetition Guard optimised)
 
 import json
 import os
@@ -881,6 +881,16 @@ class OpponentAI:
             if hash_val in search_path:
                 return self.DRAW_SCORE
 
+        # game is "repetition-sensitive": its true score depends on how many
+        # more times it can recur before hitting the threefold rule — context
+        # the Zobrist hash alone doesn't encode. Because the TT persists
+        # across real moves by design, a score cached here during an earlier
+        # turn's search (when this was only the 1st/2nd occurrence) can go
+        # stale once the real game catches up and makes it the 3rd (drawn)
+        # occurrence. Refuse to read or write TT entries for any such
+        # position so it's always freshly resolved by the check above.
+        repetition_sensitive = self.position_counts.get(hash_val, 0) >= 1
+
         if total_pieces <= self.tb_probe_limit:
             tb_score_absolute = self.tb_manager.probe(board, turn)
             if tb_score_absolute is not None:
@@ -895,6 +905,14 @@ class OpponentAI:
 
         original_alpha = alpha
         tt_entry = self.tt.get(hash_val)
+        
+        # --- STALE TT REPETITION GUARD ---
+        # Ignore TT entries ONLY if they are repetition-sensitive AND were
+        # cached during a previous turn (when the repetition count was lower).
+        if tt_entry and ply > 0:
+            if repetition_sensitive and tt_entry.age < self.current_age:
+                tt_entry = None
+
         if ply > 0 and tt_entry and tt_entry.depth >= depth:
             tt_score = tt_entry.score
             if tt_score >  self.MATE_SCORE - 1000: tt_score -= ply
@@ -1158,6 +1176,9 @@ class OpponentAI:
         hash_val = current_hash if current_hash is not None else board_hash(board, turn)
 
         tt_entry = self.tt.get(hash_val)
+        if tt_entry and self.position_counts.get(hash_val, 0) >= 1 and tt_entry.age < self.current_age:
+            tt_entry = None
+            
         if tt_entry:
             tt_score = tt_entry.score
             if tt_score >  self.MATE_SCORE - 1000: tt_score -= ply

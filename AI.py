@@ -1,4 +1,4 @@
-# AI.py (v123.6 - TT Repetition Guard)
+# AI.py (v123.7 - TT Repetition Guard optimised)
 
 import json
 import os
@@ -906,7 +906,15 @@ class ChessBot:
             return self.DRAW_SCORE
 
         original_alpha = alpha
-        tt_entry = self.tt.get(hash_val) if not repetition_sensitive else None
+        tt_entry = self.tt.get(hash_val)
+        
+        # --- STALE TT REPETITION GUARD ---
+        # Ignore TT entries ONLY if they are repetition-sensitive AND were
+        # cached during a previous turn (when the repetition count was lower).
+        if tt_entry and ply > 0:
+            if repetition_sensitive and tt_entry.age < self.current_age:
+                tt_entry = None
+
         if ply > 0 and tt_entry and tt_entry.depth >= depth:
             tt_score = tt_entry.score
             if tt_score >  self.MATE_SCORE - 1000: tt_score -= ply
@@ -1144,8 +1152,7 @@ class ChessBot:
                     sto = best_score
                     if sto >  self.MATE_SCORE - 1000: sto = best_score + ply
                     elif sto < -self.MATE_SCORE + 1000: sto = best_score - ply
-                    if not repetition_sensitive:
-                        self._store_tt(hash_val, sto, depth, TT_FLAG_LOWERBOUND, move)
+                    self._store_tt(hash_val, sto, depth, TT_FLAG_LOWERBOUND, move)
                     return best_score
 
             if legal_moves_count == 0:
@@ -1155,8 +1162,7 @@ class ChessBot:
             if sto >  self.MATE_SCORE - 1000: sto = best_score + ply
             elif sto < -self.MATE_SCORE + 1000: sto = best_score - ply
             flag = TT_FLAG_EXACT if best_score > original_alpha else TT_FLAG_UPPERBOUND
-            if not repetition_sensitive:
-                self._store_tt(hash_val, sto, depth, flag, best_move_for_node)
+            self._store_tt(hash_val, sto, depth, flag, best_move_for_node)
             return best_score
 
         finally:
@@ -1171,8 +1177,10 @@ class ChessBot:
 
         hash_val = current_hash if current_hash is not None else board_hash(board, turn)
 
-        # Same GHI/TT-repetition guard as negamax — see comment there.
-        tt_entry = self.tt.get(hash_val) if self.position_counts.get(hash_val, 0) == 0 else None
+        tt_entry = self.tt.get(hash_val)
+        if tt_entry and self.position_counts.get(hash_val, 0) >= 1 and tt_entry.age < self.current_age:
+            tt_entry = None
+            
         if tt_entry:
             tt_score = tt_entry.score
             if tt_score >  self.MATE_SCORE - 1000: tt_score -= ply
