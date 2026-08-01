@@ -881,6 +881,8 @@ class OpponentAI:
             if hash_val in search_path:
                 return self.DRAW_SCORE
 
+        # --- GHI / TT-REPETITION SAFETY ---
+        # A position that has already occurred at least once for real in this
         # game is "repetition-sensitive": its true score depends on how many
         # more times it can recur before hitting the threefold rule — context
         # the Zobrist hash alone doesn't encode. Because the TT persists
