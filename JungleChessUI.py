@@ -1,4 +1,4 @@
-# JungleChessUI.py (v17 - New framework with EngineRuntime)
+# JungleChessUI.py (v17.1 - New framework with EngineRuntime with more offloading)
 
 import tkinter as tk
 from tkinter import ttk, messagebox
@@ -9,7 +9,13 @@ import re
 from GameLogic import *
 from AI import ChessBot, board_hash
 from OpponentAI import OpponentAI
-from EngineRuntime import persistent_worker
+from EngineRuntime import (
+    persistent_worker,
+    generate_pgn,
+    generate_series_opening_sequence,
+    write_series_stats_file,
+    strip_casualties,
+)
 from enum import Enum
 import multiprocessing as mp
 
@@ -18,7 +24,6 @@ class GameMode(Enum):
     HUMAN_VS_HUMAN = "human"
     AI_VS_AI       = "ai_vs_ai"
 
-_CASUALTIES_RE = re.compile(r'\s*\(.*?\)')
 _FEN_CHAR_TO_CLASS = {'p': Pawn, 'n': Knight, 'b': Bishop, 'r': Rook, 'q': Queen, 'k': King}
 _CLASS_TO_FEN_CHAR = {Pawn:'P', Knight:'N', Bishop:'B', Rook:'R', Queen:'Q', King:'K'}
 
@@ -218,7 +223,7 @@ class EnhancedChessApp:
 
     # ------------------------------------------------------------------ helpers
     def _format_san_display(self, s):
-        return s if (self.long_notation_var.get() or not s) else _CASUALTIES_RE.sub('', s)
+        return s if (self.long_notation_var.get() or not s) else strip_casualties(s)
 
     def _on_notation_toggle(self):
         self.update_moves_list()
@@ -729,27 +734,7 @@ class EnhancedChessApp:
             self.master.after(self._get_ai_move_delay(), self._make_game_ai_move)
 
     def get_current_pgn(self):
-        moves      = []
-        start_turn = self.full_history[0][1]
-        for i in range(1, len(self.full_history)):
-            m = self.full_history[i][2]
-            if m:
-                moves.append(format_move_san(self.full_history[i-1][0], self.full_history[i][0], m))
-        pgn, move_num = "", 1
-        if start_turn == 'black' and moves:
-            pgn      += f"{move_num}... {moves[0]} "
-            moves     = moves[1:]
-            move_num += 1
-        for i in range(0, len(moves), 2):
-            w, b = moves[i], moves[i+1] if i+1 < len(moves) else None
-            pgn += f"{move_num}. {w} {b} " if b else f"{move_num}. {w} "
-            move_num += 1
-        if self.game_result:
-            r = self.game_result[1]
-            pgn += "1-0" if r == 'white' else "0-1" if r == 'black' else "1/2-1/2"
-        else:
-            pgn += "*"
-        return pgn.strip()
+        return generate_pgn(self.full_history, self.game_result)
 
     def copy_pgn_to_clipboard(self):
         pgn = self.get_current_pgn()
@@ -1736,17 +1721,7 @@ class EnhancedChessApp:
     def apply_series_opening_move(self):
         if self.ai_series_stats['game_count'] % 2 == 0:
             print("\n--- Generating new 2-ply opening sequence ---")
-            self.current_opening_sequence = []
-            temp_board = self.board.clone()
-            temp_turn  = "white"
-            for _ in range(2):
-                moves = get_all_legal_moves(temp_board, temp_turn)
-                if not moves:
-                    break
-                move = random.choice(moves)
-                self.current_opening_sequence.append(move)
-                temp_board.make_move(move[0], move[1])
-                temp_turn = "black" if temp_turn == "white" else "white"
+            self.current_opening_sequence = generate_series_opening_sequence(self.board, num_plies=2)
         self._pause_clock()
         for move in self.current_opening_sequence:
             child = self.board.clone()
@@ -1771,77 +1746,20 @@ class EnhancedChessApp:
             self.scoreboard_label.config(text="")
 
     def save_depth_stats_to_file(self):
-        if not self.move_stats:
-            return
-        use_clock   = self.use_clock_var.get()
-        fixed_depth = self.bot_depth_slider.get()
-        s           = self.ai_series_stats
-
-        def _summarise(stats):
-            if not stats: return None
-            n     = len(stats)
-            num_d = sorted(int(x['depth']) for x in stats if x['depth'].isdigit())
-            def trimmed_mean(lst):
-                if not lst: return None
-                cut = max(1, int(len(lst) * 0.16))
-                trimmed = lst[cut:-cut] if len(lst) > cut * 2 else lst
-                return sum(trimmed) / len(trimmed)
-            return {
-                'n':     n,
-                't_avg': sum(x['time']  for x in stats) / n,
-                't_max': max(x['time']  for x in stats),
-                'n_avg': sum(x['nodes'] for x in stats) / n,
-                'kn':    sum(x['knps']  for x in stats) / n,
-                'd_med': trimmed_mean(num_d),
-                'd_max': max(num_d) if num_d else None,
-            }
-
-        try:
-            import os
-            out_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "AI_Series_Results.txt")
-            with open(out_path, "w") as f:
-                mode_str = (f"Clock ({int(self.time_control_seconds.get())}s "
-                            f"+ {self.increment:.1f}s inc)") \
-                           if use_clock else f"Fixed depth {fixed_depth}"
-                mn  = self.MAIN_AI_NAME
-                on  = self.OPPONENT_AI_NAME
-                ma  = _summarise(self.move_stats.get(mn, []))
-                oa  = _summarise(self.move_stats.get(on, []))
-
-                # Header
-                f.write(f"AI Series Results  |  {mode_str}  |  {s['game_count']} / {self.AI_SERIES_GAMES} games\n")
-                f.write(f"{mn} {s['my_ai_wins']}  {on} {s['op_ai_wins']}  Draws {s['draws']}\n\n")
-
-                if not ma or not oa:
-                    f.write("(insufficient data)\n")
-                    return
-
-                # Column layout (tab-separated for Excel paste compatibility)
-                def row(label, a_str, b_str, d_str):
-                    f.write(f"{label}\t{a_str}\t{b_str}\t{d_str}\n")
-
-                def diff_str(a, b, fmt):
-                    d = a - b
-                    return ("+" if d > 0 else "") + format(d, fmt)
-
-                f.write(f"\t{mn}\t{on}\tDiff\n")
-                row("Moves", f"{ma['n']:,}", f"{oa['n']:,}", "")
-                if use_clock and ma['d_med'] is not None and oa['d_med'] is not None:
-                    row("Avg depth (68%)", f"{ma['d_med']:.1f}", f"{oa['d_med']:.1f}",
-                        diff_str(ma['d_med'], oa['d_med'], ".1f"))
-                    row("Max depth", f"{ma['d_max']}", f"{oa['d_max']}",
-                        diff_str(ma['d_max'], oa['d_max'], "d"))
-                row("Avg nodes", f"{ma['n_avg']:,.0f}", f"{oa['n_avg']:,.0f}",
-                    diff_str(ma['n_avg'], oa['n_avg'], ",.0f"))
-                row("Avg time (s)", f"{ma['t_avg']:.3f}", f"{oa['t_avg']:.3f}",
-                    diff_str(ma['t_avg'], oa['t_avg'], ".3f"))
-                row("Max time (s)", f"{ma['t_max']:.3f}", f"{oa['t_max']:.3f}",
-                    diff_str(ma['t_max'], oa['t_max'], ".3f"))
-                row("Avg KNPS", f"{ma['kn']:.1f}", f"{oa['kn']:.1f}",
-                    diff_str(ma['kn'], oa['kn'], ".1f"))
-
-        except Exception as e:
-            print(f"Failed to save stats: {e}")
+        import os
+        out_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "AI_Series_Results.txt")
+        write_series_stats_file(
+            out_path=out_path,
+            move_stats=self.move_stats,
+            series_stats=self.ai_series_stats,
+            main_name=self.MAIN_AI_NAME,
+            op_name=self.OPPONENT_AI_NAME,
+            use_clock=self.use_clock_var.get(),
+            time_control_sec=self.time_control_seconds.get(),
+            increment=self.increment,
+            fixed_depth=self.bot_depth_slider.get(),
+            total_series_games=self.AI_SERIES_GAMES,
+        )
 
     # ------------------------------------------------------------------ Delegated Events
     def _on_pv_text_motion(self, event):

@@ -1,4 +1,4 @@
-# EngineRuntime.py v1.0 - shared backend/runtime plumbing for Jungle Chess engines
+# EngineRuntime.py v1.1 - shared backend/runtime plumbing for Jungle Chess engines with more work
 
 import gc
 import glob
@@ -6,9 +6,10 @@ import inspect
 import json
 import os
 import random
+import re
 import traceback
 
-from GameLogic import ROWS, COLS, Pawn, Knight, Bishop, Rook, Queen, King
+from GameLogic import ROWS, COLS, Pawn, Knight, Bishop, Rook, Queen, King, format_move_san, get_all_legal_moves
 
 
 TIME_BUFFER_SEC = 0.50
@@ -333,3 +334,109 @@ def persistent_worker(work_queue, comm_queue, cancel_event, bot_class):
         except Exception:
             traceback.print_exc()
             TaskQueueWrapper(comm_queue, task.get("task_id", -1)).put(("move", None))
+
+
+# ---------------------------------------------------------------------------
+# PGN, Opening Sequence & Statistics Handlers
+# ---------------------------------------------------------------------------
+_CASUALTIES_RE = re.compile(r'\s*\(.*?\)')
+
+def strip_casualties(san_str):
+    """Strips casualty brackets from SAN strings for short notation display."""
+    return _CASUALTIES_RE.sub('', san_str) if san_str else ""
+
+def generate_pgn(full_history, game_result=None):
+    """Generates a complete PGN string from game history tuples."""
+    if not full_history: return ""
+    moves = []
+    start_turn = full_history[0][1]
+    for i in range(1, len(full_history)):
+        m = full_history[i][2]
+        if m:
+            moves.append(format_move_san(full_history[i-1][0], full_history[i][0], m))
+    pgn, move_num = "", 1
+    if start_turn == 'black' and moves:
+        pgn += f"{move_num}... {moves[0]} "
+        moves = moves[1:]
+        move_num += 1
+    for i in range(0, len(moves), 2):
+        w, b = moves[i], moves[i+1] if i+1 < len(moves) else None
+        pgn += f"{move_num}. {w} {b} " if b else f"{move_num}. {w} "
+        move_num += 1
+    if game_result:
+        r = game_result[1]
+        pgn += "1-0" if r == 'white' else "0-1" if r == 'black' else "1/2-1/2"
+    else:
+        pgn += "*"
+    return pgn.strip()
+
+def generate_series_opening_sequence(board, num_plies=2):
+    """Generates a random legal opening move sequence for AI series matches."""
+    opening_sequence = []
+    temp_board = board.clone()
+    temp_turn = "white"
+    for _ in range(num_plies):
+        moves = get_all_legal_moves(temp_board, temp_turn)
+        if not moves:
+            break
+        move = random.choice(moves)
+        opening_sequence.append(move)
+        temp_board.make_move(move[0], move[1])
+        temp_turn = "black" if temp_turn == "white" else "white"
+    return opening_sequence
+
+def write_series_stats_file(out_path, move_stats, series_stats, main_name, op_name, use_clock, time_control_sec, increment, fixed_depth, total_series_games):
+    """Calculates trimmed means/aggregates and writes AI_Series_Results.txt."""
+    if not move_stats: return
+    
+    def _summarise(stats):
+        if not stats: return None
+        n = len(stats)
+        num_d = sorted(int(x['depth']) for x in stats if x['depth'].isdigit())
+        def trimmed_mean(lst):
+            if not lst: return None
+            cut = max(1, int(len(lst) * 0.16))
+            trimmed = lst[cut:-cut] if len(lst) > cut * 2 else lst
+            return sum(trimmed) / len(trimmed)
+        return {
+            'n': n,
+            't_avg': sum(x['time'] for x in stats) / n,
+            't_max': max(x['time'] for x in stats),
+            'n_avg': sum(x['nodes'] for x in stats) / n,
+            'kn': sum(x['knps'] for x in stats) / n,
+            'd_med': trimmed_mean(num_d),
+            'd_max': max(num_d) if num_d else None,
+        }
+        
+    try:
+        with open(out_path, "w") as f:
+            mode_str = f"Clock ({int(time_control_sec)}s + {increment:.1f}s inc)" if use_clock else f"Fixed depth {fixed_depth}"
+            s = series_stats
+            ma = _summarise(move_stats.get(main_name, []))
+            oa = _summarise(move_stats.get(op_name, []))
+
+            f.write(f"AI Series Results  |  {mode_str}  |  {s['game_count']} / {total_series_games} games\n")
+            f.write(f"{main_name} {s['my_ai_wins']}  {op_name} {s['op_ai_wins']}  Draws {s['draws']}\n\n")
+
+            if not ma or not oa:
+                f.write("(insufficient data)\n")
+                return
+
+            def row(label, a_str, b_str, d_str):
+                f.write(f"{label}\t{a_str}\t{b_str}\t{d_str}\n")
+
+            def diff_str(a, b, fmt):
+                d = a - b
+                return ("+" if d > 0 else "") + format(d, fmt)
+
+            f.write(f"\t{main_name}\t{op_name}\tDiff\n")
+            row("Moves", f"{ma['n']:,}", f"{oa['n']:,}", "")
+            if use_clock and ma['d_med'] is not None and oa['d_med'] is not None:
+                row("Avg depth (68%)", f"{ma['d_med']:.1f}", f"{oa['d_med']:.1f}", diff_str(ma['d_med'], oa['d_med'], ".1f"))
+                row("Max depth", f"{ma['d_max']}", f"{oa['d_max']}", diff_str(ma['d_max'], oa['d_max'], "d"))
+            row("Avg nodes", f"{ma['n_avg']:,.0f}", f"{oa['n_avg']:,.0f}", diff_str(ma['n_avg'], oa['n_avg'], ",.0f"))
+            row("Avg time (s)", f"{ma['t_avg']:.3f}", f"{oa['t_avg']:.3f}", diff_str(ma['t_avg'], oa['t_avg'], ".3f"))
+            row("Max time (s)", f"{ma['t_max']:.3f}", f"{oa['t_max']:.3f}", diff_str(ma['t_max'], oa['t_max'], ".3f"))
+            row("Avg KNPS", f"{ma['kn']:.1f}", f"{oa['kn']:.1f}", diff_str(ma['kn'], oa['kn'], ".1f"))
+    except Exception as e:
+        print(f"Failed to save stats: {e}")
