@@ -1,4 +1,4 @@
-# GameLogic.py (v70 - King attack tables)
+# GameLogic.py (v70.2 - King attack tables + Precomputed Pawn Attack Geometry)
 
 
 # -----------------------------------------------------------------------
@@ -123,8 +123,10 @@ def _init_piece_movement_tables():
 
 _init_piece_movement_tables()
 
-# --- PRECOMPUTED KING ATTACK TABLE ---
+# --- PRECOMPUTED KING & PAWN ATTACK TABLES ---
 KING_ATTACK_CHECK = [[False] * 64 for _ in range(64)]
+PAWN_DIRECT = {'white': [() for _ in range(64)], 'black': [() for _ in range(64)]}
+PAWN_DOUBLE = {'white': [None] * 64, 'black': [None] * 64}
 
 def _init_king_attack_table():
     for kr in range(8):
@@ -142,7 +144,33 @@ def _init_king_attack_table():
                         elif m_dist == 2 and (abs_dr == abs_dc or abs_dr == 0 or abs_dc == 0):
                             KING_ATTACK_CHECK[k_sq][t_sq] = (kr + dr // 2, kc + dc // 2)
 
+def _init_pawn_attack_tables():
+    for r in range(8):
+        for c in range(8):
+            sq = r * 8 + c
+            
+            # White attacking `sq`: White pawns move UP (-1), so sources are at r+1, r+2
+            w_direct = []
+            if r + 1 < 8:
+                w_direct.append((r + 1, c))
+                if r + 2 == 6:
+                    PAWN_DOUBLE['white'][sq] = (r + 1, c, r + 2, c)
+            if c > 0: w_direct.append((r, c - 1))
+            if c < 7: w_direct.append((r, c + 1))
+            PAWN_DIRECT['white'][sq] = tuple(w_direct)
+
+            # Black attacking `sq`: Black pawns move DOWN (+1), so sources are at r-1, r-2
+            b_direct = []
+            if r - 1 >= 0:
+                b_direct.append((r - 1, c))
+                if r - 2 == 1:
+                    PAWN_DOUBLE['black'][sq] = (r - 1, c, r - 2, c)
+            if c > 0: b_direct.append((r, c - 1))
+            if c < 7: b_direct.append((r, c + 1))
+            PAWN_DIRECT['black'][sq] = tuple(b_direct)
+
 _init_king_attack_table()
+_init_pawn_attack_tables()
 
 
 # --- PRECOMPUTED KNIGHT EVAPORATION TABLE ---
@@ -641,43 +669,32 @@ class Board:
 # Global game logic
 # -----------------------------------------------------------------------
 def is_square_attacked(board, r, c, attacking_color):
+    t_idx           = r * 8 + c
     grid            = board.grid
     defending_color = 'black' if attacking_color == 'white' else 'white'
     attacking_pieces = board.white_pieces if attacking_color == 'white' else board.black_pieces
     attacker_counts = board.piece_counts_z[attacking_color]
     attacking_king_pos = board.white_king_pos if attacking_color == 'white' else board.black_king_pos
 
-    # 1. PAWN ATTACKS (Correct sideways and forward checks)
-    pawn_move_dir = -1 if attacking_color == 'white' else 1
-    pr = r - pawn_move_dir
-    if 0 <= pr < 8:
-        p = grid[pr][c]
-        if p is not None and p.z_idx == 0 and p.color == attacking_color:
-            return True
-        if p is None:
-            two_pr = r - (2 * pawn_move_dir)
-            starting_row = 6 if attacking_color == 'white' else 1
-            if two_pr == starting_row:
-                p2 = grid[two_pr][c]
-                if p2 is not None and p2.z_idx == 0 and p2.color == attacking_color:
-                    return True
-                    
-    if c > 0:
-        p = grid[r][c - 1]
-        if p is not None and p.z_idx == 0 and p.color == attacking_color:
-            return True
-    if c < 7:
-        p = grid[r][c + 1]
+    # 1. PAWN ATTACKS (O(1) Precomputed Sources)
+    for pr, pc in PAWN_DIRECT[attacking_color][t_idx]:
+        p = grid[pr][pc]
         if p is not None and p.z_idx == 0 and p.color == attacking_color:
             return True
 
+    dbl = PAWN_DOUBLE[attacking_color][t_idx]
+    if dbl:
+        if grid[dbl[0]][dbl[1]] is None:
+            p = grid[dbl[2]][dbl[3]]
+            if p is not None and p.z_idx == 0 and p.color == attacking_color:
+                return True
+
     # 2. KNIGHT ATTACKS (Strictly Non-Functional, O(1) Precomputed Evaporation)
     if attacker_counts[1] > 0:
-        target_idx = r * 8 + c
         for piece in board.pieces_by_z[attacking_color][1]:
             if piece.pos:
                 p_idx = piece.pos[0] * 8 + piece.pos[1]
-                evap = KNIGHT_EVAP_SQUARES[p_idx][target_idx]
+                evap = KNIGHT_EVAP_SQUARES[p_idx][t_idx]
                 if evap is True:
                     return True
                 elif evap is not None:
@@ -687,13 +704,13 @@ def is_square_attacked(board, r, c, attacking_color):
 
     # 3. KING ATTACKS (O(1) Table Lookup)
     if attacking_king_pos:
-        k_check = KING_ATTACK_CHECK[attacking_king_pos[0] * 8 + attacking_king_pos[1]][r * 8 + c]
+        k_check = KING_ATTACK_CHECK[attacking_king_pos[0] * 8 + attacking_king_pos[1]][t_idx]
         if k_check is True:
             return True
         elif k_check:
             if grid[k_check[0]][k_check[1]] is None:
                 return True
-                    
+
     if len(attacking_pieces) == attacker_counts[5]:
         return False
 
@@ -701,28 +718,26 @@ def is_square_attacked(board, r, c, attacking_color):
     has_rooks = attacker_counts[3] > 0
     has_bishops = attacker_counts[2] > 0
     if has_rooks or has_bishops:
-        start_index = r * 8 + c
-        
         if has_rooks:
             for i in range(4):
-                for cr, cc in RAYS[start_index][i]:
+                for cr, cc in RAYS[t_idx][i]:
                     piece = grid[cr][cc]
                     if piece is not None:
                         if piece.color == attacking_color:
                             if piece.z_idx == 3: return True
                             break
-                            
+
         if has_bishops:
             # Regular Diagonals
             for i in range(4, 8):
-                for cr, cc in RAYS[start_index][i]:
+                for cr, cc in RAYS[t_idx][i]:
                     piece = grid[cr][cc]
                     if piece is not None:
                         if piece.color == attacking_color and piece.z_idx == 2:
                             return True
                         break
             # ZigZag Diagonals
-            for ray in BISHOP_ZIGZAG_RAYS[start_index]:
+            for ray in BISHOP_ZIGZAG_RAYS[t_idx]:
                 for cr, cc in ray:
                     piece = grid[cr][cc]
                     if piece is not None:
@@ -730,7 +745,7 @@ def is_square_attacked(board, r, c, attacking_color):
                             return True
                         break
 
-    # 6. QUEEN EXPLOSIONS (Optimized O(1) target lookup)
+    # 6. QUEEN EXPLOSIONS
     if attacker_counts[4] > 0:
         for piece in board.pieces_by_z[attacking_color][4]:
             if piece.pos:
@@ -743,9 +758,8 @@ def is_square_attacked(board, r, c, attacking_color):
                                 if -1 <= cr - r <= 1 and -1 <= cc - c <= 1:
                                     return True
                             break
-                            
-    return False
 
+    return False
 
 def is_in_check(board, color):
     king_pos = board.white_king_pos if color == 'white' else board.black_king_pos
