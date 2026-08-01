@@ -289,6 +289,15 @@ argument handling in a standalone dispatch function) — those may be aligned
 for consistency **only if** doing so cannot change OPAI's actual move
 selection or evaluation output. When in doubt, don't touch `OPAI.py`.
 
+Shared backend plumbing now lives in `EngineRuntime.py`. It owns Zobrist
+hashing, FEN/opening-book helpers, worker dispatch, tablebase enable/disable
+plumbing, time-check budgeting helpers, and bot lifecycle updates such as
+new-game cache resets. Each worker still holds exactly one separate bot
+instance, so `AI.py` and `OpponentAI.py` do not share a transposition table,
+eval cache, history table, cancellation event, or tablebase manager. Runtime
+helpers may be edited for memory/lifecycle correctness, but do not use that
+file as a reason to merge or back-port search/eval behavior between the bots.
+
 ---
 
 ## 7. Quick Reference for AI Assistants

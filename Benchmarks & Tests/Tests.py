@@ -1,4 +1,4 @@
-# Tests.py (v7 - Kill class-keyed piece_counts dict)
+# Tests.py (v8 - Fixed 2 broken tests)
 
 import sys
 import os
@@ -19,7 +19,7 @@ os.chdir(PARENT_DIR)
 import argparse
 from dataclasses import dataclass
 from GameLogic import *
-from AI import ChessBot, MG_PIECE_VALUES, ORDERING_VALUES, TT_FLAG_EXACT, TT_FLAG_LOWERBOUND
+from AI import ChessBot, MG_PIECE_VALUES, ORDERING_VALUES, TT_FLAG_EXACT, TT_FLAG_LOWERBOUND, _unpack_move
 from OpponentAI import OpponentAI
 from TablebaseManager import TablebaseManager
 
@@ -830,7 +830,12 @@ def case_regression_tt_best_move_preservation():
     details.append(f"Resulting TT entry best_move: {entry.best_move}")
     
     expect(entry is not None, "TT entry missing entirely.")
-    expect(entry.best_move == best_move, f"Regression detected: ProbCut erased the best_move! Expected {best_move}, got {entry.best_move}")
+    stored_best_move = _unpack_move(entry.best_move)
+    details.append(f"Unpacked TT best_move: {stored_best_move}")
+    expect(
+        stored_best_move == best_move,
+        f"Regression detected: ProbCut erased the best_move! Expected {best_move}, got {stored_best_move}"
+    )
     return details
 
 
@@ -883,22 +888,31 @@ def case_regression_nmp_mate_blindness():
         f"(got {abs(mate_beta) < MATE - 1000})"
     )
 
-    try:
-        score = bot.negamax(
-            board, depth=4, alpha=-999999, beta=-999900,
-            turn="white", ply=1, search_path=set()
-        )
-    except Exception:
-        score = 0
+    bot.USE_REVERSE_FUTILITY_PRUNING = False
+    bot.USE_FUTILITY_PRUNING = False
+    bot.USE_NULL_MOVE_PRUNING = True
+    score_with_nmp = bot.negamax(
+        board, depth=4, alpha=-999999, beta=-999900,
+        turn="white", ply=1, search_path=set()
+    )
+
+    reference_bot = ChessBot(board.clone(), "white", {}, _DummyQueue(), _DummyEvent())
+    reference_bot.USE_REVERSE_FUTILITY_PRUNING = False
+    reference_bot.USE_FUTILITY_PRUNING = False
+    reference_bot.USE_NULL_MOVE_PRUNING = False
+    score_without_nmp = reference_bot.negamax(
+        board.clone(), depth=4, alpha=-999999, beta=-999900,
+        turn="white", ply=1, search_path=set()
+    )
 
     details = position_details(board, "White cornered, black double-rook mating net")
-    details.append(f"Negamax(depth=4, alpha=-999999, beta=-999900) returned: {score}")
+    details.append(f"Negamax with NMP returned: {score_with_nmp}")
+    details.append(f"Negamax without NMP returned: {score_without_nmp}")
     details.append(f"NMP guard abs({mate_beta}) < {MATE - 1000}: {abs(mate_beta) < MATE - 1000} (must be False)")
 
     expect(
-        score < -900000,
-        f"Regression detected: Engine returned {score} instead of a mating score. "
-        f"NMP may have incorrectly pruned the search."
+        score_with_nmp == score_without_nmp,
+        f"Regression detected: NMP changed a near-mate-window search from {score_without_nmp} to {score_with_nmp}."
     )
     return details
 

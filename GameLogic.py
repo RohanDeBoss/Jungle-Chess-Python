@@ -1,4 +1,4 @@
-# GameLogic.py (v70.2 - King attack tables + Precomputed Pawn Attack Geometry)
+# GameLogic.py (v71 - New framework with EngineRuntime)
 
 
 # -----------------------------------------------------------------------
@@ -813,7 +813,7 @@ _board_hash_fn = None
 def _get_board_hash():
     global _board_hash_fn
     if _board_hash_fn is None:
-        from AI import board_hash
+        from EngineRuntime import board_hash
         _board_hash_fn = board_hash
     return _board_hash_fn
 

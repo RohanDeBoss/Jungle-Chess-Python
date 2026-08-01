@@ -1,4 +1,4 @@
-# JungleChessUI.py (v16.1 - TT Maintains across moves for AI and OPAI)
+# JungleChessUI.py (v17 - New framework with EngineRuntime)
 
 import tkinter as tk
 from tkinter import ttk, messagebox
@@ -9,6 +9,7 @@ import re
 from GameLogic import *
 from AI import ChessBot, board_hash
 from OpponentAI import OpponentAI
+from EngineRuntime import persistent_worker
 from enum import Enum
 import multiprocessing as mp
 
@@ -20,86 +21,6 @@ class GameMode(Enum):
 _CASUALTIES_RE = re.compile(r'\s*\(.*?\)')
 _FEN_CHAR_TO_CLASS = {'p': Pawn, 'n': Knight, 'b': Bishop, 'r': Rook, 'q': Queen, 'k': King}
 _CLASS_TO_FEN_CHAR = {Pawn:'P', Knight:'N', Bishop:'B', Rook:'R', Queen:'Q', King:'K'}
-
-
-# ---------------------------------------------------------------------------
-# Persistent worker — runs in a subprocess, imports happen ONCE at startup.
-# ---------------------------------------------------------------------------
-class TaskQueueWrapper:
-    """Intercepts worker messages and tags them with the current task_id."""
-    def __init__(self, real_queue, task_id):
-        self.real_queue = real_queue
-        self.task_id = task_id
-
-    def put(self, item):
-        if isinstance(item, tuple) and item and item[0] in {'move', 'log', 'eval', 'pv'}:
-            self.real_queue.put(item + (self.task_id,))
-        else:
-            self.real_queue.put(item)
-
-def persistent_worker(work_queue, comm_queue, cancel_event, bot_class):
-    """
-    Sits in a loop waiting for task dicts. The worker keeps the bot instance alive 
-    across turns to persist TT and History tables, unless a reset is requested.
-    """
-    import inspect
-    bot = None
-    
-    while True:
-        task = work_queue.get()          # blocks until a task arrives
-        if task is None:                 # shutdown signal
-            break
-
-        # The worker clears the event AFTER receiving the task. 
-        cancel_event.clear()             
-
-        task_id = task.get('task_id', -1)
-        wrapped_comm = TaskQueueWrapper(comm_queue, task_id)
-
-        try:
-            accepted_params = set(inspect.signature(bot_class.__init__).parameters)
-            kwargs = {
-                'time_left': task.get('time_left'),
-                'increment': task.get('increment'),
-                'use_opening_book': task.get('use_opening_book', True),
-                'use_tablebase': task.get('use_tablebase', True),
-                'show_tt_fullness': task.get('show_tt_fullness', False)
-            }
-            filtered_kwargs = {k: v for k, v in kwargs.items() if k in accepted_params}
-            
-            # Both bots persist state across moves within a game and are only
-            # recreated on an explicit hash-clear request. OpponentAI is a
-            # class-renamed copy of ChessBot and already has update_state(),
-            # so it should be treated identically here. The previous special
-            # case rebuilt OpponentAI from scratch every move while ChessBot
-            # persisted — a large, unmeasured structural advantage for
-            # ChessBot in every AI-vs-OP comparison, independent of whatever
-            # search/eval change was actually being tested.
-            force_recreate = task.get('clear_hash', False)
-            
-            if bot is None or force_recreate:
-                bot = bot_class(
-                    task['board'], task['color'], task['position_counts'],
-                    wrapped_comm, cancel_event, task['bot_name'], 
-                    task['ply_count'], task['game_mode'], **filtered_kwargs
-                )
-            else:
-                bot.update_state(
-                    task['board'], task['color'], task['position_counts'],
-                    wrapped_comm, cancel_event, task['bot_name'], 
-                    task['ply_count'], task['game_mode'], **filtered_kwargs
-                )
-
-            bot.search_depth = task['search_depth']
-            if task['search_depth'] == 99:
-                bot.ponder_indefinitely()
-            else:
-                bot.make_move()
-                
-        except Exception as e:
-            import traceback
-            traceback.print_exc()
-            wrapped_comm.put(('move', None))
 
 
 # ---------------------------------------------------------------------------
@@ -187,6 +108,8 @@ class EnhancedChessApp:
         self.last_eval_depth = None
         self.last_eval_bar_w = 0
         self.last_eval_bar_h = 0
+        
+        self.hovered_pv_tag = None
 
         # --- TIME STATE ---
         self.time_control_seconds = tk.IntVar(value=300)
@@ -544,6 +467,14 @@ class EnhancedChessApp:
         self.moves_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         sb.pack(side=tk.RIGHT, fill=tk.Y)
 
+        # Global event delegation (fixes the lambda tag_bind memory leak)
+        self.pv_text.bind("<Motion>", self._on_pv_text_motion)
+        self.pv_text.bind("<Leave>", self._on_pv_text_leave)
+        
+        self.moves_text.bind("<Button-1>", self._on_moves_text_click)
+        self.moves_text.bind("<Motion>", self._on_moves_text_motion)
+        self.moves_text.bind("<Leave>", lambda e: self.moves_text.config(cursor="arrow"))
+
     def _create_import_export_widget(self, parent, label, load_cmd, copy_cmd):
         frame = ttk.Frame(parent, style='Left.TFrame')
         frame.pack(fill=tk.X, pady=(2, 2))
@@ -895,14 +826,6 @@ class EnhancedChessApp:
                 self._format_san_display(pair[1]).center(14) if pair[1] else " " * 14,
                 b_tag if pair[1] else "")
             self.moves_text.insert(tk.END, "\n")
-            if pair[0] != "...":
-                self.moves_text.tag_bind(w_tag, "<Button-1>", lambda e, p=w_ptr: self._navigate_history(p))
-                self.moves_text.tag_bind(w_tag, "<Enter>", lambda e: self.moves_text.config(cursor="hand2"))
-                self.moves_text.tag_bind(w_tag, "<Leave>", lambda e: self.moves_text.config(cursor="arrow"))
-            if pair[1]:
-                self.moves_text.tag_bind(b_tag, "<Button-1>", lambda e, p=b_ptr: self._navigate_history(p))
-                self.moves_text.tag_bind(b_tag, "<Enter>", lambda e: self.moves_text.config(cursor="hand2"))
-                self.moves_text.tag_bind(b_tag, "<Leave>", lambda e: self.moves_text.config(cursor="arrow"))
 
         self.moves_text.tag_configure("num", foreground=self.COLORS['text_dark'])
         for tag in self.moves_text.tag_names():
@@ -1382,6 +1305,13 @@ class EnhancedChessApp:
                     continue
                 if kind == 'log':
                     print(msg[1])
+                    in_series = self.game_mode.get() == GameMode.AI_VS_AI.value and self.ai_series_running
+                    if not in_series:
+                        status = re.sub(r'\s+', ' ', msg[1]).strip()
+                        status = re.sub(r'^>\s*', '', status)
+                        if len(status) > 120:
+                            status = status[:117] + "..."
+                        self.tt_fullness_label.config(text=status)
                     tt_m = re.search(r'TT=(\d+/1000)', msg[1])
                     if tt_m and self.show_tt_fullness_var.get():
                         self.tt_fullness_label.config(text=f"TT Occupancy: {tt_m.group(1)}")
@@ -1452,8 +1382,6 @@ class EnhancedChessApp:
         for i, (san, _) in enumerate(zip(pv_san_list, pv_raw)):
             tag = f"pv_move_{i}"
             self.pv_text.insert(tk.END, self._format_san_display(san) + " ", tag)
-            self.pv_text.tag_bind(tag, "<Enter>", lambda e, idx=i, t=tag: self.on_pv_hover_enter(e, idx, t))
-            self.pv_text.tag_bind(tag, "<Leave>", lambda e, t=tag: self.on_pv_hover_leave(e, t))
         self.pv_text.config(state=tk.DISABLED)
 
     # ------------------------------------------------------------------ AI process
@@ -1914,6 +1842,40 @@ class EnhancedChessApp:
 
         except Exception as e:
             print(f"Failed to save stats: {e}")
+
+    # ------------------------------------------------------------------ Delegated Events
+    def _on_pv_text_motion(self, event):
+        index = self.pv_text.index(f"@{event.x},{event.y}")
+        tags = self.pv_text.tag_names(index)
+        pv_tag = next((t for t in tags if t.startswith("pv_move_")), None)
+        
+        if pv_tag != self.hovered_pv_tag:
+            if self.hovered_pv_tag:
+                self.on_pv_hover_leave(None, self.hovered_pv_tag)
+            self.hovered_pv_tag = pv_tag
+            if pv_tag:
+                idx = int(pv_tag.split("_")[2])
+                self.on_pv_hover_enter(event, idx, pv_tag)
+
+    def _on_pv_text_leave(self, event):
+        if self.hovered_pv_tag:
+            self.on_pv_hover_leave(None, self.hovered_pv_tag)
+            self.hovered_pv_tag = None
+
+    def _on_moves_text_click(self, event):
+        if self.game_mode.get() == GameMode.AI_VS_AI.value: return
+        index = self.moves_text.index(f"@{event.x},{event.y}")
+        for tag in self.moves_text.tag_names(index):
+            if tag.startswith("ply_"):
+                self._navigate_history(int(tag.split("_")[1]))
+                break
+
+    def _on_moves_text_motion(self, event):
+        index = self.moves_text.index(f"@{event.x},{event.y}")
+        if any(t.startswith("ply_") for t in self.moves_text.tag_names(index)):
+            self.moves_text.config(cursor="hand2")
+        else:
+            self.moves_text.config(cursor="arrow")
 
     # ------------------------------------------------------------------ PV hover mini-board
     def on_pv_hover_enter(self, event, move_idx, tag):
