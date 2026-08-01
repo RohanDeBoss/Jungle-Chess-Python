@@ -1,4 +1,4 @@
-# OPAI.py (v124.? - No capture history + Logic fix + asymmetry fix)
+# OPAI.py (v123.2 - Fail Soft everywhere + IIR)
 
 import json
 import os
@@ -990,6 +990,7 @@ class OpponentAI:
 
                 legal_moves_count += 1
                 if not is_good_tactic: quiet_moves_tried.append((move, moving_piece))
+
                 if futility_prune and not is_good_tactic and legal_moves_count > 1:
                     # SAFETY GUARD: Never prune a quiet move that delivers check.
                     # Thanks to the highly optimized is_square_attacked in GameLogic,
@@ -1066,20 +1067,19 @@ class OpponentAI:
                         alpha, best_move_for_node = score, move
 
                 if best_score >= beta:
-                    c_idx = 0 if turn == 'white' else 1
-                    bonus = depth * depth
-
                     if not is_good_tactic:
                         if ply < len(self.killer_moves) and self.killer_moves[ply][0] != move:
                             self.killer_moves[ply][1], self.killer_moves[ply][0] = \
                                 self.killer_moves[ply][0], move
                         if prev_move_tuple:
                             (pr1, pc1), (pr2, pc2) = prev_move_tuple[0]
-                            self.counter_moves[c_idx][pr1 * 8 + pc1][pr2 * 8 + pc2] = move
+                            self.counter_moves[0 if turn == 'white' else 1][pr1 * 8 + pc1][pr2 * 8 + pc2] = move
                         
                         # --- CALIBRATED HISTORY UPDATES ---
                         if moving_piece:
-                            ht = self.history_heuristic_table[c_idx]
+                            c_idx = 0 if turn == 'white' else 1
+                            bonus = depth * depth
+                            ht    = self.history_heuristic_table[c_idx]
                             
                             # Gravity update for the successful move
                             ht[f_sq][t_sq] += bonus - (ht[f_sq][t_sq] * bonus) // 2_000_000
@@ -1109,6 +1109,7 @@ class OpponentAI:
                                         f_mp_idx = f_mp.z_idx
                                         ch_table = self.continuation_history[c_idx][prev_pt_idx][prev_to_sq][f_mp_idx]
                                         ch_table[ft] -= bonus + (ch_table[ft] * bonus) // 64_000
+
                     sto = best_score
                     if sto >  self.MATE_SCORE - 1000: sto = best_score + ply
                     elif sto < -self.MATE_SCORE + 1000: sto = best_score - ply
@@ -1252,7 +1253,7 @@ class OpponentAI:
             return -self.MATE_SCORE + ply
 
         return best_score
-
+    
     def order_moves(self, board, moves, ply, hash_move, turn, return_meta=False, counter_move=None, prev_move_tuple=None):
         if not moves: return []
         scored_moves = []
