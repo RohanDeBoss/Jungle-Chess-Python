@@ -1,4 +1,4 @@
-# OPAI.py (v123.71 - TT Repetition Guard optimised + new EngineRuntime framework)
+# OPAI.py (v123.72 - TT Repetition Guard + new EngineRuntime framework + Guard against stale PV moves)
 
 import time
 import random
@@ -15,7 +15,6 @@ from EngineRuntime import (
     calc_time_check_mask,
     configure_tablebase,
     incremental_hash,
-    run_ai_process,
     search_time_budget,
     update_bot_runtime_state,
 )
@@ -357,6 +356,11 @@ class OpponentAI:
 
         for i in range(max_depth):
             if not move: break
+            
+            # --- SAFETY GUARD AGAINST TT COLLISIONS / STALE PV MOVES ---
+            p = current_board.grid[move[0][0]][move[0][1]]
+            if not p or p.color != current_turn: break
+            
             san      = self._format_move(current_board, move)
             move_num = (current_ply // 2) + 1
             if current_turn == 'white':
