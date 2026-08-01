@@ -1,4 +1,4 @@
-# AI.py (v123.5 - Fail Soft + IIR + conservative RFP)
+# AI.py (v123.6 - TT Repetition Guard)
 
 import json
 import os
@@ -881,6 +881,18 @@ class ChessBot:
             if hash_val in search_path:
                 return self.DRAW_SCORE
 
+        # --- GHI / TT-REPETITION SAFETY ---
+        # A position that has already occurred at least once for real in this
+        # game is "repetition-sensitive": its true score depends on how many
+        # more times it can recur before hitting the threefold rule — context
+        # the Zobrist hash alone doesn't encode. Because the TT persists
+        # across real moves by design, a score cached here during an earlier
+        # turn's search (when this was only the 1st/2nd occurrence) can go
+        # stale once the real game catches up and makes it the 3rd (drawn)
+        # occurrence. Refuse to read or write TT entries for any such
+        # position so it's always freshly resolved by the check above.
+        repetition_sensitive = self.position_counts.get(hash_val, 0) >= 1
+
         if total_pieces <= self.tb_probe_limit:
             tb_score_absolute = self.tb_manager.probe(board, turn)
             if tb_score_absolute is not None:
@@ -894,7 +906,7 @@ class ChessBot:
             return self.DRAW_SCORE
 
         original_alpha = alpha
-        tt_entry = self.tt.get(hash_val)
+        tt_entry = self.tt.get(hash_val) if not repetition_sensitive else None
         if ply > 0 and tt_entry and tt_entry.depth >= depth:
             tt_score = tt_entry.score
             if tt_score >  self.MATE_SCORE - 1000: tt_score -= ply
@@ -1132,7 +1144,8 @@ class ChessBot:
                     sto = best_score
                     if sto >  self.MATE_SCORE - 1000: sto = best_score + ply
                     elif sto < -self.MATE_SCORE + 1000: sto = best_score - ply
-                    self._store_tt(hash_val, sto, depth, TT_FLAG_LOWERBOUND, move)
+                    if not repetition_sensitive:
+                        self._store_tt(hash_val, sto, depth, TT_FLAG_LOWERBOUND, move)
                     return best_score
 
             if legal_moves_count == 0:
@@ -1142,7 +1155,8 @@ class ChessBot:
             if sto >  self.MATE_SCORE - 1000: sto = best_score + ply
             elif sto < -self.MATE_SCORE + 1000: sto = best_score - ply
             flag = TT_FLAG_EXACT if best_score > original_alpha else TT_FLAG_UPPERBOUND
-            self._store_tt(hash_val, sto, depth, flag, best_move_for_node)
+            if not repetition_sensitive:
+                self._store_tt(hash_val, sto, depth, flag, best_move_for_node)
             return best_score
 
         finally:
@@ -1157,7 +1171,8 @@ class ChessBot:
 
         hash_val = current_hash if current_hash is not None else board_hash(board, turn)
 
-        tt_entry = self.tt.get(hash_val)
+        # Same GHI/TT-repetition guard as negamax — see comment there.
+        tt_entry = self.tt.get(hash_val) if self.position_counts.get(hash_val, 0) == 0 else None
         if tt_entry:
             tt_score = tt_entry.score
             if tt_score >  self.MATE_SCORE - 1000: tt_score -= ply
