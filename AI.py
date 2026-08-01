@@ -1,8 +1,9 @@
-# AI.py (v126.1 - Linear History Combining fixed)
+# AI.py (v126.2 - Memory reduced in TT + garbage collection + clear TT on new game)
 
 import json
 import os
 import time
+import gc
 import random
 import glob
 from collections import namedtuple
@@ -99,6 +100,17 @@ def board_hash(board, turn):
     if turn == 'black':
         h ^= ZOBRIST_TURN
     return h
+
+def _pack_move(move):
+    """Compresses a move tuple ((r1,c1),(r2,c2)) into a single 12-bit integer (0..4095)."""
+    if not move: return 4095
+    return (move[0][0] * 8 + move[0][1]) * 64 + (move[1][0] * 8 + move[1][1])
+
+def _unpack_move(move_int):
+    """Decompresses a 12-bit integer back into a move tuple ((r1,c1),(r2,c2))."""
+    if move_int is None or move_int == 4095: return None
+    f, t = divmod(move_int, 64)
+    return (f // 8, f % 8), (t // 8, t % 8)
 
 def incremental_hash(parent_hash, record_tuple):
     h = parent_hash ^ ZOBRIST_TURN
@@ -324,6 +336,14 @@ class ChessBot:
 
     def update_state(self, board, color, position_counts, comm_queue, cancellation_event, bot_name, ply_count, game_mode, **kwargs):
         """Called by the persistent worker to update the bot's state for the next turn without wiping memory."""
+        
+        # --- NEW GAME DETECTED ---
+        # If ply_count is 0/1 or jumped backward, a new game has started!
+        # Reset all search tables and force Python to release RAM back to Windows OS.
+        if ply_count <= 1 or ply_count < getattr(self, 'ply_count', 0):
+            self._initialize_search_state()
+            gc.collect()
+
         self.board = board
         self.color = color
         self.opponent_color = 'black' if color == 'white' else 'white'
@@ -358,20 +378,23 @@ class ChessBot:
             return cached
         val = self.evaluate_board(board, turn)
         limit = getattr(self, 'EVAL_TT_MAX_SIZE', 5_000_000)
-        if len(self.eval_tt) > limit: self.eval_tt.clear()
+        if len(self.eval_tt) > limit:
+            # Refcount drops to 0 instantly. Python reuses this memory for new entries!
+            self.eval_tt = {} 
         self.eval_tt[hash_val] = val
         return val
 
     def _store_tt(self, hash_val, score, depth, flag, move):
         existing = self.tt.get(hash_val)
         if len(self.tt) > self.TT_MAX_SIZE:
-            self.tt.clear()
+            # Refcount drops to 0 instantly. Python reuses this memory safely!
+            self.tt = {}
             existing = None
             
         # Age-based replacement: Overwrite if slot is empty, from an older turn, or searched deeper
         if not existing or existing.age < self.current_age or depth >= existing.depth:
-            best_move = move if move is not None else (existing.best_move if existing else None)
-            self.tt[hash_val] = TTEntry(score, depth, flag, best_move, self.current_age)
+            m_code = _pack_move(move) if move is not None else (existing.best_move if existing else 4095)
+            self.tt[hash_val] = TTEntry(score, depth, flag, m_code, self.current_age)
 
     def _report_log(self, message):   self.comm_queue.put(('log', message))
     def _report_eval(self, score, depth): self.comm_queue.put(('eval', score if self.color == 'white' else -score, depth))
@@ -539,9 +562,9 @@ class ChessBot:
             seen_hashes.add(h)
 
             tt_entry = self.tt.get(h)
-            if not tt_entry or not tt_entry.best_move: break
+            if not tt_entry or tt_entry.best_move == 4095: break
             if tt_entry.flag != TT_FLAG_EXACT: break
-            move = tt_entry.best_move
+            move = _unpack_move(tt_entry.best_move)
 
         return pv_san, pv_raw
 
@@ -988,7 +1011,7 @@ class ChessBot:
                     futility_prune = True
 
             pseudo_moves = get_all_pseudo_legal_moves(board, turn)
-            hash_move    = tt_entry.best_move if tt_entry else None
+            hash_move    = _unpack_move(tt_entry.best_move) if tt_entry else None
             
             # --- INTERNAL ITERATIVE REDUCTION (IIR) ---
             # If we don't have a TT move to guide us, move ordering will be suboptimal.
@@ -1220,7 +1243,7 @@ class ChessBot:
         promising_moves = get_all_pseudo_legal_moves(board, turn)
         scored_moves = []
         grid = board.grid
-        tt_move = tt_entry.best_move if tt_entry else None
+        tt_move = _unpack_move(tt_entry.best_move) if tt_entry else None
         
         opponent_turn = 'black' if turn == 'white' else 'white'
         
