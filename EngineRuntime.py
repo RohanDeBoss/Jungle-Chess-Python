@@ -192,11 +192,6 @@ def search_time_budget(time_left, increment):
     return optimum_time, max_time
 
 
-def should_reset_search_memory(bot, ply_count):
-    previous_ply = getattr(bot, "ply_count", None)
-    return previous_ply is not None and ply_count < previous_ply
-
-
 def configure_tablebase(bot, use_tablebase):
     if not hasattr(bot, "tb_manager"):
         return
@@ -209,10 +204,6 @@ def configure_tablebase(bot, use_tablebase):
 def update_bot_runtime_state(bot, board, color, position_counts, comm_queue,
                              cancellation_event, bot_name, ply_count, game_mode,
                              **kwargs):
-    if should_reset_search_memory(bot, ply_count):
-        bot._initialize_search_state()
-        gc.collect()
-
     bot.board = board
     bot.color = color
     bot.opponent_color = "black" if color == "white" else "white"

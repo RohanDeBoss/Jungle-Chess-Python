@@ -1,4 +1,4 @@
-# JungleChessUI.py (v17.1 - New framework with EngineRuntime with more offloading)
+# JungleChessUI.py (v17.2 - Bug fix to flickering)
 
 import tkinter as tk
 from tkinter import ttk, messagebox
@@ -1290,17 +1290,10 @@ class EnhancedChessApp:
                     continue
                 if kind == 'log':
                     print(msg[1])
-                    in_series = self.game_mode.get() == GameMode.AI_VS_AI.value and self.ai_series_running
-                    if not in_series:
-                        status = re.sub(r'\s+', ' ', msg[1]).strip()
-                        status = re.sub(r'^>\s*', '', status)
-                        if len(status) > 120:
-                            status = status[:117] + "..."
-                        self.tt_fullness_label.config(text=status)
                     tt_m = re.search(r'TT=(\d+/1000)', msg[1])
                     if tt_m and self.show_tt_fullness_var.get():
                         self.tt_fullness_label.config(text=f"TT Occupancy: {tt_m.group(1)}")
-                    elif not self.show_tt_fullness_var.get():
+                    else:
                         self.tt_fullness_label.config(text="")
 
                     if self.auto_save_stats_var.get() and self.game_mode.get() == GameMode.AI_VS_AI.value:

@@ -1,4 +1,4 @@
-# GameLogic.py (v71 - New framework with EngineRuntime)
+# GameLogic.py (v71.1 - Precomputed rook piercing rays)
 
 
 # -----------------------------------------------------------------------
@@ -48,6 +48,7 @@ RAYS = [[None] * 8 for _ in range(64)]
 RAYS_ORTHOGONAL = [None] * 64
 RAYS_DIAGONAL = [None] * 64
 BISHOP_ZIGZAG_RAYS = [None] * 64
+RAY_BETWEEN = [[() for _ in range(64)] for _ in range(64)]
 
 def _init_rays():
     dy_dx = [(-1, 0), (1, 0), (0, 1), (0, -1), (-1, 1), (-1, -1), (1, 1), (1, -1)]
@@ -76,6 +77,22 @@ def _init_rays():
         RAYS_ORTHOGONAL[sq] = RAYS[sq][:4]
         RAYS_DIAGONAL[sq] = RAYS[sq][4:]
         BISHOP_ZIGZAG_RAYS[sq] = tuple(tuple(ray) for ray in zigzag_tmp[sq])
+        
+    for sq1 in range(64):
+        r1, c1 = divmod(sq1, 8)
+        for sq2 in range(64):
+            if sq1 == sq2: continue
+            r2, c2 = divmod(sq2, 8)
+            if r1 == r2 or c1 == c2:
+                dr = (r2 > r1) - (r1 > r2)
+                dc = (c2 > c1) - (c1 > c2)
+                path = []
+                cr, cc = r1 + dr, c1 + dc
+                while (cr, cc) != (r2, c2):
+                    path.append((cr, cc))
+                    cr += dr
+                    cc += dc
+                RAY_BETWEEN[sq1][sq2] = tuple(path)
 
 _init_rays()
 
@@ -551,16 +568,13 @@ class Board:
 
         # ── 1. Rook piercing ──
         if mp_z == 3:   # Rook
-            dr = (end[0] > start[0]) - (start[0] > end[0])
-            dc = (end[1] > start[1]) - (start[1] > end[1])
-            cr, cc = start[0] + dr, start[1] + dc
-            while (cr, cc) != end:
+            sq1 = start[0] * 8 + start[1]
+            sq2 = end[0] * 8 + end[1]
+            for cr, cc in RAY_BETWEEN[sq1][sq2]:
                 t = self.grid[cr][cc]
                 if t is not None and t.color != mc:
                     removed.append((t, cr, cc))
                     self.remove_piece(cr, cc)
-                cr += dr
-                cc += dc
 
         # ── 2. Standard capture ──
         if is_capture:
@@ -863,19 +877,15 @@ def fast_approximate_material_swing(board, move, moving_piece, target_piece, pie
 
     pierced_knights_mask = 0
     if my_z == 3:
-        start, end = move
-        dr = (end[0] > start[0]) - (start[0] > end[0])
-        dc = (end[1] > start[1]) - (start[1] > end[1])
-        cr, cc = start[0] + dr, start[1] + dc
-        while (cr, cc) != end:
+        sq1 = move[0][0] * 8 + move[0][1]
+        sq2 = move[1][0] * 8 + move[1][1]
+        for cr, cc in RAY_BETWEEN[sq1][sq2]:
             target = board.grid[cr][cc]
             if target and target.color != my_color:
                 swing += piece_values_list[target.z_idx]
                 is_tactic = True
                 if target.z_idx == 1:
                     pierced_knights_mask |= (1 << (cr * 8 + cc))
-            cr += dr
-            cc += dc
 
     if my_z == 1:
         seen_passive_mask = 0
