@@ -1,4 +1,4 @@
-# AI.py (v126.21 - Memory reduced in TT + safety check in _get_pv_data + new EngineRuntime framework v1.2)
+# AI.py (v126.3 - History clearing re-added)
 
 import time
 import random
@@ -410,6 +410,7 @@ class ChessBot:
 
     def make_move(self):
         try:
+            self._age_history_table()
             # 1. Check Tablebases
             if len(self.board.white_pieces) + len(self.board.black_pieces) <= self.tb_probe_limit:
                 tb_move, tb_eval = self._get_best_tablebase_move_with_eval()
@@ -552,6 +553,7 @@ class ChessBot:
 
     def ponder_indefinitely(self):
         try:
+            self._age_history_table()
             if is_insufficient_material(self.board): return
             if len(self.board.white_pieces) + len(self.board.black_pieces) <= self.tb_probe_limit:
                 tb_move, tb_eval = self._get_best_tablebase_move_with_eval()
