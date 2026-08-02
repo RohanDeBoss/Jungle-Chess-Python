@@ -36,6 +36,10 @@ If your opponent has no legal moves, you win immediately. The game therefore
 behaves like a king-capture variant that stops one ply early — functionally
 identical in outcome, but the king is never actually taken off the board.
 
+- **Quiet Checkmates & King-Delivered Mates:** Because checkmate/win is defined 
+  strictly as having 0 legal moves, a checkmate or terminal loss can be 
+  delivered by a quiet move (including a 2-square King step) that cuts off the 
+  opponent's final escape square.
 ---
 
 ## 3. Piece Changes
