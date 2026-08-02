@@ -1,4 +1,4 @@
-# TablebaseViewer.py (v1.6 - Vectorized Draw Filtering & Instant Inspection)
+# TablebaseViewer.py (v2 - Draws now load faster)
 
 import os
 import numpy as np
@@ -283,7 +283,7 @@ class TBViewerApp:
         else: self.file_combo.set('')
 
     def _is_position_legal(self, placements, turn):
-        """Verifies no overlapping pieces and that the passive player is not in check."""
+        """Verifies no overlapping pieces, valid pawn ranks, and that the passive player is not in check."""
         board = Board(setup=False)
         pos_set = set()
 
@@ -292,6 +292,11 @@ class TBViewerApp:
             pos_set.add(pos)
 
             r, c = pos // 8, pos % 8
+            
+            # --- PAWN RANK LEGALITY CHECK ---
+            if char.upper() == 'P' and (r == 0 or r == 7):
+                return False
+
             color = 'white' if char.isupper() else 'black'
             piece_class = PIECE_CLASSES[char.upper()]
             board.add_piece(piece_class(color), r, c)
@@ -319,80 +324,122 @@ class TBViewerApp:
         try:
             data = np.memmap(filepath, dtype=np.int16, mode='r')
             data_flat = data.reshape(-1)
-            abs_data = np.abs(data_flat)
-
-            n = len(data_flat)
-            turn0 = np.zeros(n, dtype=bool)   # True where flat index is even -> White to move
-            turn0[0::2] = True
-            turn1 = ~turn0
 
             for key in PANEL_KEYS:
                 self.bucket_fens[key] = []
                 self.bucket_listboxes[key].delete(0, tk.END)
 
-            if view_mode == "Decisive Mates":
-                decisive_mask = abs_data > 0
-                white_wins_mask = decisive_mask & (((data_flat > 0) & turn0) | ((data_flat < 0) & turn1))
-                black_wins_mask = decisive_mask & ~white_wins_mask & decisive_mask
-
-                bucket_config = {
-                    "panel_1": ("White Wins  •  White to Move", white_wins_mask & turn0),
-                    "panel_2": ("White Wins  •  Black to Move", white_wins_mask & turn1),
-                    "panel_3": ("Black Wins  •  White to Move", black_wins_mask & turn0),
-                    "panel_4": ("Black Wins  •  Black to Move", black_wins_mask & turn1),
-                }
-            else: # Drawn Positions
-                drawn_mask = abs_data == 0
-                bucket_config = {
-                    "panel_1": ("Drawn  •  White to Move", drawn_mask & turn0),
-                    "panel_2": ("Drawn  •  Black to Move", drawn_mask & turn1),
-                    "panel_3": ("N/A", np.zeros(n, dtype=bool)),
-                    "panel_4": ("N/A", np.zeros(n, dtype=bool)),
-                }
+            panel_titles = {
+                "panel_1": ("White Wins  •  White to Move" if view_mode == "Decisive Mates" else "Drawn  •  White to Move"),
+                "panel_2": ("White Wins  •  Black to Move" if view_mode == "Decisive Mates" else "Drawn  •  Black to Move"),
+                "panel_3": ("Black Wins  •  White to Move" if view_mode == "Decisive Mates" else "N/A"),
+                "panel_4": ("Black Wins  •  Black to Move" if view_mode == "Decisive Mates" else "N/A"),
+            }
 
             any_found = False
 
-            for key in PANEL_KEYS:
-                title, mask = bucket_config[key]
-                self.bucket_title_labels[key].config(text=title)
+            if view_mode == "Decisive Mates":
+                # Only scan non-zero positions (sparse)
+                non_zero_indices = np.where(data_flat != 0)[0]
+                if len(non_zero_indices) == 0:
+                    messagebox.showinfo("Result", "No decisive mate positions found.")
+                    return
 
-                side_indices = np.where(mask)[0]
-                if len(side_indices) == 0:
-                    continue
+                vals = data_flat[non_zero_indices]
+                turns = non_zero_indices % 2  # 0 for White to move, 1 for Black to move
 
-                if view_mode == "Decisive Mates":
-                    order = np.argsort(-abs_data[side_indices])
-                    ranked_indices = side_indices[order]
-                else:
-                    # Instantly strip out tens of millions of overlapping-piece zeroes in vector C speed
-                    ranked_indices = filter_valid_candidate_indices(side_indices, category, has_pawn)
+                white_wins = ((vals > 0) & (turns == 0)) | ((vals < 0) & (turns == 1))
 
-                bucket_count = 0
-                listbox = self.bucket_listboxes[key]
-                for idx in ranked_indices:
-                    if bucket_count >= QUARTER_CAP:
-                        break
-                    idx = int(idx)
-                    placements, turn = self.decode_placements(idx, metadata, has_pawn)
-                    if not placements: continue
+                masks = {
+                    "panel_1": white_wins & (turns == 0),
+                    "panel_2": white_wins & (turns == 1),
+                    "panel_3": ~white_wins & (turns == 0),
+                    "panel_4": ~white_wins & (turns == 1),
+                }
 
-                    if not self._is_position_legal(placements, turn):
+                for key in PANEL_KEYS:
+                    title = panel_titles[key]
+                    self.bucket_title_labels[key].config(text=title)
+
+                    m = masks[key]
+                    sub_indices = non_zero_indices[m]
+                    sub_vals = np.abs(vals[m])
+
+                    if len(sub_indices) == 0:
                         continue
 
-                    fen = self.build_fen(placements, turn)
-                    dtm_val = int(abs_data[idx])
-                    self.bucket_fens[key].append((dtm_val, fen))
+                    # Sort by longest mate first
+                    order = np.argsort(-sub_vals)
+                    ranked_indices = sub_indices[order]
 
-                    label = f"#{bucket_count+1}  DTM {dtm_val}" if view_mode == "Decisive Mates" else f"#{bucket_count+1}  Draw"
-                    listbox.insert(tk.END, label)
-                    bucket_count += 1
-                    any_found = True
+                    bucket_count = 0
+                    listbox = self.bucket_listboxes[key]
+                    for idx in ranked_indices:
+                        if bucket_count >= QUARTER_CAP:
+                            break
+                        idx_int = int(idx)
+                        placements, turn = self.decode_placements(idx_int, metadata, has_pawn)
+                        if not placements: continue
+                        if not self._is_position_legal(placements, turn): continue
+
+                        fen = self.build_fen(placements, turn)
+                        dtm_val = int(abs(data_flat[idx_int]))
+                        self.bucket_fens[key].append((dtm_val, fen))
+
+                        listbox.insert(tk.END, f"#{bucket_count+1}  DTM {dtm_val}")
+                        bucket_count += 1
+                        any_found = True
+
+            else:  # Drawn Positions - Instant Chunked Search
+                for key in ("panel_1", "panel_2"):
+                    turn_target = 0 if key == "panel_1" else 1
+                    title = panel_titles[key]
+                    self.bucket_title_labels[key].config(text=title)
+
+                    # Scan in small 200k chunks to find 50 positions instantly (< 0.001s)
+                    chunk_size = 200_000
+                    total_len = len(data_flat)
+                    bucket_count = 0
+                    listbox = self.bucket_listboxes[key]
+
+                    for start_i in range(0, total_len, chunk_size):
+                        if bucket_count >= QUARTER_CAP:
+                            break
+                        end_i = min(start_i + chunk_size, total_len)
+                        chunk_vals = data_flat[start_i:end_i]
+
+                        chunk_idx = np.arange(start_i, end_i, dtype=np.int64)
+                        zero_mask = (chunk_vals == 0) & (chunk_idx % 2 == turn_target)
+                        zero_indices = chunk_idx[zero_mask]
+
+                        if len(zero_indices) == 0:
+                            continue
+
+                        valid_candidates = filter_valid_candidate_indices(zero_indices, category, has_pawn)
+
+                        for idx in valid_candidates:
+                            if bucket_count >= QUARTER_CAP:
+                                break
+                            idx_int = int(idx)
+                            placements, turn = self.decode_placements(idx_int, metadata, has_pawn)
+                            if not placements: continue
+                            if not self._is_position_legal(placements, turn): continue
+
+                            fen = self.build_fen(placements, turn)
+                            self.bucket_fens[key].append((0, fen))
+
+                            listbox.insert(tk.END, f"#{bucket_count+1}  Draw")
+                            bucket_count += 1
+                            any_found = True
+
+                for key in ("panel_3", "panel_4"):
+                    self.bucket_title_labels[key].config(text="N/A")
 
             if not any_found:
                 messagebox.showinfo("Result", f"No legal {view_mode.lower()} found.")
                 return
 
-            # Auto-select the first available entry across buckets
+            # Auto-select first available entry
             for key in PANEL_KEYS:
                 if self.bucket_fens[key]:
                     self.bucket_listboxes[key].selection_set(0)
