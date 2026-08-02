@@ -1,4 +1,4 @@
-# TablebaseViewer.py (v2 - Draws now load faster)
+# TablebaseViewer.py (v2.1 - Draws now load faster)
 
 import os
 import numpy as np
@@ -282,52 +282,71 @@ class TBViewerApp:
         if files: self.file_combo.current(0)
         else: self.file_combo.set('')
 
-    def _is_position_legal(self, placements, turn):
-        """Verifies no overlapping pieces, valid pawn ranks, and that the passive player is not in check."""
-        board = Board(setup=False)
+    def _fast_is_position_legal(self, placements, turn, board):
+        """Ultra-fast legality check reusing a single Board instance to prevent RAM allocation lag."""
         pos_set = set()
-
         for char, pos in placements:
-            if pos in pos_set: return False # Pieces overlapping
+            if pos in pos_set: return False
             pos_set.add(pos)
-
             r, c = pos // 8, pos % 8
-            
-            # --- PAWN RANK LEGALITY CHECK ---
-            if char.upper() == 'P' and (r == 0 or r == 7):
-                return False
+            if char.upper() == 'P' and (r == 0 or r == 7): return False
 
+        # Reset Reusable Board
+        board.white_pieces.clear()
+        board.black_pieces.clear()
+        board.pieces_by_z = {'white': [[] for _ in range(6)], 'black': [[] for _ in range(6)]}
+        board.piece_counts_z = {'white': [0]*6, 'black': [0]*6}
+        board.white_king_pos = None
+        board.black_king_pos = None
+        for r in range(8):
+            for c in range(8):
+                board.grid[r][c] = None
+
+        # Add Pieces
+        for char, pos in placements:
+            r, c = pos // 8, pos % 8
             color = 'white' if char.isupper() else 'black'
-            piece_class = PIECE_CLASSES[char.upper()]
-            board.add_piece(piece_class(color), r, c)
+            board.add_piece(PIECE_CLASSES[char.upper()](color), r, c)
 
         passive_color = 'black' if turn == 0 else 'white'
-        if is_in_check(board, passive_color):
-            return False # Passive player is in check (Illegal starting state)
-
-        return True
+        return not is_in_check(board, passive_color)
 
     def load_tablebase(self):
+        if getattr(self, '_is_searching', False): return
+        
         filename = self.file_combo.get()
         if not filename: return
 
+        self._is_searching = True
+        self.load_btn.config(state=tk.DISABLED, text="Scanning...")
+        self.info_label.config(text="Scanning tablebase... Please wait.")
+        
+        for key in PANEL_KEYS:
+            self.bucket_fens[key] = []
+            self.bucket_listboxes[key].delete(0, tk.END)
+
+        import threading
+        threading.Thread(target=self._tb_search_thread, args=(filename, self.mode_combo.get()), daemon=True).start()
+
+    def _tb_search_thread(self, filename, view_mode):
         tb_dir = "TBs" if os.path.exists("TBs") else "tablebases"
         filepath = os.path.join(tb_dir, filename)
         metadata = parse_tablebase_filename(filename)
+        
         if metadata is None:
-            messagebox.showerror("Error", f"Could not parse tablebase name:\n{filename}")
+            self.root.after(0, lambda: self._search_finished_error(f"Could not parse tablebase name:\n{filename}"))
             return
+            
         has_pawn = "Pawn" in filename
         category = metadata["category"]
-        view_mode = self.mode_combo.get()
 
         try:
             data = np.memmap(filepath, dtype=np.int16, mode='r')
             data_flat = data.reshape(-1)
-
-            for key in PANEL_KEYS:
-                self.bucket_fens[key] = []
-                self.bucket_listboxes[key].delete(0, tk.END)
+            
+            reusable_board = Board(setup=False)
+            results = {key: {'title': "N/A", 'items': []} for key in PANEL_KEYS}
+            any_found = False
 
             panel_titles = {
                 "panel_1": ("White Wins  •  White to Move" if view_mode == "Decisive Mates" else "Drawn  •  White to Move"),
@@ -336,17 +355,14 @@ class TBViewerApp:
                 "panel_4": ("Black Wins  •  Black to Move" if view_mode == "Decisive Mates" else "N/A"),
             }
 
-            any_found = False
-
             if view_mode == "Decisive Mates":
-                # Only scan non-zero positions (sparse)
                 non_zero_indices = np.where(data_flat != 0)[0]
                 if len(non_zero_indices) == 0:
-                    messagebox.showinfo("Result", "No decisive mate positions found.")
+                    self.root.after(0, lambda: self._search_finished_empty("No decisive mate positions found."))
                     return
 
                 vals = data_flat[non_zero_indices]
-                turns = non_zero_indices % 2  # 0 for White to move, 1 for Black to move
+                turns = non_zero_indices % 2
 
                 white_wins = ((vals > 0) & (turns == 0)) | ((vals < 0) & (turns == 1))
 
@@ -358,96 +374,133 @@ class TBViewerApp:
                 }
 
                 for key in PANEL_KEYS:
-                    title = panel_titles[key]
-                    self.bucket_title_labels[key].config(text=title)
-
+                    results[key]['title'] = panel_titles[key]
                     m = masks[key]
                     sub_indices = non_zero_indices[m]
                     sub_vals = np.abs(vals[m])
 
-                    if len(sub_indices) == 0:
-                        continue
+                    if len(sub_indices) == 0: continue
 
-                    # Sort by longest mate first
                     order = np.argsort(-sub_vals)
                     ranked_indices = sub_indices[order]
 
                     bucket_count = 0
-                    listbox = self.bucket_listboxes[key]
                     for idx in ranked_indices:
-                        if bucket_count >= QUARTER_CAP:
-                            break
+                        if bucket_count >= QUARTER_CAP: break
                         idx_int = int(idx)
                         placements, turn = self.decode_placements(idx_int, metadata, has_pawn)
                         if not placements: continue
-                        if not self._is_position_legal(placements, turn): continue
+                        if not self._fast_is_position_legal(placements, turn, reusable_board): continue
 
                         fen = self.build_fen(placements, turn)
                         dtm_val = int(abs(data_flat[idx_int]))
-                        self.bucket_fens[key].append((dtm_val, fen))
-
-                        listbox.insert(tk.END, f"#{bucket_count+1}  DTM {dtm_val}")
+                        
+                        results[key]['items'].append({
+                            'label': f"#{bucket_count+1}  DTM {dtm_val}",
+                            'dtm': dtm_val,
+                            'fen': fen
+                        })
                         bucket_count += 1
                         any_found = True
 
-            else:  # Drawn Positions - Instant Chunked Search
+            else:  # Drawn Positions - Shuffled Chunk Search
+                total_len = len(data_flat)
                 for key in ("panel_1", "panel_2"):
                     turn_target = 0 if key == "panel_1" else 1
-                    title = panel_titles[key]
-                    self.bucket_title_labels[key].config(text=title)
+                    results[key]['title'] = panel_titles[key]
 
-                    # Scan in small 200k chunks to find 50 positions instantly (< 0.001s)
-                    chunk_size = 200_000
-                    total_len = len(data_flat)
+                    chunk_size = 500_000 
                     bucket_count = 0
-                    listbox = self.bucket_listboxes[key]
+                    
+                    # SHUFFLE the chunks so we instantly hit rare pockets of draws
+                    chunk_starts = list(range(0, total_len, chunk_size))
+                    np.random.shuffle(chunk_starts)
+                    total_chunks = len(chunk_starts)
+                    chunks_processed = 0
 
-                    for start_i in range(0, total_len, chunk_size):
-                        if bucket_count >= QUARTER_CAP:
-                            break
+                    for start_i in chunk_starts:
+                        if bucket_count >= QUARTER_CAP: break
+                        
+                        chunks_processed += 1
+                        if chunks_processed % 5 == 0:
+                            pct = int((chunks_processed / total_chunks) * 100)
+                            display_k = "White to Move" if key == "panel_1" else "Black to Move"
+                            self.root.after(0, lambda p=pct, k=display_k: self.info_label.config(text=f"Scanning {k} (Draws)... {p}%"))
+
                         end_i = min(start_i + chunk_size, total_len)
                         chunk_vals = data_flat[start_i:end_i]
-
                         chunk_idx = np.arange(start_i, end_i, dtype=np.int64)
+                        
                         zero_mask = (chunk_vals == 0) & (chunk_idx % 2 == turn_target)
                         zero_indices = chunk_idx[zero_mask]
 
-                        if len(zero_indices) == 0:
-                            continue
+                        if len(zero_indices) == 0: continue
 
                         valid_candidates = filter_valid_candidate_indices(zero_indices, category, has_pawn)
+                        
+                        # Shuffle positions inside the chunk to get a random spread
+                        np.random.shuffle(valid_candidates)
 
                         for idx in valid_candidates:
-                            if bucket_count >= QUARTER_CAP:
-                                break
+                            if bucket_count >= QUARTER_CAP: break
                             idx_int = int(idx)
                             placements, turn = self.decode_placements(idx_int, metadata, has_pawn)
                             if not placements: continue
-                            if not self._is_position_legal(placements, turn): continue
+                            
+                            # Use ultra-fast recycled board evaluation
+                            if not self._fast_is_position_legal(placements, turn, reusable_board): continue
 
                             fen = self.build_fen(placements, turn)
-                            self.bucket_fens[key].append((0, fen))
-
-                            listbox.insert(tk.END, f"#{bucket_count+1}  Draw")
+                            results[key]['items'].append({
+                                'label': f"#{bucket_count+1}  Draw",
+                                'dtm': 0,
+                                'fen': fen
+                            })
                             bucket_count += 1
                             any_found = True
 
                 for key in ("panel_3", "panel_4"):
                     self.bucket_title_labels[key].config(text="N/A")
 
-            if not any_found:
-                messagebox.showinfo("Result", f"No legal {view_mode.lower()} found.")
-                return
-
-            # Auto-select first available entry
-            for key in PANEL_KEYS:
-                if self.bucket_fens[key]:
-                    self.bucket_listboxes[key].selection_set(0)
-                    self.on_select_fen(key)
-                    break
+            self.root.after(0, self._tb_search_complete, results, view_mode, any_found)
 
         except Exception as e:
-            messagebox.showerror("Error", f"Failed to parse tablebase:\n{e}")
+            self.root.after(0, lambda err=e: self._search_finished_error(f"Failed to parse tablebase:\n{err}"))
+
+    def _search_finished_error(self, msg):
+        self._is_searching = False
+        self.load_btn.config(state=tk.NORMAL, text="Inspect Positions")
+        self.info_label.config(text="Select a position to view")
+        messagebox.showerror("Error", msg)
+
+    def _search_finished_empty(self, msg):
+        self._is_searching = False
+        self.load_btn.config(state=tk.NORMAL, text="Inspect Positions")
+        self.info_label.config(text="Select a position to view")
+        messagebox.showinfo("Result", msg)
+
+    def _tb_search_complete(self, results, view_mode, any_found):
+        self._is_searching = False
+        self.load_btn.config(state=tk.NORMAL, text="Inspect Positions")
+        
+        if not any_found:
+            self.info_label.config(text="Select a position to view")
+            messagebox.showinfo("Result", f"No legal {view_mode.lower()} found.")
+            return
+
+        # Populate UI
+        for key in PANEL_KEYS:
+            self.bucket_title_labels[key].config(text=results[key]['title'])
+            for item in results[key]['items']:
+                self.bucket_fens[key].append((item['dtm'], item['fen']))
+                self.bucket_listboxes[key].insert(tk.END, item['label'])
+
+        # Auto-select
+        for key in PANEL_KEYS:
+            if self.bucket_fens[key]:
+                self.bucket_listboxes[key].selection_set(0)
+                self.on_select_fen(key)
+                break
 
     def decode_placements(self, flat, metadata, has_pawn):
         turn = flat % 2
