@@ -1,4 +1,4 @@
-# AI.py (v126.5 - Speedups + improvements)
+# AI.py (v126.6 - SIMP + Actual speedups?)
 
 import time
 import random
@@ -199,8 +199,7 @@ class ChessBot:
         if cached is not None:
             return cached
         val = self.evaluate_board(board, turn)
-        limit = getattr(self, 'EVAL_TT_MAX_SIZE', 5_000_000)
-        if len(self.eval_tt) > limit:
+        if len(self.eval_tt) > 5000000:
             # Refcount drops to 0 instantly. Python reuses this memory for new entries!
             self.eval_tt = {} 
         self.eval_tt[hash_val] = val
@@ -344,19 +343,12 @@ class ChessBot:
 
     def _age_history_table(self):
         # Gentle 12.5% decay per turn (* 7 // 8) instead of aggressive 50% halving.
-        # Ages BOTH Main History and Continuation History so neither table saturates permanently.
+        # Continuation history naturally bounds itself, so we skip the massive Python loop overhead.
         for c_idx in range(2):
             ht = self.history_heuristic_table[c_idx]
             for from_sq in range(64):
                 for to_sq in range(64):
                     ht[from_sq][to_sq] = (ht[from_sq][to_sq] * 7) // 8
-                    
-            for pt1 in range(6):
-                for sq1 in range(64):
-                    for pt2 in range(6):
-                        for sq2 in range(64):
-                            self.continuation_history[c_idx][pt1][sq1][pt2][sq2] = \
-                                (self.continuation_history[c_idx][pt1][sq1][pt2][sq2] * 7) // 8
 
     def _get_pv_data(self, max_depth, root_move):
         if not root_move: return [], []
@@ -1155,6 +1147,7 @@ class ChessBot:
             target_piece = grid[r2][c2]
             
             my_z = moving_piece.z_idx
+            t_sq = r2 * 8 + c2
 
             is_definitely_quiet = False
             if target_piece is None:
@@ -1197,9 +1190,9 @@ class ChessBot:
                 # Fast path: Main History + Continuation History (only computed if non-zero)
                 # Bounds quiet moves dynamically between [-3M, +3M], allowing
                 # excellent quiet moves to compete with Counter Moves seamlessly.
-                score = history_table[r1 * 8 + c1][r2 * 8 + c2]
+                score = history_table[r1 * 8 + c1][t_sq]
                 if prev_to_sq is not None:
-                    ch_score = self.continuation_history[c_idx][prev_pt_idx][prev_to_sq][my_z][r2 * 8 + c2]
+                    ch_score = self.continuation_history[c_idx][prev_pt_idx][prev_to_sq][my_z][t_sq]
                     if ch_score:
                         score += ch_score * 16
 

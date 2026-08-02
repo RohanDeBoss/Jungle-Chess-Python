@@ -1,4 +1,4 @@
-# JungleChessUI.py (v17.2 - Bug fix to flickering)
+# JungleChessUI.py (v17.1 - Cleanup duplicate code)
 
 import tkinter as tk
 from tkinter import ttk, messagebox
@@ -15,6 +15,7 @@ from EngineRuntime import (
     generate_series_opening_sequence,
     write_series_stats_file,
     strip_casualties,
+    board_to_fen,
 )
 from enum import Enum
 import multiprocessing as mp
@@ -25,8 +26,6 @@ class GameMode(Enum):
     AI_VS_AI       = "ai_vs_ai"
 
 _FEN_CHAR_TO_CLASS = {'p': Pawn, 'n': Knight, 'b': Bishop, 'r': Rook, 'q': Queen, 'k': King}
-_CLASS_TO_FEN_CHAR = {Pawn:'P', Knight:'N', Bishop:'B', Rook:'R', Queen:'Q', King:'K'}
-
 
 # ---------------------------------------------------------------------------
 # Main application
@@ -658,23 +657,8 @@ class EnhancedChessApp:
 
     # ------------------------------------------------------------------ FEN / PGN
     def get_current_fen(self):
-        rows = []
-        for r in range(ROWS):
-            row, empty = "", 0
-            for c in range(COLS):
-                p = self.board.grid[r][c]
-                if p is None:
-                    empty += 1
-                else:
-                    if empty:
-                        row += str(empty)
-                        empty = 0
-                    ch = _CLASS_TO_FEN_CHAR[type(p)]
-                    row += ch if p.color == "white" else ch.lower()
-            if empty:
-                row += str(empty)
-            rows.append(row)
-        return "/".join(rows) + f" {'w' if self.turn == 'white' else 'b'} - - 0 1"
+        # The ' - - 0 1' suffix satisfies standard chess FEN parsers (castling/en-passant/clocks)
+        return board_to_fen(self.board, self.turn) + " - - 0 1"
 
     def copy_fen_to_clipboard(self):
         fen = self.get_current_fen()

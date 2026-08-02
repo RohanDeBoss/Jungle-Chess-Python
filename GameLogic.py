@@ -1,4 +1,4 @@
-# GameLogic.py (v71.1 - Precomputed rook piercing rays)
+# GameLogic.py (v71.2 - Microoptimizations)
 
 
 # -----------------------------------------------------------------------
@@ -278,8 +278,8 @@ class Queen(Piece):
         moves = []
         grid = board.grid
         start_index = pos[0] * COLS + pos[1]
-        for i in range(8):
-            for r, c in RAYS[start_index][i]:
+        for ray in RAYS[start_index]:
+            for r, c in ray:
                 target = grid[r][c]
                 if target is None:
                     moves.append((pos, (r, c)))
@@ -298,8 +298,8 @@ class Rook(Piece):
         moves = []
         grid = board.grid
         start_index = pos[0] * COLS + pos[1]
-        for i in range(4):
-            for r, c in RAYS[start_index][i]:
+        for ray in RAYS_ORTHOGONAL[start_index]:
+            for r, c in ray:
                 target = grid[r][c]
                 if target and target.color == self.color:
                     break
@@ -317,8 +317,8 @@ class Bishop(Piece):
         start_index = pos[0] * COLS + pos[1]
         seen_mask = 0
 
-        for i in range(4, 8):
-            for r, c in RAYS[start_index][i]:
+        for ray in RAYS_DIAGONAL[start_index]:
+            for r, c in ray:
                 target = grid[r][c]
                 if target:
                     if target.color != self.color:
@@ -733,23 +733,23 @@ def is_square_attacked(board, r, c, attacking_color):
     has_bishops = attacker_counts[2] > 0
     if has_rooks or has_bishops:
         if has_rooks:
-            for i in range(4):
-                for cr, cc in RAYS[t_idx][i]:
+            for ray in RAYS_ORTHOGONAL[t_idx]:
+                for cr, cc in ray:
                     piece = grid[cr][cc]
                     if piece is not None:
                         if piece.color == attacking_color:
                             if piece.z_idx == 3: return True
-                            break
+                            break  # Correctly indented! Only breaks on friendly blockers.
 
         if has_bishops:
             # Regular Diagonals
-            for i in range(4, 8):
-                for cr, cc in RAYS[t_idx][i]:
+            for ray in RAYS_DIAGONAL[t_idx]:
+                for cr, cc in ray:
                     piece = grid[cr][cc]
                     if piece is not None:
                         if piece.color == attacking_color and piece.z_idx == 2:
                             return True
-                        break
+                        break      # Correctly indented! Bishops stop at ANY piece.
             # ZigZag Diagonals
             for ray in BISHOP_ZIGZAG_RAYS[t_idx]:
                 for cr, cc in ray:
