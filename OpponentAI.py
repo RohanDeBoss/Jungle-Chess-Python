@@ -1,4 +1,4 @@
-# OPAI.py (v123.71 - Baseline for comparing)
+# OPAI.py (v126.6 - New baseline)
 
 import time
 import random
@@ -51,6 +51,8 @@ ORDERING_VALUES = [
 
 INITIAL_PHASE_MATERIAL = (MG_PIECE_VALUES[Rook] * 4 + MG_PIECE_VALUES[Knight] * 4 +
                           MG_PIECE_VALUES[Bishop] * 4 + MG_PIECE_VALUES[Queen] * 2)
+
+# (Move packing helpers removed to eliminate inner-loop function overhead and ensure tuple consistency)
 
 # --- SEARCH STRUCTURES ---
 TTEntry = namedtuple('TTEntry', ['score', 'depth', 'flag', 'best_move', 'age'])
@@ -197,15 +199,16 @@ class OpponentAI:
         if cached is not None:
             return cached
         val = self.evaluate_board(board, turn)
-        limit = getattr(self, 'EVAL_TT_MAX_SIZE', 5_000_000)
-        if len(self.eval_tt) > limit: self.eval_tt.clear()
+        if len(self.eval_tt) > 5000000:
+            # Refcount drops to 0 instantly. Python reuses this memory for new entries!
+            self.eval_tt = {} 
         self.eval_tt[hash_val] = val
         return val
 
     def _store_tt(self, hash_val, score, depth, flag, move):
         existing = self.tt.get(hash_val)
         if len(self.tt) > self.TT_MAX_SIZE:
-            self.tt.clear()
+            self.tt = {}   # <--- INSTANT MEMORY RELEASE
             existing = None
             
         # Age-based replacement: Overwrite if slot is empty, from an older turn, or searched deeper
@@ -339,10 +342,13 @@ class OpponentAI:
         return best_score, best_move
 
     def _age_history_table(self):
-        for color_idx in range(2):
-            for from_sq in range(ROWS * COLS):
-                for to_sq in range(ROWS * COLS):
-                    self.history_heuristic_table[color_idx][from_sq][to_sq] //= 2
+        # Gentle 12.5% decay per turn (* 7 // 8) instead of aggressive 50% halving.
+        # Continuation history naturally bounds itself, so we skip the massive Python loop overhead.
+        for c_idx in range(2):
+            ht = self.history_heuristic_table[c_idx]
+            for from_sq in range(64):
+                for to_sq in range(64):
+                    ht[from_sq][to_sq] = (ht[from_sq][to_sq] * 7) // 8
 
     def _get_pv_data(self, max_depth, root_move):
         if not root_move: return [], []
@@ -407,7 +413,6 @@ class OpponentAI:
     def make_move(self):
         try:
             self._age_history_table()
-
             # 1. Check Tablebases
             if len(self.board.white_pieces) + len(self.board.black_pieces) <= self.tb_probe_limit:
                 tb_move, tb_eval = self._get_best_tablebase_move_with_eval()
@@ -747,8 +752,7 @@ class OpponentAI:
 
         opponent_turn    = 'black' if turn == 'white' else 'white'
         is_in_check_flag = is_in_check(board, turn)
-        # PEEK AT THE CACHE: Get the eval if it exists, otherwise leave it as None
-        static_eval      = self.eval_tt.get(hash_val)
+        static_eval      = None
 
         # --- CHECK EXTENSION with absolute ceiling ---
         if is_in_check_flag and ply < self.MAX_EXTENSION_DEPTH:
@@ -768,6 +772,7 @@ class OpponentAI:
             if (self.USE_REVERSE_FUTILITY_PRUNING and depth <= self.RFP_MAX_DEPTH and
                     not is_in_check_flag and ply > 0 and abs(beta) < self.MATE_SCORE - 1000
                     and total_pieces > 6):
+                static_eval = self.eval_tt.get(hash_val)
                 if static_eval is not None:
                     rfp_margin = self.RFP_MARGIN_PER_DEPTH * depth
                     if static_eval - rfp_margin >= beta:
@@ -780,7 +785,8 @@ class OpponentAI:
                 if (pc['white'][1] + pc['white'][2] + pc['white'][3] + pc['white'][4] > 0 and
                         pc['black'][1] + pc['black'][2] + pc['black'][3] + pc['black'][4] > 0):
                     self.used_heuristic_eval = True
-                    static_eval = self._get_cached_static_eval(board, turn, hash_val)
+                    if static_eval is None:
+                        static_eval = self._get_cached_static_eval(board, turn, hash_val)
                     if static_eval >= beta:
                         reduction  = self.NMP_BASE_REDUCTION + (depth // self.NMP_DEPTH_DIVISOR)
                         null_hash  = hash_val ^ ZOBRIST_TURN
@@ -1127,12 +1133,21 @@ class OpponentAI:
                 if k.pos:
                     enemy_knight_indices.append(k.pos[0] * 8 + k.pos[1])
 
+        # HOIST: Pre-extract previous move destination & piece type once per node
+        prev_to_sq = None
+        prev_pt_idx = None
+        if prev_move_tuple:
+            prev_move, prev_pt_idx = prev_move_tuple
+            pr, pc = prev_move[1]
+            prev_to_sq = pr * 8 + pc
+
         for move in moves:
             (r1, c1), (r2, c2) = move
             moving_piece = grid[r1][c1]
             target_piece = grid[r2][c2]
             
             my_z = moving_piece.z_idx
+            t_sq = r2 * 8 + c2
 
             is_definitely_quiet = False
             if target_piece is None:
@@ -1172,20 +1187,14 @@ class OpponentAI:
             elif move == counter_move:
                 score = 2_000_000
             else:
-                score = 0
-                if prev_move_tuple:
-                    prev_move, prev_pt_idx = prev_move_tuple
-                    pr, pc = prev_move[1]
-                    prev_to_sq  = pr * 8 + pc
-                    mp_idx      = moving_piece.z_idx
-                    to_sq       = r2 * 8 + c2
-                    
-                    ch_score = self.continuation_history[c_idx][prev_pt_idx][prev_to_sq][mp_idx][to_sq]
-                    if ch_score > 1000:
-                        score = self.BONUS_CONTINUATION + ch_score
-                
-                if score == 0:
-                    score = history_table[r1 * 8 + c1][r2 * 8 + c2]
+                # Fast path: Main History + Continuation History (only computed if non-zero)
+                # Bounds quiet moves dynamically between [-3M, +3M], allowing
+                # excellent quiet moves to compete with Counter Moves seamlessly.
+                score = history_table[r1 * 8 + c1][t_sq]
+                if prev_to_sq is not None:
+                    ch_score = self.continuation_history[c_idx][prev_pt_idx][prev_to_sq][my_z][t_sq]
+                    if ch_score:
+                        score += ch_score * 16
 
             if is_opening: 
                 score += self._opening_development_bonus(move, moving_piece)
