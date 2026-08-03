@@ -1,10 +1,11 @@
-# TablebaseViewer.py (v2.1 - Draws now load faster)
+# TablebaseViewer.py (v2.2 - Drawn dont show duplicates)
 
 import os
 import numpy as np
 import tkinter as tk
 from tkinter import ttk, messagebox
 from GameLogic import Board, King, Queen, Rook, Bishop, Knight, Pawn, is_in_check
+from TablebaseManager import TablebaseManager
 
 # --- CONFIGURATION ---
 TB_DIR = "TBs"
@@ -388,6 +389,9 @@ class TBViewerApp:
                     for idx in ranked_indices:
                         if bucket_count >= QUARTER_CAP: break
                         idx_int = int(idx)
+                        
+                        if not self._is_index_canonical(idx_int, metadata, has_pawn): continue
+                        
                         placements, turn = self.decode_placements(idx_int, metadata, has_pawn)
                         if not placements: continue
                         if not self._fast_is_position_legal(placements, turn, reusable_board): continue
@@ -444,6 +448,9 @@ class TBViewerApp:
                         for idx in valid_candidates:
                             if bucket_count >= QUARTER_CAP: break
                             idx_int = int(idx)
+                            
+                            if not self._is_index_canonical(idx_int, metadata, has_pawn): continue
+                            
                             placements, turn = self.decode_placements(idx_int, metadata, has_pawn)
                             if not placements: continue
                             
@@ -501,6 +508,57 @@ class TBViewerApp:
                 self.bucket_listboxes[key].selection_set(0)
                 self.on_select_fen(key)
                 break
+
+    def _is_index_canonical(self, flat, metadata, has_pawn):
+        turn = flat % 2
+        rest = flat // 2
+        wk_squares = PAWN_WK_SQUARES if has_pawn else NON_PAWN_WK_SQUARES
+        category = metadata["category"]
+        w_pieces = metadata["white_pieces"]
+        
+        if category == "3-Man":
+            bk = rest % 64
+            p1 = (rest // 64) % 64
+            wk_idx = rest // 4096
+            wk = wk_squares[wk_idx]
+            return TablebaseManager._canonical_tuple_3(wk, p1, bk, turn, has_pawn) == (wk_idx, p1, bk, turn)
+            
+        elif category == "4-Man Same-Side":
+            bk = rest % 64
+            p2 = (rest // 64) % 64
+            p1 = (rest // 4096) % 64
+            wk_idx = rest // 262144
+            wk = wk_squares[wk_idx]
+            same_p = (w_pieces[0] == w_pieces[1])
+            return TablebaseManager._canonical_tuple_4(wk, p1, p2, bk, turn, has_pawn, same_p) == (wk_idx, p1, p2, bk, turn)
+            
+        elif category == "4-Man Cross":
+            bp = rest % 64
+            bk = (rest // 64) % 64
+            wp = (rest // 4096) % 64
+            wk_idx = rest // 262144
+            wk = wk_squares[wk_idx]
+            return TablebaseManager._canonical_tuple_4vs(wk, wp, bk, bp, turn, has_pawn) == (wk_idx, wp, bk, bp, turn)
+            
+        elif category == "5-Man Same-Side":
+            bk = rest % 64
+            p3 = (rest // 64) % 64
+            p2 = (rest // 4096) % 64
+            p1 = (rest // 262144) % 64
+            wk_idx = rest // 16777216
+            wk = wk_squares[wk_idx]
+            return TablebaseManager._canonical_tuple_5(wk, p1, p2, p3, bk, turn, has_pawn, w_pieces[0], w_pieces[1], w_pieces[2]) == (wk_idx, p1, p2, p3, bk, turn)
+            
+        elif category == "5-Man Cross":
+            bp = rest % 64
+            bk = (rest // 64) % 64
+            wp2 = (rest // 4096) % 64
+            wp1 = (rest // 262144) % 64
+            wk_idx = rest // 16777216
+            wk = wk_squares[wk_idx]
+            return TablebaseManager._canonical_tuple_5vs(wk, wp1, wp2, bk, bp, turn, has_pawn, w_pieces[0], w_pieces[1]) == (wk_idx, wp1, wp2, bk, bp, turn)
+            
+        return False
 
     def decode_placements(self, flat, metadata, has_pawn):
         turn = flat % 2

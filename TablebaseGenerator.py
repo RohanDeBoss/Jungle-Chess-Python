@@ -1,4 +1,4 @@
-# TablebaseGenerator.py (v24 - Kill class-keyed piece_counts dict (nonfunc))
+# TablebaseGenerator.py (v24.1 - Crash fix for 5-man cross tables)
 
 import os
 import time
@@ -1684,7 +1684,7 @@ def _init_transition_worker_5vs(w1_name, w2_name, b_name):
                 path = os.path.join(TB_DIR, tb_name)
                 if os.path.exists(path) and os.path.exists(path + TB_WDL_MARKER_SUFFIX):
                     _W5V_PROMO_TABLES[("b", (w1_name, w2_name), "Queen")] = _load_5man_table_file(path)
-                _W5V_BOARD = Board(setup=False)
+        _W5V_BOARD = Board(setup=False)
         _W5V_WK_OBJ = King('white'); _W5V_WP1_OBJ = PIECE_CLASS_BY_NAME[w1_name]('white'); _W5V_WP2_OBJ = PIECE_CLASS_BY_NAME[w2_name]('white')
         _W5V_BK_OBJ = King('black'); _W5V_BP_OBJ = PIECE_CLASS_BY_NAME[b_name]('black')
         _W5V_BOARD.white_pieces[:] = [_W5V_WK_OBJ, _W5V_WP1_OBJ, _W5V_WP2_OBJ]; _W5V_BOARD.black_pieces[:] = [_W5V_BK_OBJ, _W5V_BP_OBJ]

@@ -1,4 +1,4 @@
-# AI.py (v126.6 - SIMP + Actual speedups?)
+# AI.py (v127 - Respect the TT cap)
 
 import time
 import random
@@ -199,9 +199,10 @@ class ChessBot:
         if cached is not None:
             return cached
         val = self.evaluate_board(board, turn)
-        if len(self.eval_tt) > 5000000:
+        limit = getattr(self, 'EVAL_TT_MAX_SIZE', 5_000_000)
+        if len(self.eval_tt) > limit:
             # Refcount drops to 0 instantly. Python reuses this memory for new entries!
-            self.eval_tt = {} 
+            self.eval_tt = {}
         self.eval_tt[hash_val] = val
         return val
 

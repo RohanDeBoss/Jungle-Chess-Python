@@ -1,4 +1,4 @@
-# Tests.py (v8 - Fixed 2 broken tests)
+# Tests.py (v8.1 - Fixed 2 broken tests + bugfix)
 
 import sys
 import os
@@ -19,7 +19,7 @@ os.chdir(PARENT_DIR)
 import argparse
 from dataclasses import dataclass
 from GameLogic import *
-from AI import ChessBot, MG_PIECE_VALUES, ORDERING_VALUES, TT_FLAG_EXACT, TT_FLAG_LOWERBOUND, _unpack_move
+from AI import ChessBot, MG_PIECE_VALUES, ORDERING_VALUES, TT_FLAG_EXACT, TT_FLAG_LOWERBOUND
 from OpponentAI import OpponentAI
 from TablebaseManager import TablebaseManager
 
@@ -830,8 +830,8 @@ def case_regression_tt_best_move_preservation():
     details.append(f"Resulting TT entry best_move: {entry.best_move}")
     
     expect(entry is not None, "TT entry missing entirely.")
-    stored_best_move = _unpack_move(entry.best_move)
-    details.append(f"Unpacked TT best_move: {stored_best_move}")
+    stored_best_move = entry.best_move
+    details.append(f"Stored TT best_move: {stored_best_move}")
     expect(
         stored_best_move == best_move,
         f"Regression detected: ProbCut erased the best_move! Expected {best_move}, got {stored_best_move}"

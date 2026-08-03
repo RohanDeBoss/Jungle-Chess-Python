@@ -1,4 +1,4 @@
-# OPAI.py (v123.71 - TT Repetition Guard + new EngineRuntime framework v1.2 + Guard against stale PV moves)
+# OPAI.py (v123.71 - Baseline for comparing)
 
 import time
 import random

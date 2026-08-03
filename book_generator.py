@@ -1,4 +1,4 @@
-# book_generator.py (v4.2 - No TT wipe + New Partial Save Logic and root_depth_bonus + bug fixes)
+# book_generator.py (v4.3 - Resume bug fix)
 
 import os
 import json
@@ -257,7 +257,13 @@ def generate_book():
                             
                     for move_data in node_moves:
                         child = board.clone()
-                        child.make_move(move_data['move'][0], move_data['move'][1])
+                        # move_data['move'] may be plain lists instead of tuples if it was
+                        # just loaded back from JSON (json has no tuple type). GameLogic keys
+                        # several dicts (KNIGHT_ATTACKS_FROM[end], ADJACENT_SQUARES_MAP[end])
+                        # directly off the position, so an unhashable list crashes make_move.
+                        mv_start = tuple(move_data['move'][0])
+                        mv_end   = tuple(move_data['move'][1])
+                        child.make_move(mv_start, mv_end)
                         child_fen = board_to_fen(child, next_turn)
                         next_level_queue.append((child_fen, current_ply + 1))
             
