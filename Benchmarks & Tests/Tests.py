@@ -1,4 +1,4 @@
-# Tests.py (v8.1 - Fixed 2 broken tests + bugfix)
+# Tests.py (v8.2 - New test added)
 
 import sys
 import os
@@ -19,7 +19,7 @@ os.chdir(PARENT_DIR)
 import argparse
 from dataclasses import dataclass
 from GameLogic import *
-from AI import ChessBot, MG_PIECE_VALUES, ORDERING_VALUES, TT_FLAG_EXACT, TT_FLAG_LOWERBOUND
+from AI import ChessBot, MG_PIECE_VALUES, ORDERING_VALUES, TT_FLAG_EXACT, TT_FLAG_LOWERBOUND, board_hash
 from OpponentAI import OpponentAI
 from TablebaseManager import TablebaseManager
 
@@ -917,6 +917,81 @@ def case_regression_nmp_mate_blindness():
     return details
 
 
+def case_regression_twofold_as_draw_policy():
+    # v127.1 introduced a search-side policy where any position that has
+    # already occurred once — either for real (position_counts) or purely
+    # within this search's own line (search_path) — is scored as an
+    # immediate draw, instead of waiting for a literal third occurrence.
+    # This exercises both trigger paths directly, plus a control case
+    # proving the change didn't make negamax return DRAW_SCORE everywhere.
+    board = make_board([
+        ("white", King, (7, 4)),
+        ("white", Rook, (7, 0)),
+        ("black", King, (0, 4)),
+        ("black", Rook, (0, 0)),
+    ])
+    bot = ChessBot(board, "white", {}, _DummyQueue(), _DummyEvent(), use_tablebase=False)
+    hash_val = board_hash(board, "white")
+
+    details = position_details(board, "Twofold-as-draw repetition policy")
+
+    # 1. Real-history trigger: position already occurred once for real.
+    bot.position_counts = {hash_val: 1}
+    score_real = bot.negamax(board, 2, -bot.MATE_SCORE, bot.MATE_SCORE,
+                              "white", 1, set(), current_hash=hash_val)
+    details.append(f"negamax score with position_counts[hash]=1 (real repeat): {score_real}")
+    expect(
+        score_real == bot.DRAW_SCORE,
+        f"Regression detected: a position that already occurred once for real should be an "
+        f"immediate draw under the twofold policy, but negamax returned {score_real}."
+    )
+
+    # 2. Search-path trigger: position never happened for real, but this
+    #    search's own hypothetical line has already visited it once.
+    bot.position_counts = {}
+    score_path = bot.negamax(board, 2, -bot.MATE_SCORE, bot.MATE_SCORE,
+                              "white", 1, {hash_val}, current_hash=hash_val)
+    details.append(f"negamax score with hash already in search_path: {score_path}")
+    expect(
+        score_path == bot.DRAW_SCORE,
+        f"Regression detected: a position already present in search_path should be an immediate "
+        f"draw under the twofold policy, but negamax returned {score_path}."
+    )
+
+    # 3. qsearch should honor the same policy.
+    bot.position_counts = {hash_val: 1}
+    qscore = bot.qsearch(board, -bot.MATE_SCORE, bot.MATE_SCORE, "white", 1, current_hash=hash_val)
+    details.append(f"qsearch score with position_counts[hash]=1 (real repeat): {qscore}")
+    expect(
+        qscore == bot.DRAW_SCORE,
+        f"Regression detected: qsearch should also honor the twofold-as-draw policy, but "
+        f"returned {qscore} instead of {bot.DRAW_SCORE}."
+    )
+
+    # 4. Control: an actual fresh, never-repeated position must NOT be
+    #    blindly forced to DRAW_SCORE. Give white a spare queen so the
+    #    position is unambiguously non-drawish.
+    board_control = make_board([
+        ("white", King, (7, 4)),
+        ("white", Rook, (7, 0)),
+        ("white", Queen, (5, 3)),
+        ("black", King, (0, 4)),
+        ("black", Rook, (0, 0)),
+    ])
+    bot_control = ChessBot(board_control, "white", {}, _DummyQueue(), _DummyEvent(), use_tablebase=False)
+    control_hash = board_hash(board_control, "white")
+    score_control = bot_control.negamax(board_control, 1, -bot_control.MATE_SCORE, bot_control.MATE_SCORE,
+                                         "white", 1, set(), current_hash=control_hash)
+    details.append(f"Control negamax score (fresh position, white up a queen): {score_control}")
+    expect(
+        score_control != bot_control.DRAW_SCORE,
+        f"Regression detected: a fresh, never-repeated, clearly non-drawish position was scored "
+        f"as a draw ({score_control}) — the twofold policy must only apply to actual repeats."
+    )
+
+    return details
+
+
 def case_oracle_deep_fuzz():
     import random
     details = []
@@ -1116,6 +1191,13 @@ CASES = [
         "engine_internals",
         "Verify NMP is suppressed when beta indicates a forced-mate line (abs(beta) >= MATE_SCORE - 1000).",
         case_regression_nmp_mate_blindness,
+    ),
+    TestCaseSpec(
+        "regression_twofold_as_draw_policy",
+        "engine_internals",
+        "Verify negamax/qsearch score any already-occurred position (real or search-path) as an "
+        "immediate draw under the v127.1 twofold policy, without forcing fresh positions to draw.",
+        case_regression_twofold_as_draw_policy,
     ),
     TestCaseSpec(
         "regression_no_legal_moves_without_check_qsearch",

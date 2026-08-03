@@ -262,6 +262,13 @@ aren't overlapping/adjacent-illegally, pawns aren't on illegal ranks), which
 the generator guarantees independently of anything the live UI does. The
 tablebase was never at risk from the FEN-loading gap described in §6.3.
 
+- **Canonical Storage and Ghost Mirrors:** The 16-bit tablebase files ONLY store 
+  the canonical representation of a position (where the White King is reflected 
+  into the bottom-left a1-d4 triangle). Symmetrical "mirror" indices are left 
+  un-evaluated as `0`. Any probing logic or viewer MUST translate a position into 
+  its canonical tuple before querying the array, otherwise it will falsely read 
+  un-evaluated "ghost mirrors" as Draws (0).
+
 ### 6.5 Performance-sensitive rules
 
 - **Stalemate is a loss, so don't add expensive legal-move checks to
@@ -271,12 +278,22 @@ tablebase was never at risk from the FEN-loading gap described in §6.3.
   specifically *because* `has_legal_moves` short-circuits on the first legal
   move found — it does not enumerate all moves, so it's effectively O(1) in
   any position that isn't a genuine dead end.
+
 - **Keep pruning conservative.** A single AoE knight or queen move can swing
   material by 3000+ points. Standard-chess-tuned LMR/futility margins will
-  blind the engine to these tactics. Don't tighten pruning margins without
-  re-testing against `OPAI.py`.
+  blind the engine to these tactics. Additionally, because a quiet King move 
+  can close a mating net and end the game, **Late Move Reduction (LMR) must 
+  be artificially suppressed in the endgame** (e.g., when `total_pieces <= 6`). 
+  Don't tighten pruning margins without re-testing against `OPAI.py`.
+
 - **Don't hand-roll 5-piece endgame heuristics.** The tablebase already
   solves these exactly; heuristic code would only risk disagreeing with it.
+
+- **Use Tuple Iteration over Range Indexing.** In `GameLogic.py`, raycasts use 
+  precomputed tuples of tuples (e.g., `for ray in RAYS_ORTHOGONAL[sq]:`). Do NOT 
+  replace this with `for i in range(4): ray = RAYS_ORTHOGONAL[sq][i]`. CPython 
+  iterates over tuples at native C-speed; forcing integer assignment and double 
+  index lookups in the hottest loop of the engine causes a measurable KNPS drop.
 
 ### 6.6 `OPAI.py` is a frozen baseline — do not edit its search/eval logic
 
@@ -301,6 +318,17 @@ instance, so `AI.py` and `OpponentAI.py` do not share a transposition table,
 eval cache, history table, cancellation event, or tablebase manager. Runtime
 helpers may be edited for memory/lifecycle correctness, but do not use that
 file as a reason to merge or back-port search/eval behavior between the bots.
+
+### 6.7 Search-side twofold repetition policy
+
+While the UI and actual game rules strictly require a 3-fold repetition to 
+declare a draw, the engine's internal search (`AI.py`) intentionally uses a 
+stricter **2-fold repetition policy**. Inside `negamax` and `qsearch`, if a 
+position has occurred even *once* before (either in the real game history or 
+the current hypothetical search path), it is instantly scored as a draw. 
+This is a vital search heuristic: it forces winning bots to seek progress 
+rather than shuffling, helps losing bots find swindles, and prunes massive 
+subtrees a full ply early. **Do not "fix" the search to wait for a 3rd occurrence.**
 
 ---
 

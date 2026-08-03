@@ -1,4 +1,4 @@
-# AI.py (v127 - Respect the TT cap)
+# AI.py (v127.1 - Search-side twofold-as-draw repetition policy)
 
 import time
 import random
@@ -693,24 +693,25 @@ class ChessBot:
         total_pieces = len(board.white_pieces) + len(board.black_pieces)
 
         # --- REPETITION CHECKS (must come before TB probe) ---
+        # v127.1 POLICY: search-side repetition avoidance is intentionally
+        # stricter than the literal game rule. GameLogic/get_game_state still
+        # requires an actual THIRD occurrence before the game is drawn — that
+        # is completely unchanged. Here, inside the search only, any hash
+        # that has already occurred once — whether that occurrence was for
+        # real (self.position_counts) or purely hypothetical within this
+        # search's own line (search_path) — is scored as an immediate draw
+        # rather than waiting for a literal third occurrence. This can never
+        # cause the engine to walk a real game into an unseen threefold (it
+        # now refuses to volunteer for even a SECOND occurrence), and it
+        # prunes repeating subtrees a full ply earlier without adding any new
+        # pruning heuristic. OPAI.py is intentionally left on the old
+        # (threefold-only) policy so it remains a valid A/B baseline.
         hash_val = current_hash if current_hash is not None else board_hash(board, turn)
         if ply > 0:
-            if self.position_counts.get(hash_val, 0) >= 2:
+            if self.position_counts.get(hash_val, 0) >= 1:
                 return self.DRAW_SCORE
             if hash_val in search_path:
                 return self.DRAW_SCORE
-
-        # --- GHI / TT-REPETITION SAFETY ---
-        # A position that has already occurred at least once for real in this
-        # game is "repetition-sensitive": its true score depends on how many
-        # more times it can recur before hitting the threefold rule — context
-        # the Zobrist hash alone doesn't encode. Because the TT persists
-        # across real moves by design, a score cached here during an earlier
-        # turn's search (when this was only the 1st/2nd occurrence) can go
-        # stale once the real game catches up and makes it the 3rd (drawn)
-        # occurrence. Refuse to read or write TT entries for any such
-        # position so it's always freshly resolved by the check above.
-        repetition_sensitive = self.position_counts.get(hash_val, 0) >= 1
 
         if total_pieces <= self.tb_probe_limit:
             tb_score_absolute = self.tb_manager.probe(board, turn)
@@ -726,13 +727,10 @@ class ChessBot:
 
         original_alpha = alpha
         tt_entry = self.tt.get(hash_val)
-        
-        # --- STALE TT REPETITION GUARD ---
-        # Ignore TT entries ONLY if they are repetition-sensitive AND were
-        # cached during a previous turn (when the repetition count was lower).
-        if tt_entry and ply > 0:
-            if repetition_sensitive and tt_entry.age < self.current_age:
-                tt_entry = None
+        # NOTE (v127.1): the old "stale TT repetition guard" that used to sit
+        # here existed only to cover position_counts == 1 nodes; those now
+        # return DRAW_SCORE above before the TT is ever consulted, so the
+        # guard became unreachable dead code and has been removed.
 
         if ply > 0 and tt_entry and tt_entry.depth >= depth:
             tt_score = tt_entry.score
@@ -997,10 +995,16 @@ class ChessBot:
 
         hash_val = current_hash if current_hash is not None else board_hash(board, turn)
 
+        # v127.1: mirrors negamax's twofold-as-draw search policy. Any
+        # position that already occurred at least once for real is scored as
+        # an immediate draw rather than waiting for a literal third
+        # occurrence. This also makes the old stale-TT repetition guard that
+        # used to live here unreachable, so it has been removed.
+        if ply > 0 and self.position_counts.get(hash_val, 0) >= 1:
+            return self.DRAW_SCORE
+
         tt_entry = self.tt.get(hash_val)
-        if tt_entry and self.position_counts.get(hash_val, 0) >= 1 and tt_entry.age < self.current_age:
-            tt_entry = None
-            
+
         if tt_entry:
             tt_score = tt_entry.score
             if tt_score >  self.MATE_SCORE - 1000: tt_score -= ply
