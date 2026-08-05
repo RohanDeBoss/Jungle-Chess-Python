@@ -1,4 +1,4 @@
-# AI.py (v127.4 - Maintainability)
+# AI.py (v127.6 - Re-Remove heuristics)
 
 import time
 import random
@@ -1333,39 +1333,8 @@ class ChessBot:
                         scores_mg[color_idx] += ROOK_OPEN_FILE_BONUS_MG
                         scores_eg[color_idx] += ROOK_OPEN_FILE_BONUS_EG
 
-                    # --- JUNGLE-NATIVE MOBILITY (Piercing) ---
-                    mobility = 0
-                    for ray in RAYS_ORTHOGONAL[sq]: # Orthogonal rays
-                        for cr, cc in ray:
-                            target = grid[cr][cc]
-                            if target is not None:
-                                if target.color == my_color_name:
-                                    break # Blocked by friendly piece
-                            mobility += 1
-                    scores_mg[color_idx] += mobility * self.EVAL_MOBILITY_ROOK
-                    scores_eg[color_idx] += mobility * self.EVAL_MOBILITY_ROOK
-
                 elif z == 2: # Bishop
-                    # --- JUNGLE-NATIVE MOBILITY (Sliding & Zigzag) ---
-                    mobility = 0
-                    for ray in RAYS_DIAGONAL[sq]: # Diagonal rays
-                        for cr, cc in ray:
-                            target = grid[cr][cc]
-                            if target is not None:
-                                if target.color != my_color_name:
-                                    mobility += 1
-                                break
-                            mobility += 1
-                    for ray in BISHOP_ZIGZAG_RAYS[sq]: # Zigzag rays
-                        for cr, cc in ray:
-                            target = grid[cr][cc]
-                            if target is not None:
-                                if target.color != my_color_name:
-                                    mobility += 1
-                                break
-                            mobility += 1
-                    scores_mg[color_idx] += mobility * self.EVAL_MOBILITY_BISHOP
-                    scores_eg[color_idx] += mobility * self.EVAL_MOBILITY_BISHOP
+                    pass # Mobility handled intrinsically by PSTs
 
                 elif z == 1: # Knight
                     has_attacked_king_zone = False
@@ -1383,19 +1352,6 @@ class ChessBot:
                 elif z == 4: # Queen
                     if enemy_king and (abs(r - enemy_king[0]) + abs(c - enemy_king[1]) <= 3):
                         king_zone_attacks[1 - color_idx] += 2
-                        
-                    # --- JUNGLE-NATIVE MOBILITY (Sliding) ---
-                    mobility = 0
-                    for ray in RAYS[sq]: # All 8 rays
-                        for cr, cc in ray:
-                            target = grid[cr][cc]
-                            if target is not None:
-                                if target.color != my_color_name:
-                                    mobility += 1 # Count the capture square
-                                break # Stop at any piece (capturing explodes her)
-                            mobility += 1
-                    scores_mg[color_idx] += mobility * self.EVAL_MOBILITY_QUEEN
-                    scores_eg[color_idx] += mobility * self.EVAL_MOBILITY_QUEEN
 
         phase     = min(256, (phase_material_score * 256) // INITIAL_PHASE_MATERIAL) if INITIAL_PHASE_MATERIAL > 0 else 0
         inv_phase = 256 - phase
