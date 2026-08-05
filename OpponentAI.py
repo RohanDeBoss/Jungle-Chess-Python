@@ -1,8 +1,7 @@
-# OPAI.py (v126.6 - New baseline)
+# OPAI.py (v126.7 - New baseline + code refactoring)
 
 import time
 import random
-from collections import namedtuple
 from GameLogic import *
 from TablebaseManager import TablebaseManager
 from operator import itemgetter
@@ -10,13 +9,21 @@ from EngineRuntime import (
     OPENING_BOOK,
     ZOBRIST_TURN,
     SearchCancelledException,
+    TT_FLAG_EXACT,
+    TT_FLAG_LOWERBOUND,
+    TT_FLAG_UPPERBOUND,
+    TTEntry,
     board_hash,
     board_to_fen,
     build_flat_pst_tables,
     calc_time_check_mask,
     configure_tablebase,
+    format_bot_move,
+    get_best_tablebase_move_with_eval,
+    get_pv_data,
+    get_root_tb_eval_relative,
     incremental_hash,
-    search_time_budget,
+    report_root_tb_solution,
     update_bot_runtime_state,
 )
 
@@ -55,8 +62,8 @@ INITIAL_PHASE_MATERIAL = (MG_PIECE_VALUES[Rook] * 4 + MG_PIECE_VALUES[Knight] * 
 # (Move packing helpers removed to eliminate inner-loop function overhead and ensure tuple consistency)
 
 # --- SEARCH STRUCTURES ---
-TTEntry = namedtuple('TTEntry', ['score', 'depth', 'flag', 'best_move', 'age'])
-TT_FLAG_EXACT, TT_FLAG_LOWERBOUND, TT_FLAG_UPPERBOUND = 0, 1, 2
+# TTEntry / TT_FLAG_* now live in EngineRuntime.py as shared, non-tunable
+# infrastructure — identical values/semantics, just deduplicated.
 
 
 class OpponentAI:
@@ -106,6 +113,18 @@ class OpponentAI:
     OPENING_CENTRAL_FILES = (COLS // 2 - 1, COLS // 2)
     ASP_WINDOW_INIT = 250
     ASP_MAX_RETRIES = 3
+
+    # --- TIME MANAGEMENT (tunable — deliberately duplicated, not shared) ---
+    # Kept as an independent local copy, identical to AI.py's, per README §6.6:
+    # this is a tunable strategy, not a data-format contract, so it must not
+    # be centralized where changing it for one bot could affect the other.
+    TIME_BUFFER_SEC = 0.50
+    TIME_BUFFER_PCT = 0.05
+    MIN_MOVE_TIME = 0.03
+    TIME_DIVISOR_BASE = 50
+    TIME_DIVISOR_HEALTH_WEIGHT = 20
+    TIME_INCREMENT_WEIGHT = 0.8
+    TIME_MAX_MULTIPLIER = 3.5
 
     MAX_EXTENSION_DEPTH = 12  # absolute ply ceiling including check extensions
 
@@ -223,11 +242,25 @@ class OpponentAI:
     def _calc_time_check_mask(self, allocated):
         return calc_time_check_mask(allocated)
 
+    def _search_time_budget(self, time_left, increment):
+        """Split the clock into an 'optimum' soft budget (banked if unused)
+        and a 'max' hard ceiling. Local copy — see TIME_* constants above."""
+        buffer = max(self.TIME_BUFFER_SEC, time_left * self.TIME_BUFFER_PCT, increment * 1.5)
+        clock_ceiling = max(0.0, time_left - buffer)
+
+        buffer_health = max(0.0, min(1.0, clock_ceiling / time_left)) if time_left > 0 else 0.0
+
+        divisor = self.TIME_DIVISOR_BASE - (self.TIME_DIVISOR_HEALTH_WEIGHT * buffer_health)
+        optimum_time = (time_left / divisor) + (increment * self.TIME_INCREMENT_WEIGHT)
+        optimum_time = max(self.MIN_MOVE_TIME, optimum_time)
+        optimum_time = min(optimum_time, clock_ceiling)
+
+        max_time = min(clock_ceiling, optimum_time * self.TIME_MAX_MULTIPLIER)
+        max_time = max(max_time, min(self.MIN_MOVE_TIME, clock_ceiling))
+        return optimum_time, max_time
+
     def _format_move(self, board_before, move):
-        if not move: return "None"
-        child = board_before.clone()
-        child.make_move(move[0], move[1])
-        return format_move_san(board_before, child, move)
+        return format_bot_move(self, board_before, move)
 
     def _is_opening_position(self, board):
         return (len(board.white_pieces) + len(board.black_pieces)) >= self.OPENING_TOTAL_PIECE_THRESHOLD
@@ -252,45 +285,10 @@ class OpponentAI:
         return 0
 
     def _get_root_tb_eval_relative(self):
-        root_abs = self.tb_manager.probe(self.board, self.color)
-        if root_abs is None: return None
-        self.tb_hits += 1
-        return root_abs if self.color == 'white' else -root_abs
+        return get_root_tb_eval_relative(self)
 
     def _get_best_tablebase_move_with_eval(self):
-        root_abs = self.tb_manager.probe(self.board, self.color)
-        if root_abs is None and not is_insufficient_material(self.board): return None, None
-
-        best_move  = None
-        best_score = -float('inf')
-
-        for move in get_all_legal_moves(self.board, self.color):
-            sim = self.board.clone()
-            sim.make_move(move[0], move[1])
-
-            if not sim.find_king_pos(self.opponent_color): return move, self.MATE_SCORE - 1
-            if not has_legal_moves(sim, self.opponent_color): return move, self.MATE_SCORE - 1
-
-            if len(sim.white_pieces) + len(sim.black_pieces) <= 2:
-                score = 0
-            else:
-                score_abs = self.tb_manager.probe(sim, self.opponent_color)
-                if score_abs is None: return None, None
-                self.tb_hits += 1
-                score = score_abs if self.color == 'white' else -score_abs
-                if score > self.MATE_SCORE - 1000: score -= 1
-                elif score < -self.MATE_SCORE + 1000: score += 1
-
-            if score > best_score:
-                best_score = score
-                best_move  = move
-                tied_draw_count = 1 if score == 0 else 0
-            elif score == best_score == 0:
-                tied_draw_count += 1
-                if random.random() < 1.0 / tied_draw_count:
-                    best_move = move
-
-        return best_move, best_score
+        return get_best_tablebase_move_with_eval(self)
 
     def _run_depth_iteration(self, depth, root_moves, root_hash, pv_move,
                              prev_iter_score=None, alpha_floor=None):
@@ -351,64 +349,10 @@ class OpponentAI:
                     ht[from_sq][to_sq] = (ht[from_sq][to_sq] * 7) // 8
 
     def _get_pv_data(self, max_depth, root_move):
-        if not root_move: return [], []
-
-        pv_san  = []
-        pv_raw  = []
-        current_board = self.board.clone()
-        current_turn  = self.color
-        current_ply   = self.ply_count
-        seen_hashes = set()
-        move = root_move
-
-        for i in range(max_depth):
-            if not move: break
-            
-            # --- SAFETY GUARD AGAINST TT COLLISIONS / STALE PV MOVES ---
-            p = current_board.grid[move[0][0]][move[0][1]]
-            if not p or p.color != current_turn: break
-            
-            san      = self._format_move(current_board, move)
-            move_num = (current_ply // 2) + 1
-            if current_turn == 'white':
-                pv_san.append(f"{move_num}. {san}")
-            else:
-                pv_san.append(f"{move_num}... {san}" if i == 0 else san)
-
-            pv_raw.append(move)
-            current_board.make_move(move[0], move[1])
-            current_turn = 'black' if current_turn == 'white' else 'white'
-            current_ply += 1
-
-            h = board_hash(current_board, current_turn)
-            if h in seen_hashes: break
-            seen_hashes.add(h)
-
-            tt_entry = self.tt.get(h)
-            if not tt_entry or not tt_entry.best_move: break
-            if tt_entry.flag != TT_FLAG_EXACT: break
-            move = tt_entry.best_move
-
-        return pv_san, pv_raw
+        return get_pv_data(self, max_depth, root_move)
 
     def _report_root_tb_solution(self, tb_move, tb_eval, perfect_play=False, emit_move=False):
-        if not tb_move: return False
-        root_tb_eval  = self._get_root_tb_eval_relative()
-        display_eval  = root_tb_eval if root_tb_eval is not None else tb_eval
-        if tb_eval > self.MATE_SCORE - 1000: display_eval = tb_eval
-
-        eval_for_ui = display_eval if self.color == 'white' else -display_eval
-        suffix      = " (Perfect Play)" if perfect_play else ""
-        self._report_log(f"  > {self.bot_name} (TB): {self._format_move(self.board, tb_move)}, Eval={eval_for_ui/100:+.2f}, TBhits={self.tb_hits}{suffix}")
-        self._report_eval(display_eval, "TB")
-
-        move_num = (self.ply_count // 2) + 1
-        prefix   = f"{move_num}. " if self.color == 'white' else f"{move_num}... "
-        pv_str   = prefix + self._format_move(self.board, tb_move)
-        self.comm_queue.put(('pv', display_eval, "TB", [pv_str], [tb_move]))
-
-        if emit_move: self._report_move(tb_move)
-        return True
+        return report_root_tb_solution(self, tb_move, tb_eval, perfect_play=perfect_play, emit_move=emit_move)
 
     def make_move(self):
         try:
@@ -455,7 +399,7 @@ class OpponentAI:
             # --- TIME ALLOCATION STRATEGY (Optimum / Max split) ---
             search_start_time = time.time()
             if self.time_left is not None and self.increment is not None:
-                optimum_time, max_time = search_time_budget(self.time_left, self.increment)
+                optimum_time, max_time = self._search_time_budget(self.time_left, self.increment)
                 self.stop_time = search_start_time + max_time
                 target_depth = 100
             else:

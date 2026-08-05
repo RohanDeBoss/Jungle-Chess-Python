@@ -295,29 +295,46 @@ tablebase was never at risk from the FEN-loading gap described in §6.3.
   iterates over tuples at native C-speed; forcing integer assignment and double 
   index lookups in the hottest loop of the engine causes a measurable KNPS drop.
 
-### 6.6 `OPAI.py` is a frozen baseline — do not edit its search/eval logic
+### 6.6 `OPAI.py` is a frozen baseline — its *behavior* is frozen, not its source layout
 
 `OPAI.py` exists solely as a stable comparison target for measuring whether
 changes to `AI.py` are actual improvements (via the "AI vs OP Series" mode)
-rather than illusory ones. Its search logic, evaluation function, and
-pruning constants must **never** be back-ported from `AI.py`, even for
-"harmless" cleanups — a frozen baseline is only useful if it stays bit-for-
-bit stable across comparison runs.
+rather than illusory ones. What must stay frozen is its **output**: move
+selection, evaluation scores, and search behavior on any given position must
+never change as a side effect of a refactor. This means:
 
-The one category of exception is shared, non-heuristic infrastructure that
-both files import or duplicate for boilerplate reasons (e.g. constructor
-argument handling in a standalone dispatch function) — those may be aligned
-for consistency **only if** doing so cannot change OPAI's actual move
-selection or evaluation output. When in doubt, don't touch `OPAI.py`.
+- **Functional changes are forbidden.** Never back-port `AI.py`'s search
+  logic, evaluation function, or pruning constants into `OPAI.py`, even for
+  "harmless" cleanups — a frozen baseline is only useful if its move choices
+  stay bit-for-bit stable across comparison runs.
+- **Non-functional changes are fine — including in `OPAI.py`.** Moving code
+  verbatim to eliminate duplication (e.g. extracting SAN formatting, PV
+  reconstruction, or tablebase move selection into a shared helper in
+  `EngineRuntime.py` and calling it from both files) is explicitly allowed
+  and encouraged, *provided* the moved code is unmodified and produces
+  identical output to what it replaced. If a change couldn't be caught by
+  running `OPAI.py` against itself before/after and diffing every move of
+  every game, it's non-functional and fine. If it could, it isn't.
+- **Tunable strategy is never shared, even between two files that currently
+  agree.** Time-allocation formulas (`_search_time_budget` and its `TIME_*`
+  constants), pruning margins, and similar tunables live independently in
+  each bot's class body — never in `EngineRuntime.py` — specifically so that
+  retuning one bot later can't silently retune the other by way of a shared
+  function. `AI.py` and `OPAI.py` currently duplicate this formula with
+  identical values; that's expected, not a sign it should be merged.
 
-Shared backend plumbing now lives in `EngineRuntime.py`. It owns Zobrist
+Shared backend plumbing lives in `EngineRuntime.py`. It owns Zobrist
 hashing, FEN/opening-book helpers, worker dispatch, tablebase enable/disable
-plumbing, time-check budgeting helpers, and bot lifecycle updates such as
-new-game cache resets. Each worker still holds exactly one separate bot
-instance, so `AI.py` and `OpponentAI.py` do not share a transposition table,
-eval cache, history table, cancellation event, or tablebase manager. Runtime
-helpers may be edited for memory/lifecycle correctness, but do not use that
-file as a reason to merge or back-port search/eval behavior between the bots.
+plumbing, time-check *mask* budgeting (not the time-allocation formula —
+see above), bot lifecycle updates such as new-game cache resets, and pure
+reporting/PV/tablebase-move plumbing (`format_bot_move`, `get_pv_data`,
+`get_best_tablebase_move_with_eval`, `report_root_tb_solution`,
+`get_root_tb_eval_relative`) along with the shared `TTEntry`/`TT_FLAG_*`
+transposition-table record format. Each worker still holds exactly one
+separate bot instance, so `AI.py` and `OpponentAI.py` do not share a
+transposition table, eval cache, history table, cancellation event, or
+tablebase manager — only the code that operates on them is shared, never the
+data itself.
 
 ### 6.7 Search-side twofold repetition policy
 

@@ -1,4 +1,4 @@
-# EngineRuntime.py v1.2 - shared backend/runtime plumbing for Jungle Chess engines with more work
+# EngineRuntime.py (v1.3 - code refactoring)
 
 import gc
 import glob
@@ -8,13 +8,12 @@ import os
 import random
 import re
 import traceback
+from collections import namedtuple
 
-from GameLogic import ROWS, COLS, Pawn, Knight, Bishop, Rook, Queen, King, format_move_san, get_all_legal_moves
-
-
-TIME_BUFFER_SEC = 0.50
-TIME_BUFFER_PCT = 0.05
-MIN_MOVE_TIME = 0.03
+from GameLogic import (
+    ROWS, COLS, Pawn, Knight, Bishop, Rook, Queen, King,
+    format_move_san, get_all_legal_moves, has_legal_moves, is_insufficient_material,
+)
 
 OPTIONAL_BOT_KWARGS = (
     "time_left",
@@ -173,23 +172,11 @@ def calc_time_check_mask(allocated):
     return 511
 
 
-def search_time_budget(time_left, increment):
-    buffer = max(TIME_BUFFER_SEC, time_left * TIME_BUFFER_PCT, increment * 1.5)
-    clock_ceiling = max(0.0, time_left - buffer)
-
-    if time_left > 0:
-        buffer_health = max(0.0, min(1.0, clock_ceiling / time_left))
-    else:
-        buffer_health = 0.0
-
-    divisor = 50 - (20 * buffer_health)
-    optimum_time = (time_left / divisor) + (increment * 0.8)
-    optimum_time = max(MIN_MOVE_TIME, optimum_time)
-    optimum_time = min(optimum_time, clock_ceiling)
-
-    max_time = min(clock_ceiling, optimum_time * 3.5)
-    max_time = max(max_time, min(MIN_MOVE_TIME, clock_ceiling))
-    return optimum_time, max_time
+# NOTE: time-budgeting formula intentionally does NOT live here. Unlike
+# hashing/FEN/dispatch, it's a *tunable strategy* (per §6.6 of the README),
+# so AI.py and OPAI.py each keep an independent, duplicated copy of the
+# constants + method. Do not re-add a shared version of this here even if
+# the two copies look identical today — that would silently couple them.
 
 
 def configure_tablebase(bot, use_tablebase):
@@ -431,6 +418,129 @@ def write_series_stats_file(out_path, move_stats, series_stats, main_name, op_na
             row("Avg KNPS", f"{ma['kn']:.1f}", f"{oa['kn']:.1f}", diff_str(ma['kn'], oa['kn'], ".1f"))
     except Exception as e:
         print(f"Failed to save stats: {e}")
+
+
+# ---------------------------------------------------------------------------
+# Shared search infrastructure — pure plumbing, no tunable constants.
+# Every bot subclass (AI.py, OPAI.py, or future ones) uses these verbatim;
+# behavior-affecting logic (time budgets, pruning, eval weights) does NOT
+# belong here.
+# ---------------------------------------------------------------------------
+TTEntry = namedtuple('TTEntry', ['score', 'depth', 'flag', 'best_move', 'age'])
+TT_FLAG_EXACT, TT_FLAG_LOWERBOUND, TT_FLAG_UPPERBOUND = 0, 1, 2
+
+
+def format_bot_move(bot, board_before, move):
+    if not move: return "None"
+    child = board_before.clone()
+    child.make_move(move[0], move[1])
+    return format_move_san(board_before, child, move)
+
+
+def get_pv_data(bot, max_depth, root_move):
+    if not root_move: return [], []
+
+    pv_san  = []
+    pv_raw  = []
+    current_board = bot.board.clone()
+    current_turn  = bot.color
+    current_ply   = bot.ply_count
+    seen_hashes = set()
+    move = root_move
+
+    for i in range(max_depth):
+        if not move: break
+
+        # --- SAFETY GUARD AGAINST TT COLLISIONS / STALE PV MOVES ---
+        p = current_board.grid[move[0][0]][move[0][1]]
+        if not p or p.color != current_turn: break
+
+        san      = format_bot_move(bot, current_board, move)
+        move_num = (current_ply // 2) + 1
+        if current_turn == 'white':
+            pv_san.append(f"{move_num}. {san}")
+        else:
+            pv_san.append(f"{move_num}... {san}" if i == 0 else san)
+
+        pv_raw.append(move)
+        current_board.make_move(move[0], move[1])
+        current_turn = 'black' if current_turn == 'white' else 'white'
+        current_ply += 1
+
+        h = board_hash(current_board, current_turn)
+        if h in seen_hashes: break
+        seen_hashes.add(h)
+
+        tt_entry = bot.tt.get(h)
+        if not tt_entry or not tt_entry.best_move: break
+        if tt_entry.flag != TT_FLAG_EXACT: break
+        move = tt_entry.best_move
+
+    return pv_san, pv_raw
+
+
+def get_root_tb_eval_relative(bot):
+    root_abs = bot.tb_manager.probe(bot.board, bot.color)
+    if root_abs is None: return None
+    bot.tb_hits += 1
+    return root_abs if bot.color == 'white' else -root_abs
+
+
+def get_best_tablebase_move_with_eval(bot):
+    root_abs = bot.tb_manager.probe(bot.board, bot.color)
+    if root_abs is None and not is_insufficient_material(bot.board): return None, None
+
+    best_move  = None
+    best_score = -float('inf')
+    tied_draw_count = 0
+
+    for move in get_all_legal_moves(bot.board, bot.color):
+        sim = bot.board.clone()
+        sim.make_move(move[0], move[1])
+
+        if not sim.find_king_pos(bot.opponent_color): return move, bot.MATE_SCORE - 1
+        if not has_legal_moves(sim, bot.opponent_color): return move, bot.MATE_SCORE - 1
+
+        if len(sim.white_pieces) + len(sim.black_pieces) <= 2:
+            score = 0
+        else:
+            score_abs = bot.tb_manager.probe(sim, bot.opponent_color)
+            if score_abs is None: return None, None
+            bot.tb_hits += 1
+            score = score_abs if bot.color == 'white' else -score_abs
+            if score > bot.MATE_SCORE - 1000: score -= 1
+            elif score < -bot.MATE_SCORE + 1000: score += 1
+
+        if score > best_score:
+            best_score = score
+            best_move  = move
+            tied_draw_count = 1 if score == 0 else 0
+        elif score == best_score == 0:
+            tied_draw_count += 1
+            if random.random() < 1.0 / tied_draw_count:
+                best_move = move
+
+    return best_move, best_score
+
+
+def report_root_tb_solution(bot, tb_move, tb_eval, perfect_play=False, emit_move=False):
+    if not tb_move: return False
+    root_tb_eval  = get_root_tb_eval_relative(bot)
+    display_eval  = root_tb_eval if root_tb_eval is not None else tb_eval
+    if tb_eval > bot.MATE_SCORE - 1000: display_eval = tb_eval
+
+    eval_for_ui = display_eval if bot.color == 'white' else -display_eval
+    suffix      = " (Perfect Play)" if perfect_play else ""
+    bot._report_log(f"  > {bot.bot_name} (TB): {format_bot_move(bot, bot.board, tb_move)}, Eval={eval_for_ui/100:+.2f}, TBhits={bot.tb_hits}{suffix}")
+    bot._report_eval(display_eval, "TB")
+
+    move_num = (bot.ply_count // 2) + 1
+    prefix   = f"{move_num}. " if bot.color == 'white' else f"{move_num}... "
+    pv_str   = prefix + format_bot_move(bot, bot.board, tb_move)
+    bot.comm_queue.put(('pv', display_eval, "TB", [pv_str], [tb_move]))
+
+    if emit_move: bot._report_move(tb_move)
+    return True
 
 
 def build_flat_pst_tables(mg_values, eg_values, piece_square_tables):

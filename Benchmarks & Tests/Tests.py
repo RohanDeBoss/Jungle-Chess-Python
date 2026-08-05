@@ -992,6 +992,45 @@ def case_regression_twofold_as_draw_policy():
     return details
 
 
+def case_regression_unconditional_soft_see_ordering():
+    # v127.4 gated Soft-SEE behind a swing-vs-own-value window and measured
+    # a real elo loss (-7 games vs OPAI, higher node count despite higher
+    # KNPS) because the window excluded exactly the highest-frequency,
+    # highest-stakes case: a cheap attacker capturing a valuable, defended
+    # target (swing far exceeds the attacker's own value). v127.5 reverted
+    # to unconditional Soft-SEE. This test pins that down directly: a big,
+    # clearly-favorable-looking capture (Rook takes Rook, large swing) must
+    # still be discounted when the destination is defended, proving SEE is
+    # no longer gated off for large-swing captures.
+    board = make_board([
+        ("white", King, (7, 7)),
+        ("white", Rook, (4, 4)),
+        ("black", King, (0, 0)),
+        ("black", Rook, (3, 4)),   # target: defended, large swing (600)
+        ("black", Rook, (3, 0)),   # defends (3,4) via rank
+        ("black", Rook, (5, 5)),   # undefended capture target, same swing (600), for comparison
+    ])
+    bot = ChessBot(board, "white", {}, _DummyQueue(), _DummyEvent(), use_tablebase=False)
+
+    move_defended   = ((4, 4), (3, 4))  # Rxr, defended: should be discounted by SEE
+    move_undefended = ((4, 4), (5, 5))  # Rxr, undefended: should NOT be discounted
+
+    ordered = bot.order_moves(board, [move_defended, move_undefended], 0, None, "white")
+
+    details = position_details(board, "Unconditional Soft-SEE ordering")
+    details.append(f"Ordered moves: {[format_move(m) for m in ordered]}")
+    details.append("Expected order (best first): undefended capture, then defended capture.")
+
+    expect(
+        ordered == [move_undefended, move_defended],
+        f"Regression detected: Soft-SEE failed to discount a large-swing defended capture below "
+        f"an equal-swing undefended one. Got {ordered}, expected [undefended, defended]. This is "
+        f"exactly the failure mode that made v127.4's gate regress elo — don't reintroduce a "
+        f"swing-magnitude gate on Soft-SEE without re-testing against OPAI."
+    )
+    return details
+
+
 def case_oracle_deep_fuzz():
     import random
     details = []
@@ -1191,6 +1230,13 @@ CASES = [
         "engine_internals",
         "Verify NMP is suppressed when beta indicates a forced-mate line (abs(beta) >= MATE_SCORE - 1000).",
         case_regression_nmp_mate_blindness,
+    ),
+    TestCaseSpec(
+        "regression_unconditional_soft_see_ordering",
+        "engine_internals",
+        "Verify Soft-SEE discounts defended captures regardless of swing magnitude — guards "
+        "against reintroducing the swing-magnitude gate that regressed elo in v127.4.",
+        case_regression_unconditional_soft_see_ordering,
     ),
     TestCaseSpec(
         "regression_twofold_as_draw_policy",
