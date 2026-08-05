@@ -1,4 +1,4 @@
-# AI.py (v127.1 - Search-side twofold-as-draw repetition policy)
+# AI.py (v127.4 - Maintainability)
 
 import time
 import random
@@ -52,6 +52,24 @@ ORDERING_VALUES = [
 INITIAL_PHASE_MATERIAL = (MG_PIECE_VALUES[Rook] * 4 + MG_PIECE_VALUES[Knight] * 4 +
                           MG_PIECE_VALUES[Bishop] * 4 + MG_PIECE_VALUES[Queen] * 2)
 
+def _is_quiet_and_unevaporated(my_z, r2, c2, moving_piece, enemy_knight_indices):
+    """True if a non-capturing move to (r2, c2) is genuinely quiet — i.e. the
+    landing square isn't secretly a kill via passive knight evaporation.
+    NOTE: only accesses moving_piece.promo_rank inside the my_z == 0 branch —
+    non-pawn pieces don't have that attribute."""
+    if my_z in (2, 4, 5):
+        pass
+    elif my_z == 0 and r2 != moving_piece.promo_rank:
+        pass
+    else:
+        return False
+    if enemy_knight_indices:
+        target_idx = r2 * 8 + c2
+        for kp_idx in enemy_knight_indices:
+            if KNIGHT_EVAP_SQUARES[kp_idx][target_idx] is True:
+                return False
+    return True
+
 # (Move packing helpers removed to eliminate inner-loop function overhead and ensure tuple consistency)
 
 # --- SEARCH STRUCTURES ---
@@ -90,6 +108,7 @@ class ChessBot:
     IIR_MIN_DEPTH = 4
 
     TT_MAX_SIZE = 10_000_000 #Lots of entries
+    EVAL_TT_MAX_SIZE = 5_000_000
 
     BONUS_PV_MOVE = 10_000_000
     BONUS_CAPTURE = 8_000_000
@@ -199,8 +218,7 @@ class ChessBot:
         if cached is not None:
             return cached
         val = self.evaluate_board(board, turn)
-        limit = getattr(self, 'EVAL_TT_MAX_SIZE', 5_000_000)
-        if len(self.eval_tt) > limit:
+        if len(self.eval_tt) > self.EVAL_TT_MAX_SIZE:
             # Refcount drops to 0 instantly. Python reuses this memory for new entries!
             self.eval_tt = {}
         self.eval_tt[hash_val] = val
@@ -345,11 +363,12 @@ class ChessBot:
     def _age_history_table(self):
         # Gentle 12.5% decay per turn (* 7 // 8) instead of aggressive 50% halving.
         # Continuation history naturally bounds itself, so we skip the massive Python loop overhead.
+        # List comprehension avoids repeated ht[from_sq][to_sq] double-indexing.
         for c_idx in range(2):
             ht = self.history_heuristic_table[c_idx]
             for from_sq in range(64):
-                for to_sq in range(64):
-                    ht[from_sq][to_sq] = (ht[from_sq][to_sq] * 7) // 8
+                row = ht[from_sq]
+                ht[from_sq] = [(v * 7) // 8 for v in row]
 
     def _get_pv_data(self, max_depth, root_move):
         if not root_move: return [], []
@@ -1063,17 +1082,9 @@ class ChessBot:
             
             my_z = moving_piece.z_idx
             
-            if not is_in_check_flag and target_piece is None:
-                if my_z in (2, 4, 5) or (my_z == 0 and r2 != moving_piece.promo_rank):
-                    gets_evaporated = False
-                    if enemy_knight_indices:
-                        target_idx = r2 * 8 + c2
-                        for kp_idx in enemy_knight_indices:
-                            if KNIGHT_EVAP_SQUARES[kp_idx][target_idx] is True:
-                                gets_evaporated = True
-                                break
-                    if not gets_evaporated:
-                        continue
+            if (not is_in_check_flag and target_piece is None and
+                    _is_quiet_and_unevaporated(my_z, r2, c2, moving_piece, enemy_knight_indices)):
+                continue
 
             swing, is_tactic = fast_approximate_material_swing(board, move, moving_piece, target_piece, ORDERING_VALUES)
 
@@ -1154,18 +1165,10 @@ class ChessBot:
             my_z = moving_piece.z_idx
             t_sq = r2 * 8 + c2
 
-            is_definitely_quiet = False
-            if target_piece is None:
-                if my_z in (2, 4, 5) or (my_z == 0 and r2 != moving_piece.promo_rank):
-                    gets_evaporated = False
-                    if enemy_knight_indices:
-                        target_idx = r2 * 8 + c2
-                        for kp_idx in enemy_knight_indices:
-                            if KNIGHT_EVAP_SQUARES[kp_idx][target_idx] is True:
-                                gets_evaporated = True
-                                break
-                    if not gets_evaporated:
-                        is_definitely_quiet = True
+            is_definitely_quiet = (
+                target_piece is None and
+                _is_quiet_and_unevaporated(my_z, r2, c2, moving_piece, enemy_knight_indices)
+            )
 
             if is_definitely_quiet:
                 swing = 0
