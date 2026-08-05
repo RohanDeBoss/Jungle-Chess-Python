@@ -1,4 +1,4 @@
-# AI.py (v127.9 - inline v2)
+# AI.py (v128 -  Fast IN_DICT)
 
 import time
 import random
@@ -655,7 +655,7 @@ class ChessBot:
         # (threefold-only) policy so it remains a valid A/B baseline.
         hash_val = current_hash if current_hash is not None else board_hash(board, turn)
         if ply > 0:
-            if self.position_counts.get(hash_val, 0) >= 1:
+            if hash_val in self.position_counts:
                 return self.DRAW_SCORE
             if hash_val in search_path:
                 return self.DRAW_SCORE
@@ -947,7 +947,7 @@ class ChessBot:
         # an immediate draw rather than waiting for a literal third
         # occurrence. This also makes the old stale-TT repetition guard that
         # used to live here unreachable, so it has been removed.
-        if ply > 0 and self.position_counts.get(hash_val, 0) >= 1:
+        if ply > 0 and hash_val in self.position_counts:
             return self.DRAW_SCORE
 
         tt_entry = self.tt.get(hash_val)
@@ -1129,10 +1129,7 @@ class ChessBot:
                 if target_piece is not None and my_z != 4:  # Exclude Queens since they already self-destruct
                     # Soft-SEE: if the destination square is defended by the
                     # opponent, the moving piece will likely be recaptured.
-                    # This only affects move ORDERING — is_good_tactic (which
-                    # governs pruning/LMR safety elsewhere) is untouched, so a
-                    # losing-but-forcing capture still gets searched at full
-                    # depth, just later in the move list.
+                    # Only check defense on positive swing moves to skip raycasts on losing/equal captures.
                     if is_square_attacked(board, r2, c2, opponent_turn):
                         ordering_swing = swing - ORDERING_VALUES[my_z]
                 score = self.BONUS_CAPTURE + (ordering_swing * 100) + (5 - my_z)
