@@ -1,4 +1,4 @@
-# AI.py (v127.7 - Re-Remove heuristics + code refactoring)
+# AI.py (v127.9 - inline v2)
 
 import time
 import random
@@ -58,24 +58,6 @@ ORDERING_VALUES = [
 
 INITIAL_PHASE_MATERIAL = (MG_PIECE_VALUES[Rook] * 4 + MG_PIECE_VALUES[Knight] * 4 +
                           MG_PIECE_VALUES[Bishop] * 4 + MG_PIECE_VALUES[Queen] * 2)
-
-def _is_quiet_and_unevaporated(my_z, r2, c2, moving_piece, enemy_knight_indices):
-    """True if a non-capturing move to (r2, c2) is genuinely quiet — i.e. the
-    landing square isn't secretly a kill via passive knight evaporation.
-    NOTE: only accesses moving_piece.promo_rank inside the my_z == 0 branch —
-    non-pawn pieces don't have that attribute."""
-    if my_z in (2, 4, 5):
-        pass
-    elif my_z == 0 and r2 != moving_piece.promo_rank:
-        pass
-    else:
-        return False
-    if enemy_knight_indices:
-        target_idx = r2 * 8 + c2
-        for kp_idx in enemy_knight_indices:
-            if KNIGHT_EVAP_SQUARES[kp_idx][target_idx] is True:
-                return False
-    return True
 
 # (Move packing helpers removed to eliminate inner-loop function overhead and ensure tuple consistency)
 
@@ -1028,9 +1010,17 @@ class ChessBot:
             
             my_z = moving_piece.z_idx
             
-            if (not is_in_check_flag and target_piece is None and
-                    _is_quiet_and_unevaporated(my_z, r2, c2, moving_piece, enemy_knight_indices)):
-                continue
+            if not is_in_check_flag and target_piece is None:
+                if my_z in (2, 4, 5) or (my_z == 0 and r2 != moving_piece.promo_rank):
+                    gets_evaporated = False
+                    if enemy_knight_indices:
+                        target_idx = r2 * 8 + c2
+                        for kp_idx in enemy_knight_indices:
+                            if KNIGHT_EVAP_SQUARES[kp_idx][target_idx] is True:
+                                gets_evaporated = True
+                                break
+                    if not gets_evaporated:
+                        continue
 
             swing, is_tactic = fast_approximate_material_swing(board, move, moving_piece, target_piece, ORDERING_VALUES)
 
@@ -1103,6 +1093,9 @@ class ChessBot:
             pr, pc = prev_move[1]
             prev_to_sq = pr * 8 + pc
 
+        k1 = killers[0] if killers else None
+        k2 = killers[1] if killers else None
+
         for move in moves:
             (r1, c1), (r2, c2) = move
             moving_piece = grid[r1][c1]
@@ -1111,10 +1104,17 @@ class ChessBot:
             my_z = moving_piece.z_idx
             t_sq = r2 * 8 + c2
 
-            is_definitely_quiet = (
-                target_piece is None and
-                _is_quiet_and_unevaporated(my_z, r2, c2, moving_piece, enemy_knight_indices)
-            )
+            is_definitely_quiet = False
+            if target_piece is None:
+                if my_z in (2, 4, 5) or (my_z == 0 and r2 != moving_piece.promo_rank):
+                    gets_evaporated = False
+                    if enemy_knight_indices:
+                        for kp_idx in enemy_knight_indices:
+                            if KNIGHT_EVAP_SQUARES[kp_idx][t_sq] is True:
+                                gets_evaporated = True
+                                break
+                    if not gets_evaporated:
+                        is_definitely_quiet = True
 
             if is_definitely_quiet:
                 swing = 0
@@ -1136,8 +1136,10 @@ class ChessBot:
                     if is_square_attacked(board, r2, c2, opponent_turn):
                         ordering_swing = swing - ORDERING_VALUES[my_z]
                 score = self.BONUS_CAPTURE + (ordering_swing * 100) + (5 - my_z)
-            elif move in killers:
-                score = 4_000_000 if move == killers[0] else 3_000_000
+            elif move == k1:
+                score = 4_000_000
+            elif move == k2:
+                score = 3_000_000
             elif move == counter_move:
                 score = 2_000_000
             else:
