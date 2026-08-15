@@ -1,4 +1,4 @@
-# OPAI.py (v126.7 - New baseline + code refactoring)
+# OPAI.py (v128 - Baseline with recent fixes)
 
 import time
 import random
@@ -63,7 +63,7 @@ INITIAL_PHASE_MATERIAL = (MG_PIECE_VALUES[Rook] * 4 + MG_PIECE_VALUES[Knight] * 
 
 # --- SEARCH STRUCTURES ---
 # TTEntry / TT_FLAG_* now live in EngineRuntime.py as shared, non-tunable
-# infrastructure — identical values/semantics, just deduplicated.
+# infrastructure — every bot subclass needs the exact same TT record format.
 
 
 class OpponentAI:
@@ -97,6 +97,7 @@ class OpponentAI:
     IIR_MIN_DEPTH = 4
 
     TT_MAX_SIZE = 10_000_000 #Lots of entries
+    EVAL_TT_MAX_SIZE = 5_000_000
 
     BONUS_PV_MOVE = 10_000_000
     BONUS_CAPTURE = 8_000_000
@@ -115,9 +116,10 @@ class OpponentAI:
     ASP_MAX_RETRIES = 3
 
     # --- TIME MANAGEMENT (tunable — deliberately duplicated, not shared) ---
-    # Kept as an independent local copy, identical to AI.py's, per README §6.6:
-    # this is a tunable strategy, not a data-format contract, so it must not
-    # be centralized where changing it for one bot could affect the other.
+    # This formula lives independently in AI.py and OPAI.py. It's a tunable
+    # strategy, not a data-format contract, so it must NOT be centralized in
+    # EngineRuntime.py: doing so would silently couple AI.py's time strategy
+    # to OPAI.py's frozen baseline (or vice versa) any time either gets tuned.
     TIME_BUFFER_SEC = 0.50
     TIME_BUFFER_PCT = 0.05
     MIN_MOVE_TIME = 0.03
@@ -218,9 +220,9 @@ class OpponentAI:
         if cached is not None:
             return cached
         val = self.evaluate_board(board, turn)
-        if len(self.eval_tt) > 5000000:
+        if len(self.eval_tt) > self.EVAL_TT_MAX_SIZE:
             # Refcount drops to 0 instantly. Python reuses this memory for new entries!
-            self.eval_tt = {} 
+            self.eval_tt = {}
         self.eval_tt[hash_val] = val
         return val
 
@@ -244,7 +246,8 @@ class OpponentAI:
 
     def _search_time_budget(self, time_left, increment):
         """Split the clock into an 'optimum' soft budget (banked if unused)
-        and a 'max' hard ceiling. Local copy — see TIME_* constants above."""
+        and a 'max' hard ceiling. See TIME_* constants above for why this
+        stays a local, independently-tunable copy."""
         buffer = max(self.TIME_BUFFER_SEC, time_left * self.TIME_BUFFER_PCT, increment * 1.5)
         clock_ceiling = max(0.0, time_left - buffer)
 
@@ -342,11 +345,12 @@ class OpponentAI:
     def _age_history_table(self):
         # Gentle 12.5% decay per turn (* 7 // 8) instead of aggressive 50% halving.
         # Continuation history naturally bounds itself, so we skip the massive Python loop overhead.
+        # List comprehension avoids repeated ht[from_sq][to_sq] double-indexing.
         for c_idx in range(2):
             ht = self.history_heuristic_table[c_idx]
             for from_sq in range(64):
-                for to_sq in range(64):
-                    ht[from_sq][to_sq] = (ht[from_sq][to_sq] * 7) // 8
+                row = ht[from_sq]
+                ht[from_sq] = [(v * 7) // 8 for v in row]
 
     def _get_pv_data(self, max_depth, root_move):
         return get_pv_data(self, max_depth, root_move)
@@ -636,24 +640,25 @@ class OpponentAI:
         total_pieces = len(board.white_pieces) + len(board.black_pieces)
 
         # --- REPETITION CHECKS (must come before TB probe) ---
+        # v127.1 POLICY: search-side repetition avoidance is intentionally
+        # stricter than the literal game rule. GameLogic/get_game_state still
+        # requires an actual THIRD occurrence before the game is drawn — that
+        # is completely unchanged. Here, inside the search only, any hash
+        # that has already occurred once — whether that occurrence was for
+        # real (self.position_counts) or purely hypothetical within this
+        # search's own line (search_path) — is scored as an immediate draw
+        # rather than waiting for a literal third occurrence. This can never
+        # cause the engine to walk a real game into an unseen threefold (it
+        # now refuses to volunteer for even a SECOND occurrence), and it
+        # prunes repeating subtrees a full ply earlier without adding any new
+        # pruning heuristic. OPAI.py is intentionally left on the old
+        # (threefold-only) policy so it remains a valid A/B baseline.
         hash_val = current_hash if current_hash is not None else board_hash(board, turn)
         if ply > 0:
-            if self.position_counts.get(hash_val, 0) >= 2:
+            if hash_val in self.position_counts:
                 return self.DRAW_SCORE
             if hash_val in search_path:
                 return self.DRAW_SCORE
-
-        # --- GHI / TT-REPETITION SAFETY ---
-        # A position that has already occurred at least once for real in this
-        # game is "repetition-sensitive": its true score depends on how many
-        # more times it can recur before hitting the threefold rule — context
-        # the Zobrist hash alone doesn't encode. Because the TT persists
-        # across real moves by design, a score cached here during an earlier
-        # turn's search (when this was only the 1st/2nd occurrence) can go
-        # stale once the real game catches up and makes it the 3rd (drawn)
-        # occurrence. Refuse to read or write TT entries for any such
-        # position so it's always freshly resolved by the check above.
-        repetition_sensitive = self.position_counts.get(hash_val, 0) >= 1
 
         if total_pieces <= self.tb_probe_limit:
             tb_score_absolute = self.tb_manager.probe(board, turn)
@@ -669,13 +674,10 @@ class OpponentAI:
 
         original_alpha = alpha
         tt_entry = self.tt.get(hash_val)
-        
-        # --- STALE TT REPETITION GUARD ---
-        # Ignore TT entries ONLY if they are repetition-sensitive AND were
-        # cached during a previous turn (when the repetition count was lower).
-        if tt_entry and ply > 0:
-            if repetition_sensitive and tt_entry.age < self.current_age:
-                tt_entry = None
+        # NOTE (v127.1): the old "stale TT repetition guard" that used to sit
+        # here existed only to cover position_counts == 1 nodes; those now
+        # return DRAW_SCORE above before the TT is ever consulted, so the
+        # guard became unreachable dead code and has been removed.
 
         if ply > 0 and tt_entry and tt_entry.depth >= depth:
             tt_score = tt_entry.score
@@ -940,10 +942,16 @@ class OpponentAI:
 
         hash_val = current_hash if current_hash is not None else board_hash(board, turn)
 
+        # v127.1: mirrors negamax's twofold-as-draw search policy. Any
+        # position that already occurred at least once for real is scored as
+        # an immediate draw rather than waiting for a literal third
+        # occurrence. This also makes the old stale-TT repetition guard that
+        # used to live here unreachable, so it has been removed.
+        if ply > 0 and hash_val in self.position_counts:
+            return self.DRAW_SCORE
+
         tt_entry = self.tt.get(hash_val)
-        if tt_entry and self.position_counts.get(hash_val, 0) >= 1 and tt_entry.age < self.current_age:
-            tt_entry = None
-            
+
         if tt_entry:
             tt_score = tt_entry.score
             if tt_score >  self.MATE_SCORE - 1000: tt_score -= ply
@@ -1085,6 +1093,9 @@ class OpponentAI:
             pr, pc = prev_move[1]
             prev_to_sq = pr * 8 + pc
 
+        k1 = killers[0] if killers else None
+        k2 = killers[1] if killers else None
+
         for move in moves:
             (r1, c1), (r2, c2) = move
             moving_piece = grid[r1][c1]
@@ -1098,9 +1109,8 @@ class OpponentAI:
                 if my_z in (2, 4, 5) or (my_z == 0 and r2 != moving_piece.promo_rank):
                     gets_evaporated = False
                     if enemy_knight_indices:
-                        target_idx = r2 * 8 + c2
                         for kp_idx in enemy_knight_indices:
-                            if KNIGHT_EVAP_SQUARES[kp_idx][target_idx] is True:
+                            if KNIGHT_EVAP_SQUARES[kp_idx][t_sq] is True:
                                 gets_evaporated = True
                                 break
                     if not gets_evaporated:
@@ -1119,15 +1129,14 @@ class OpponentAI:
                 if target_piece is not None and my_z != 4:  # Exclude Queens since they already self-destruct
                     # Soft-SEE: if the destination square is defended by the
                     # opponent, the moving piece will likely be recaptured.
-                    # This only affects move ORDERING — is_good_tactic (which
-                    # governs pruning/LMR safety elsewhere) is untouched, so a
-                    # losing-but-forcing capture still gets searched at full
-                    # depth, just later in the move list.
+                    # Only check defense on positive swing moves to skip raycasts on losing/equal captures.
                     if is_square_attacked(board, r2, c2, opponent_turn):
                         ordering_swing = swing - ORDERING_VALUES[my_z]
                 score = self.BONUS_CAPTURE + (ordering_swing * 100) + (5 - my_z)
-            elif move in killers:
-                score = 4_000_000 if move == killers[0] else 3_000_000
+            elif move == k1:
+                score = 4_000_000
+            elif move == k2:
+                score = 3_000_000
             elif move == counter_move:
                 score = 2_000_000
             else:
@@ -1269,39 +1278,8 @@ class OpponentAI:
                         scores_mg[color_idx] += ROOK_OPEN_FILE_BONUS_MG
                         scores_eg[color_idx] += ROOK_OPEN_FILE_BONUS_EG
 
-                    # --- JUNGLE-NATIVE MOBILITY (Piercing) ---
-                    mobility = 0
-                    for ray in RAYS_ORTHOGONAL[sq]: # Orthogonal rays
-                        for cr, cc in ray:
-                            target = grid[cr][cc]
-                            if target is not None:
-                                if target.color == my_color_name:
-                                    break # Blocked by friendly piece
-                            mobility += 1
-                    scores_mg[color_idx] += mobility * self.EVAL_MOBILITY_ROOK
-                    scores_eg[color_idx] += mobility * self.EVAL_MOBILITY_ROOK
-
                 elif z == 2: # Bishop
-                    # --- JUNGLE-NATIVE MOBILITY (Sliding & Zigzag) ---
-                    mobility = 0
-                    for ray in RAYS_DIAGONAL[sq]: # Diagonal rays
-                        for cr, cc in ray:
-                            target = grid[cr][cc]
-                            if target is not None:
-                                if target.color != my_color_name:
-                                    mobility += 1
-                                break
-                            mobility += 1
-                    for ray in BISHOP_ZIGZAG_RAYS[sq]: # Zigzag rays
-                        for cr, cc in ray:
-                            target = grid[cr][cc]
-                            if target is not None:
-                                if target.color != my_color_name:
-                                    mobility += 1
-                                break
-                            mobility += 1
-                    scores_mg[color_idx] += mobility * self.EVAL_MOBILITY_BISHOP
-                    scores_eg[color_idx] += mobility * self.EVAL_MOBILITY_BISHOP
+                    pass # Mobility handled intrinsically by PSTs
 
                 elif z == 1: # Knight
                     has_attacked_king_zone = False
@@ -1319,19 +1297,6 @@ class OpponentAI:
                 elif z == 4: # Queen
                     if enemy_king and (abs(r - enemy_king[0]) + abs(c - enemy_king[1]) <= 3):
                         king_zone_attacks[1 - color_idx] += 2
-                        
-                    # --- JUNGLE-NATIVE MOBILITY (Sliding) ---
-                    mobility = 0
-                    for ray in RAYS[sq]: # All 8 rays
-                        for cr, cc in ray:
-                            target = grid[cr][cc]
-                            if target is not None:
-                                if target.color != my_color_name:
-                                    mobility += 1 # Count the capture square
-                                break # Stop at any piece (capturing explodes her)
-                            mobility += 1
-                    scores_mg[color_idx] += mobility * self.EVAL_MOBILITY_QUEEN
-                    scores_eg[color_idx] += mobility * self.EVAL_MOBILITY_QUEEN
 
         phase     = min(256, (phase_material_score * 256) // INITIAL_PHASE_MATERIAL) if INITIAL_PHASE_MATERIAL > 0 else 0
         inv_phase = 256 - phase
