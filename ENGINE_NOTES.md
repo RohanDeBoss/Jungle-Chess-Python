@@ -161,11 +161,9 @@ tablebase was never at risk from the FEN-loading gap described in §2.3.
   its canonical tuple before querying the array, otherwise it will falsely read 
   un-evaluated "ghost mirrors" as Draws (0).
 
-- **Evaluation Perspective Contract:** Probing routines (`tb_manager.probe()`) return 
-  absolute evaluations from White's perspective (positive = White winning, negative = 
-  Black winning) — the same convention documented in Section 1 for the UI/AI eval
-  reporting. Any reporting or search pipeline expecting mover-relative scores 
-  must convert Black-to-move results accordingly before passing them to UI dispatchers.
+- **Evaluation Perspective Contract & Raw Storage Convention:** 
+  - **Raw Storage (STM-Relative):** The `.bin` tablebase files store evaluations relative to the Side-To-Move (STM). A positive value means the STM is winning (DTM), and a negative value means the STM is losing. This is color-blind and standard for tablebase generation.
+  - **Probe Output (White-Relative):** `TablebaseManager.probe()` acts as a strict conversion layer. It reads the STM-relative value, applies the `(t_idx == 0 and val > 0) or (t_idx == 1 and val < 0)` logic to determine if White is the winner, and returns an absolute White-relative score — the same convention documented in Section 1 for the UI/AI eval reporting. Any code interacting with the tablebases MUST use `probe()` and never read the raw `.bin` files directly. Search pipelines expecting mover-relative scores must convert the White-relative output accordingly.
 
 ### 2.5 Performance-sensitive rules
 
