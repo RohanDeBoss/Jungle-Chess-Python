@@ -1,24 +1,20 @@
-# Jungle Chess — Official Rules & Engine Notes
+# Jungle Chess — Rules
 
 Jungle Chess is a chess variant where four of the six piece types have been
-given volatile, area-of-effect abilities. This document is the single source
-of truth for both **players** (rules) and **AI assistants / engine
-developers** (implementation invariants). If you are an AI reading this
-before touching the codebase, read the whole thing — the "Engine Invariants"
-section at the end exists specifically to stop you from re-deriving (and
-getting wrong) an argument that has already been settled.
+given volatile, area-of-effect abilities. This page covers the rules you
+need to play. (Looking for engine/development notes instead? See
+`ENGINE_NOTES.md`.)
 
 ---
 
 ## 1. Objective
 
 Checkmate the opponent's king, as in standard chess. You do **not** need to
-explode, evaporate, or pierce the enemy king to win — you win by putting your
-opponent in a position where they have **no legal move** on their turn. The
-game always ends exactly one ply before a king would actually be destroyed,
-so a king is never literally removed from the board during valid play. See
-[Section 6](#6-engine-invariants-read-this-before-touching-the-code) for why
-this is true by construction, not just by convention.
+explode, evaporate, or pierce the enemy king to win — you win by putting
+your opponent in a position where they have **no legal move** on their
+turn. The game always ends exactly one ply before a king would actually be
+destroyed, so a king is never literally removed from the board during valid
+play.
 
 ---
 
@@ -32,14 +28,15 @@ regardless of whether that side is currently in check.
   practice (see [Section 5](#5-why-stalemate-almost-never-happens)) but is
   still a loss. Jungle Chess has no stalemate-as-draw rule.
 
-If your opponent has no legal moves, you win immediately. The game therefore
-behaves like a king-capture variant that stops one ply early — functionally
-identical in outcome, but the king is never actually taken off the board.
+If your opponent has no legal moves, you win immediately — functionally
+identical to a king-capture variant, except the king is never actually
+taken off the board.
 
-- **Quiet Checkmates & King-Delivered Mates:** Because checkmate/win is defined 
-  strictly as having 0 legal moves, a checkmate or terminal loss can be 
-  delivered by a quiet move (including a 2-square King step) that cuts off the 
-  opponent's final escape square.
+- **Quiet Checkmates & King-Delivered Mates:** Because a terminal loss is
+  defined strictly as "0 legal moves," a checkmate can be delivered by a
+  quiet move (including a 2-square King step) that cuts off the opponent's
+  final escape square.
+
 ---
 
 ## 3. Piece Changes
@@ -47,8 +44,8 @@ identical in outcome, but the king is never actually taken off the board.
 ### Queen
 - Moves normally: any number of squares, any direction.
 - **Explodes on capture.** When the queen captures a piece, it explodes,
-  removing all enemy pieces on the 8 squares surrounding the capture square.
-  The queen itself is also removed in the blast.
+  removing all enemy pieces on the 8 squares surrounding the capture
+  square. The queen itself is also removed in the blast.
 - The queen does **not** explode if it is the one being captured.
 
 ### Rook
@@ -68,14 +65,15 @@ identical in outcome, but the king is never actually taken off the board.
 
 ### Knight
 - Moves in the normal L-shape, but **can only land on empty squares.**
-- **Passive evaporation.** At all times, a knight evaporates (removes) every
-  enemy piece sitting on a square it could jump to — this happens simply by
-  the knight existing there, not by landing on the target. This is why a
-  knight can only land on empty squares: anything else would already have
-  been evaporated.
-- If two enemy knights are mutually within evaporation range and one of them
-  moves so as to trigger the exchange, **both knights are removed**, but any
-  other pieces caught in either evaporation zone are removed first.
+- **Passive evaporation.** At all times, a knight evaporates (removes)
+  every enemy piece sitting on a square it could jump to — this happens
+  simply by the knight existing there, not by landing on the target. This
+  is why a knight can only land on empty squares: anything else would
+  already have been evaporated.
+- If two enemy knights are mutually within evaporation range and one of
+  them moves so as to trigger the exchange, **both knights are removed**,
+  but any other pieces caught in either evaporation zone are removed
+  first.
 
 ### Pawn
 - Moves forward one square (two from its starting rank, unless blocked).
@@ -88,9 +86,9 @@ identical in outcome, but the king is never actually taken off the board.
 ### King
 - Slides one **or two** squares horizontally, vertically, or diagonally,
   blocked by any piece in its path.
-- On a 2-square move, only the **landing square** must be safe — the king is
-  allowed to pass through an attacked square. This is intentional; it makes
-  the king meaningfully harder to checkmate than in standard chess.
+- On a 2-square move, only the **landing square** must be safe — the king
+  is allowed to pass through an attacked square. This is intentional; it
+  makes the king meaningfully harder to checkmate than in standard chess.
 - Still subject to check and checkmate.
 - No castling.
 
@@ -98,28 +96,28 @@ identical in outcome, but the king is never actually taken off the board.
 
 ## 4. Check, Notation, and Casualty Lists
 
-**Definition of check:** a position is check if the side to move's king would
-be destroyed by *any* legal move available to the opponent on their next
-turn, including all of the special attacks below.
+**Definition of check:** a position is check if the side to move's king
+would be destroyed by *any* legal move available to the opponent on their
+next turn, including all of the special attacks below.
 
-- **Explosive check** — your king sits adjacent to a piece (yours or theirs)
-  that an enemy queen could capture, because the resulting explosion would
-  reach your king. Example: an enemy queen attacks a pawn on f2; a king on e2
-  is in check, because Qxf2 would explode and kill it.
+- **Explosive check** — your king sits adjacent to a piece (yours or
+  theirs) that an enemy queen could capture, because the resulting
+  explosion would reach your king. Example: an enemy queen attacks a pawn
+  on f2; a king on e2 is in check, because Qxf2 would explode and kill it.
 - **Evaporation check** — your king sits on a square an enemy knight could
   jump to (even though the knight can only land on *empty* squares — it's
   the landing threat, not an actual capture, that creates the check).
-- **Railgun check** — your king shares a rank or file with an enemy rook, at
-  any distance, regardless of any pieces in between (because the rook
+- **Railgun check** — your king shares a rank or file with an enemy rook,
+  at any distance, regardless of any pieces in between (because the rook
   pierces through everything but a friendly blocker).
 
 Standard algebraic notation is used, with a comma separating each half-move
-and `+`/`#` for check/checkmate. Exact SAN formatting isn't a gameplay rule —
-any move that's clear and unambiguous is acceptable.
+and `+`/`#` for check/checkmate. Exact SAN formatting isn't a gameplay rule
+— any move that's clear and unambiguous is acceptable.
 
 **Casualty lists.** For any move that pierces, evaporates, or explodes
-multiple squares, list every affected square in parentheses after the move,
-sorted by lowest rank first, then lowest file:
+multiple squares, list every affected square in parentheses after the
+move, sorted by lowest rank first, then lowest file:
 
 ```
 Nc6 (xe4 xg4)          — knight evaporation
@@ -139,232 +137,32 @@ Qxf7 (xf7 xg7 xh7 xg8) — queen explosion (queen's own square is included)
 
 ## 5. Why Stalemate Almost Never Happens
 
-Because no-legal-moves is always a loss, it's tempting to worry about the
-engine accidentally "missing" a stalemate at the search horizon. In practice
-this concern doesn't apply:
+Because no-legal-moves is always a loss, you might worry about accidentally
+running yourself out of moves. In practice this is rarely a concern:
 
-- **Pawns can't lock a position.** A pawn captures forward, so a blocked pawn
-  chain can simply step onto the blocker — chains can never freeze the board
-  the way they sometimes threaten to in standard chess.
+- **Pawns can't lock a position.** A pawn captures forward, so a blocked
+  pawn chain can simply step onto the blocker — chains can never freeze the
+  board the way they sometimes threaten to in standard chess.
 - **The king phases through attacks.** A 2-square king move only needs the
   *landing* square to be safe, so boxing a king in without ever checking it
   requires an unusually large, deliberate cage of pieces.
-- **The tablebase owns the endgame.** Non-check stalemates are essentially an
-  endgame-only phenomenon (a near-empty, fully paralyzed board), and the
-  precomputed tablebase (5 pieces or fewer) resolves those positions exactly,
-  with no heuristics needed.
+- **The tablebase owns the endgame.** With 5 pieces or fewer on the board,
+  positions are resolved exactly by a precomputed tablebase — no
+  heuristics, no guesswork.
 
 ---
 
-## 6. Engine Invariants (read this before touching the code)
+## 6. Reading the Evaluation Bar
 
-This section exists because this exact question — *"couldn't the search
-actually capture a king, and does the tablebase need to account for
-unreachable positions?"* — has come up before, including from AI assistants
-reviewing this codebase, and it deserves a definitive answer so it doesn't
-get re-litigated (badly) every time.
+The evaluation bar and score (shown above the board, and in the engine-line
+panel) always represent **White's** advantage, no matter which side of the
+board is shown at the bottom of your screen:
 
-### 6.1 The core invariant
+- A bar/score to the **right of center** (positive number) means **White**
+  is doing better.
+- A bar/score to the **left of center** (negative number) means **Black**
+  is doing better.
 
-**On every position the engine ever searches, the side *not* to move is
-never in check.**
-
-This holds for three independent reasons, all of which must remain true:
-
-1. **Legal self-play enforces it structurally.** `generate_legal_moves_generator`
-   in `GameLogic.py` filters out any candidate move that leaves the mover's
-   own king in check. A position reached by legal play can therefore never
-   have the side-not-to-move in check — if it were, that side would have had
-   no legal move available to escape it, and the game would already have
-   ended one ply earlier as a loss.
-2. **PGN replay reuses the same legal-move generator.** `load_pgn_from_entry`
-   matches typed notation against `get_all_legal_moves` output, so replayed
-   games inherit the same guarantee as live play.
-3. **FEN loading is explicitly validated.** `load_fen_from_entry` rejects any
-   position where the side not to move is in check:
-   ```python
-   passive_color = "black" if self.turn == "white" else "white"
-   if is_in_check(self.board, passive_color):
-       messagebox.showerror("Invalid FEN", "Illegal Position: the side not "
-                             "to move is already in check/danger.")
-       self.reset_game(schedule_ai=False)
-       return
-   ```
-   Before this check existed, a hand-typed FEN was the *only* way to hand the
-   engine a position that violated the invariant. With it in place, all three
-   entry points (self-play, PGN, FEN) now agree.
-
-### 6.2 Why the invariant makes king-capture code unreachable
-
-`is_square_attacked` in `GameLogic.py` computes "check" by directly
-projecting each volatile piece's *kill capability*, not just its normal move
-squares:
-
-- A queen's explosive threat is checked by testing whether it can already
-  capture something adjacent to the king.
-- A rook's railgun threat is checked by scanning through every piece on the
-  king's rank/file, since piercing ignores blockers.
-- A knight's evaporation threat is checked with a **second-order lookup** —
-  for every empty square the knight could jump to, it also checks whether
-  *that* square's jump-set includes the king. This is what correctly flags
-  "the knight could move to an empty square and evaporate the king from
-  there" as check *right now*, before the knight has moved anywhere.
-
-Because of this, **any geometric arrangement capable of killing a king next
-turn is already classified as check on the current turn.** There's no piece
-type in this ruleset whose kill-capability is created by the same move that
-executes the kill — the capability (sightline, shared file, jump-adjacency)
-always pre-exists the move. Combined with the invariant in §6.1, this means:
-
-> If it is White's turn, Black's king cannot be in a position where any
-> White move would destroy it — because that would mean Black started their
-> turn in check with no way to escape, which is a terminal loss that would
-> have already ended the game.
-
-**Practical consequence:** code paths in `AI.py`/`OPAI.py` that check "did my
-move just remove the opponent's king" (`find_king_pos(...) is None`,
-`not sim.find_king_pos(...)`, etc.) are checking for a condition that can
-never actually occur during normal search on a reachable position. They are
-not wrong to have — they're a cheap fast-path stand-in for the more
-expensive "did I deliver checkmate" computation, and they're harmless to
-leave in place — but removing them (as done in `AI.py` v118) is a safe,
-verified simplification, not a behavioral change. `AI.py` v117/v118 and
-`OPAI.py` are provably equivalent in every search decision on any position
-the UI will ever hand them.
-
-### 6.3 Where this *used* to be false, and why it isn't anymore
-
-Before the FEN-legality check in §6.1 existed, a hand-crafted FEN could
-violate the invariant (e.g. loading a position where Black's king is already
-in an unescapable evaporation threat, but it's recorded as White's move).
-That was the one gap where the "unreachable" argument didn't hold — a
-custom-loaded, non-self-play position could theoretically make the
-otherwise-dead king-capture code paths live for one move. That gap is now
-closed at the UI layer. If FEN loading is ever refactored, **this check must
-be preserved** or the invariant silently breaks again.
-
-### 6.4 Tablebases are unaffected by any of this
-
-The tablebase generator (`TablebaseGenerator.py`) enforces the same
-own-king-first ordering independently, in every transition worker (3-man,
-4-man same-side, 4-man cross, 5-man same-side, 5-man cross) — e.g.:
-```python
-if is_in_check(board, 'white'): board.unmake_move(record); continue   # legality first
-...
-if not bkp or not has_legal_moves(board, 'black'):
-    immediate_win = True; ...                                        # mate check second
-```
-Tablebase files legitimately contain many positions that are *unreachable
-from the starting position of a real game* — that's normal and expected for
-any tablebase, chess or otherwise. What matters is that every stored
-position is **legal in isolation** (side not to move isn't in check, kings
-aren't overlapping/adjacent-illegally, pawns aren't on illegal ranks), which
-the generator guarantees independently of anything the live UI does. The
-tablebase was never at risk from the FEN-loading gap described in §6.3.
-
-- **Canonical Storage and Ghost Mirrors:** The 16-bit tablebase files ONLY store 
-  the canonical representation of a position (where the White King is reflected 
-  into the bottom-left a1-d4 triangle). Symmetrical "mirror" indices are left 
-  un-evaluated as `0`. Any probing logic or viewer MUST translate a position into 
-  its canonical tuple before querying the array, otherwise it will falsely read 
-  un-evaluated "ghost mirrors" as Draws (0).
-
-- **Evaluation Perspective Contract:** Probing routines (`tb_manager.probe()`) return 
-  absolute evaluations from White's perspective (positive = White winning, negative = 
-  Black winning). Any reporting or search pipeline expecting mover-relative scores 
-  must convert Black-to-move results accordingly before passing them to UI dispatchers.
-
-### 6.5 Performance-sensitive rules
-
-- **Stalemate is a loss, so don't add expensive legal-move checks to
-  `qsearch`.** The engine already starves the opponent naturally at the
-  horizon via static eval; there's no correctness gap to patch. The one
-  `has_legal_moves()` call that does exist in `qsearch` is safe to keep,
-  specifically *because* `has_legal_moves` short-circuits on the first legal
-  move found — it does not enumerate all moves, so it's effectively O(1) in
-  any position that isn't a genuine dead end.
-
-- **Keep pruning conservative.** A single AoE knight or queen move can swing
-  material by 3000+ points. Standard-chess-tuned LMR/futility margins will
-  blind the engine to these tactics. Additionally, because a quiet King move 
-  can close a mating net and end the game, **Late Move Reduction (LMR) must 
-  be artificially suppressed in the endgame** (e.g., when `total_pieces <= 6`). 
-  Don't tighten pruning margins without re-testing against `OPAI.py`.
-
-- **Don't hand-roll 5-piece endgame heuristics.** The tablebase already
-  solves these exactly; heuristic code would only risk disagreeing with it.
-
-- **Use Tuple Iteration over Range Indexing.** In `GameLogic.py`, raycasts use 
-  precomputed tuples of tuples (e.g., `for ray in RAYS_ORTHOGONAL[sq]:`). Do NOT 
-  replace this with `for i in range(4): ray = RAYS_ORTHOGONAL[sq][i]`. CPython 
-  iterates over tuples at native C-speed; forcing integer assignment and double 
-  index lookups in the hottest loop of the engine causes a measurable KNPS drop.
-
-### 6.6 `OPAI.py` is a frozen baseline — its *behavior* is frozen, not its source layout
-
-`OPAI.py` exists solely as a stable comparison target for measuring whether
-changes to `AI.py` are actual improvements (via the "AI vs OP Series" mode)
-rather than illusory ones. What must stay frozen is its **output**: move
-selection, evaluation scores, and search behavior on any given position must
-never change as a side effect of a refactor. This means:
-
-- **Functional changes are forbidden.** Never back-port `AI.py`'s search
-  logic, evaluation function, or pruning constants into `OPAI.py`, even for
-  "harmless" cleanups — a frozen baseline is only useful if its move choices
-  stay bit-for-bit stable across comparison runs.
-- **Non-functional changes are fine — including in `OPAI.py`.** Moving code
-  verbatim to eliminate duplication (e.g. extracting SAN formatting, PV
-  reconstruction, or tablebase move selection into a shared helper in
-  `EngineRuntime.py` and calling it from both files) is explicitly allowed
-  and encouraged, *provided* the moved code is unmodified and produces
-  identical output to what it replaced. If a change couldn't be caught by
-  running `OPAI.py` against itself before/after and diffing every move of
-  every game, it's non-functional and fine. If it could, it isn't.
-- **Tunable strategy is never shared, even between two files that currently
-  agree.** Time-allocation formulas (`_search_time_budget` and its `TIME_*`
-  constants), pruning margins, and similar tunables live independently in
-  each bot's class body — never in `EngineRuntime.py` — specifically so that
-  retuning one bot later can't silently retune the other by way of a shared
-  function. `AI.py` and `OPAI.py` currently duplicate this formula with
-  identical values; that's expected, not a sign it should be merged.
-
-Shared backend plumbing lives in `EngineRuntime.py`. It owns Zobrist
-hashing, FEN/opening-book helpers, worker dispatch, tablebase enable/disable
-plumbing, time-check *mask* budgeting (not the time-allocation formula —
-see above), bot lifecycle updates such as new-game cache resets, and pure
-reporting/PV/tablebase-move plumbing (`format_bot_move`, `get_pv_data`,
-`get_best_tablebase_move_with_eval`, `report_root_tb_solution`,
-`get_root_tb_eval_relative`) along with the shared `TTEntry`/`TT_FLAG_*`
-transposition-table record format. Each worker still holds exactly one
-separate bot instance, so `AI.py` and `OpponentAI.py` do not share a
-transposition table, eval cache, history table, cancellation event, or
-tablebase manager — only the code that operates on them is shared, never the
-data itself.
-
-### 6.7 Search-side twofold repetition policy
-
-While the UI and actual game rules strictly require a 3-fold repetition to 
-declare a draw, the engine's internal search (`AI.py`) intentionally uses a 
-stricter **2-fold repetition policy**. Inside `negamax` and `qsearch`, if a 
-position has occurred even *once* before (either in the real game history or 
-the current hypothetical search path), it is instantly scored as a draw. 
-This is a vital search heuristic: it forces winning bots to seek progress 
-rather than shuffling, helps losing bots find swindles, and prunes massive 
-subtrees a full ply early. **Do not "fix" the search to wait for a 3rd occurrence.**
-
----
-
-## 7. Quick Reference for AI Assistants
-
-If you're reviewing or modifying this codebase, before proposing a change:
-
-1. Read §6 in full. If your review is about to raise "the king could get
-   captured" or "the tablebase might miss unreachable positions," it's
-   already answered above — check whether the FEN-legality guard (§6.1,
-   point 3) is intact before re-opening either question.
-2. Never edit `OPAI.py`'s search or evaluation logic (§6.6).
-3. Don't propose adding legal-move enumeration to `qsearch` — it's already
-   there in the one place it's needed, and it's cheap (§6.5).
-4. Don't propose tightening pruning margins without flagging that it needs
-   an AI-vs-OP regression run — Jungle Chess's swing sizes break assumptions
-   pruning margins are normally tuned against. Tests shown to lose elo: LMP.
+This is deliberate and does **not** flip when you use "Flip View" or when
+you're playing as Black — the bar always reads the same way a printed
+newspaper diagram would, regardless of which side you're sitting on.
