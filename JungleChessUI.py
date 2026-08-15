@@ -1,4 +1,4 @@
-# JungleChessUI.py (v17.1 - Cleanup duplicate code)
+# JungleChessUI.py (v17.2 - Fix rare visual eval flipping bug)
 
 import tkinter as tk
 from tkinter import ttk, messagebox
@@ -853,7 +853,7 @@ class EnhancedChessApp:
             # --- AUTO ADJUDICATE TB DRAW ---
             if not self.game_over and self.auto_adjudicate_var.get() and \
                self.game_mode.get() != GameMode.HUMAN_VS_HUMAN.value:
-                if self.last_eval_depth == "TB" and abs(self.last_eval_score) < 0.05:
+                if self.last_eval_depth == "TB" and self.last_eval_score == 0:
                     self.game_over = True
                     self.game_result = ("tb draw", None)
                     self.update_ui_after_state_change()

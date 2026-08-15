@@ -437,7 +437,7 @@ class OpponentAI:
                     # Root is in a tablebase — report TB as authoritative
                     self.tb_hits += 1
                     depth_label = "TB"
-                    report_score = root_tb_val
+                    report_score = root_tb_val if self.color == 'white' else -root_tb_val
                 else:
                     depth_label = "TB" if (not self.used_heuristic_eval and self.tb_hits > 0) else current_depth
                     report_score = best_score_this_iter
@@ -541,7 +541,7 @@ class OpponentAI:
                         # Root is in a tablebase — report TB as authoritative
                         self.tb_hits += 1
                         depth_label = "TB"
-                        report_score = root_tb_val
+                        report_score = root_tb_val if self.color == 'white' else -root_tb_val
                     else:
                         depth_label = "TB" if (not self.used_heuristic_eval and self.tb_hits > 0) else current_depth
                         report_score = best_score_this_iter
