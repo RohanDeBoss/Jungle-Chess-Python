@@ -269,6 +269,11 @@ tablebase was never at risk from the FEN-loading gap described in §6.3.
   its canonical tuple before querying the array, otherwise it will falsely read 
   un-evaluated "ghost mirrors" as Draws (0).
 
+- **Evaluation Perspective Contract:** Probing routines (`tb_manager.probe()`) return 
+  absolute evaluations from White's perspective (positive = White winning, negative = 
+  Black winning). Any reporting or search pipeline expecting mover-relative scores 
+  must convert Black-to-move results accordingly before passing them to UI dispatchers.
+
 ### 6.5 Performance-sensitive rules
 
 - **Stalemate is a loss, so don't add expensive legal-move checks to
