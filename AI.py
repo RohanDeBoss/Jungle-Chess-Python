@@ -1,4 +1,4 @@
-# AI.py (v128 -  Fast IN_DICT)
+# AI.py (v128.1 - Widen asp)
 
 import time
 import random
@@ -112,7 +112,9 @@ class ChessBot:
     OPENING_PAWN_CENTER_WEIGHT = 10
     OPENING_CENTER_PAWN_BONUS = 28
     OPENING_CENTRAL_FILES = (COLS // 2 - 1, COLS // 2)
-    ASP_WINDOW_INIT = 250
+    
+    # 2. WIDENED ASPIRATION WINDOW (Handles Jungle Chess volatility, reduces re-searches)
+    ASP_WINDOW_INIT = 450      
     ASP_MAX_RETRIES = 3
 
     # --- TIME MANAGEMENT (tunable — deliberately duplicated, not shared) ---
