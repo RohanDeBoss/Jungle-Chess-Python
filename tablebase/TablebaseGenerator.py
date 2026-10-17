@@ -1,16 +1,22 @@
 # TablebaseGenerator.py (v24.1 - Crash fix for 5-man cross tables)
 
 import os
+import sys
 import time
 import signal
 from concurrent.futures import ProcessPoolExecutor
 import multiprocessing
 from itertools import combinations_with_replacement
 import numpy as np
+
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+
 from GameLogic import *
 from array import array
 
-TB_DIR = "TBs"
+TB_DIR = os.path.join(PROJECT_ROOT, "TBs")
 os.makedirs(TB_DIR, exist_ok=True)
 
 TB_SUFFIX = "_tb16.bin"

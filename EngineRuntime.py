@@ -364,7 +364,7 @@ def generate_series_opening_sequence(board, num_plies=2):
     return opening_sequence
 
 def write_series_stats_file(out_path, move_stats, series_stats, main_name, op_name, use_clock, time_control_sec, increment, fixed_depth, total_series_games):
-    """Calculates trimmed means/aggregates and writes AI_Series_Results.txt."""
+    """Calculate trimmed means/aggregates and write AI_Series_Results.txt."""
     if not move_stats: return
     
     def _summarise(stats):

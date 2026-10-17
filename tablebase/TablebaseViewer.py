@@ -1,14 +1,19 @@
 # TablebaseViewer.py (v2.2 - Drawn dont show duplicates)
 
 import os
+import sys
 import numpy as np
 import tkinter as tk
 from tkinter import ttk, messagebox
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+
 from GameLogic import Board, King, Queen, Rook, Bishop, Knight, Pawn, is_in_check
-from TablebaseManager import TablebaseManager
+from tablebase.TablebaseManager import TablebaseManager
 
 # --- CONFIGURATION ---
-TB_DIR = "TBs"
+TB_DIR = os.path.join(PROJECT_ROOT, "TBs")
 TB_SUFFIX = "_tb16.bin"
 SQUARE_SIZE = 60
 BOARD_COLOR_1 = "#D2B48C"
@@ -260,9 +265,8 @@ class TBViewerApp:
         self.bucket_listboxes[key] = listbox
 
     def load_file_list(self):
-        tb_path = "TBs" if os.path.exists("TBs") else "tablebases"
-        if not os.path.exists(tb_path): os.makedirs(tb_path)
-        files = [f for f in os.listdir(tb_path) if f.endswith(TB_SUFFIX)]
+        os.makedirs(TB_DIR, exist_ok=True)
+        files = [f for f in os.listdir(TB_DIR) if f.endswith(TB_SUFFIX)]
         if not files: return
 
         for f in sorted(files):
@@ -330,8 +334,7 @@ class TBViewerApp:
         threading.Thread(target=self._tb_search_thread, args=(filename, self.mode_combo.get()), daemon=True).start()
 
     def _tb_search_thread(self, filename, view_mode):
-        tb_dir = "TBs" if os.path.exists("TBs") else "tablebases"
-        filepath = os.path.join(tb_dir, filename)
+        filepath = os.path.join(TB_DIR, filename)
         metadata = parse_tablebase_filename(filename)
         
         if metadata is None:

@@ -137,7 +137,7 @@ be preserved** or the invariant silently breaks again.
 
 ### 2.4 Tablebases are unaffected by any of this
 
-The tablebase generator (`TablebaseGenerator.py`) enforces the same
+The tablebase generator (`tablebase/TablebaseGenerator.py`) enforces the same
 own-king-first ordering independently, in every transition worker (3-man,
 4-man same-side, 4-man cross, 5-man same-side, 5-man cross) — e.g.:
 ```python

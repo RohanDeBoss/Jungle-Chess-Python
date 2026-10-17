@@ -50,7 +50,8 @@ class TablebaseManager:
         self.tables = {}
         self.full_wdl_tables = set()
         self.signature_map = {}
-        self.tb_dir = "TBs"
+        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        self.tb_dir = os.path.join(project_root, "TBs")
         self.pre_load_all()
 
     def pre_load_all(self):

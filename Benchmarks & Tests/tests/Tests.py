@@ -7,7 +7,7 @@ import os
 # Get the directory where this script is located
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 # Get the parent directory (the main project folder)
-PARENT_DIR = os.path.abspath(os.path.join(SCRIPT_DIR, '..'))
+PARENT_DIR = os.path.abspath(os.path.join(SCRIPT_DIR, '..', '..'))
 # Add the parent directory to the Python path
 if PARENT_DIR not in sys.path:
     sys.path.insert(0, PARENT_DIR)
@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from GameLogic import *
 from AI import ChessBot, MG_PIECE_VALUES, ORDERING_VALUES, TT_FLAG_EXACT, TT_FLAG_LOWERBOUND, board_hash
 from OpponentAI import OpponentAI
-from TablebaseManager import TablebaseManager
+from tablebase.TablebaseManager import TablebaseManager
 
 # Change CWD so that sub-imports (like tablebase loader) work correctly
 os.chdir(PARENT_DIR)
@@ -225,7 +225,7 @@ def make_opponent_ai(board, color):
 def manager_with_table(table_name):
     manager = TablebaseManager()
     if table_name not in manager.tables:
-        raise SkipCase(f"Required table '{table_name}' is not available in tablebases/.")
+        raise SkipCase(f"Required table '{table_name}' is not available in TBs/.")
     return manager
 
 

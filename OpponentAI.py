@@ -3,7 +3,7 @@
 import time
 import random
 from GameLogic import *
-from TablebaseManager import TablebaseManager
+from tablebase.TablebaseManager import TablebaseManager
 from operator import itemgetter
 from EngineRuntime import (
     OPENING_BOOK,

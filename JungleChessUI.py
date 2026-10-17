@@ -100,6 +100,8 @@ class EnhancedChessApp:
 
         self.current_pv_raw  = []
         self.current_pv_san  = []
+        self.current_pv_board = None
+        self.current_pv_turn = None
         self.last_pv_message = None
 
         self.white_playing_bot_type = "main"
@@ -579,6 +581,8 @@ class EnhancedChessApp:
         self.last_eval_depth = None
         self.current_pv_raw  = []
         self.current_pv_san  = []
+        self.current_pv_board = None
+        self.current_pv_turn = None
         self.last_pv_message = None
         self.draw_eval_bar(0)
         self.eval_score_label.config(text="Even")
@@ -646,6 +650,9 @@ class EnhancedChessApp:
         self.last_eval_depth = None
         self.draw_eval_bar(0)
         self.current_pv_raw  = []
+        self.current_pv_san  = []
+        self.current_pv_board = None
+        self.current_pv_turn = None
         self.last_pv_message = None
         self.custom_arrows.clear()
         self.custom_highlights.clear()
@@ -1298,6 +1305,8 @@ class EnhancedChessApp:
                     if self._analysis_output_enabled():
                         self.draw_eval_bar(msg[1], msg[2])
                 elif kind == 'pv':
+                    self.current_pv_board = self.board.clone()
+                    self.current_pv_turn = self.turn
                     self.last_pv_message = msg
                     if self._analysis_output_enabled():
                         self._render_pv()
@@ -1774,6 +1783,11 @@ class EnhancedChessApp:
 
     # ------------------------------------------------------------------ PV hover mini-board
     def on_pv_hover_enter(self, event, move_idx, tag):
+        preview = self._get_pv_preview_state(move_idx)
+        if preview is None:
+            return
+        tt_sim, last_move = preview
+
         self.pv_text.tag_config(tag, background=self.COLORS['accent'],
                                 foreground=self.COLORS['text_light'])
         if getattr(self, 'pv_tooltip', None):
@@ -1787,10 +1801,29 @@ class EnhancedChessApp:
                                     bg=self.COLORS['bg_medium'], highlightthickness=2,
                                     highlightbackground=self.COLORS['accent'])
         self.tt_canvas.pack()
-        tt_sim = self.board.clone()
-        for i in range(move_idx + 1):
-            tt_sim.make_move(*self.current_pv_raw[i])
-        self._draw_tt_board_static(tt_sim, self.current_pv_raw[move_idx])
+        self._draw_tt_board_static(tt_sim, last_move)
+
+    def _get_pv_preview_state(self, move_idx):
+        if (self.current_pv_board is None or self.current_pv_turn is None
+                or not 0 <= move_idx < len(self.current_pv_raw)):
+            return None
+
+        preview_board = self.current_pv_board.clone()
+        turn = self.current_pv_turn
+        for move in self.current_pv_raw[:move_idx + 1]:
+            start, end = move
+            sr, sc = start
+            er, ec = end
+            if not (0 <= sr < ROWS and 0 <= sc < COLS
+                    and 0 <= er < ROWS and 0 <= ec < COLS):
+                return None
+            moving_piece = preview_board.grid[sr][sc]
+            if moving_piece is None or moving_piece.color != turn:
+                return None
+            preview_board.make_move(start, end)
+            turn = "black" if turn == "white" else "white"
+
+        return preview_board, self.current_pv_raw[move_idx]
 
     def on_pv_hover_leave(self, event, tag):
         self.pv_text.tag_config(tag, background="", foreground="")

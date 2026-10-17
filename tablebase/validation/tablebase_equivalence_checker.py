@@ -3,12 +3,19 @@ import argparse
 import json
 import os
 import re
+import sys
 from dataclasses import dataclass
 
 import numpy as np
 
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.abspath(os.path.join(SCRIPT_DIR, "..", ".."))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+os.chdir(PROJECT_ROOT)
+
 from GameLogic import Board, King, Queen, Rook, Bishop, Knight, Pawn, is_in_check
-from TablebaseManager import TablebaseManager
+from tablebase.TablebaseManager import TablebaseManager
 
 
 OLD_SUFFIX = "_tb16.bin"
@@ -363,7 +370,10 @@ def main():
     parser.add_argument("--new-longest", default=NEW_LONGEST)
     parser.add_argument("--samples-per-table", type=int, default=12)
     parser.add_argument("--seed", type=int, default=12345)
-    parser.add_argument("--output", default="tablebase_equivalence_report.json")
+    parser.add_argument(
+        "--output",
+        default=os.path.join(SCRIPT_DIR, "tablebase_equivalence_report.json"),
+    )
     args = parser.parse_args()
 
     old_bases = list_table_bases(args.old_dir, args.old_suffix)

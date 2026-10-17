@@ -6,8 +6,12 @@ import random
 import os
 import json
 import glob
+import sys
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
 from GameLogic import *
-from TablebaseManager import TablebaseManager
+from tablebase.TablebaseManager import TablebaseManager
 
 # ==============================================================================
 # MODULE-LEVEL SETUP (DO NOT MODIFY)
