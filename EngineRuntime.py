@@ -1,4 +1,4 @@
-# EngineRuntime.py (v1.3 - code refactoring)
+# EngineRuntime.py (v1.4 - Persistent-search deadline and TB PV fixes)
 
 import gc
 import glob
@@ -201,6 +201,9 @@ def update_bot_runtime_state(bot, board, color, position_counts, comm_queue,
     bot.ply_count = ply_count
     bot.game_mode = game_mode
 
+    # A previous timed make_move() can leave an expired deadline behind.  An
+    # analysis/ponder request has no deadline, so it must start clean.
+    bot.stop_time = None
     bot.time_left = kwargs.get("time_left")
     bot.increment = kwargs.get("increment")
     bot.use_opening_book = kwargs.get("use_opening_book", True)
@@ -537,7 +540,7 @@ def report_root_tb_solution(bot, tb_move, tb_eval, perfect_play=False, emit_move
     move_num = (bot.ply_count // 2) + 1
     prefix   = f"{move_num}. " if bot.color == 'white' else f"{move_num}... "
     pv_str   = prefix + format_bot_move(bot, bot.board, tb_move)
-    bot.comm_queue.put(('pv', display_eval, "TB", [pv_str], [tb_move]))
+    bot.comm_queue.put(('pv', eval_for_ui, "TB", [pv_str], [tb_move]))
 
     if emit_move: bot._report_move(tb_move)
     return True

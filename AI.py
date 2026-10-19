@@ -653,8 +653,8 @@ class ChessBot:
         # cause the engine to walk a real game into an unseen threefold (it
         # now refuses to volunteer for even a SECOND occurrence), and it
         # prunes repeating subtrees a full ply earlier without adding any new
-        # pruning heuristic. OPAI.py is intentionally left on the old
-        # (threefold-only) policy so it remains a valid A/B baseline.
+        # pruning heuristic. OPAI uses this same policy; it remains an A/B
+        # baseline through its independent search and evaluation tuning.
         hash_val = current_hash if current_hash is not None else board_hash(board, turn)
         if ply > 0:
             if hash_val in self.position_counts:

@@ -100,8 +100,8 @@ taken off the board.
 would be destroyed by *any* legal move available to the opponent on their
 next turn, including all of the special attacks below.
 
-- **Explosive check** — your king sits adjacent to a piece (yours or
-  theirs) that an enemy queen could capture, because the resulting
+- **Explosive check** — your king sits adjacent to one of your own
+  pieces that an enemy queen could capture, because the resulting
   explosion would reach your king. Example: an enemy queen attacks a pawn
   on f2; a king on e2 is in check, because Qxf2 would explode and kill it.
 - **Evaporation check** — your king sits on a square an enemy knight could
@@ -151,6 +151,15 @@ running yourself out of moves. In practice this is rarely a concern:
   heuristics, no guesswork.
 
 ---
+
+### 5.1 King and Rook versus King
+
+Unlike standard chess, a lone rook usually cannot force checkmate. The
+defending king can step two squares, so it can jump straight over the rook's
+rank or file, and it only needs its landing square to be safe. The rook's
+piercing adds nothing here because a lone king leaves nothing to pierce.
+Mate is only possible in a minority of positions, such as when the defending
+king is already boxed in near an edge or corner.
 
 ## 6. Reading the Evaluation Bar
 

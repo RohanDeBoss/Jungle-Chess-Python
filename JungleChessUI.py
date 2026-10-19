@@ -1,4 +1,4 @@
-# JungleChessUI.py (v17.2 - Fix rare visual eval flipping bug)
+# JungleChessUI.py (v17.3 - Import, worker-cache, and move-list fixes)
 
 import tkinter as tk
 from tkinter import ttk, messagebox
@@ -442,7 +442,7 @@ class EnhancedChessApp:
             command=lambda _=None: self._update_time_control_label())
         self.time_control_slider.set(int(self.time_control_seconds.get()))
         self.time_control_slider.pack(fill=tk.X, pady=(2, 2))
-        self.time_control_slider.bind("<ButtonRelease-1>", lambda e: self.reset_game())
+        self.time_control_slider.bind("<ButtonRelease-1>", self._on_time_slider_release)
 
         self.bottom_tools_frame = ttk.Frame(parent, style='Left.TFrame')
         self.bottom_tools_frame.pack(side=tk.BOTTOM, fill=tk.X, pady=(0, 10))
@@ -674,6 +674,12 @@ class EnhancedChessApp:
         self.master.clipboard_clear()
         self.master.clipboard_append(fen)
 
+    def _reject_fen(self, fen, message):
+        """Show an error and reset, while preserving typed FEN for correction."""
+        messagebox.showerror("Invalid FEN", message)
+        self.reset_game(schedule_ai=False)
+        self.fen_entry.insert(0, fen)
+
     def load_fen_from_entry(self):
         fen = self.fen_entry.get().strip()
         if not fen:
@@ -689,21 +695,27 @@ class EnhancedChessApp:
                 c += int(ch)
             else:
                 pc = _FEN_CHAR_TO_CLASS.get(ch.lower())
-                if pc:
-                    self.board.add_piece(pc("white" if ch.isupper() else "black"), r, c)
+                if pc is None or not (0 <= r < ROWS and 0 <= c < COLS):
+                    self._reject_fen(fen, f"Unrecognised piece or off-board square near '{ch}'.")
+                    return
+                self.board.add_piece(pc("white" if ch.isupper() else "black"), r, c)
                 c += 1
         self.turn = "white" if (parts[1] if len(parts) > 1 else 'w').lower() == 'w' else "black"
         
         # --- JUNGLE CHESS LEGALITY CHECK ---
-        if not self.board.white_king_pos or not self.board.black_king_pos:
-            messagebox.showerror("Invalid FEN", "Illegal Position: Both Kings must be present on the board.")
-            self.reset_game(schedule_ai=False)
+        all_pieces = self.board.white_pieces + self.board.black_pieces
+        if sum(1 for p in self.board.white_pieces if type(p) is King) != 1 or \
+           sum(1 for p in self.board.black_pieces if type(p) is King) != 1:
+            self._reject_fen(fen, "Illegal Position: each side must have exactly one King.")
+            return
+        if any(type(p) is Pawn and p.pos[0] in (0, ROWS - 1) for p in all_pieces):
+            self._reject_fen(fen, "Illegal Position: pawns cannot stand on the first or last rank "
+                                  "(the tablebases do not cover those squares).")
             return
             
         passive_color = "black" if self.turn == "white" else "white"
         if is_in_check(self.board, passive_color):
-            messagebox.showerror("Invalid FEN", f"Illegal Position: The side not to move ({passive_color}) is already in direct/indirect check.")
-            self.reset_game(schedule_ai=False)
+            self._reject_fen(fen, f"Illegal Position: The side not to move ({passive_color}) is already in direct/indirect check.")
             return
         # -----------------------------------
 
@@ -767,7 +779,13 @@ class EnhancedChessApp:
             else:
                 messagebox.showwarning("PGN Error", f"Could not parse: {pgn_text[:20]}...")
                 break
-        self.last_clock_tick = time.time()
+        # Replaying moves awards an increment per ply; loaded games begin with
+        # a clean clock state just like FEN imports.
+        self._reset_clock_state()
+        self.render_clocks()
+        if not self.game_over and self.game_mode.get() == GameMode.HUMAN_VS_BOT.value \
+                and self.turn != self.human_color:
+            self.master.after(self._get_ai_move_delay(), self._make_game_ai_move)
 
     # ------------------------------------------------------------------ move history UI
     def update_moves_list(self):
@@ -782,7 +800,16 @@ class EnhancedChessApp:
         for i in range(1, len(self.full_history)):
             m = self.full_history[i][2]
             if m:
-                formatted.append(format_move_san(self.full_history[i-1][0], self.full_history[i][0], m))
+                prev_board, prev_turn, _ = self.full_history[i-1]
+                san_cache = self.__dict__.setdefault('_san_cache', {})
+                if len(san_cache) > 100_000:
+                    san_cache.clear()
+                key = (board_hash(prev_board, prev_turn), m)
+                san = san_cache.get(key)
+                if san is None:
+                    san = format_move_san(prev_board, self.full_history[i][0], m)
+                    san_cache[key] = san
+                formatted.append(san)
 
         pairs = []
         if start_turn == 'black' and formatted:
@@ -1047,14 +1074,14 @@ class EnhancedChessApp:
 
     # ------------------------------------------------------------------ resets and modes
     def clear_hash_manually(self):
-        self._force_clear_hash = True
+        self._pending_hash_clear = {'main', 'op'}
         self._stop_ai_process(invalidate_task=True)
         print("--- Transposition Table & History Cleared ---")
         if self.analysis_mode_var.get() and self.game_mode.get() == GameMode.HUMAN_VS_HUMAN.value:
             self._update_analysis_after_state_change()
 
     def reset_game(self, schedule_ai=True):
-        self._force_clear_hash = True
+        self._pending_hash_clear = {'main', 'op'}
         if self.game_mode.get() != GameMode.AI_VS_AI.value:
             self.ai_series_running = False
         self._stop_ai_process()
@@ -1320,8 +1347,10 @@ class EnhancedChessApp:
                         self.active_worker_name = None
                         self.analysis_thinking  = False
                         self._execute_ai_move(msg[1])
-        except Exception:
-            pass
+        except Exception as exc:
+            if not self._shutting_down and type(exc).__name__ != 'Empty':
+                import traceback
+                traceback.print_exc()
         finally:
             if not self._shutting_down:
                 try:
@@ -1366,6 +1395,7 @@ class EnhancedChessApp:
         inc = self.increment if self.use_clock_var.get() else None
 
         self.current_task_id += 1  # Increment task generation
+        worker_key = 'main' if bot_class is ChessBot else 'op'
 
         task = {
             'board':            self.board.clone(),
@@ -1380,10 +1410,10 @@ class EnhancedChessApp:
             'use_opening_book': self.use_opening_book_var.get(),
             'use_tablebase':    self.use_tablebase_var.get(),
             'show_tt_fullness': self.show_tt_fullness_var.get(),
-            'clear_hash':       getattr(self, '_force_clear_hash', False),
+            'clear_hash':       worker_key in getattr(self, '_pending_hash_clear', ()),
             'task_id':          self.current_task_id
         }
-        self._force_clear_hash = False  # Reset flag after consuming
+        getattr(self, '_pending_hash_clear', set()).discard(worker_key)
 
         self.analysis_thinking = (bot_name == self.ANALYSIS_AI_NAME)
 
@@ -1445,6 +1475,15 @@ class EnhancedChessApp:
             self.master.after(50, lambda: self._start_ai_process(ChessBot, self.ANALYSIS_AI_NAME, 99))
 
     # ------------------------------------------------------------------ misc helpers
+    def _on_time_slider_release(self, event=None):
+        """Confirm before a time-control change discards an active game."""
+        in_progress = self.history_pointer > 0 and not self.game_over
+        if in_progress and not messagebox.askyesno(
+                "Change time control", "Changing the time control starts a new game. Continue?"):
+            self._update_time_control_label()
+            return
+        self.reset_game()
+
     def _update_time_control_label(self):
         t = int(self.time_control_seconds.get())
         self.time_control_label.config(text=f"Time Control: {t // 60:02d}:{t % 60:02d}")

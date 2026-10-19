@@ -179,7 +179,7 @@ tablebase was never at risk from the FEN-loading gap described in §2.3.
   material by 3000+ points. Standard-chess-tuned LMR/futility margins will
   blind the engine to these tactics. Additionally, because a quiet King move 
   can close a mating net and end the game, **Late Move Reduction (LMR) must 
-  be artificially suppressed in the endgame** (e.g., when `total_pieces <= 6`). 
+  be artificially dampened in the endgame (reduction - 1, not disabled)** (e.g., when `total_pieces <= 6`).
   Don't tighten pruning margins without re-testing against `OPAI.py`.
 
 - **Don't hand-roll 5-piece endgame heuristics.** The tablebase already
@@ -244,6 +244,17 @@ rather than shuffling, helps losing bots find swindles, and prunes massive
 subtrees a full ply early. **Do not "fix" the search to wait for a 3rd occurrence.**
 
 ---
+
+### 2.8 Lone-slider evaluation dampening is intentional
+
+`evaluate_board` divides a winning score by 8 when the side ahead has no
+pawns, knights or queens and fewer than two rooks+bishops combined
+(`can_force_mate`). This deliberately includes a lone rook. Standard-chess
+intuition does not transfer: the 2-square king step lets the defender jump a
+rook's rank/file, and piercing adds nothing against a bare king. Evidence:
+`K_Rook_K` has 986 decisive positions versus 55,475 drawn in
+`TBs/longest_mates_tb16.tsv`. Do not change the condition to `rook_counts == 0`
+without re-checking those numbers.
 
 ## 3. Quick Reference for AI Assistants
 

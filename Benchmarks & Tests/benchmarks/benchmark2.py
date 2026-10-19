@@ -50,7 +50,7 @@ from GameLogic import (  # noqa: E402
 
 LOG_FILE = os.path.join(SCRIPT_DIR, "benchmarks.tsv")
 JSON_DIR = os.path.join(SCRIPT_DIR, "benchmark_reports")
-BENCHMARK_SCRIPT_VERSION = "2.0"
+BENCHMARK_SCRIPT_VERSION = "2.1"
 
 PIECE_FROM_FEN = {
     "p": Pawn,
@@ -311,14 +311,14 @@ def detect_engine_version():
 def counts_by_color(board):
     result = {}
     for color in ("white", "black"):
-        counts = board.piece_counts[color]
+        counts = board.piece_counts_z[color]
         result[color] = {
-            "king": int(counts[King]),
-            "queen": int(counts[Queen]),
-            "rook": int(counts[Rook]),
-            "bishop": int(counts[Bishop]),
-            "knight": int(counts[Knight]),
-            "pawn": int(counts[Pawn]),
+            "king": int(counts[King.z_idx]),
+            "queen": int(counts[Queen.z_idx]),
+            "rook": int(counts[Rook.z_idx]),
+            "bishop": int(counts[Bishop.z_idx]),
+            "knight": int(counts[Knight.z_idx]),
+            "pawn": int(counts[Pawn.z_idx]),
         }
     return result
 

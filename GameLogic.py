@@ -1,4 +1,4 @@
-# GameLogic.py (v71.2 - Microoptimizations)
+# GameLogic.py (v71.3 - Knight collateral scoring fix)
 
 
 # -----------------------------------------------------------------------
@@ -764,8 +764,8 @@ def is_square_attacked(board, r, c, attacking_color):
         for piece in board.pieces_by_z[attacking_color][4]:
             if piece.pos:
                 q_idx = piece.pos[0] * 8 + piece.pos[1]
-                for i in range(8):
-                    for cr, cc in RAYS[q_idx][i]:
+                for ray in RAYS[q_idx]:
+                    for cr, cc in ray:
                         target = grid[cr][cc]
                         if target is not None:
                             if target.color == defending_color:
@@ -897,14 +897,14 @@ def fast_approximate_material_swing(board, move, moving_piece, target_piece, pie
                 if target.z_idx == 1:
                     for pr, pc in KNIGHT_ATTACKS_FROM[(r, c)]:
                         if (pr, pc) == move[1]:
-                            if not (seen_passive_mask & 2): # 1 << 1 (Knight z_idx is 1)
+                            if not (seen_passive_mask & (1 << (pr * 8 + pc))):
                                 swing -= piece_values_list[1]
-                                seen_passive_mask |= 2
+                                seen_passive_mask |= 1 << (pr * 8 + pc)
                         else:
                             ptarget = board.grid[pr][pc]
                             if ptarget and ptarget.color == my_color:
                                 pz = ptarget.z_idx
-                                bit = 1 << pz
+                                bit = 1 << (pr * 8 + pc)
                                 if not (seen_passive_mask & bit):
                                     swing -= piece_values_list[pz]
                                     seen_passive_mask |= bit

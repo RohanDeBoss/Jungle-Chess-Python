@@ -1,4 +1,4 @@
-# Tests.py (v8.2 - New test added)
+# Tests.py (v8.3 - Runtime-deadline and knight-collateral regressions)
 
 import sys
 import os
@@ -1200,7 +1200,51 @@ def case_robustness_illegal_position_king_kill_ordering():
     return details
 
 
+def case_regression_stale_stop_time_reset():
+    board = Board()
+    bot = ChessBot(board, "white", {}, _DummyQueue(), _DummyEvent(), use_tablebase=False)
+    bot.stop_time = 1.0  # Expired deadline left by a previous timed search.
+    bot.update_state(board, "white", {}, _DummyQueue(), _DummyEvent(), "Analysis", 0, "human")
+    expect(bot.stop_time is None, f"Stale stop_time survived update_state: {bot.stop_time}")
+    return ["update_state clears the previous search deadline."]
+
+
+def case_regression_knight_collateral_per_square():
+    # Black Nd6 jumps to e4, b5 and f5. White Nd2-e4 kills d6, but our knight
+    # and both pawns die too: +950 -950 -100 -100 = -200.
+    board = make_board([
+        ("white", King, (7, 7)),
+        ("white", Knight, (6, 3)),
+        ("white", Pawn, (3, 5)),
+        ("white", Pawn, (3, 1)),
+        ("black", King, (0, 7)),
+        ("black", Knight, (2, 3)),
+    ])
+    move = ((6, 3), (4, 4))
+    swing, _ = fast_approximate_material_swing(board, move, board.grid[6][3], None, ORDERING_VALUES)
+    details = position_details(board, "Knight landing in an enemy knight zone with two friendly pawns exposed")
+    details.append(f"Material swing calculated: {swing}")
+    expect(swing == -200, f"Regression detected: swing was {swing}, expected -200 (second pawn not charged).")
+    after = board.clone()
+    after.make_move(move[0], move[1])
+    expect(len(after.white_pieces) == 1 and len(after.black_pieces) == 1,
+           "Reference make_move disagrees with the expected casualties.")
+    return details
+
+
 CASES = [
+    TestCaseSpec(
+        "regression_stale_stop_time_reset",
+        "engine_internals",
+        "Verify a reused persistent bot does not carry an expired stop_time into ponder_indefinitely.",
+        case_regression_stale_stop_time_reset,
+    ),
+    TestCaseSpec(
+        "regression_knight_collateral_per_square",
+        "engine_internals",
+        "Verify the knight swing heuristic charges every friendly piece in an enemy knight's zone, keyed by square.",
+        case_regression_knight_collateral_per_square,
+    ),
     TestCaseSpec(
         "move_tracking_edge_cases",
         "engine_internals",
