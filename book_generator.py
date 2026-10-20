@@ -15,13 +15,13 @@ BOOK_DIR         = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ope
 if not os.path.exists(BOOK_DIR):
     os.makedirs(BOOK_DIR)
     
-BOOK_FILE        = os.path.join(BOOK_DIR, "opening_book_6-3-9-2-250.json")
-PARTIAL_BOOK_FILE= os.path.join(BOOK_DIR, "opening_book_6-3-9-2-250_partial.json")
+BOOK_FILE        = os.path.join(BOOK_DIR, "opening_book_6-3-8-2-300.json")
+PARTIAL_BOOK_FILE= os.path.join(BOOK_DIR, "opening_book_6-3-8-2-300_partial.json")
 BOOK_PLY_DEPTH   = 6    # 6 plies = 3 full moves
 BRANCHING_FACTOR = 3    # Top 3 responses prevents exponential explosion
-SEARCH_DEPTH     = 9    # Deep enough to avoid tactical blunders in side-lines
+SEARCH_DEPTH     = 8    # Deep enough to avoid tactical blunders in side-lines
 ROOT_DEPTH_BONUS = 2    # Extra depth added ONLY to Ply 0 and Ply 1
-EVAL_TOLERANCE   = 250  # Discard moves that are worse than the best by 3 pawns
+EVAL_TOLERANCE   = 300  # Discard moves that are worse than the best by 3 pawns
 
 
 _CLS_TO_CHAR = {Pawn: 'P', Knight: 'N', Bishop: 'B', Rook: 'R', Queen: 'Q', King: 'K'}

@@ -97,6 +97,7 @@ def incremental_hash(parent_hash, record_tuple):
 # ---------------------------------------------------------------------------
 _CLS_TO_CHAR = {Pawn: "P", Knight: "N", Bishop: "B", Rook: "R", Queen: "Q", King: "K"}
 OPENING_BOOK = {}
+OPENING_BOOK_FILENAME = None
 
 
 def board_to_fen(board, turn):
@@ -146,6 +147,7 @@ for _book_filename in _find_opening_book_files():
     try:
         with open(_book_filename, "r", encoding="utf-8") as f:
             OPENING_BOOK = json.load(f)
+        OPENING_BOOK_FILENAME = _book_filename
         break
     except Exception as e:
         print(f"Opening book not found or invalid at {_book_filename}: {e}")

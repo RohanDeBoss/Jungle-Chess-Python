@@ -2,6 +2,7 @@
 
 import tkinter as tk
 from tkinter import ttk, messagebox
+import os
 import math
 import random
 import time
@@ -10,6 +11,7 @@ from GameLogic import *
 from AI import ChessBot, board_hash
 from OpponentAI import OpponentAI
 from EngineRuntime import (
+    OPENING_BOOK_FILENAME,
     persistent_worker,
     generate_pgn,
     generate_series_opening_sequence,
@@ -118,7 +120,7 @@ class EnhancedChessApp:
         self.hovered_pv_tag = None
 
         # --- TIME STATE ---
-        self.time_control_seconds = tk.IntVar(value=300)
+        self.time_control_seconds = tk.IntVar(value=60)
         self.white_time      = 0.0
         self.black_time      = 0.0
         self.increment       = 0.0
@@ -134,6 +136,8 @@ class EnhancedChessApp:
         self._start_persistent_workers()
         self.process_comm_queue()
         self.reset_game()
+        if OPENING_BOOK_FILENAME:
+            print(f"Using opening book: {os.path.basename(OPENING_BOOK_FILENAME)}")
 
     # ------------------------------------------------------------------ workers
     def _start_persistent_workers(self):
@@ -431,13 +435,13 @@ class EnhancedChessApp:
         self.time_control_frame = ttk.Frame(info, style='Left.TFrame')
         self.time_control_frame.pack(fill=tk.X, pady=(5, 5))
         self.time_control_label = ttk.Label(self.time_control_frame,
-                                            text="Time Control: 05:00",
+                                            text="Time Control: 01:00",
                                             style='SmallHeader.TLabel')
         self.time_control_label.pack(anchor=tk.W)
         self.time_control_slider = tk.Scale(
             self.time_control_frame, from_=10, to=600, orient=tk.HORIZONTAL,
             bg=self.COLORS['bg_dark'], fg=self.COLORS['text_light'],
-            highlightthickness=0, relief='flat', showvalue=False,
+            highlightthickness=0, relief='flat', showvalue=False, resolution=10,
             variable=self.time_control_seconds,
             command=lambda _=None: self._update_time_control_label())
         self.time_control_slider.set(int(self.time_control_seconds.get()))
@@ -975,6 +979,8 @@ class EnhancedChessApp:
         self.canvas.delete("drag_ghost")
         row, col = self.canvas_to_board(event.x, event.y)
         if row == -1 or not self.drag_start:
+            self.drag_start = None
+            self.drag_piece_ghost = None
             self.update_ui_after_state_change()
             self.set_interactivity(True)
             return
