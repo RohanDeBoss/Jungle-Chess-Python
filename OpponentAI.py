@@ -1,4 +1,4 @@
-# OPAI.py (v128 - Baseline with recent fixes)
+# OPAI.py (v128.2 - MIN_QSEARCH_PLIES = 4 (baseline))
 
 import time
 import random
@@ -74,6 +74,7 @@ class OpponentAI:
 
     MAX_Q_SEARCH_DEPTH = 10
     Q_MARGIN_MAX = 950
+    MIN_QSEARCH_PLIES = 4  # Plies below the leaf allowed past MAX_Q_SEARCH_DEPTH.
     Q_MARGIN_MIN = 250
 
     LMR_DEPTH_THRESHOLD = 3
@@ -112,7 +113,9 @@ class OpponentAI:
     OPENING_PAWN_CENTER_WEIGHT = 10
     OPENING_CENTER_PAWN_BONUS = 28
     OPENING_CENTRAL_FILES = (COLS // 2 - 1, COLS // 2)
-    ASP_WINDOW_INIT = 250
+    
+    # 2. WIDENED ASPIRATION WINDOW (Handles Jungle Chess volatility, reduces re-searches)
+    ASP_WINDOW_INIT = 450
     ASP_MAX_RETRIES = 3
 
     # --- TIME MANAGEMENT (tunable — deliberately duplicated, not shared) ---
@@ -934,7 +937,7 @@ class OpponentAI:
             if path_added: search_path.discard(hash_val)
 
 
-    def qsearch(self, board, alpha, beta, turn, ply, current_hash=None):
+    def qsearch(self, board, alpha, beta, turn, ply, current_hash=None, qply=0):
         self.nodes_searched += 1
         if (self.nodes_searched & self.time_check_mask) == 0:
             if self.cancellation_event.is_set() or (self.stop_time and time.time() > self.stop_time):
@@ -971,7 +974,7 @@ class OpponentAI:
 
         if is_insufficient_material(board): return self.DRAW_SCORE
 
-        if ply >= self.MAX_Q_SEARCH_DEPTH:
+        if ply >= self.MAX_Q_SEARCH_DEPTH and qply >= self.MIN_QSEARCH_PLIES:
             self.used_heuristic_eval = True
             return self._get_cached_static_eval(board, turn, hash_val)
 
@@ -1049,7 +1052,8 @@ class OpponentAI:
 
             legal_moves_count += 1
             child_hash = incremental_hash(hash_val, record)
-            search_score = -self.qsearch(board, -beta, -alpha, opponent_turn, ply + 1, current_hash=child_hash)
+            search_score = -self.qsearch(board, -beta, -alpha, opponent_turn, ply + 1,
+                                         current_hash=child_hash, qply=qply + 1)
             board.unmake_move(record)
 
             if search_score > best_score:

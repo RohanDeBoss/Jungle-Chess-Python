@@ -536,7 +536,15 @@ def report_root_tb_solution(bot, tb_move, tb_eval, perfect_play=False, emit_move
 
     eval_for_ui = display_eval if bot.color == 'white' else -display_eval
     suffix      = " (Perfect Play)" if perfect_play else ""
-    bot._report_log(f"  > {bot.bot_name} (TB): {format_bot_move(bot, bot.board, tb_move)}, Eval={eval_for_ui/100:+.2f}, TBhits={bot.tb_hits}{suffix}")
+    
+    if abs(eval_for_ui) > bot.MATE_SCORE - 1000:
+        mate_in = (bot.MATE_SCORE - abs(eval_for_ui) + 1) // 2
+        sign = "+" if eval_for_ui > 0 else "-"
+        eval_str = f"{sign}M{mate_in}"
+    else:
+        eval_str = f"{eval_for_ui / 100:+.2f}"
+
+    bot._report_log(f"  > {bot.bot_name} (TB): {format_bot_move(bot, bot.board, tb_move)}, Eval={eval_str}, TBhits={bot.tb_hits}{suffix}")
     bot._report_eval(display_eval, "TB")
 
     move_num = (bot.ply_count // 2) + 1

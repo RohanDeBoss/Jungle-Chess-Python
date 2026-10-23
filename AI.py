@@ -1,31 +1,11 @@
-# AI.py (v128.2 - MIN_QSEARCH_PLIES = 4)
+# AI.py (v128.3 - qsearch is always from 10)
 
 import time
 import random
 from GameLogic import *
 from tablebase.TablebaseManager import TablebaseManager
 from operator import itemgetter
-from EngineRuntime import (
-    OPENING_BOOK,
-    ZOBRIST_TURN,
-    SearchCancelledException,
-    TT_FLAG_EXACT,
-    TT_FLAG_LOWERBOUND,
-    TT_FLAG_UPPERBOUND,
-    TTEntry,
-    board_hash,
-    board_to_fen,
-    build_flat_pst_tables,
-    calc_time_check_mask,
-    configure_tablebase,
-    format_bot_move,
-    get_best_tablebase_move_with_eval,
-    get_pv_data,
-    get_root_tb_eval_relative,
-    incremental_hash,
-    report_root_tb_solution,
-    update_bot_runtime_state,
-)
+from EngineRuntime import *
 
 # --- EVALUATION CONSTANTS (Tuned) ---
 MG_PIECE_VALUES = {
@@ -72,10 +52,9 @@ class ChessBot:
     MATE_SCORE = 1000000
     DRAW_SCORE = 0
 
-    MAX_Q_SEARCH_DEPTH = 10
-    Q_MARGIN_MAX = 950
-    MIN_QSEARCH_PLIES = 4  # Plies below the leaf allowed past MAX_Q_SEARCH_DEPTH.
-    Q_MARGIN_MIN = 250
+    MAX_Q_SEARCH_DEPTH = 10  # Now strictly measures relative capture plies below the leaf
+    Q_MARGIN_MAX = 1000
+    Q_MARGIN_MIN = 200
 
     LMR_DEPTH_THRESHOLD = 3
     LMR_MOVE_COUNT_THRESHOLD = 4
@@ -446,7 +425,7 @@ class ChessBot:
                     depth_label = "TB"
                     report_score = root_tb_val if self.color == 'white' else -root_tb_val
                 else:
-                    depth_label = "TB" if (not self.used_heuristic_eval and self.tb_hits > 0) else current_depth
+                    depth_label = current_depth
                     report_score = best_score_this_iter
 
                 eval_for_ui = report_score if self.color == 'white' else -report_score
@@ -550,7 +529,7 @@ class ChessBot:
                         depth_label = "TB"
                         report_score = root_tb_val if self.color == 'white' else -root_tb_val
                     else:
-                        depth_label = "TB" if (not self.used_heuristic_eval and self.tb_hits > 0) else current_depth
+                        depth_label = current_depth
                         report_score = best_score_this_iter
 
                     eval_for_ui = report_score if self.color == 'white' else -report_score
@@ -974,7 +953,7 @@ class ChessBot:
 
         if is_insufficient_material(board): return self.DRAW_SCORE
 
-        if ply >= self.MAX_Q_SEARCH_DEPTH and qply >= self.MIN_QSEARCH_PLIES:
+        if qply >= self.MAX_Q_SEARCH_DEPTH:
             self.used_heuristic_eval = True
             return self._get_cached_static_eval(board, turn, hash_val)
 
@@ -988,10 +967,10 @@ class ChessBot:
             if stand_pat >= beta: return stand_pat
             if stand_pat > alpha: alpha = stand_pat
 
-        if ply <= 4:
-            current_margin = self.Q_MARGIN_MAX
-        else:
-            current_margin = max(self.Q_MARGIN_MIN, self.Q_MARGIN_MAX - (ply - 4) * 117)
+        # Smooth linear decay (1000 -> 200) across all 10 capture plies keyed strictly to qply
+        current_margin = (self.Q_MARGIN_MAX
+                          - (self.Q_MARGIN_MAX - self.Q_MARGIN_MIN) * qply
+                            // (self.MAX_Q_SEARCH_DEPTH - 1))
 
         promising_moves = get_all_pseudo_legal_moves(board, turn)
         scored_moves = []
