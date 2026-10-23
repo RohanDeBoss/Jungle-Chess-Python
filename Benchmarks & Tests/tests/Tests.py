@@ -935,8 +935,8 @@ def case_regression_twofold_as_draw_policy():
 
     details = position_details(board, "Twofold-as-draw repetition policy")
 
-    # 1. Real-history trigger: position already occurred once for real.
-    bot.position_counts = {hash_val: 1}
+    # 1. Real-history trigger: position already occurred twice for real (threefold).
+    bot.position_counts = {hash_val: 2}
     score_real = bot.negamax(board, 2, -bot.MATE_SCORE, bot.MATE_SCORE,
                               "white", 1, set(), current_hash=hash_val)
     details.append(f"negamax score with position_counts[hash]=1 (real repeat): {score_real}")
@@ -959,7 +959,7 @@ def case_regression_twofold_as_draw_policy():
     )
 
     # 3. qsearch should honor the same policy.
-    bot.position_counts = {hash_val: 1}
+    bot.position_counts = {hash_val: 2}
     qscore = bot.qsearch(board, -bot.MATE_SCORE, bot.MATE_SCORE, "white", 1, current_hash=hash_val)
     details.append(f"qsearch score with position_counts[hash]=1 (real repeat): {qscore}")
     expect(
@@ -987,6 +987,17 @@ def case_regression_twofold_as_draw_policy():
         score_control != bot_control.DRAW_SCORE,
         f"Regression detected: a fresh, never-repeated, clearly non-drawish position was scored "
         f"as a draw ({score_control}) — the twofold policy must only apply to actual repeats."
+    )
+
+    # 5. Control: a position seen only ONCE in real history must NOT be a draw.
+    bot_control.position_counts = {control_hash: 1}
+    score_once = bot_control.negamax(board_control, 1, -bot_control.MATE_SCORE, bot_control.MATE_SCORE,
+                                     "white", 1, set(), current_hash=control_hash)
+    details.append(f"Control negamax score with position_counts[hash]=1: {score_once}")
+    expect(
+        score_once != bot_control.DRAW_SCORE,
+        f"Regression detected: a single real-history occurrence scored as a draw ({score_once}); "
+        f"only a genuine threefold (count >= 2) should."
     )
 
     return details

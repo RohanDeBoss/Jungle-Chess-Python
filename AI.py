@@ -1,4 +1,4 @@
-# AI.py (v128.3 - qsearch is always from 10)
+# AI.py (v128.4 - Code cleanup, under 1400 lines woo!)
 
 import time
 import random
@@ -58,7 +58,6 @@ class ChessBot:
 
     LMR_DEPTH_THRESHOLD = 3
     LMR_MOVE_COUNT_THRESHOLD = 4
-    LMR_REDUCTION = 1
     NMP_MIN_DEPTH = 3
     NMP_BASE_REDUCTION = 2
     NMP_DEPTH_DIVISOR = 6
@@ -83,8 +82,6 @@ class ChessBot:
     BONUS_CAPTURE = 8_000_000
     BONUS_KILLER_1 = 4_000_000
     BONUS_KILLER_2 = 3_000_000
-    BONUS_CONTINUATION = 2_500_000
-    BAD_TACTIC_PENALTY = -2_000_000
     OPENING_TOTAL_PIECE_THRESHOLD = 23
     OPENING_BONUS_MAX_PLY = 1
     OPENING_KNIGHT_DEVELOP_BONUS = 100
@@ -126,10 +123,6 @@ class ChessBot:
     LONE_ROOK_PENALTIES = (550, 200, 150, 80, 40)
     LONE_BISHOP_PENALTIES = (650, 250, 170, 100, 50)
     EVAL_PAWN_VULNERABILITY_EG = 15
-
-    EVAL_MOBILITY_BISHOP = 4
-    EVAL_MOBILITY_ROOK   = 4
-    EVAL_MOBILITY_QUEEN  = 5
 
     def __init__(self, board, color, position_counts, comm_queue, cancellation_event,
                  bot_name=None, ply_count=0, game_mode="bot", max_moves=200,
@@ -269,9 +262,6 @@ class ChessBot:
             return bonus
         return 0
 
-    def _get_root_tb_eval_relative(self):
-        return get_root_tb_eval_relative(self)
-
     def _get_best_tablebase_move_with_eval(self):
         return get_best_tablebase_move_with_eval(self)
 
@@ -340,6 +330,32 @@ class ChessBot:
     def _report_root_tb_solution(self, tb_move, tb_eval, perfect_play=False, emit_move=False):
         return report_root_tb_solution(self, tb_move, tb_eval, perfect_play=perfect_play, emit_move=emit_move)
 
+    def _report_iteration(self, depth, move, score, total_nodes, iter_duration):
+        """Shared per-iteration reporting. Returns (label, report_score)."""
+        root_tb_val = None
+        if len(self.board.white_pieces) + len(self.board.black_pieces) <= self.tb_probe_limit:
+            root_tb_val = self.tb_manager.probe(self.board, self.color)
+
+        if root_tb_val is not None:
+            self.tb_hits += 1
+            label = "TB"
+            report_score = root_tb_val if self.color == 'white' else -root_tb_val
+        else:
+            label = depth
+            report_score = score
+
+        ui_eval = report_score if self.color == 'white' else -report_score
+        knps = (self.nodes_searched / iter_duration / 1000) if iter_duration > 0 else 0
+        tt_str = (f", TT={int((len(self.tt) / self.TT_MAX_SIZE) * 1000)}/1000"
+                  if getattr(self, 'show_tt_fullness', False) else "")
+        self._report_log(f"  > {self.bot_name} (D{label}): {self._format_move(self.board, move)}, "
+                         f"Eval={ui_eval/100:+.2f}, NodesTotal={total_nodes}, KNPS={knps:.1f}, "
+                         f"TBhits={self.tb_hits}{tt_str}, Time={iter_duration:.2f}s")
+        self._report_eval(report_score, label)
+        pv_str, pv_raw = self._get_pv_data(depth, move)
+        self.comm_queue.put(('pv', ui_eval, label, pv_str, pv_raw))
+        return label, report_score
+    
     def make_move(self):
         try:
             self._age_history_table()
@@ -410,47 +426,14 @@ class ChessBot:
                 prev_iter_score   = best_score_this_iter
                 total_nodes      += self.nodes_searched
                 iter_duration     = time.time() - iter_start_time
-                knps              = (self.nodes_searched / iter_duration / 1000) if iter_duration > 0 else 0
-                # Prefer reporting a root tablebase evaluation if available —
-                # this ensures TB-drawn positions are shown as TB and can be
-                # auto-adjudicated by the UI. Fall back to heuristic reporting
-                # when no root TB exists.
-                root_tb_val = None
-                if len(self.board.white_pieces) + len(self.board.black_pieces) <= self.tb_probe_limit:
-                    root_tb_val = self.tb_manager.probe(self.board, self.color)
-
-                if root_tb_val is not None:
-                    # Root is in a tablebase — report TB as authoritative
-                    self.tb_hits += 1
-                    depth_label = "TB"
-                    report_score = root_tb_val if self.color == 'white' else -root_tb_val
-                else:
-                    depth_label = current_depth
-                    report_score = best_score_this_iter
-
-                eval_for_ui = report_score if self.color == 'white' else -report_score
-                tt_str = f", TT={int((len(self.tt) / self.TT_MAX_SIZE) * 1000)}/1000" if getattr(self, 'show_tt_fullness', False) else ""
-                self._report_log(f"  > {self.bot_name} (D{depth_label}): {self._format_move(self.board, best_move_this_iter)}, Eval={eval_for_ui/100:+.2f}, NodesTotal={total_nodes}, KNPS={knps:.1f}, TBhits={self.tb_hits}{tt_str}, Time={iter_duration:.2f}s")
-                self._report_eval(report_score, depth_label)
-
-                ui_eval        = report_score if self.color == 'white' else -report_score
-                pv_str, pv_raw = self._get_pv_data(current_depth, best_move_this_iter)
-                self.comm_queue.put(('pv', ui_eval, depth_label, pv_str, pv_raw))
+                _, report_score = self._report_iteration(
+                    current_depth, best_move_this_iter, best_score_this_iter, total_nodes, iter_duration)
 
                 if report_score > self.MATE_SCORE - 2000: break
 
                 # --- PREDICTIVE TIME BOUND ---
-                # Two independent gates before committing to another depth:
-                #  1. Soft bound: once we've spent our optimum budget, stop and
-                #     bank the rest for a later, harder move (time_left already
-                #     carries this saving into next move's optimum calculation).
-                #  2. Hard predictive bound: estimate the next depth's cost from
-                #     how much slower this depth was than the last one, and
-                #     refuse to START a depth we don't expect to finish inside
-                #     max_time. This is what lets max_time sit meaningfully
-                #     above optimum without risk — we only ever attempt depths
-                #     we expect to complete, so the in-search hard abort becomes
-                #     a rare safety net instead of the normal way a depth ends.
+                # 1. Soft: past optimum_time, stop and bank the rest for later moves.
+                # 2. Hard: don't START a depth we predict won't finish before max_time.
                 if self.stop_time:
                     time_used = time.time() - search_start_time
 
@@ -461,16 +444,13 @@ class ChessBot:
                         effective_branching = iter_duration / prev_iter_duration
                         effective_branching = max(1.5, min(effective_branching, 8.0))
                     else:
-                        # Not enough history yet (first completed iteration) —
-                        # assume a generously large branching factor so we don't
-                        # optimistically start a depth we can't finish.
+                        # No history yet: assume a large branching factor.
                         effective_branching = 6.0
 
                     predicted_next_duration = iter_duration * effective_branching
                     time_remaining_to_max   = self.stop_time - time.time()
 
-                    # Require 15% headroom, not just a bare fit — protects
-                    # against the prediction itself being slightly optimistic.
+                    # 15% headroom, since the prediction can be optimistic.
                     if predicted_next_duration > time_remaining_to_max * 0.85:
                         break
 
@@ -514,32 +494,8 @@ class ChessBot:
                     prev_iter_score   = best_score_this_iter
                     total_nodes      += self.nodes_searched
                     iter_duration     = time.time() - iter_start_time
-                    knps              = (self.nodes_searched / iter_duration / 1000) if iter_duration > 0 else 0
-                    # Prefer reporting a root tablebase evaluation if available —
-                    # this ensures TB-drawn positions are shown as TB and can be
-                    # auto-adjudicated by the UI. Fall back to heuristic reporting
-                    # when no root TB exists.
-                    root_tb_val = None
-                    if len(self.board.white_pieces) + len(self.board.black_pieces) <= self.tb_probe_limit:
-                        root_tb_val = self.tb_manager.probe(self.board, self.color)
-
-                    if root_tb_val is not None:
-                        # Root is in a tablebase — report TB as authoritative
-                        self.tb_hits += 1
-                        depth_label = "TB"
-                        report_score = root_tb_val if self.color == 'white' else -root_tb_val
-                    else:
-                        depth_label = current_depth
-                        report_score = best_score_this_iter
-
-                    eval_for_ui = report_score if self.color == 'white' else -report_score
-                    tt_str = f", TT={int((len(self.tt) / self.TT_MAX_SIZE) * 1000)}/1000" if getattr(self, 'show_tt_fullness', False) else ""
-                    self._report_log(f"  > {self.bot_name} (D{depth_label}): {self._format_move(self.board, best_move_this_iter)}, Eval={eval_for_ui/100:+.2f}, NodesTotal={total_nodes}, KNPS={knps:.1f}, TBhits={self.tb_hits}{tt_str}, Time={iter_duration:.2f}s")
-                    self._report_eval(report_score, depth_label)
-
-                    ui_eval        = report_score if self.color == 'white' else -report_score
-                    pv_str, pv_raw = self._get_pv_data(current_depth, best_move_this_iter)
-                    self.comm_queue.put(('pv', ui_eval, depth_label, pv_str, pv_raw))
+                    depth_label, _ = self._report_iteration(
+                        current_depth, best_move_this_iter, best_score_this_iter, total_nodes, iter_duration)
 
                     if depth_label == "TB":
                         while not self.cancellation_event.is_set(): time.sleep(0.1)
@@ -613,7 +569,7 @@ class ChessBot:
 
         return best_score_this_iter, best_move_this_iter
 
-    def negamax(self, board, depth, alpha, beta, turn, ply, search_path, current_hash=None, prev_move_tuple=None, extensions=0):
+    def negamax(self, board, depth, alpha, beta, turn, ply, search_path, current_hash=None, prev_move_tuple=None):
         self.nodes_searched += 1
         if (self.nodes_searched & self.time_check_mask) == 0:
             if self.cancellation_event.is_set() or (self.stop_time and time.time() > self.stop_time):
@@ -622,23 +578,18 @@ class ChessBot:
         total_pieces = len(board.white_pieces) + len(board.black_pieces)
 
         # --- REPETITION CHECKS (must come before TB probe) ---
-        # v127.1 POLICY: search-side repetition avoidance is intentionally
-        # stricter than the literal game rule. GameLogic/get_game_state still
-        # requires an actual THIRD occurrence before the game is drawn — that
-        # is completely unchanged. Here, inside the search only, any hash
-        # that has already occurred once — whether that occurrence was for
-        # real (self.position_counts) or purely hypothetical within this
-        # search's own line (search_path) — is scored as an immediate draw
-        # rather than waiting for a literal third occurrence. This can never
-        # cause the engine to walk a real game into an unseen threefold (it
-        # now refuses to volunteer for even a SECOND occurrence), and it
-        # prunes repeating subtrees a full ply earlier without adding any new
-        # pruning heuristic. OPAI uses this same policy; it remains an A/B
-        # baseline through its independent search and evaluation tuning.
+        # POLICY: in-tree repeats (hash in search_path) are a draw after one
+        # repeat. Repeats against REAL game history only count once the position
+        # has already occurred twice (a genuine threefold), because a real-history
+        # repeat needs the opponent to cooperate. Counting it at twofold produced
+        # phantom 0.00 evals in shuffling endgames. OPAI keeps the older
+        # twofold-vs-history policy.
         hash_val = current_hash if current_hash is not None else board_hash(board, turn)
         if ply > 0:
-            if hash_val in self.position_counts:
+            # Real history: only a genuine threefold (2 prior occurrences) is a draw.
+            if self.position_counts.get(hash_val, 0) >= 2:
                 return self.DRAW_SCORE
+            # In-tree: one repeat of the current search line is a draw.
             if hash_val in search_path:
                 return self.DRAW_SCORE
 
@@ -656,10 +607,6 @@ class ChessBot:
 
         original_alpha = alpha
         tt_entry = self.tt.get(hash_val)
-        # NOTE (v127.1): the old "stale TT repetition guard" that used to sit
-        # here existed only to cover position_counts == 1 nodes; those now
-        # return DRAW_SCORE above before the TT is ever consulted, so the
-        # guard became unreachable dead code and has been removed.
 
         if ply > 0 and tt_entry and tt_entry.depth >= depth:
             tt_score = tt_entry.score
@@ -685,7 +632,6 @@ class ChessBot:
         # --- CHECK EXTENSION with absolute ceiling ---
         if is_in_check_flag and ply < self.MAX_EXTENSION_DEPTH:
             depth      += 1
-            extensions += 1 # Currently unused, just keep cos I cant be bothered removing it
 
         path_added = False
         if hash_val not in search_path:
@@ -720,7 +666,7 @@ class ChessBot:
                         null_hash  = hash_val ^ ZOBRIST_TURN
                         score = -self.negamax(board, depth - 1 - reduction, -beta, -beta + 1,
                                             opponent_turn, ply + 1, search_path,
-                                            null_hash, None, extensions)
+                                            null_hash, None)
                         if score >= beta: 
                             # Fail-soft return, but clamp false mate scores
                             # (skipping a turn creates hallucinated mate distances)
@@ -836,14 +782,14 @@ class ChessBot:
 
                 if legal_moves_count == 1:
                     score = -self.negamax(board, search_depth_child, -beta, -alpha,
-                                        opponent_turn, ply + 1, search_path, child_hash, next_prev_tuple, extensions)
+                                        opponent_turn, ply + 1, search_path, child_hash, next_prev_tuple)
                 else: # Principal Variation Search (PVS)
                     score = -self.negamax(board, search_depth_child, -(alpha + 1), -alpha,
-                                        opponent_turn, ply + 1, search_path, child_hash, next_prev_tuple, extensions)
+                                        opponent_turn, ply + 1, search_path, child_hash, next_prev_tuple)
                     if score > alpha:
                         if reduction > 0 or score < beta:
                             score = -self.negamax(board, depth - 1, -beta, -alpha,
-                                                opponent_turn, ply + 1, search_path, child_hash, next_prev_tuple, extensions)
+                                                opponent_turn, ply + 1, search_path, child_hash, next_prev_tuple)
 
                 board.unmake_move(record)
 
@@ -924,12 +870,8 @@ class ChessBot:
 
         hash_val = current_hash if current_hash is not None else board_hash(board, turn)
 
-        # v127.1: mirrors negamax's twofold-as-draw search policy. Any
-        # position that already occurred at least once for real is scored as
-        # an immediate draw rather than waiting for a literal third
-        # occurrence. This also makes the old stale-TT repetition guard that
-        # used to live here unreachable, so it has been removed.
-        if ply > 0 and hash_val in self.position_counts:
+        # Real-history repeats count only at threefold (see negamax).
+        if ply > 0 and self.position_counts.get(hash_val, 0) >= 2:
             return self.DRAW_SCORE
 
         tt_entry = self.tt.get(hash_val)
@@ -1117,9 +1059,9 @@ class ChessBot:
                         ordering_swing = swing - ORDERING_VALUES[my_z]
                 score = self.BONUS_CAPTURE + (ordering_swing * 100) + (5 - my_z)
             elif move == k1:
-                score = 4_000_000
+                score = self.BONUS_KILLER_1
             elif move == k2:
-                score = 3_000_000
+                score = self.BONUS_KILLER_2
             elif move == counter_move:
                 score = 2_000_000
             else:
@@ -1261,8 +1203,7 @@ class ChessBot:
                         scores_mg[color_idx] += ROOK_OPEN_FILE_BONUS_MG
                         scores_eg[color_idx] += ROOK_OPEN_FILE_BONUS_EG
 
-                elif z == 2: # Bishop
-                    pass # Mobility handled intrinsically by PSTs
+                # Bishop Mobility handled intrinsically by PSTs
 
                 elif z == 1: # Knight
                     has_attacked_king_zone = False

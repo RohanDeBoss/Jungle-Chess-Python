@@ -236,10 +236,8 @@ data itself.
 
 While the UI and actual game rules strictly require a 3-fold repetition to 
 declare a draw, the engine's internal search (`AI.py`) intentionally uses a 
-stricter **2-fold repetition policy**. Inside `negamax` and `qsearch`, if a 
-position has occurred even *once* before (either in the real game history or 
-the current hypothetical search path), it is instantly scored as a draw. 
-This is a vital search heuristic: it forces winning bots to seek progress 
+stricter twofold inside the search tree, threefold against real history policy.
+This is a search heuristic: it forces winning bots to seek progress 
 rather than shuffling, helps losing bots find swindles, and prunes massive 
 subtrees a full ply early. **Do not "fix" the search to wait for a 3rd occurrence.**
 
