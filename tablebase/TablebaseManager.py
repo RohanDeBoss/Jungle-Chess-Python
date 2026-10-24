@@ -5,8 +5,8 @@ import numpy as np
 from GameLogic import King, Board
 from itertools import combinations, combinations_with_replacement
 
-TB_SUFFIX = "_tb16.bin"
-TB_DTYPE = np.int16
+TB_SUFFIX = "_tb8.bin"
+TB_DTYPE = np.int8   # values stored directly (signed STM-relative DTM, |v| <= 127)
 TB_WDL_MARKER_SUFFIX = ".wdl"
 
 def _flip(pos):
@@ -93,7 +93,7 @@ class TablebaseManager:
 
     def load_table(self, base_name):
         # We strip suffixes just in case callers include one.
-        base_name = base_name.replace("_tb16", "").replace("_xsml", "").replace("_sml16", "")
+        base_name = base_name.replace("_tb8", "").replace("_xsml", "").replace("_sml16", "")
         
         if base_name in self.tables: return True
         

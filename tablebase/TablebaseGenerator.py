@@ -1,4 +1,4 @@
-# TablebaseGenerator.py (v24.2 - Remove unused table allocations and dead helpers)
+# TablebaseGenerator.py (v24.4 - int8 + Numba BFS + temp dir)
 
 import os
 import sys
@@ -18,12 +18,15 @@ from array import array
 
 TB_DIR = os.path.join(PROJECT_ROOT, "TBs")
 os.makedirs(TB_DIR, exist_ok=True)
+TEMP_DIR = os.path.join(TB_DIR, "temp")
+os.makedirs(TEMP_DIR, exist_ok=True)
 
-TB_SUFFIX = "_tb16.bin"
-TB_DTYPE = np.int16
+TB_SUFFIX = "_tb8.bin"
+TB_DTYPE = np.int16        # in-RAM working dtype (array('h') buffers, BFS table)
+TB_DISK_DTYPE = np.int8    # on-disk dtype; |DTM| <= 127, values stored directly
 TB_WDL_MARKER_SUFFIX = ".wdl"
-MAX_DTM = 32766
-LONGEST_MATES_NOTE_FILE = os.path.join(TB_DIR, "longest_mates_tb16.tsv")
+MAX_DTM = 127
+LONGEST_MATES_NOTE_FILE = os.path.join(TB_DIR, "longest_mates_tb8.tsv")
 LONGEST_MATE_KEY_PREFIX = "regen_"
 TB_THREADS_SUBTRACT = 4
 _IN_TABLE_SENTINEL = "IN_TABLE"
@@ -180,11 +183,11 @@ def _load_3man_table_file(filename):
     try:
         has_pawn = "Pawn" in os.path.basename(filename)
         shape = (32 if has_pawn else 10, 64, 64, 2)
-        expected_size = shape[0] * 64 * 64 * 2 * 2  # 2 bytes per int16
+        expected_size = shape[0] * 64 * 64 * 2 * np.dtype(TB_DISK_DTYPE).itemsize
         actual_size = os.path.getsize(filename)
         if actual_size != expected_size:
             raise ValueError(f"Corrupted file size! Expected {expected_size:,} bytes, but got {actual_size:,} bytes.")
-        return np.memmap(filename, dtype=TB_DTYPE, mode='r', shape=shape)
+        return np.memmap(filename, dtype=TB_DISK_DTYPE, mode='r', shape=shape)
     except Exception as e:
         print(f"\n[Loader Error] Failed to map 3-man table {filename}: {e}", flush=True)
         raise e
@@ -193,11 +196,11 @@ def _load_4man_table_file(filename):
     try:
         has_pawn = "Pawn" in os.path.basename(filename)
         shape = (32 if has_pawn else 10, 64, 64, 64, 2)
-        expected_size = shape[0] * 64 * 64 * 64 * 2 * 2
+        expected_size = shape[0] * 64 * 64 * 64 * 2 * np.dtype(TB_DISK_DTYPE).itemsize
         actual_size = os.path.getsize(filename)
         if actual_size != expected_size:
             raise ValueError(f"Corrupted file size! Expected {expected_size:,} bytes, but got {actual_size:,} bytes.")
-        return np.memmap(filename, dtype=TB_DTYPE, mode='r', shape=shape)
+        return np.memmap(filename, dtype=TB_DISK_DTYPE, mode='r', shape=shape)
     except Exception as e:
         print(f"\n[Loader Error] Failed to map 4-man table {filename}: {e}", flush=True)
         raise e
@@ -206,11 +209,11 @@ def _load_5man_table_file(filename):
     try:
         has_pawn = "Pawn" in os.path.basename(filename)
         shape = (32 if has_pawn else 10, 64, 64, 64, 64, 2)
-        expected_size = shape[0] * 64 * 64 * 64 * 64 * 2 * 2
+        expected_size = shape[0] * 64 * 64 * 64 * 64 * 2 * np.dtype(TB_DISK_DTYPE).itemsize
         actual_size = os.path.getsize(filename)
         if actual_size != expected_size:
             raise ValueError(f"Corrupted file size! Expected {expected_size:,} bytes, but got {actual_size:,} bytes.")
-        return np.memmap(filename, dtype=TB_DTYPE, mode='r', shape=shape)
+        return np.memmap(filename, dtype=TB_DISK_DTYPE, mode='r', shape=shape)
     except Exception as e:
         print(f"\n[Loader Error] Failed to map 5-man table {filename}: {e}", flush=True)
         raise e
@@ -248,9 +251,16 @@ def _safe_record_longest_mate(table_key, max_dtm, decisive, remaining, elapsed_s
         print(f"[LongestMate] Warning: failed to update note file ({e})")
 
 def _write_dense_table(filename, total_positions, solved_flats_np, solved_values):
-    dense_table = np.memmap(filename, dtype=TB_DTYPE, mode='w+', shape=(total_positions,))
+    # Direct signed int8: +DTM = STM wins, -DTM = STM loses, 0 = draw/unsolved.
+    # Root mates stay -1. Validate BEFORE creating the file so a failed run
+    # can't leave a partial table that `generate()` would later treat as done.
+    if len(solved_values):
+        lo, hi = int(solved_values.min()), int(solved_values.max())
+        if lo < -127 or hi > 127:
+            raise OverflowError(f"DTM range [{lo}, {hi}] does not fit int8 tablebase format")
+    dense_table = np.memmap(filename, dtype=TB_DISK_DTYPE, mode='w+', shape=(total_positions,))
     dense_table[:] = 0
-    dense_table[solved_flats_np] = solved_values
+    dense_table[solved_flats_np] = np.asarray(solved_values).astype(TB_DISK_DTYPE)
     dense_table.flush()
     del dense_table
 
@@ -261,12 +271,21 @@ def _write_wdl_marker(filename):
 def _make_temp_graph_paths(output_filename):
     base_name = os.path.basename(output_filename).replace(TB_SUFFIX, "")
     run_prefix = f"{base_name}_{os.getpid()}_{time.time_ns()}"
-    tmp_b2w = os.path.join(TB_DIR, f"{run_prefix}_tmp_b2w.bin")
-    tmp_w2b = os.path.join(TB_DIR, f"{run_prefix}_tmp_w2b.bin")
+    tmp_b2w = os.path.join(TEMP_DIR, f"{run_prefix}_tmp_b2w.bin")
+    tmp_w2b = os.path.join(TEMP_DIR, f"{run_prefix}_tmp_w2b.bin")
     return run_prefix, tmp_b2w, tmp_w2b
+
+class _IdentityMap:
+    def __getitem__(self, idx):
+        return idx
 
 def _sort_unsolved_flats(unsolved_flats):
     unsolved_flats_np = np.frombuffer(unsolved_flats, dtype=np.uint32)
+    # Fast path: Because of Patch A (imap), chunks arrive in order, so states are already sorted!
+    if len(unsolved_flats_np) < 2 or bool(np.all(unsolved_flats_np[1:] > unsolved_flats_np[:-1])):
+        return unsolved_flats_np, slice(None), _IdentityMap()
+
+    # Fallback only if an out-of-order chunk ever slips through
     sort_idx = np.argsort(unsolved_flats_np).astype(np.uint32)
     old_to_new = np.empty_like(sort_idx)
     old_to_new[sort_idx] = np.arange(len(sort_idx), dtype=np.uint32)
@@ -284,7 +303,7 @@ def _build_csr_from_disk(unsolved_flats_np, edges_file, prefix, old_to_new):
     """
     num_states = len(unsolved_flats_np)
     num_bins = 64
-    bin_files = [open(os.path.join(TB_DIR, f"{prefix}_bin_{b}.bin"), "wb") for b in range(num_bins)]
+    bin_files = [open(os.path.join(TEMP_DIR, f"{prefix}_bin_{b}.bin"), "wb") for b in range(num_bins)]
     
     chunk_size = 10_000_000 
     with open(edges_file, "rb") as f:
@@ -316,11 +335,11 @@ def _build_csr_from_disk(unsolved_flats_np, edges_file, prefix, old_to_new):
     for f in bin_files: f.close()
     
     head = np.zeros(num_states + 1, dtype=np.uint32)
-    edges_out_file = os.path.join(TB_DIR, f"{prefix}_edges.bin")
+    edges_out_file = os.path.join(TEMP_DIR, f"{prefix}_edges.bin")
     
     with open(edges_out_file, "wb") as f_out:
         for b in range(num_bins):
-            bin_path = os.path.join(TB_DIR, f"{prefix}_bin_{b}.bin")
+            bin_path = os.path.join(TEMP_DIR, f"{prefix}_bin_{b}.bin")
             if os.path.exists(bin_path):
                 with open(bin_path, "rb") as f_bin:
                     data = np.fromfile(f_bin, dtype=np.uint32).reshape(-1, 2)
@@ -354,7 +373,7 @@ def _build_csr_from_disk(unsolved_flats_np, edges_file, prefix, old_to_new):
     
     return head, edges_out, edges_out_file
 
-def _run_flat_bfs(unsolved_flats_np, init_table_np, init_out_degree_np,
+def _run_flat_bfs_py(unsolved_flats_np, init_table_np, init_out_degree_np,
                   wtm_promo_wins_idx, wtm_promo_wins_val,
                   btm_promo_losses_idx, btm_promo_losses_val,
                   b2w_head, b2w_edges, w2b_head, w2b_edges,
@@ -379,7 +398,7 @@ def _run_flat_bfs(unsolved_flats_np, init_table_np, init_out_degree_np,
             else:
                 return False
         if dtm_int > MAX_DTM:
-            raise OverflowError(f"16-bit DTM overflow: {dtm_int}")
+            raise OverflowError(f"working int16 DTM overflow: {dtm_int}")
         local_table[state_idx] = dtm_int
         queues[dtm_int].append(int(state_idx))
         if curr == 0:
@@ -393,7 +412,7 @@ def _run_flat_bfs(unsolved_flats_np, init_table_np, init_out_degree_np,
             return False
         dtm_int = int(dtm_value)
         if dtm_int > MAX_DTM:
-            raise OverflowError(f"16-bit DTM overflow: {dtm_int}")
+            raise OverflowError(f"working int16 DTM overflow: {dtm_int}")
         local_table[state_idx] = -dtm_int
         queues[dtm_int].append(int(state_idx))
         solved_count += 1
@@ -426,7 +445,7 @@ def _run_flat_bfs(unsolved_flats_np, init_table_np, init_out_degree_np,
             
     max_dtm_solved = 1 if solved_count > 0 else 0
     
-    print(f"[Stage 3] BFS start (16-bit) | Terminal (DTM 1): {solved_count:,} | "
+    print(f"[Stage 3] BFS start (working int16 / output int8) | Terminal (DTM 1): {solved_count:,} | "
           f"Elapsed so far: {_fmt_elapsed(time.time() - start_time)}", flush=True)
 
     for dtm in range(1, MAX_DTM + 1):
@@ -471,7 +490,7 @@ def _run_flat_bfs(unsolved_flats_np, init_table_np, init_out_degree_np,
         queues[dtm] = None  # Free RAM dynamically
         
         if dtm == MAX_DTM and pending_count > 0:
-            raise OverflowError("16-bit DTM overflowed the supported tablebase range.")
+            raise OverflowError("working int16 DTM overflowed the supported int8 tablebase range.")
 
         print(f"  [DTM {dtm:^3}] Solved: {solved_count:,}/{num_states:,} "
               f"| Next Q: {len(queues[dtm+1]):<6,} | Held: {pending_count:<6,} ", flush=True)
@@ -535,7 +554,7 @@ def _append_full_wdl_state(flat, trans, unsolved_flats, init_table,
             f_w2b.write(arr.tobytes())
 
 
-def _run_flat_bfs_full_wdl(unsolved_flats_np, init_table_np,
+def _run_flat_bfs_full_wdl_py(unsolved_flats_np, init_table_np,
                            init_out_degree_np, init_max_child_dtm_np,
                            b2w_head, b2w_edges, w2b_head, w2b_edges,
                            start_time):
@@ -561,7 +580,7 @@ def _run_flat_bfs_full_wdl(unsolved_flats_np, init_table_np,
                 return False
         dtm = abs(val)
         if dtm > MAX_DTM:
-            raise OverflowError(f"16-bit DTM overflow: {dtm}")
+            raise OverflowError(f"working int16 DTM overflow: {dtm}")
         local_table[state_idx] = val
         queues[dtm].append(int(state_idx))
         if curr == 0:
@@ -573,14 +592,14 @@ def _run_flat_bfs_full_wdl(unsolved_flats_np, init_table_np,
         if val != 0:
             dtm = abs(int(val))
             if dtm > MAX_DTM:
-                raise OverflowError(f"16-bit DTM overflow: {dtm}")
+                raise OverflowError(f"working int16 DTM overflow: {dtm}")
             queues[dtm].append(idx)
             solved_count += 1
             pending_count += 1
 
     max_dtm_solved = 1 if solved_count > 0 else 0
 
-    print(f"[Stage 3] Full WDL BFS start (16-bit) | Seeded: {solved_count:,} | "
+    print(f"[Stage 3] Full WDL BFS start (working int16 / output int8) | Seeded: {solved_count:,} | "
           f"Elapsed so far: {_fmt_elapsed(time.time() - start_time)}", flush=True)
 
     for dtm in range(1, MAX_DTM + 1):
@@ -628,13 +647,74 @@ def _run_flat_bfs_full_wdl(unsolved_flats_np, init_table_np,
         queues[dtm] = None  # Free RAM dynamically
 
         if dtm == MAX_DTM and pending_count > 0:
-            raise OverflowError("16-bit DTM overflowed the supported tablebase range.")
+            raise OverflowError("working int16 DTM overflowed the supported int8 tablebase range.")
 
         print(f"  [DTM {dtm:^3}] Solved: {solved_count:,}/{num_states:,} "
               f"| Next Q: {len(queues[dtm+1]):<6,} | Held: {pending_count:<6,} "
               f"| New: {changed:<6,}", flush=True)
 
     return local_table, max_dtm_solved, solved_count
+
+
+def _numba_bfs(unsolved_flats_np, init_table_np, init_out_degree_np, init_max_child_dtm_np,
+               wtm_idx, wtm_val, btm_idx, btm_val,
+               b2w_head, b2w_edges, w2b_head, w2b_edges, start_time):
+    try:
+        from TBKernels import bfs_kernel
+    except ImportError:
+        from tablebase.TBKernels import bfs_kernel
+
+    n = len(unsolved_flats_np)
+    local_table = init_table_np.astype(TB_DTYPE)
+    out_degree = np.array(init_out_degree_np, dtype=np.uint16, order="C", copy=True)
+    if init_max_child_dtm_np is None:
+        max_child = np.zeros(n, dtype=np.uint16)
+    else:
+        max_child = np.array(init_max_child_dtm_np, dtype=np.uint16, order="C", copy=True)
+    wi = np.ascontiguousarray(wtm_idx, dtype=np.int64)
+    wv = np.ascontiguousarray(wtm_val, dtype=np.int64)
+    bi = np.ascontiguousarray(btm_idx, dtype=np.int64)
+    bv = np.ascontiguousarray(btm_val, dtype=np.int64)
+    init_cap = int(np.count_nonzero(local_table)) + len(wi) + len(bi) + (1 << 16)
+    print(f"[Stage 3] Numba BFS start | States: {n:,} | "
+          f"Elapsed so far: {_fmt_elapsed(time.time() - start_time)} "
+          "(first run compiles the kernel)", flush=True)
+    max_dtm_solved, solved = bfs_kernel(
+        np.asarray(unsolved_flats_np), local_table, out_degree, max_child,
+        np.asarray(b2w_head), np.asarray(b2w_edges),
+        np.asarray(w2b_head), np.asarray(w2b_edges),
+        wi, wv, bi, bv, MAX_DTM, init_cap, True)
+    return local_table, int(max_dtm_solved), int(solved)
+
+
+def _run_flat_bfs(unsolved_flats_np, init_table_np, init_out_degree_np,
+                  wtm_promo_wins_idx, wtm_promo_wins_val,
+                  btm_promo_losses_idx, btm_promo_losses_val,
+                  b2w_head, b2w_edges, w2b_head, w2b_edges,
+                  start_time):
+    if os.environ.get("TB_PURE_PYTHON_BFS") == "1":
+        return _run_flat_bfs_py(unsolved_flats_np, init_table_np, init_out_degree_np,
+                                wtm_promo_wins_idx, wtm_promo_wins_val,
+                                btm_promo_losses_idx, btm_promo_losses_val,
+                                b2w_head, b2w_edges, w2b_head, w2b_edges, start_time)
+    return _numba_bfs(unsolved_flats_np, init_table_np, init_out_degree_np, None,
+                      wtm_promo_wins_idx, wtm_promo_wins_val,
+                      btm_promo_losses_idx, btm_promo_losses_val,
+                      b2w_head, b2w_edges, w2b_head, w2b_edges, start_time)
+
+
+def _run_flat_bfs_full_wdl(unsolved_flats_np, init_table_np,
+                           init_out_degree_np, init_max_child_dtm_np,
+                           b2w_head, b2w_edges, w2b_head, w2b_edges,
+                           start_time):
+    if os.environ.get("TB_PURE_PYTHON_BFS") == "1":
+        return _run_flat_bfs_full_wdl_py(unsolved_flats_np, init_table_np,
+                                         init_out_degree_np, init_max_child_dtm_np,
+                                         b2w_head, b2w_edges, w2b_head, w2b_edges, start_time)
+    empty = np.empty(0, dtype=np.int64)
+    return _numba_bfs(unsolved_flats_np, init_table_np, init_out_degree_np,
+                      init_max_child_dtm_np, empty, empty, empty, empty,
+                      b2w_head, b2w_edges, w2b_head, w2b_edges, start_time)
 
 # ==============================================================================
 # 3-MAN GENERATOR
@@ -736,7 +816,7 @@ class Generator:
     def generate(self):
         if os.path.exists(self.filename): return
         start_time = time.time()
-        print(f"\n{'='*60}\n GENERATING: K+{self.piece_name} vs K (TB16)\n{'='*60}")
+        print(f"\n{'='*60}\n GENERATING: K+{self.piece_name} vs K (working int16 / output int8)\n{'='*60}")
         s1 = time.time(); print(f"[Stage 1] Enumerating candidates...", flush=True)
         raw_candidates = []
         for flat in range(self.total_positions):
@@ -762,7 +842,7 @@ class Generator:
         done = 0
         with multiprocessing.Pool(processes=self.transition_workers, initializer=_init_transition_worker,
                                   initargs=(self.piece_name, self.queen_tb_file)) as pool:
-            for processed_count, results in pool.imap_unordered(_worker_3_chunk, chunks):
+            for processed_count, results in pool.imap(_worker_3_chunk, chunks):
                 for result in results:
                     flat, trans = result
                     i = len(unsolved_flats)
@@ -971,7 +1051,7 @@ class Generator4:
     def generate(self):
         if os.path.exists(self.filename): return
         start_time = time.time()
-        print(f"\n{'='*60}\n GENERATING: K+{self.p1_name}+{self.p2_name} vs K (TB16)\n{'='*60}", flush=True)
+        print(f"\n{'='*60}\n GENERATING: K+{self.p1_name}+{self.p2_name} vs K (working int16 / output int8)\n{'='*60}", flush=True)
         s1 = time.time(); print(f"[Stage 1] Enumerating candidates...", flush=True)
         all_flats = array('I')
         for chunk in _gen_valid_4man_indices_numpy(self.total_positions, self.p1_name, self.p2_name, self.same_piece, self.has_pawn):
@@ -998,7 +1078,7 @@ class Generator4:
         done = 0
         with multiprocessing.Pool(processes=self.transition_workers, initializer=_init_transition_worker_4,
                                   initargs=(self.p1_name, self.p2_name, self.promo_tb_file)) as pool:
-            for processed_count, results in pool.imap_unordered(_worker_4_chunk, _get_chunks()):
+            for processed_count, results in pool.imap(_worker_4_chunk, _get_chunks()):
                 for result in results:
                     flat, trans = result
                     i = len(unsolved_flats)
@@ -1229,7 +1309,7 @@ class Generator4Vs:
     def generate(self):
         if os.path.exists(self.filename) and os.path.exists(self.filename + TB_WDL_MARKER_SUFFIX): return
         start_time = time.time()
-        print(f"\n{'='*60}\n GENERATING: K+{self.w_name} vs K+{self.b_name} (TB16)\n{'='*60}", flush=True)
+        print(f"\n{'='*60}\n GENERATING: K+{self.w_name} vs K+{self.b_name} (working int16 / output int8)\n{'='*60}", flush=True)
         s1 = time.time(); print(f"[Stage 1] Enumerating candidates...", flush=True)
         all_flats = array('I')
         for chunk in _gen_valid_4man_vs_indices_numpy(self.total_positions, self.w_name, self.b_name, self.has_pawn):
@@ -1255,7 +1335,7 @@ class Generator4Vs:
         done = 0
         with multiprocessing.Pool(processes=self.transition_workers, initializer=_init_transition_worker_4vs,
                                   initargs=(self.w_name, self.b_name)) as pool:
-            for processed_count, results in pool.imap_unordered(_worker_4vs_chunk, _get_chunks()):
+            for processed_count, results in pool.imap(_worker_4vs_chunk, _get_chunks()):
                 for result in results:
                     flat, trans = result
                     _append_full_wdl_state(flat, trans, unsolved_flats, init_table,
@@ -1488,8 +1568,8 @@ class Generator5:
     def generate(self):
         if os.path.exists(self.filename): return
         start_time = time.time()
-        sz_mb = self.wk_size * 64**4 * 2 * 2 / 1024**2
-        print(f"\n{'='*60}\n GENERATING: K+{self.p1_name}+{self.p2_name}+{self.p3_name} vs K (TB16)", flush=True)
+        sz_mb = self.wk_size * 64**4 * 2 * 1 / 1024**2
+        print(f"\n{'='*60}\n GENERATING: K+{self.p1_name}+{self.p2_name}+{self.p3_name} vs K (working int16 / output int8)", flush=True)
         print(f" Estimated file size: {sz_mb:.0f} MB\n{'='*60}", flush=True)
         s1 = time.time(); print(f"[Stage 1] Enumerating candidates...", flush=True)
         total = sum(
@@ -1516,7 +1596,7 @@ class Generator5:
             chunk_iter = _gen_valid_5same_indices_numpy(
                 self.total_positions, self.p1_name, self.p2_name, self.p3_name, self.has_pawn, chunk_size=chunk_size)
             
-            for processed_count, results in pool.imap_unordered(_worker_5_chunk, chunk_iter):
+            for processed_count, results in pool.imap(_worker_5_chunk, chunk_iter):
                 for result in results:
                     flat, trans = result
                     i = len(unsolved_flats)
@@ -1826,8 +1906,8 @@ class Generator5Vs:
     def generate(self):
         if os.path.exists(self.filename) and os.path.exists(self.filename + TB_WDL_MARKER_SUFFIX): return
         start_time = time.time()
-        sz_mb = self.wk_size * 64**4 * 2 * 2 / 1024**2
-        print(f"\n{'='*60}\n GENERATING: K+{self.w1_name}+{self.w2_name} vs K+{self.b_name} (TB16)", flush=True)
+        sz_mb = self.wk_size * 64**4 * 2 * 1 / 1024**2
+        print(f"\n{'='*60}\n GENERATING: K+{self.w1_name}+{self.w2_name} vs K+{self.b_name} (working int16 / output int8)", flush=True)
         print(f" Estimated file size: {sz_mb:.0f} MB\n{'='*60}", flush=True)
         s1 = time.time(); print(f"[Stage 1] Enumerating candidates...", flush=True)
         total = sum(
@@ -1855,7 +1935,7 @@ class Generator5Vs:
                 self.total_positions, self.w1_name, self.w2_name,
                 self.b_name, self.has_pawn, self.same_wp, chunk_size=chunk_size)
             
-            for processed_count, results in pool.imap_unordered(_worker_5vs_chunk, chunk_iter):
+            for processed_count, results in pool.imap(_worker_5vs_chunk, chunk_iter):
                 for result in results:
                     flat, trans = result
                     _append_full_wdl_state(flat, trans, unsolved_flats, init_table,
@@ -1915,6 +1995,17 @@ def auto_cleanup_tb_directory():
     if not os.path.exists(TB_DIR): return
     print("[Auto-Cleanup] Scanning for orphaned temp files and incomplete tables...")
     cleaned = 0
+
+    # Startup cleanup assumes only one generator process is running.
+    if os.path.isdir(TEMP_DIR):
+        for tf in os.listdir(TEMP_DIR):
+            tpath = os.path.join(TEMP_DIR, tf)
+            if os.path.isfile(tpath):
+                try:
+                    os.remove(tpath)
+                    cleaned += 1
+                except OSError as e:
+                    print(f"  [Warning] Failed to remove temporary file {tpath}: {e}")
     
     for f in os.listdir(TB_DIR):
         path = os.path.join(TB_DIR, f)
@@ -1927,6 +2018,16 @@ def auto_cleanup_tb_directory():
             except: pass
             continue
             
+        # 2a. Orphaned WDL marker (its table .bin was deleted)
+        if f.endswith(TB_SUFFIX + TB_WDL_MARKER_SUFFIX):
+            if not os.path.exists(path[:-len(TB_WDL_MARKER_SUFFIX)]):
+                print(f"  [!] Deleting orphaned WDL marker: {f}")
+                try:
+                    os.remove(path)
+                    cleaned += 1
+                except: pass
+            continue
+
         # 2. Check for incomplete cross-tables (missing WDL markers)
         if f.endswith(TB_SUFFIX) and "_vs_" in f:
             wdl_path = path + TB_WDL_MARKER_SUFFIX

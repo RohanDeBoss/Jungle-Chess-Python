@@ -19,9 +19,9 @@ from tablebase.TablebaseManager import TablebaseManager
 
 
 OLD_SUFFIX = "_tb16.bin"
-NEW_SUFFIX = "_tb16.bin"
+NEW_SUFFIX = "_tb8.bin"
 OLD_LONGEST = "longest_mates_tb16.tsv"
-NEW_LONGEST = "longest_mates_tb16.tsv"
+NEW_LONGEST = "longest_mates_tb8.tsv"
 PIECE_CLASSES = {
     "King": King,
     "Queen": Queen,
@@ -59,6 +59,28 @@ class ProbeManager(TablebaseManager):
     def __init__(self, tables):
         self.tables = tables
         self.tb_dir = ""
+        self.full_wdl_tables = set(tables)
+        self.signature_map = {}
+        piece_order = {"Pawn": 0, "Knight": 1, "Bishop": 2, "Rook": 3, "Queen": 4}
+
+        for base_name in tables:
+            middle = base_name[2:-2]
+            if "_vs_" in middle:
+                white_names, black_names = middle.split("_vs_")
+                white_pieces, black_pieces = white_names.split("_"), black_names.split("_")
+            else:
+                white_pieces, black_pieces = middle.split("_"), []
+
+            white_signature, black_signature = [0] * 5, [0] * 5
+            for piece in white_pieces:
+                white_signature[piece_order[piece]] += 1
+            for piece in black_pieces:
+                black_signature[piece_order[piece]] += 1
+
+            normal = tuple(white_signature + black_signature)
+            flipped = tuple(black_signature + white_signature)
+            self.signature_map[normal] = base_name
+            self.signature_map[flipped] = base_name
 
 
 def parse_longest_mates(path):
@@ -268,63 +290,129 @@ def compare_longest_mates(old_records, new_records, common_bases):
     return comparison
 
 
-def table_actual_summary(arr):
-    flat = np.asarray(arr).reshape(-1)
-    abs_flat = np.abs(flat.astype(np.int32, copy=False))
-    decisive = int(np.count_nonzero(flat))
-    max_dtm = int(abs_flat.max()) if decisive else 0
-    return {
-        "max_abs_value": max_dtm,
-        "decisive_entries": decisive,
-        "zero_entries_total": int(flat.size - decisive),
-    }
+COMPARE_CHUNK_SIZE = 1 << 22
 
 
 def full_compare_table(base_name, old_arr, new_arr):
-    old_flat = np.asarray(old_arr).reshape(-1).astype(np.int32, copy=False)
-    new_flat = np.asarray(new_arr).reshape(-1).astype(np.int32, copy=False)
-    mismatch_mask = old_flat != new_flat
-    mismatch_count = int(np.count_nonzero(mismatch_mask))
+    old_flat = np.asarray(old_arr).reshape(-1)
+    new_flat = np.asarray(new_arr).reshape(-1)
+    mismatch_count = 0
+    max_abs_diff = 0
+    old_decisive = 0
+    old_max_dtm = 0
+    new_decisive = 0
+    new_max_dtm = 0
+    mismatch_examples = []
+    total_chunks = (old_flat.size + COMPARE_CHUNK_SIZE - 1) // COMPARE_CHUNK_SIZE
+    progress_interval = max(1, total_chunks // 20)
+
+    for chunk_number, start in enumerate(range(0, old_flat.size, COMPARE_CHUNK_SIZE), 1):
+        end = min(start + COMPARE_CHUNK_SIZE, old_flat.size)
+        old_chunk = old_flat[start:end].astype(np.int32, copy=False)
+        new_chunk = new_flat[start:end].astype(np.int32, copy=False)
+        mismatch_mask = old_chunk != new_chunk
+        chunk_mismatch_count = int(np.count_nonzero(mismatch_mask))
+        mismatch_count += chunk_mismatch_count
+        if chunk_mismatch_count:
+            max_abs_diff = max(
+                max_abs_diff,
+                int(np.max(np.abs(old_chunk[mismatch_mask] - new_chunk[mismatch_mask]))),
+            )
+            if len(mismatch_examples) < 10:
+                for local_idx in np.flatnonzero(mismatch_mask)[: 10 - len(mismatch_examples)]:
+                    idx = start + int(local_idx)
+                    mismatch_examples.append(
+                        {
+                            "flat_index": idx,
+                            "old": int(old_chunk[local_idx]),
+                            "new": int(new_chunk[local_idx]),
+                        }
+                    )
+
+        old_nonzero = old_chunk != 0
+        new_nonzero = new_chunk != 0
+        old_decisive += int(np.count_nonzero(old_nonzero))
+        new_decisive += int(np.count_nonzero(new_nonzero))
+        if old_nonzero.any():
+            old_max_dtm = max(old_max_dtm, int(np.max(np.abs(old_chunk[old_nonzero]))))
+        if new_nonzero.any():
+            new_max_dtm = max(new_max_dtm, int(np.max(np.abs(new_chunk[new_nonzero]))))
+
+        if chunk_number % progress_interval == 0 or chunk_number == total_chunks:
+            percent = chunk_number * 100 // total_chunks
+            print(
+                f"    Value comparison: {percent}% "
+                f"({end:,}/{old_flat.size:,} states)",
+                flush=True,
+            )
+
     summary = {
         "table": base_name,
         "state_count": int(old_flat.size),
         "identical": mismatch_count == 0,
         "mismatch_count": mismatch_count,
-        "max_abs_diff": int(np.max(np.abs(old_flat - new_flat))) if mismatch_count else 0,
-        "old_actual": table_actual_summary(old_flat),
-        "new_actual": table_actual_summary(new_flat),
-        "mismatch_examples": [],
+        "max_abs_diff": max_abs_diff,
+        "old_actual": {
+            "max_abs_value": old_max_dtm,
+            "decisive_entries": old_decisive,
+            "zero_entries_total": int(old_flat.size - old_decisive),
+        },
+        "new_actual": {
+            "max_abs_value": new_max_dtm,
+            "decisive_entries": new_decisive,
+            "zero_entries_total": int(new_flat.size - new_decisive),
+        },
+        "mismatch_examples": mismatch_examples,
     }
-    if mismatch_count:
-        mismatch_indices = np.flatnonzero(mismatch_mask)[:10]
-        for idx in mismatch_indices:
-            summary["mismatch_examples"].append(
-                {
-                    "flat_index": int(idx),
-                    "old": int(old_flat[idx]),
-                    "new": int(new_flat[idx]),
-                }
-            )
     return summary
 
 
 def sample_probe_checks(base_name, metadata, old_arr, new_arr, sample_count, rng_seed):
-    old_flat = np.asarray(old_arr).reshape(-1).astype(np.int32, copy=False)
-    new_flat = np.asarray(new_arr).reshape(-1).astype(np.int32, copy=False)
-    mismatch_indices = np.flatnonzero(old_flat != new_flat)
-    candidate_indices = np.flatnonzero((old_flat != 0) | (new_flat != 0))
+    old_flat = np.asarray(old_arr).reshape(-1)
+    new_flat = np.asarray(new_arr).reshape(-1)
+    rng = np.random.default_rng(rng_seed)
+    pool_size = max(sample_count * 20, sample_count)
+    mismatch_indices = []
+    candidate_pool = []
+    candidate_count = 0
+    total_chunks = (old_flat.size + COMPARE_CHUNK_SIZE - 1) // COMPARE_CHUNK_SIZE
+    progress_interval = max(1, total_chunks // 20)
+
+    for chunk_number, start in enumerate(range(0, old_flat.size, COMPARE_CHUNK_SIZE), 1):
+        end = min(start + COMPARE_CHUNK_SIZE, old_flat.size)
+        old_chunk = old_flat[start:end]
+        new_chunk = new_flat[start:end]
+        mismatch_local = np.flatnonzero(old_chunk != new_chunk)
+        if len(mismatch_indices) < sample_count:
+            mismatch_indices.extend(
+                start + int(idx) for idx in mismatch_local[: sample_count - len(mismatch_indices)]
+            )
+
+        candidates = np.flatnonzero((old_chunk != 0) | (new_chunk != 0))
+        for local_idx in candidates:
+            candidate_count += 1
+            candidate_idx = start + int(local_idx)
+            if len(candidate_pool) < pool_size:
+                candidate_pool.append(candidate_idx)
+            else:
+                replacement = int(rng.integers(candidate_count))
+                if replacement < pool_size:
+                    candidate_pool[replacement] = candidate_idx
+
+        if chunk_number % progress_interval == 0 or chunk_number == total_chunks:
+            percent = chunk_number * 100 // total_chunks
+            print(
+                f"    Probe-sample scan: {percent}% "
+                f"({end:,}/{old_flat.size:,} states)",
+                flush=True,
+            )
 
     old_mgr = ProbeManager({base_name: old_arr})
     new_mgr = ProbeManager({base_name: new_arr})
 
-    chosen = []
-    if len(mismatch_indices):
-        chosen.extend(int(x) for x in mismatch_indices[:sample_count])
-
-    if len(chosen) < sample_count and len(candidate_indices):
-        rng = np.random.default_rng(rng_seed)
-        pool_size = min(len(candidate_indices), max(sample_count * 20, sample_count))
-        pool = rng.choice(candidate_indices, size=pool_size, replace=False)
+    chosen = list(mismatch_indices)
+    if len(chosen) < sample_count and candidate_pool:
+        pool = rng.choice(candidate_pool, size=len(candidate_pool), replace=False)
         for idx in pool:
             if len(chosen) >= sample_count:
                 break
@@ -363,7 +451,7 @@ def main():
         description="Compare old and new Jungle Chess tablebases using note files, full value diffs, and live probe checks."
     )
     parser.add_argument("--old-dir", default="TBs")
-    parser.add_argument("--new-dir", default="TBbbs")
+    parser.add_argument("--new-dir", default="TBs")
     parser.add_argument("--old-suffix", default=OLD_SUFFIX)
     parser.add_argument("--new-suffix", default=NEW_SUFFIX)
     parser.add_argument("--old-longest", default=OLD_LONGEST)
@@ -396,15 +484,19 @@ def main():
         "table_comparisons": [],
     }
 
+    print(f"Comparing {len(common_bases)} common tables.", flush=True)
+
     for offset, base_name in enumerate(common_bases):
+        print(f"\n[{offset + 1}/{len(common_bases)}] {base_name}: loading tables", flush=True)
         metadata = parse_table_metadata(base_name)
         
-        old_dtype = np.int8 if "xsml" in args.old_suffix else np.int16
-        new_dtype = np.int8 if "xsml" in args.new_suffix else np.int16
+        old_dtype = np.int8 if args.old_suffix.endswith(("_xsml.bin", "_tb8.bin")) else np.int16
+        new_dtype = np.int8 if args.new_suffix.endswith(("_xsml.bin", "_tb8.bin")) else np.int16
         
         old_arr = load_table(args.old_dir, base_name, args.old_suffix, old_dtype, metadata.shape)
         new_arr = load_table(args.new_dir, base_name, args.new_suffix, new_dtype, metadata.shape)
 
+        print(f"  Comparing {old_arr.size:,} states in chunks...", flush=True)
         table_report = full_compare_table(base_name, old_arr, new_arr)
         table_report["metadata"] = {
             "category": metadata.category,
@@ -423,6 +515,7 @@ def main():
             and table_report["new_note"]["dtm"] == table_report["new_actual"]["max_abs_value"]
             and table_report["new_note"]["decisive"] == table_report["new_actual"]["decisive_entries"]
         )
+        print(f"  Sampling up to {args.samples_per_table} legal probe positions...", flush=True)
         table_report["sample_probe_checks"] = sample_probe_checks(
             base_name, metadata, old_arr, new_arr, args.samples_per_table, args.seed + offset
         )
@@ -430,6 +523,12 @@ def main():
             1 for item in table_report["sample_probe_checks"] if not item["probe_match"]
         )
         report["table_comparisons"].append(table_report)
+        print(
+            f"  Done: {'MATCH' if table_report['identical'] else 'DIFF'} "
+            f"({table_report['mismatch_count']:,} mismatches; "
+            f"{len(table_report['sample_probe_checks'])} probes)",
+            flush=True,
+        )
 
     report["summary"] = {
         "fully_identical_tables": sum(1 for item in report["table_comparisons"] if item["identical"]),

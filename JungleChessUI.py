@@ -1,4 +1,4 @@
-# JungleChessUI.py (v17.3 - Import, worker-cache, and move-list fixes)
+# JungleChessUI.py (v17.3 - REMEMBER TO ASK AN AI TO ADD A FLIP BOARD FEATURE AS A BUTTON next to it)
 
 import tkinter as tk
 from tkinter import ttk, messagebox

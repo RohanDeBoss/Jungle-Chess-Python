@@ -251,7 +251,7 @@ pawns, knights or queens and fewer than two rooks+bishops combined
 intuition does not transfer: the 2-square king step lets the defender jump a
 rook's rank/file, and piercing adds nothing against a bare king. Evidence:
 `K_Rook_K` has 986 decisive positions versus 55,475 drawn in
-`TBs/longest_mates_tb16.tsv`. Do not change the condition to `rook_counts == 0`
+`TBs/longest_mates_tb8.tsv`. Do not change the condition to `rook_counts == 0`
 without re-checking those numbers.
 
 ## 3. Quick Reference for AI Assistants

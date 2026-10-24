@@ -14,7 +14,7 @@ from tablebase.TablebaseManager import TablebaseManager
 
 # --- CONFIGURATION ---
 TB_DIR = os.path.join(PROJECT_ROOT, "TBs")
-TB_SUFFIX = "_tb16.bin"
+TB_SUFFIX = "_tb8.bin"
 SQUARE_SIZE = 60
 BOARD_COLOR_1 = "#D2B48C"
 BOARD_COLOR_2 = "#8B5A2B"
