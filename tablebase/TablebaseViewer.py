@@ -345,7 +345,7 @@ class TBViewerApp:
         category = metadata["category"]
 
         try:
-            data = np.memmap(filepath, dtype=np.int16, mode='r')
+            data = np.memmap(filepath, dtype=np.int8, mode='r')
             data_flat = data.reshape(-1)
             
             reusable_board = Board(setup=False)
