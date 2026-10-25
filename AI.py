@@ -1,4 +1,4 @@
-# AI.py (v128.4 - Code cleanup, under 1400 lines woo!)
+# AI.py (v128.4 - Code cleanup + TB pv lines displayed)
 
 import time
 import random
@@ -324,11 +324,176 @@ class ChessBot:
                 row = ht[from_sq]
                 ht[from_sq] = [(v * 7) // 8 for v in row]
 
+    def _get_best_tb_step(self, board, turn):
+        """Finds the single best move from the Tablebase for the side to move."""
+        legal_moves = get_all_legal_moves(board, turn)
+        if not legal_moves:
+            return None, None
+
+        opp_turn = 'black' if turn == 'white' else 'white'
+        best_move = None
+        best_score = -float('inf')
+
+        for move in legal_moves:
+            sim = board.clone()
+            sim.make_move(move[0], move[1])
+
+            # Immediate mate in 1
+            if not has_legal_moves(sim, opp_turn):
+                return move, self.MATE_SCORE - 1
+
+            total_p = len(sim.white_pieces) + len(sim.black_pieces)
+            if total_p <= 2:
+                score_rel = self.DRAW_SCORE
+            else:
+                score_abs = self.tb_manager.probe(sim, opp_turn)
+                if score_abs is None:
+                    continue
+                score_rel = score_abs if turn == 'white' else -score_abs
+                if score_rel > self.MATE_SCORE - 1000:
+                    score_rel -= 1
+                elif score_rel < -self.MATE_SCORE + 1000:
+                    score_rel += 1
+
+            if score_rel > best_score:
+                best_score = score_rel
+                best_move = move
+
+        return best_move, best_score
+
+    def _extract_tb_line(self, start_board, start_turn, start_ply, first_move=None, max_plies=100):
+        """Simulates play from the Tablebase until mate, draw, or ply limit."""
+        pv_san = []
+        pv_raw = []
+        sim_board = start_board.clone()
+        current_turn = start_turn
+        current_ply = start_ply
+        seen = set()
+
+        move = first_move
+        for _ in range(max_plies):
+            if not move:
+                total_p = len(sim_board.white_pieces) + len(sim_board.black_pieces)
+                if total_p > self.tb_probe_limit or total_p <= 2:
+                    break
+                move, _ = self._get_best_tb_step(sim_board, current_turn)
+                if not move:
+                    break
+
+            child = sim_board.clone()
+            child.make_move(move[0], move[1])
+            san = format_move_san(sim_board, child, move)
+
+            move_num = (current_ply // 2) + 1
+            if current_turn == 'white':
+                pv_san.append(f"{move_num}. {san}")
+            else:
+                pv_san.append(f"{move_num}... {san}" if len(pv_raw) == 0 else san)
+
+            pv_raw.append(move)
+
+            sim_board = child
+            current_turn = 'black' if current_turn == 'white' else 'white'
+            current_ply += 1
+
+            if not has_legal_moves(sim_board, current_turn) or is_insufficient_material(sim_board):
+                break
+
+            h = board_hash(sim_board, current_turn)
+            if h in seen:
+                break
+            seen.add(h)
+
+            move = None
+
+        return pv_san, pv_raw
+
     def _get_pv_data(self, max_depth, root_move):
-        return get_pv_data(self, max_depth, root_move)
+        if not root_move:
+            return [], []
+
+        pv_san = []
+        pv_raw = []
+        current_board = self.board.clone()
+        current_turn = self.color
+        current_ply = self.ply_count
+        seen_hashes = set()
+        move = root_move
+
+        # 1. Walk the Transposition Table as far as it goes
+        for i in range(max_depth):
+            if not move:
+                break
+            san = self._format_move(current_board, move)
+            move_num = (current_ply // 2) + 1
+            if current_turn == 'white':
+                pv_san.append(f"{move_num}. {san}")
+            else:
+                pv_san.append(f"{move_num}... {san}" if i == 0 else san)
+
+            pv_raw.append(move)
+            current_board.make_move(move[0], move[1])
+            current_turn = 'black' if current_turn == 'white' else 'white'
+            current_ply += 1
+
+            if not has_legal_moves(current_board, current_turn):
+                return pv_san, pv_raw
+
+            h = board_hash(current_board, current_turn)
+            if h in seen_hashes:
+                break
+            seen_hashes.add(h)
+
+            # If the search line enters Tablebase range, splice the rest from the TB
+            total_pieces = len(current_board.white_pieces) + len(current_board.black_pieces)
+            if total_pieces <= self.tb_probe_limit:
+                tb_san, tb_raw = self._extract_tb_line(current_board, current_turn, current_ply)
+                pv_san.extend(tb_san)
+                pv_raw.extend(tb_raw)
+                return pv_san, pv_raw
+
+            tt_entry = self.tt.get(h)
+            if not tt_entry or not tt_entry.best_move or tt_entry.flag != TT_FLAG_EXACT:
+                break
+            move = tt_entry.best_move
+
+        # 2. If TT runs out but the ending position is in Tablebase range, continue to mate
+        total_pieces = len(current_board.white_pieces) + len(current_board.black_pieces)
+        if total_pieces <= self.tb_probe_limit and has_legal_moves(current_board, current_turn):
+            tb_san, tb_raw = self._extract_tb_line(current_board, current_turn, current_ply)
+            pv_san.extend(tb_san)
+            pv_raw.extend(tb_raw)
+
+        return pv_san, pv_raw
 
     def _report_root_tb_solution(self, tb_move, tb_eval, perfect_play=False, emit_move=False):
-        return report_root_tb_solution(self, tb_move, tb_eval, perfect_play=perfect_play, emit_move=emit_move)
+        if not tb_move:
+            return False
+
+        root_abs = self.tb_manager.probe(self.board, self.color)
+        display_eval = (root_abs if self.color == 'white' else -root_abs) if root_abs is not None else tb_eval
+        if tb_eval > self.MATE_SCORE - 1000:
+            display_eval = tb_eval
+
+        eval_for_ui = display_eval if self.color == 'white' else -display_eval
+        suffix = " (Perfect Play)" if perfect_play else ""
+        self._report_log(f"  > {self.bot_name} (TB): {self._format_move(self.board, tb_move)}, "
+                         f"Eval={eval_for_ui/100:+.2f}, TBhits={self.tb_hits}{suffix}")
+        self._report_eval(display_eval, "TB")
+
+        # Walk the full tablebase line all the way to checkmate
+        pv_san, pv_raw = self._extract_tb_line(self.board, self.color, self.ply_count, first_move=tb_move)
+        if not pv_san:
+            move_num = (self.ply_count // 2) + 1
+            prefix = f"{move_num}. " if self.color == 'white' else f"{move_num}... "
+            pv_san = [prefix + self._format_move(self.board, tb_move)]
+            pv_raw = [tb_move]
+
+        self.comm_queue.put(('pv', eval_for_ui, "TB", pv_san, pv_raw))
+
+        if emit_move:
+            self._report_move(tb_move)
+        return True
 
     def _report_iteration(self, depth, move, score, total_nodes, iter_duration):
         """Shared per-iteration reporting. Returns (label, report_score)."""

@@ -1,4 +1,4 @@
-# JungleChessUI.py (v17.3 - REMEMBER TO ASK AN AI TO ADD A FLIP BOARD FEATURE AS A BUTTON next to it)
+# JungleChessUI.py (v17.3 - Import, worker-cache, and move-list fixes)
 
 import tkinter as tk
 from tkinter import ttk, messagebox
@@ -94,7 +94,6 @@ class EnhancedChessApp:
         self.auto_save_stats_var  = tk.BooleanVar(value=True)
         self.show_pv_var          = tk.BooleanVar(value=True)
         self.long_notation_var    = tk.BooleanVar(value=False)
-        self.instant_move         = tk.BooleanVar(value=False)
         self.use_opening_book_var = tk.BooleanVar(value=True)
         self.use_tablebase_var    = tk.BooleanVar(value=True)
         self.auto_adjudicate_var  = tk.BooleanVar(value=True)
@@ -394,7 +393,6 @@ class EnhancedChessApp:
         for text, var, cmd in [
             ("Use Opening Book",           self.use_opening_book_var, None),
             ("Use Tablebase",              self.use_tablebase_var,    None),
-            ("Instant Moves",              self.instant_move,         None),
             ("Auto Adjudicate TB Draw",    self.auto_adjudicate_var,  None),
             ("Analysis Mode (H-vs-H)",     self.analysis_mode_var,    self._update_analysis_after_state_change),
             ("Auto-save Depth Stats",      self.auto_save_stats_var,  None),
@@ -1509,7 +1507,7 @@ class EnhancedChessApp:
             self.last_clock_tick = None
 
     def _get_ai_move_delay(self):
-        return 0 if self.use_clock_var.get() else (4 if self.instant_move.get() else 20)
+        return 0
 
     def render_clocks(self):
         if not self.use_clock_var.get():
@@ -1839,13 +1837,13 @@ class EnhancedChessApp:
             self.pv_tooltip.destroy()
         self.pv_tooltip = tk.Toplevel(self.master)
         self.pv_tooltip.wm_overrideredirect(True)
+        self.pv_tooltip.configure(bg=self.COLORS['accent'])
         self.pv_tooltip.wm_geometry(f"+{event.x_root + 15}+{event.y_root - ROWS * 25 - 20}")
         self.tt_sq_size = 25
         self.tt_canvas  = tk.Canvas(self.pv_tooltip,
                                     width=COLS * self.tt_sq_size, height=ROWS * self.tt_sq_size,
-                                    bg=self.COLORS['bg_medium'], highlightthickness=2,
-                                    highlightbackground=self.COLORS['accent'])
-        self.tt_canvas.pack()
+                                    bg=self.COLORS['bg_medium'], highlightthickness=0, bd=0)
+        self.tt_canvas.pack(padx=2, pady=2)
         self._draw_tt_board_static(tt_sim, last_move)
 
     def _get_pv_preview_state(self, move_idx):
