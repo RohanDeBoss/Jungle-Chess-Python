@@ -1,7 +1,8 @@
-# JungleChessUI.py (v17.3 - Import, worker-cache, and move-list fixes)
+# JungleChessUI.py (v17.9 - aspiration-suite position navigation)
 
 import tkinter as tk
 from tkinter import ttk, messagebox
+import json
 import os
 import math
 import random
@@ -16,6 +17,9 @@ from EngineRuntime import (
     generate_pgn,
     generate_series_opening_sequence,
     write_series_stats_file,
+    make_ai_series_benchmark_position,
+    append_aspiration_position_candidate,
+    write_aspiration_position_suite,
     strip_casualties,
     board_to_fen,
 )
@@ -88,8 +92,25 @@ class EnhancedChessApp:
         self.analysis_mode_var   = tk.BooleanVar(value=True)
         self.ai_series_running   = False
         self.ai_series_stats     = {'game_count': 0, 'my_ai_wins': 0, 'op_ai_wins': 0, 'draws': 0}
+        self.aspiration_position_candidates = []
+        self.aspiration_position_fens = set()
+        self.aspiration_position_suite_saved = False
+        self.aspiration_position_suite_path = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            "Benchmarks & Tests", "benchmarks", "aspiration_series_positions.json",
+        )
+        self.aspiration_position_candidate_path = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            "Benchmarks & Tests", "benchmarks", "aspiration_series_candidates.jsonl",
+        )
         self.move_stats          = {}
         self._pending_move_stat  = {}
+        self.aspiration_suite_positions = None
+        self.aspiration_suite_index = -1
+        self.aspiration_suite_path = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            "Benchmarks & Tests", "benchmarks", "aspiration_series_positions.json",
+        )
         
         self.auto_save_stats_var  = tk.BooleanVar(value=True)
         self.show_pv_var          = tk.BooleanVar(value=True)
@@ -376,7 +397,8 @@ class EnhancedChessApp:
         for txt, cmd in [("NEW GAME",        self.reset_game),
                          ("SWAP SIDES",      self.swap_sides),
                          ("CLEAR HASH",      self.clear_hash_manually),
-                         ("AI vs OP Series", self.start_ai_series)]:
+                         ("AI vs OP Series", self.start_ai_series),
+                         ("NEXT SUITE GAME", self.load_next_suite_game)]:
             ttk.Button(cf, text=txt, command=cmd, style='Control.TButton').pack(fill=tk.X, pady=3)
         self.flip_view_btn = ttk.Button(cf, text="FLIP VIEW",
                                         command=self.toggle_board_view, style='Control.TButton')
@@ -682,7 +704,7 @@ class EnhancedChessApp:
         self.reset_game(schedule_ai=False)
         self.fen_entry.insert(0, fen)
 
-    def load_fen_from_entry(self):
+    def load_fen_from_entry(self, schedule_ai=True):
         fen = self.fen_entry.get().strip()
         if not fen:
             return
@@ -734,9 +756,42 @@ class EnhancedChessApp:
         self._update_flip_view_button_style()
         self.update_ui_after_state_change()
         self._update_analysis_after_state_change()
-        if not self.game_over and self.game_mode.get() == GameMode.HUMAN_VS_BOT.value \
+        if schedule_ai and not self.game_over and self.game_mode.get() == GameMode.HUMAN_VS_BOT.value \
                 and self.turn != self.human_color:
             self.master.after(self._get_ai_move_delay(), self._make_game_ai_move)
+
+    def load_next_suite_game(self):
+        """Load the next saved aspiration-suite position into the live board."""
+        if self.aspiration_suite_positions is None:
+            try:
+                with open(self.aspiration_suite_path, encoding="utf-8") as handle:
+                    payload = json.load(handle)
+                positions = payload.get("positions", [])
+                if not positions:
+                    raise ValueError("The aspiration suite contains no positions.")
+                self.aspiration_suite_positions = positions
+            except (OSError, json.JSONDecodeError, ValueError) as exc:
+                messagebox.showerror("Aspiration suite", str(exc), parent=self.master)
+                return
+
+        self.aspiration_suite_index = (
+            self.aspiration_suite_index + 1
+        ) % len(self.aspiration_suite_positions)
+        position = self.aspiration_suite_positions[self.aspiration_suite_index]
+
+        # A suite position is a study puzzle: keep it on the board and start
+        # the app's normal analysis worker instead of automatically moving the bot.
+        self.ai_series_running = False
+        self.game_mode.set(GameMode.HUMAN_VS_HUMAN.value)
+        self.analysis_mode_var.set(True)
+        self._update_flip_view_button_style()
+        self.fen_entry.delete(0, tk.END)
+        self.fen_entry.insert(0, position["fen"])
+        self.load_fen_from_entry(schedule_ai=False)
+        self.game_info_label.config(
+            text=f"Aspiration Suite {self.aspiration_suite_index + 1}/"
+                 f"{len(self.aspiration_suite_positions)}"
+        )
 
     def get_current_pgn(self):
         return generate_pgn(self.full_history, self.game_result)
@@ -872,6 +927,7 @@ class EnhancedChessApp:
         if status != "ongoing":
             self.game_over   = True
             self.game_result = (status, winner)
+        self._maybe_harvest_aspiration_position()
         self.update_ui_after_state_change()
         if self.game_over:
             print(f"Game Over! Result: {self.game_result[0]}")
@@ -1719,6 +1775,48 @@ class EnhancedChessApp:
         self.end_button  .config(state=tk.NORMAL if can_fwd  else tk.DISABLED)
 
     # ------------------------------------------------------------------ AI series
+    def _maybe_harvest_aspiration_position(self):
+        try:
+            self._harvest_aspiration_position()
+        except Exception as exc:
+            print(f"Aspiration position harvest skipped after an error: {exc}")
+
+    def _harvest_aspiration_position(self):
+        if not self.ai_series_running:
+            return
+        if len(self.aspiration_position_candidates) >= 50:
+            return
+        ply_index = self.history_pointer
+        if ply_index < 5 or ply_index % 5 != 0:
+            return
+
+        game_number = self.ai_series_stats['game_count'] + 1
+        record = make_ai_series_benchmark_position(
+            self.board, self.turn, game_number, ply_index
+        )
+        if record is None or record["fen"] in self.aspiration_position_fens:
+            return
+
+        self.aspiration_position_candidates.append(record)
+        self.aspiration_position_fens.add(record["fen"])
+        try:
+            append_aspiration_position_candidate(
+                self.aspiration_position_candidate_path, record
+            )
+        except OSError as exc:
+            print(f"Aspiration position checkpoint could not be written: {exc}")
+
+        print(
+            f"Harvested aspiration position {len(self.aspiration_position_candidates)} "
+            f"at game {game_number}, ply {ply_index}."
+        )
+        if len(self.aspiration_position_candidates) >= 50 and not self.aspiration_position_suite_saved:
+            self._save_aspiration_position_suite(
+                series_complete=(self.ai_series_stats['game_count'] >= self.AI_SERIES_GAMES)
+            )
+            print("Collected 50 aspiration positions; the current game will finish, then the series will stop.")
+        self.update_scoreboard()
+
     def process_ai_series_result(self):
         self.ai_series_stats['game_count'] += 1
         _, wc = self.game_result
@@ -1730,11 +1828,69 @@ class EnhancedChessApp:
         self.update_scoreboard()
         if self.auto_save_stats_var.get():
             self.save_depth_stats_to_file()
-        if self.ai_series_running and self.ai_series_stats['game_count'] < self.AI_SERIES_GAMES:
+        if (self.ai_series_running
+                and len(self.aspiration_position_candidates) < 50
+                and self.ai_series_stats['game_count'] < self.AI_SERIES_GAMES):
             self.master.after(1000, self.reset_game)
         else:
+            if self.aspiration_position_candidates:
+                self._save_aspiration_position_suite(
+                    series_complete=(self.ai_series_stats['game_count'] >= self.AI_SERIES_GAMES)
+                )
+            if len(self.aspiration_position_candidates) < 50:
+                print(
+                    "Aspiration position harvest needs 50 unique positions for the tuner suite; "
+                    f"collected {len(self.aspiration_position_candidates)}. "
+                    f"Raw samples are saved in {self.aspiration_position_candidate_path}."
+                )
             self.ai_series_running = False
-            self.turn_label.config(text="AI SERIES COMPLETE!")
+            if len(self.aspiration_position_candidates) >= 50:
+                self.turn_label.config(text="ASPIRATION POSITIONS READY!")
+            else:
+                self.turn_label.config(text="AI SERIES COMPLETE!")
+
+    def _save_aspiration_position_suite(self, series_complete):
+        if len(self.aspiration_position_candidates) < 50:
+            return False
+
+        def header(filename):
+            try:
+                with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), filename),
+                          encoding="utf-8") as handle:
+                    return handle.readline().strip()
+            except OSError:
+                return "unavailable"
+
+        series_context = {
+            "main_ai_header": header("AI.py"),
+            "opponent_ai_header": header("OpponentAI.py"),
+            "main_asp_window": ChessBot.ASP_WINDOW_INIT,
+            "opponent_asp_window": OpponentAI.ASP_WINDOW_INIT,
+            "clock_enabled": bool(self.use_clock_var.get()),
+            "time_control_seconds": int(self.time_control_seconds.get()),
+            "fixed_depth_slider": int(self.bot_depth_slider.get()),
+            "opening_book_enabled": bool(self.use_opening_book_var.get()),
+            "tablebases_enabled": bool(self.use_tablebase_var.get()),
+            "games_requested": self.AI_SERIES_GAMES,
+        }
+        saved_path, selected = write_aspiration_position_suite(
+            self.aspiration_position_suite_path,
+            self.aspiration_position_candidates,
+            game_count=self.ai_series_stats['game_count'],
+            target_count=50,
+            series_complete=series_complete,
+            series_context=series_context,
+        )
+        if saved_path == self.aspiration_position_suite_path:
+            self.aspiration_position_suite_saved = True
+            source_games = len({row["source_game"] for row in selected})
+            print(f"Saved 50 AI-vs-OP positions from {source_games} games to {saved_path}.")
+            return True
+        print(
+            "Could not replace the aspiration suite file; the complete recovery "
+            f"suite is at {saved_path}."
+        )
+        return False
 
     def start_ai_series(self):
         self._stop_ai_process()
@@ -1742,6 +1898,14 @@ class EnhancedChessApp:
         self.ai_series_stats          = {'game_count': 0, 'my_ai_wins': 0, 'op_ai_wins': 0, 'draws': 0}
         self.move_stats               = {}
         self._pending_move_stat       = {}
+        self.aspiration_position_candidates = []
+        self.aspiration_position_fens = set()
+        self.aspiration_position_suite_saved = False
+        try:
+            with open(self.aspiration_position_candidate_path, "w", encoding="utf-8"):
+                pass
+        except OSError as exc:
+            print(f"Aspiration position checkpoint file could not be reset: {exc}")
         self.ai_series_running        = True
         self.current_opening_sequence = []
         self.update_scoreboard()
@@ -1770,7 +1934,9 @@ class EnhancedChessApp:
                 f"{self.MAIN_AI_NAME} vs {self.OPPONENT_AI_NAME} "
                 f"({s['game_count']}/{self.AI_SERIES_GAMES} games)\n"
                 f"  {self.MAIN_AI_NAME}: {s['my_ai_wins']}  "
-                f"{self.OPPONENT_AI_NAME}: {s['op_ai_wins']}  Draws: {s['draws']}"))
+                f"{self.OPPONENT_AI_NAME}: {s['op_ai_wins']}  Draws: {s['draws']}\n"
+                f"  Aspiration positions: {min(len(self.aspiration_position_candidates), 50)}/50 "
+                f"from {len({row['source_game'] for row in self.aspiration_position_candidates})} games"))
         else:
             self.scoreboard_label.config(text="")
 

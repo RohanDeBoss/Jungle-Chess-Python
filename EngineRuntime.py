@@ -1,4 +1,4 @@
-# EngineRuntime.py (v1.4 - Persistent-search deadline and TB PV fixes)
+# EngineRuntime.py (v1.8 - Bound aspiration samples to early full-board play)
 
 import gc
 import glob
@@ -7,12 +7,14 @@ import json
 import os
 import random
 import re
+import time
 import traceback
 from collections import namedtuple
 
 from GameLogic import (
     ROWS, COLS, Pawn, Knight, Bishop, Rook, Queen, King,
     format_move_san, get_all_legal_moves, has_legal_moves, is_insufficient_material,
+    is_in_check,
 )
 
 OPTIONAL_BOT_KWARGS = (
@@ -22,6 +24,9 @@ OPTIONAL_BOT_KWARGS = (
     "use_tablebase",
     "show_tt_fullness",
 )
+
+ASPIRATION_SAMPLE_MAX_PLY = 50
+ASPIRATION_SAMPLE_MIN_PIECES = 12
 
 
 # ---------------------------------------------------------------------------
@@ -119,6 +124,97 @@ def board_to_fen(board, turn):
         if r < ROWS - 1:
             fen += "/"
     return fen + (" w" if turn == "white" else " b")
+
+
+def make_ai_series_benchmark_position(board, turn, game_number, ply_index):
+    """Record an eligible legal AI-vs-OP position from the first 50 plies."""
+    if ply_index > ASPIRATION_SAMPLE_MAX_PLY:
+        return None
+    if board.white_king_pos is None or board.black_king_pos is None:
+        return None
+    passive = "black" if turn == "white" else "white"
+    if is_in_check(board, passive) or not get_all_legal_moves(board, turn):
+        return None
+
+    fen = board_to_fen(board, turn)
+    piece_count = len(board.white_pieces) + len(board.black_pieces)
+    if piece_count < ASPIRATION_SAMPLE_MIN_PIECES:
+        return None
+    stage = "opening" if piece_count >= 24 else "middlegame" if piece_count >= 12 else "endgame"
+    return {
+        "key": f"G{int(game_number):03d}_P{int(ply_index):03d}",
+        "stage": stage,
+        "name": f"Series game {int(game_number)}, ply {int(ply_index)}",
+        "fen": fen,
+        "note": "Sampled at a fixed ply interval from an AI-vs-OP game.",
+        "source_game": int(game_number),
+        "ply": int(ply_index),
+        "piece_count": piece_count,
+    }
+
+
+def append_aspiration_position_candidate(out_path, position_record):
+    """Append each sampled game position immediately as one JSONL record."""
+    with open(out_path, "a", encoding="utf-8") as handle:
+        json.dump(position_record, handle)
+        handle.write("\n")
+        handle.flush()
+
+
+def select_representative_aspiration_positions(position_records, count=50, seed=20261027):
+    """Keep the first `count` unique valid positions in collection order."""
+    del seed  # Retained for call compatibility; selection is intentionally not randomized.
+    unique_by_fen = {}
+    for record in position_records:
+        unique_by_fen.setdefault(record["fen"], record)
+    normalized = []
+    for index, record in enumerate(list(unique_by_fen.values())[:count], 1):
+        normalized.append({
+            **record,
+            "key": f"SER{index:03d}",
+            "name": f"{record['stage'].title()} · game {record['source_game']}, ply {record['ply']}",
+        })
+    return normalized
+
+
+def write_aspiration_position_suite(out_path, position_records, game_count, target_count=50,
+                                     seed=20261027, series_complete=False, series_context=None):
+    """Write a sampled series suite atomically; return its actual saved path and rows."""
+    selected = select_representative_aspiration_positions(
+        position_records, count=target_count, seed=seed
+    )
+    payload = {
+        "metadata": {
+            "source": "AI-vs-OP series",
+            "games_completed": int(game_count),
+            "candidate_positions": len({record["fen"] for record in position_records}),
+            "sampled_positions": len(selected),
+            "target_positions": target_count,
+            "sample_seed": None,
+            "series_complete": bool(series_complete),
+            "collection_complete": len(selected) >= target_count,
+            "sampling": (
+                f"Every fifth ply through ply {ASPIRATION_SAMPLE_MAX_PLY}; positions require "
+                f"at least {ASPIRATION_SAMPLE_MIN_PIECES} pieces; "
+                "first 50 unique legal positions, in collection order."
+            ),
+            "series_context": series_context or {},
+        },
+        "positions": selected,
+    }
+    temp_path = f"{out_path}.{os.getpid()}.{time.time_ns()}.tmp"
+    with open(temp_path, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, indent=2)
+        handle.flush()
+        os.fsync(handle.fileno())
+    for attempt in range(6):
+        try:
+            os.replace(temp_path, out_path)
+            return out_path, selected
+        except PermissionError:
+            if attempt < 5:
+                time.sleep(0.1 * (attempt + 1))
+    return temp_path, selected
 
 
 def _find_opening_book_files():

@@ -1,4 +1,4 @@
-# AI.py (v128.4 - Code cleanup + TB pv lines displayed)
+# AI.py (v128.7 - reuse proven mate-in-one score in analysis)
 
 import time
 import random
@@ -91,7 +91,7 @@ class ChessBot:
     OPENING_CENTRAL_FILES = (COLS // 2 - 1, COLS // 2)
     
     # 2. WIDENED ASPIRATION WINDOW (Handles Jungle Chess volatility, reduces re-searches)
-    ASP_WINDOW_INIT = 450
+    ASP_WINDOW_INIT = 200
     ASP_MAX_RETRIES = 3
 
     # --- TIME MANAGEMENT (tunable — deliberately duplicated, not shared) ---
@@ -685,6 +685,12 @@ class ChessBot:
             best_move_this_iter   = pv_move if pv_move in root_moves else (root_moves[0] if root_moves else None)
             alpha = alpha_floor
             beta  = float('inf')
+            # MATE_SCORE - 1 is the maximum score available at the root: a
+            # forced win on this move. Once proven, later analysis depths can
+            # report the same PV without probing alternatives that cannot
+            # improve on it. Keep iterative deepening alive for the UI.
+            if alpha_floor >= self.MATE_SCORE - 1:
+                return best_score_this_iter, best_move_this_iter
         elif aspiration_window is not None:
             best_score_this_iter, best_move_this_iter = -float('inf'), None
             alpha, beta = aspiration_window
@@ -731,6 +737,13 @@ class ChessBot:
                 best_move_this_iter  = move
             if best_score_this_iter > alpha:
                 alpha = best_score_this_iter
+
+            # A mate delivered by this root move is the highest possible
+            # score (MATE_SCORE - 1). No remaining root move can improve it,
+            # so avoid searching their trees at every analysis depth. The
+            # outer iterative-deepening loop continues as usual.
+            if best_score_this_iter >= self.MATE_SCORE - 1:
+                break
 
         return best_score_this_iter, best_move_this_iter
 

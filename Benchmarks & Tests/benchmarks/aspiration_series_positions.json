@@ -1,0 +1,543 @@
+{
+  "metadata": {
+    "source": "AI-vs-OP series candidates, filtered and curated",
+    "games_completed": 2,
+    "candidate_positions": 50,
+    "sampled_positions": 50,
+    "target_positions": 50,
+    "sample_seed": null,
+    "series_complete": false,
+    "sampling": "Applied ply <= 50 and piece_count >= 12; selected 50 unique positions round-robin across available source games, spaced across sampled plies within each game. Historical checkpoints were recorded every six plies.",
+    "series_context": {
+      "main_ai_header": "# AI.py (v128.5 - ASP_WINDOW_INIT = 200)",
+      "opponent_ai_header": "# OPAI.py (v128.2 - MIN_QSEARCH_PLIES = 4 (baseline))",
+      "main_asp_window": 200,
+      "opponent_asp_window": 450,
+      "clock_enabled": false,
+      "time_control_seconds": 60,
+      "fixed_depth_slider": 6,
+      "opening_book_enabled": true,
+      "tablebases_enabled": true,
+      "games_requested": 300
+    },
+    "raw_candidate_positions": 154,
+    "eligible_unique_positions": 68,
+    "source_games": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      11,
+      12
+    ],
+    "source_games_count": 11,
+    "collection_complete": true
+  },
+  "positions": [
+    {
+      "key": "SER001",
+      "stage": "opening",
+      "name": "Opening ? game 1, ply 4",
+      "fen": "rnbqkb1r/pppp1ppp/4p2n/8/3P4/5P2/PPP1P1PP/RNBQKBNR w",
+      "note": "Sampled at a fixed ply interval from an AI-vs-OP game.",
+      "source_game": 1,
+      "ply": 4,
+      "piece_count": 32
+    },
+    {
+      "key": "SER002",
+      "stage": "opening",
+      "name": "Opening ? game 1, ply 10",
+      "fen": "r1bqkb1r/ppp2ppp/2npp3/5n2/4BP2/8/PPP3PP/RNBQK1NR w",
+      "note": "Sampled at a fixed ply interval from an AI-vs-OP game.",
+      "source_game": 1,
+      "ply": 10,
+      "piece_count": 30
+    },
+    {
+      "key": "SER003",
+      "stage": "opening",
+      "name": "Opening ? game 1, ply 22",
+      "fen": "r2qk2r/ppp3pp/2bpp1n1/5p2/8/2N1b1Q1/PPP1N1PP/R3K2R w",
+      "note": "Sampled at a fixed ply interval from an AI-vs-OP game.",
+      "source_game": 1,
+      "ply": 22,
+      "piece_count": 26
+    },
+    {
+      "key": "SER004",
+      "stage": "middlegame",
+      "name": "Middlegame ? game 1, ply 28",
+      "fen": "r2qk2r/pp4pp/3pp3/2p5/4b3/4N1Q1/PPP4P/R3K1R1 w",
+      "note": "Sampled at a fixed ply interval from an AI-vs-OP game.",
+      "source_game": 1,
+      "ply": 28,
+      "piece_count": 21
+    },
+    {
+      "key": "SER005",
+      "stage": "middlegame",
+      "name": "Middlegame ? game 1, ply 40",
+      "fen": "r6r/p2k2pp/2b5/1p2p3/2p2Q2/6K1/PPP4P/4R1R1 w",
+      "note": "Sampled at a fixed ply interval from an AI-vs-OP game.",
+      "source_game": 1,
+      "ply": 40,
+      "piece_count": 18
+    },
+    {
+      "key": "SER006",
+      "stage": "middlegame",
+      "name": "Middlegame ? game 1, ply 46",
+      "fen": "r1k4r/p3R1pp/5Q2/1p1bK3/2p5/8/PPP4P/6R1 w",
+      "note": "Sampled at a fixed ply interval from an AI-vs-OP game.",
+      "source_game": 1,
+      "ply": 46,
+      "piece_count": 17
+    },
+    {
+      "key": "SER007",
+      "stage": "opening",
+      "name": "Opening ? game 2, ply 10",
+      "fen": "r1bqk2r/ppp2ppp/3pp2n/4n3/3P4/2N5/PPP1P1PP/R2QKBNR w",
+      "note": "Sampled at a fixed ply interval from an AI-vs-OP game.",
+      "source_game": 2,
+      "ply": 10,
+      "piece_count": 29
+    },
+    {
+      "key": "SER008",
+      "stage": "middlegame",
+      "name": "Middlegame ? game 2, ply 16",
+      "fen": "r2qk2r/ppp2ppp/3pp3/3b4/8/8/PP1Q2PP/R3KB1R w",
+      "note": "Sampled at a fixed ply interval from an AI-vs-OP game.",
+      "source_game": 2,
+      "ply": 16,
+      "piece_count": 22
+    },
+    {
+      "key": "SER009",
+      "stage": "middlegame",
+      "name": "Middlegame ? game 2, ply 22",
+      "fen": "r2qk2r/ppp2pp1/8/3pp2p/1P6/8/P2Q2PP/R3K2R w",
+      "note": "Sampled at a fixed ply interval from an AI-vs-OP game.",
+      "source_game": 2,
+      "ply": 22,
+      "piece_count": 20
+    },
+    {
+      "key": "SER010",
+      "stage": "middlegame",
+      "name": "Middlegame ? game 2, ply 34",
+      "fen": "r1q4r/1pk3p1/2p2R2/p3p2p/1P6/8/P4QPP/2K1R3 w",
+      "note": "Sampled at a fixed ply interval from an AI-vs-OP game.",
+      "source_game": 2,
+      "ply": 34,
+      "piece_count": 18
+    },
+    {
+      "key": "SER011",
+      "stage": "middlegame",
+      "name": "Middlegame ? game 2, ply 40",
+      "fen": "1k1q3r/1p2R1p1/r1p2R2/p6p/1P6/5Q2/P5PP/4K3 w",
+      "note": "Sampled at a fixed ply interval from an AI-vs-OP game.",
+      "source_game": 2,
+      "ply": 40,
+      "piece_count": 17
+    },
+    {
+      "key": "SER012",
+      "stage": "middlegame",
+      "name": "Middlegame ? game 2, ply 46",
+      "fen": "3k3r/1p2R1p1/8/R6p/1P3Q2/5q2/P5PP/4K3 w",
+      "note": "Sampled at a fixed ply interval from an AI-vs-OP game.",
+      "source_game": 2,
+      "ply": 46,
+      "piece_count": 14
+    },
+    {
+      "key": "SER013",
+      "stage": "opening",
+      "name": "Opening ? game 3, ply 4",
+      "fen": "rnbqkb1r/pp1ppppp/5n2/2p5/8/4P2P/PPPP1PP1/RNBQKBNR w",
+      "note": "Sampled at a fixed ply interval from an AI-vs-OP game.",
+      "source_game": 3,
+      "ply": 4,
+      "piece_count": 32
+    },
+    {
+      "key": "SER014",
+      "stage": "middlegame",
+      "name": "Middlegame ? game 3, ply 16",
+      "fen": "4kb1r/5ppp/4pn2/8/2p5/7P/PP2bPP1/RBB1K2R w",
+      "note": "Sampled at a fixed ply interval from an AI-vs-OP game.",
+      "source_game": 3,
+      "ply": 16,
+      "piece_count": 20
+    },
+    {
+      "key": "SER015",
+      "stage": "middlegame",
+      "name": "Middlegame ? game 3, ply 28",
+      "fen": "5b1r/3k2pp/4R3/3n4/2p2pP1/1B3K1P/PP3P2/R1B5 w",
+      "note": "Sampled at a fixed ply interval from an AI-vs-OP game.",
+      "source_game": 3,
+      "ply": 28,
+      "piece_count": 18
+    },
+    {
+      "key": "SER016",
+      "stage": "middlegame",
+      "name": "Middlegame ? game 3, ply 34",
+      "fen": "7r/2b3pp/3k4/8/2B5/5K1P/PP3P2/R7 w",
+      "note": "Sampled at a fixed ply interval from an AI-vs-OP game.",
+      "source_game": 3,
+      "ply": 34,
+      "piece_count": 12
+    },
+    {
+      "key": "SER017",
+      "stage": "middlegame",
+      "name": "Middlegame ? game 3, ply 46",
+      "fen": "4r3/3R3p/1k6/4bKp1/2B5/5P1P/PP6/8 w",
+      "note": "Sampled at a fixed ply interval from an AI-vs-OP game.",
+      "source_game": 3,
+      "ply": 46,
+      "piece_count": 12
+    },
+    {
+      "key": "SER018",
+      "stage": "opening",
+      "name": "Opening ? game 4, ply 10",
+      "fen": "r1b1kb1r/pp2pppp/2n2n2/2p5/8/5N1P/PP3PP1/R1BQKB1R w",
+      "note": "Sampled at a fixed ply interval from an AI-vs-OP game.",
+      "source_game": 4,
+      "ply": 10,
+      "piece_count": 26
+    },
+    {
+      "key": "SER019",
+      "stage": "middlegame",
+      "name": "Middlegame ? game 4, ply 22",
+      "fen": "r3k1r1/pp5p/4p3/5B2/8/7P/PP3PP1/3bK2R w",
+      "note": "Sampled at a fixed ply interval from an AI-vs-OP game.",
+      "source_game": 4,
+      "ply": 22,
+      "piece_count": 16
+    },
+    {
+      "key": "SER020",
+      "stage": "middlegame",
+      "name": "Middlegame ? game 4, ply 28",
+      "fen": "3r1k2/pp4rp/4p3/5B2/8/1K5P/PP3PP1/4R3 w",
+      "note": "Sampled at a fixed ply interval from an AI-vs-OP game.",
+      "source_game": 4,
+      "ply": 28,
+      "piece_count": 15
+    },
+    {
+      "key": "SER021",
+      "stage": "middlegame",
+      "name": "Middlegame ? game 4, ply 34",
+      "fen": "5k2/ppr5/3rp2p/5B2/6P1/1PK4P/P4P2/4R3 w",
+      "note": "Sampled at a fixed ply interval from an AI-vs-OP game.",
+      "source_game": 4,
+      "ply": 34,
+      "piece_count": 15
+    },
+    {
+      "key": "SER022",
+      "stage": "middlegame",
+      "name": "Middlegame ? game 4, ply 46",
+      "fen": "2B5/pp2k3/r6p/6P1/P7/1P4KP/5P2/8 w",
+      "note": "Sampled at a fixed ply interval from an AI-vs-OP game.",
+      "source_game": 4,
+      "ply": 46,
+      "piece_count": 12
+    },
+    {
+      "key": "SER023",
+      "stage": "opening",
+      "name": "Opening ? game 5, ply 4",
+      "fen": "rnbqkbnr/ppppp1pp/8/5p2/7P/4P3/PPPP1PP1/RNBQKBNR w",
+      "note": "Sampled at a fixed ply interval from an AI-vs-OP game.",
+      "source_game": 5,
+      "ply": 4,
+      "piece_count": 32
+    },
+    {
+      "key": "SER024",
+      "stage": "middlegame",
+      "name": "Middlegame ? game 5, ply 16",
+      "fen": "r6r/p3k1pp/5n2/2b5/7P/4P3/PPPP1PP1/RNB1K1NR w",
+      "note": "Sampled at a fixed ply interval from an AI-vs-OP game.",
+      "source_game": 5,
+      "ply": 16,
+      "piece_count": 22
+    },
+    {
+      "key": "SER025",
+      "stage": "middlegame",
+      "name": "Middlegame ? game 5, ply 28",
+      "fen": "4r3/p3k1pp/3b1n2/8/P2P3P/4PN2/2P1KPP1/1RB4R w",
+      "note": "Sampled at a fixed ply interval from an AI-vs-OP game.",
+      "source_game": 5,
+      "ply": 28,
+      "piece_count": 19
+    },
+    {
+      "key": "SER026",
+      "stage": "middlegame",
+      "name": "Middlegame ? game 5, ply 34",
+      "fen": "4rk2/p7/3b1npp/8/P1PP3P/1RB1PN2/4KPP1/7R w",
+      "note": "Sampled at a fixed ply interval from an AI-vs-OP game.",
+      "source_game": 5,
+      "ply": 34,
+      "piece_count": 19
+    },
+    {
+      "key": "SER027",
+      "stage": "middlegame",
+      "name": "Middlegame ? game 5, ply 46",
+      "fen": "2rbk3/p7/5npp/8/P1PP4/1R2PN2/1B3PP1/3K3R w",
+      "note": "Sampled at a fixed ply interval from an AI-vs-OP game.",
+      "source_game": 5,
+      "ply": 46,
+      "piece_count": 18
+    },
+    {
+      "key": "SER028",
+      "stage": "opening",
+      "name": "Opening ? game 6, ply 10",
+      "fen": "rnbq2nr/pppp2pp/3bk3/8/7P/4PQ2/PPPP1PP1/RNB1K1NR w",
+      "note": "Sampled at a fixed ply interval from an AI-vs-OP game.",
+      "source_game": 6,
+      "ply": 10,
+      "piece_count": 29
+    },
+    {
+      "key": "SER029",
+      "stage": "middlegame",
+      "name": "Middlegame ? game 6, ply 22",
+      "fen": "r6r/pp3kpp/2n5/8/5B1P/3P4/PPP2PP1/RN2K2R w",
+      "note": "Sampled at a fixed ply interval from an AI-vs-OP game.",
+      "source_game": 6,
+      "ply": 22,
+      "piece_count": 20
+    },
+    {
+      "key": "SER030",
+      "stage": "middlegame",
+      "name": "Middlegame ? game 6, ply 28",
+      "fen": "3rr3/pp3k1p/2n3p1/8/5B1P/2NP4/PPP2PP1/4RK1R w",
+      "note": "Sampled at a fixed ply interval from an AI-vs-OP game.",
+      "source_game": 6,
+      "ply": 28,
+      "piece_count": 20
+    },
+    {
+      "key": "SER031",
+      "stage": "middlegame",
+      "name": "Middlegame ? game 6, ply 34",
+      "fen": "4r3/pp3k1p/3Bn1p1/8/P6P/2NP4/1PP2PP1/5K1R w",
+      "note": "Sampled at a fixed ply interval from an AI-vs-OP game.",
+      "source_game": 6,
+      "ply": 34,
+      "piece_count": 18
+    },
+    {
+      "key": "SER032",
+      "stage": "middlegame",
+      "name": "Middlegame ? game 6, ply 46",
+      "fen": "4r3/p6p/2k3p1/1p6/P4BPP/3K4/1PP2P2/3R4 w",
+      "note": "Sampled at a fixed ply interval from an AI-vs-OP game.",
+      "source_game": 6,
+      "ply": 46,
+      "piece_count": 15
+    },
+    {
+      "key": "SER033",
+      "stage": "opening",
+      "name": "Opening ? game 7, ply 4",
+      "fen": "rnbqkb1r/ppppnppp/4p3/8/5P2/8/PPPPP1PP/RNBQKBNR w",
+      "note": "Sampled at a fixed ply interval from an AI-vs-OP game.",
+      "source_game": 7,
+      "ply": 4,
+      "piece_count": 32
+    },
+    {
+      "key": "SER034",
+      "stage": "middlegame",
+      "name": "Middlegame ? game 7, ply 16",
+      "fen": "rnbqk1r1/ppp2ppp/4p3/8/5P2/2N1P3/PP6/3RK1NR w",
+      "note": "Sampled at a fixed ply interval from an AI-vs-OP game.",
+      "source_game": 7,
+      "ply": 16,
+      "piece_count": 22
+    },
+    {
+      "key": "SER035",
+      "stage": "middlegame",
+      "name": "Middlegame ? game 7, ply 28",
+      "fen": "R7/ppp2pp1/4p3/3b4/5k2/4P3/PP6/4K3 w",
+      "note": "Sampled at a fixed ply interval from an AI-vs-OP game.",
+      "source_game": 7,
+      "ply": 28,
+      "piece_count": 13
+    },
+    {
+      "key": "SER036",
+      "stage": "middlegame",
+      "name": "Middlegame ? game 7, ply 34",
+      "fen": "8/ppp5/3kp3/6p1/6b1/2K1P3/PP3R2/8 w",
+      "note": "Sampled at a fixed ply interval from an AI-vs-OP game.",
+      "source_game": 7,
+      "ply": 34,
+      "piece_count": 12
+    },
+    {
+      "key": "SER037",
+      "stage": "middlegame",
+      "name": "Middlegame ? game 7, ply 46",
+      "fen": "3k4/ppp5/4p3/5bp1/PR6/2K1P3/1P6/8 w",
+      "note": "Sampled at a fixed ply interval from an AI-vs-OP game.",
+      "source_game": 7,
+      "ply": 46,
+      "piece_count": 12
+    },
+    {
+      "key": "SER038",
+      "stage": "opening",
+      "name": "Opening ? game 8, ply 10",
+      "fen": "rnbqk2r/ppppbppp/4p3/8/5P2/2N1B3/PP2P2P/R3K1NR w",
+      "note": "Sampled at a fixed ply interval from an AI-vs-OP game.",
+      "source_game": 8,
+      "ply": 10,
+      "piece_count": 26
+    },
+    {
+      "key": "SER039",
+      "stage": "middlegame",
+      "name": "Middlegame ? game 8, ply 22",
+      "fen": "r1bq1k1r/ppp2ppp/2n1p3/8/5P2/2N1PN2/PP5P/3RK1R1 w",
+      "note": "Sampled at a fixed ply interval from an AI-vs-OP game.",
+      "source_game": 8,
+      "ply": 22,
+      "piece_count": 23
+    },
+    {
+      "key": "SER040",
+      "stage": "middlegame",
+      "name": "Middlegame ? game 8, ply 28",
+      "fen": "r1b1k2r/1pp2ppp/4p3/p7/5P2/4P3/PP2NK1P/6R1 w",
+      "note": "Sampled at a fixed ply interval from an AI-vs-OP game.",
+      "source_game": 8,
+      "ply": 28,
+      "piece_count": 19
+    },
+    {
+      "key": "SER041",
+      "stage": "middlegame",
+      "name": "Middlegame ? game 8, ply 34",
+      "fen": "r3k2r/1p3ppp/8/p1p5/3NPP2/6R1/PP3K1P/3b4 w",
+      "note": "Sampled at a fixed ply interval from an AI-vs-OP game.",
+      "source_game": 8,
+      "ply": 34,
+      "piece_count": 18
+    },
+    {
+      "key": "SER042",
+      "stage": "middlegame",
+      "name": "Middlegame ? game 8, ply 46",
+      "fen": "r3r3/1p1k1ppp/8/p1pb4/3NPP2/2R5/PP1K3P/8 w",
+      "note": "Sampled at a fixed ply interval from an AI-vs-OP game.",
+      "source_game": 8,
+      "ply": 46,
+      "piece_count": 18
+    },
+    {
+      "key": "SER043",
+      "stage": "opening",
+      "name": "Opening ? game 9, ply 4",
+      "fen": "r1bqkbnr/p1pppppp/2n5/1p6/8/4PN2/PPPP1PPP/RNBQKB1R w",
+      "note": "Sampled at a fixed ply interval from an AI-vs-OP game.",
+      "source_game": 9,
+      "ply": 4,
+      "piece_count": 32
+    },
+    {
+      "key": "SER044",
+      "stage": "opening",
+      "name": "Opening ? game 9, ply 10",
+      "fen": "r1b3nr/p2p2k1/2n1p3/1p6/8/4P1P1/PPPP1P1P/RNBQKB1R w",
+      "note": "Sampled at a fixed ply interval from an AI-vs-OP game.",
+      "source_game": 9,
+      "ply": 10,
+      "piece_count": 25
+    },
+    {
+      "key": "SER045",
+      "stage": "middlegame",
+      "name": "Middlegame ? game 9, ply 16",
+      "fen": "r7/p2p2k1/b3B3/1p2n3/8/4P1P1/PPPPKP2/RNBQ3r w",
+      "note": "Sampled at a fixed ply interval from an AI-vs-OP game.",
+      "source_game": 9,
+      "ply": 16,
+      "piece_count": 21
+    },
+    {
+      "key": "SER046",
+      "stage": "middlegame",
+      "name": "Middlegame ? game 9, ply 22",
+      "fen": "8/p2p2k1/b3B3/4n3/1p1P4/4P1P1/PP1NKP2/R1r5 w",
+      "note": "Sampled at a fixed ply interval from an AI-vs-OP game.",
+      "source_game": 9,
+      "ply": 22,
+      "piece_count": 17
+    },
+    {
+      "key": "SER047",
+      "stage": "middlegame",
+      "name": "Middlegame ? game 9, ply 28",
+      "fen": "8/p2p2k1/B7/4n3/3PP3/6P1/Pp2KP2/8 w",
+      "note": "Sampled at a fixed ply interval from an AI-vs-OP game.",
+      "source_game": 9,
+      "ply": 28,
+      "piece_count": 12
+    },
+    {
+      "key": "SER048",
+      "stage": "opening",
+      "name": "Opening ? game 11, ply 4",
+      "fen": "r1bqkbnr/ppppppp1/2n4p/8/8/4P2N/PPPP1PPP/RNBQKB1R w",
+      "note": "Sampled at a fixed ply interval from an AI-vs-OP game.",
+      "source_game": 11,
+      "ply": 4,
+      "piece_count": 32
+    },
+    {
+      "key": "SER049",
+      "stage": "opening",
+      "name": "Opening ? game 11, ply 10",
+      "fen": "r1bq1bnr/ppppp1p1/2nk3p/8/5N2/4P3/PPPP1PPP/RNBQKB1R w",
+      "note": "Sampled at a fixed ply interval from an AI-vs-OP game.",
+      "source_game": 11,
+      "ply": 10,
+      "piece_count": 31
+    },
+    {
+      "key": "SER050",
+      "stage": "opening",
+      "name": "Opening ? game 12, ply 4",
+      "fen": "rnbqkbnr/ppp1ppp1/7p/3p4/8/4P2N/PPPP1PPP/RNBQKB1R w",
+      "note": "Sampled at a fixed ply interval from an AI-vs-OP game.",
+      "source_game": 12,
+      "ply": 4,
+      "piece_count": 32
+    }
+  ]
+}
