@@ -11,7 +11,11 @@ def convert(tb_dir):
             continue
         src = os.path.join(tb_dir, f)
         dst = src[:-len(SRC_SUFFIX)] + DST_SUFFIX
+        src_marker = src + ".wdl"
+        dst_marker = dst + ".wdl"
         if os.path.exists(dst):
+            if os.path.exists(src_marker) and not os.path.exists(dst_marker):
+                shutil.copy2(src_marker, dst_marker)
             print(f"skip   {os.path.basename(dst)}"); continue
         a = np.memmap(src, dtype=np.int16, mode='r')
         n = a.size
@@ -32,8 +36,8 @@ def convert(tb_dir):
             del out; os.remove(tmp); raise
         del out
         os.replace(tmp, dst)
-        if os.path.exists(src + ".wdl"):
-            shutil.copyfile(src + ".wdl", dst + ".wdl")
+        if os.path.exists(src_marker) and not os.path.exists(dst_marker):
+            shutil.copy2(src_marker, dst_marker)
         print(f"OK     {os.path.basename(dst)}  ({n:,} entries)")
 
 

@@ -130,7 +130,7 @@ Qxf7 (xf7 xg7 xh7 xg8) — queen explosion (queen's own square is included)
 ```
 1. e4, Nf6 (xe4)
 2. Bxf7+, Kxf7
-3. Nc3, Ne4 (xd2 xf2)
+3. Nc3, Ne4 (xd2 xf2 xc3 xe4)
 ```
 
 ---

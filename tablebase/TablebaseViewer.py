@@ -11,6 +11,7 @@ if PROJECT_ROOT not in sys.path:
 
 from GameLogic import Board, King, Queen, Rook, Bishop, Knight, Pawn, is_in_check
 from tablebase.TablebaseManager import TablebaseManager
+from tablebase.TablebaseFormat import infer_flat_table_dtype
 
 # --- CONFIGURATION ---
 TB_DIR = os.path.join(PROJECT_ROOT, "TBs")
@@ -345,7 +346,13 @@ class TBViewerApp:
         category = metadata["category"]
 
         try:
-            data = np.memmap(filepath, dtype=np.int8, mode='r')
+            position_count = (
+                (32 if has_pawn else 10)
+                * 64 ** (len(metadata["white_pieces"]) + len(metadata["black_pieces"]) + 1)
+                * 2
+            )
+            disk_dtype = infer_flat_table_dtype(filepath, position_count)
+            data = np.memmap(filepath, dtype=disk_dtype, mode='r')
             data_flat = data.reshape(-1)
             
             reusable_board = Board(setup=False)

@@ -1,4 +1,4 @@
-# EngineRuntime.py (v1.8 - Bound aspiration samples to early full-board play)
+# EngineRuntime.py (v1.9 - Robust aspiration suite writes)
 
 import gc
 import glob
@@ -140,7 +140,7 @@ def make_ai_series_benchmark_position(board, turn, game_number, ply_index):
     piece_count = len(board.white_pieces) + len(board.black_pieces)
     if piece_count < ASPIRATION_SAMPLE_MIN_PIECES:
         return None
-    stage = "opening" if piece_count >= 24 else "middlegame" if piece_count >= 12 else "endgame"
+    stage = "opening" if piece_count >= 24 else "middlegame"
     return {
         "key": f"G{int(game_number):03d}_P{int(ply_index):03d}",
         "stage": stage,
@@ -155,6 +155,7 @@ def make_ai_series_benchmark_position(board, turn, game_number, ply_index):
 
 def append_aspiration_position_candidate(out_path, position_record):
     """Append each sampled game position immediately as one JSONL record."""
+    os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
     with open(out_path, "a", encoding="utf-8") as handle:
         json.dump(position_record, handle)
         handle.write("\n")
@@ -203,10 +204,18 @@ def write_aspiration_position_suite(out_path, position_records, game_count, targ
         "positions": selected,
     }
     temp_path = f"{out_path}.{os.getpid()}.{time.time_ns()}.tmp"
-    with open(temp_path, "w", encoding="utf-8") as handle:
-        json.dump(payload, handle, indent=2)
-        handle.flush()
-        os.fsync(handle.fileno())
+    os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
+    try:
+        with open(temp_path, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, indent=2)
+            handle.flush()
+            os.fsync(handle.fileno())
+    except Exception:
+        try:
+            os.remove(temp_path)
+        except OSError:
+            pass
+        raise
     for attempt in range(6):
         try:
             os.replace(temp_path, out_path)
@@ -214,6 +223,12 @@ def write_aspiration_position_suite(out_path, position_records, game_count, targ
         except PermissionError:
             if attempt < 5:
                 time.sleep(0.1 * (attempt + 1))
+        except Exception:
+            try:
+                os.remove(temp_path)
+            except OSError:
+                pass
+            raise
     return temp_path, selected
 
 
@@ -227,6 +242,8 @@ def _find_opening_book_files():
     matches = []
     for pattern in patterns:
         for path in glob.glob(pattern):
+            if "partial" in os.path.basename(path).lower():
+                continue  # in-progress checkpoint from book_generator
             norm = os.path.normcase(os.path.abspath(path))
             if norm in seen:
                 continue
@@ -271,7 +288,7 @@ def calc_time_check_mask(allocated):
 
 
 # NOTE: time-budgeting formula intentionally does NOT live here. Unlike
-# hashing/FEN/dispatch, it's a *tunable strategy* (per §6.6 of the README),
+# hashing/FEN/dispatch, it's a *tunable strategy* (per §2.6 of ENGINE_NOTES.md),
 # so AI.py and OPAI.py each keep an independent, duplicated copy of the
 # constants + method. Do not re-add a shared version of this here even if
 # the two copies look identical today — that would silently couple them.
@@ -369,9 +386,17 @@ class EngineWorker:
     def __init__(self, bot_class):
         self.bot_class = bot_class
         self.bot = None
+        self._clear_pending = False
 
-    def handle_task(self, task, comm_queue, cancel_event):
+    def handle_task(self, task, comm_queue, cancel_event, latest_task_id=None):
         cancel_event.clear()
+        # The UI bumps latest_task_id BEFORE setting the cancel event, so a task
+        # cancelled while still queued is seen as stale here instead of having
+        # its cancellation wiped by the clear() above.
+        if latest_task_id is not None and task.get("task_id", -1) != latest_task_id.value:
+            if task.get("clear_hash", False):
+                self._clear_pending = True
+            return
         wrapped_comm = TaskQueueWrapper(comm_queue, task.get("task_id", -1))
 
         values = {
@@ -383,7 +408,8 @@ class EngineWorker:
         }
         filtered_kwargs = accepted_bot_kwargs(self.bot_class, values)
 
-        if self.bot is None or task.get("clear_hash", False):
+        if self.bot is None or task.get("clear_hash", False) or self._clear_pending:
+            self._clear_pending = False
             self.bot = self.bot_class(
                 task["board"], task["color"], task["position_counts"],
                 wrapped_comm, cancel_event, task["bot_name"],
@@ -400,7 +426,7 @@ class EngineWorker:
         run_bot_turn(self.bot)
 
 
-def persistent_worker(work_queue, comm_queue, cancel_event, bot_class):
+def persistent_worker(work_queue, comm_queue, cancel_event, bot_class, latest_task_id=None):
     worker = EngineWorker(bot_class)
 
     while True:
@@ -409,7 +435,7 @@ def persistent_worker(work_queue, comm_queue, cancel_event, bot_class):
             break
 
         try:
-            worker.handle_task(task, comm_queue, cancel_event)
+            worker.handle_task(task, comm_queue, cancel_event, latest_task_id)
         except Exception:
             traceback.print_exc()
             TaskQueueWrapper(comm_queue, task.get("task_id", -1)).put(("move", None))

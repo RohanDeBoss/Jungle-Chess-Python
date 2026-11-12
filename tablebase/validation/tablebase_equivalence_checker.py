@@ -1,4 +1,6 @@
-#TB Equivalence Checker (v1.0)
+# ARCHIVED: Tablebase Equivalence Checker (v1.0)
+# Kept for future comparisons when legacy _tb16.bin tables are available.
+# An empty common-table report is not a current verification of generated tables.
 import argparse
 import json
 import os
@@ -16,6 +18,7 @@ os.chdir(PROJECT_ROOT)
 
 from GameLogic import Board, King, Queen, Rook, Bishop, Knight, Pawn, is_in_check
 from tablebase.TablebaseManager import TablebaseManager
+from tablebase.TablebaseFormat import infer_table_dtype
 
 
 OLD_SUFFIX = "_tb16.bin"
@@ -89,7 +92,7 @@ def parse_longest_mates(path):
     records = {}
     with open(path, "r", encoding="utf-8") as handle:
         for raw in handle:
-            line = raw.strip()
+            line = raw.strip().lstrip("\ufeff")
             if not line or any(line.startswith(x) for x in ("#", "Table", "---")):
                 continue
             parts = re.split(r"\s{2,}|\t", line)
@@ -98,13 +101,19 @@ def parse_longest_mates(path):
             key = parts[0]
             if key.startswith("regen_"):
                 key = key[len("regen_") :]
+            if len(parts) >= 7 and parts[2] in {"tb8", "tb16"}:
+                dtm, storage, decisive, drawn, minutes, updated = parts[1:7]
+            else:
+                dtm, decisive, drawn, minutes, updated = parts[1:6]
             records[key] = {
-                "dtm": int(parts[1]),
-                "decisive": int(parts[2].replace(",", "")),
-                "drawn": int(parts[3].replace(",", "")),
-                "minutes": float(parts[4]),
-                "updated_utc": parts[5],
+                "dtm": int(dtm),
+                "decisive": int(decisive.replace(",", "")),
+                "drawn": int(drawn.replace(",", "")),
+                "minutes": float(minutes),
+                "updated_utc": updated,
             }
+            if len(parts) >= 7 and parts[2] in {"tb8", "tb16"}:
+                records[key]["storage"] = storage
     return records
 
 
@@ -146,8 +155,9 @@ def parse_table_metadata(base_name):
     return TableMetadata(base_name, category, white_pieces, black_pieces, has_pawn, shape)
 
 
-def load_table(directory, base_name, suffix, dtype, shape):
+def load_table(directory, base_name, suffix, shape):
     filename = os.path.join(directory, f"{base_name}{suffix}")
+    dtype = infer_table_dtype(filename, shape)
     return np.memmap(filename, dtype=dtype, mode="r", shape=shape)
 
 
@@ -448,7 +458,10 @@ def sample_probe_checks(base_name, metadata, old_arr, new_arr, sample_count, rng
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Compare old and new Jungle Chess tablebases using note files, full value diffs, and live probe checks."
+        description=(
+            "ARCHIVED: compare legacy and newer Jungle Chess tablebases when "
+            "both datasets are available."
+        )
     )
     parser.add_argument("--old-dir", default="TBs")
     parser.add_argument("--new-dir", default="TBs")
@@ -490,11 +503,8 @@ def main():
         print(f"\n[{offset + 1}/{len(common_bases)}] {base_name}: loading tables", flush=True)
         metadata = parse_table_metadata(base_name)
         
-        old_dtype = np.int8 if args.old_suffix.endswith(("_xsml.bin", "_tb8.bin")) else np.int16
-        new_dtype = np.int8 if args.new_suffix.endswith(("_xsml.bin", "_tb8.bin")) else np.int16
-        
-        old_arr = load_table(args.old_dir, base_name, args.old_suffix, old_dtype, metadata.shape)
-        new_arr = load_table(args.new_dir, base_name, args.new_suffix, new_dtype, metadata.shape)
+        old_arr = load_table(args.old_dir, base_name, args.old_suffix, metadata.shape)
+        new_arr = load_table(args.new_dir, base_name, args.new_suffix, metadata.shape)
 
         print(f"  Comparing {old_arr.size:,} states in chunks...", flush=True)
         table_report = full_compare_table(base_name, old_arr, new_arr)

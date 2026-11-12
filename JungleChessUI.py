@@ -1,4 +1,4 @@
-# JungleChessUI.py (v17.9 - aspiration-suite position navigation)
+# JungleChessUI.py (v18.0 - suite refresh and safe series transitions)
 
 import tkinter as tk
 from tkinter import ttk, messagebox
@@ -58,6 +58,7 @@ class EnhancedChessApp:
         self.op_work_queue     = mp.Queue()
         self.main_cancel_event = mp.Event()
         self.op_cancel_event   = mp.Event()
+        self.latest_task_id    = mp.Value('i', 0)
         self.active_worker_name = None   # 'main' | 'op' | None
         self.analysis_thinking  = False
         self.main_worker        = None   
@@ -91,6 +92,7 @@ class EnhancedChessApp:
         self.game_mode           = tk.StringVar(value=GameMode.HUMAN_VS_BOT.value)
         self.analysis_mode_var   = tk.BooleanVar(value=True)
         self.ai_series_running   = False
+        self._series_reset_after_id = None
         self.ai_series_stats     = {'game_count': 0, 'my_ai_wins': 0, 'op_ai_wins': 0, 'draws': 0}
         self.aspiration_position_candidates = []
         self.aspiration_position_fens = set()
@@ -107,11 +109,6 @@ class EnhancedChessApp:
         self._pending_move_stat  = {}
         self.aspiration_suite_positions = None
         self.aspiration_suite_index = -1
-        self.aspiration_suite_path = os.path.join(
-            os.path.dirname(os.path.abspath(__file__)),
-            "Benchmarks & Tests", "benchmarks", "aspiration_series_positions.json",
-        )
-        
         self.auto_save_stats_var  = tk.BooleanVar(value=True)
         self.show_pv_var          = tk.BooleanVar(value=True)
         self.long_notation_var    = tk.BooleanVar(value=False)
@@ -164,13 +161,13 @@ class EnhancedChessApp:
         self.main_worker = mp.Process(
             target=persistent_worker,
             args=(self.main_work_queue, self.comm_queue,
-                  self.main_cancel_event, ChessBot),
+                  self.main_cancel_event, ChessBot, self.latest_task_id),
             daemon=True,
         )
         self.op_worker = mp.Process(
             target=persistent_worker,
             args=(self.op_work_queue, self.comm_queue,
-                  self.op_cancel_event, OpponentAI),
+                  self.op_cancel_event, OpponentAI, self.latest_task_id),
             daemon=True,
         )
         self.main_worker.start()
@@ -707,7 +704,7 @@ class EnhancedChessApp:
     def load_fen_from_entry(self, schedule_ai=True):
         fen = self.fen_entry.get().strip()
         if not fen:
-            return
+            return False
         parts = fen.split()
         self._stop_ai_process()
         self.board = Board(setup=False)
@@ -721,7 +718,7 @@ class EnhancedChessApp:
                 pc = _FEN_CHAR_TO_CLASS.get(ch.lower())
                 if pc is None or not (0 <= r < ROWS and 0 <= c < COLS):
                     self._reject_fen(fen, f"Unrecognised piece or off-board square near '{ch}'.")
-                    return
+                    return False
                 self.board.add_piece(pc("white" if ch.isupper() else "black"), r, c)
                 c += 1
         self.turn = "white" if (parts[1] if len(parts) > 1 else 'w').lower() == 'w' else "black"
@@ -731,16 +728,16 @@ class EnhancedChessApp:
         if sum(1 for p in self.board.white_pieces if type(p) is King) != 1 or \
            sum(1 for p in self.board.black_pieces if type(p) is King) != 1:
             self._reject_fen(fen, "Illegal Position: each side must have exactly one King.")
-            return
+            return False
         if any(type(p) is Pawn and p.pos[0] in (0, ROWS - 1) for p in all_pieces):
             self._reject_fen(fen, "Illegal Position: pawns cannot stand on the first or last rank "
                                   "(the tablebases do not cover those squares).")
-            return
+            return False
             
         passive_color = "black" if self.turn == "white" else "white"
         if is_in_check(self.board, passive_color):
             self._reject_fen(fen, f"Illegal Position: The side not to move ({passive_color}) is already in direct/indirect check.")
-            return
+            return False
         # -----------------------------------
 
         self.game_started = True
@@ -752,19 +749,24 @@ class EnhancedChessApp:
         if status != "ongoing":
             self.game_over   = True
             self.game_result = (status, winner)
-        self.board_orientation = self.human_color
+        self.board_orientation = (
+            self.human_color
+            if self.game_mode.get() == GameMode.HUMAN_VS_BOT.value
+            else "white"
+        )
         self._update_flip_view_button_style()
         self.update_ui_after_state_change()
         self._update_analysis_after_state_change()
         if schedule_ai and not self.game_over and self.game_mode.get() == GameMode.HUMAN_VS_BOT.value \
                 and self.turn != self.human_color:
             self.master.after(self._get_ai_move_delay(), self._make_game_ai_move)
+        return True
 
     def load_next_suite_game(self):
         """Load the next saved aspiration-suite position into the live board."""
         if self.aspiration_suite_positions is None:
             try:
-                with open(self.aspiration_suite_path, encoding="utf-8") as handle:
+                with open(self.aspiration_position_suite_path, encoding="utf-8") as handle:
                     payload = json.load(handle)
                 positions = payload.get("positions", [])
                 if not positions:
@@ -774,20 +776,23 @@ class EnhancedChessApp:
                 messagebox.showerror("Aspiration suite", str(exc), parent=self.master)
                 return
 
-        self.aspiration_suite_index = (
-            self.aspiration_suite_index + 1
-        ) % len(self.aspiration_suite_positions)
+        previous_index = self.aspiration_suite_index
+        self.aspiration_suite_index = (previous_index + 1) % len(self.aspiration_suite_positions)
         position = self.aspiration_suite_positions[self.aspiration_suite_index]
 
         # A suite position is a study puzzle: keep it on the board and start
         # the app's normal analysis worker instead of automatically moving the bot.
+        self._cancel_pending_series_reset()
         self.ai_series_running = False
         self.game_mode.set(GameMode.HUMAN_VS_HUMAN.value)
+        self.update_scoreboard()
         self.analysis_mode_var.set(True)
         self._update_flip_view_button_style()
         self.fen_entry.delete(0, tk.END)
         self.fen_entry.insert(0, position["fen"])
-        self.load_fen_from_entry(schedule_ai=False)
+        if not self.load_fen_from_entry(schedule_ai=False):
+            self.aspiration_suite_index = previous_index
+            return
         self.game_info_label.config(
             text=f"Aspiration Suite {self.aspiration_suite_index + 1}/"
                  f"{len(self.aspiration_suite_positions)}"
@@ -1140,7 +1145,22 @@ class EnhancedChessApp:
         if self.analysis_mode_var.get() and self.game_mode.get() == GameMode.HUMAN_VS_HUMAN.value:
             self._update_analysis_after_state_change()
 
+    def _cancel_pending_series_reset(self):
+        if self._series_reset_after_id is None:
+            return
+        try:
+            self.master.after_cancel(self._series_reset_after_id)
+        except tk.TclError:
+            pass
+        self._series_reset_after_id = None
+
+    def _reset_for_next_series_game(self):
+        self._series_reset_after_id = None
+        if self.ai_series_running:
+            self.reset_game()
+
     def reset_game(self, schedule_ai=True):
+        self._cancel_pending_series_reset()
         self._pending_hash_clear = {'main', 'op'}
         if self.game_mode.get() != GameMode.AI_VS_AI.value:
             self.ai_series_running = False
@@ -1455,6 +1475,7 @@ class EnhancedChessApp:
         inc = self.increment if self.use_clock_var.get() else None
 
         self.current_task_id += 1  # Increment task generation
+        self.latest_task_id.value = self.current_task_id
         worker_key = 'main' if bot_class is ChessBot else 'op'
 
         task = {
@@ -1490,13 +1511,16 @@ class EnhancedChessApp:
 
     def _stop_ai_process(self, drain_queue=True, invalidate_task=True):
         """Cancel the current task (worker stays alive)."""
+        # Invalidate before setting the event so a still-queued task is seen
+        # as stale instead of having its cancellation wiped by the worker.
+        if invalidate_task:
+            self.current_task_id += 1
+            self.latest_task_id.value = self.current_task_id
+
         if self.active_worker_name == 'main':
             self.main_cancel_event.set()
         elif self.active_worker_name == 'op':
             self.op_cancel_event.set()
-
-        if invalidate_task:
-            self.current_task_id += 1
 
         self.active_worker_name = None
         self.analysis_thinking  = False
@@ -1706,7 +1730,8 @@ class EnhancedChessApp:
 
         # Read the file
         try:
-            with open("Zreadme.txt", "r", encoding="utf-8") as f:
+            readme_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Zreadme.txt")
+            with open(readme_path, "r", encoding="utf-8") as f:
                 readme_text = f.read()
         except FileNotFoundError:
             readme_text = "# Error\nCould not find `Zreadme.txt` in the current directory."
@@ -1831,7 +1856,10 @@ class EnhancedChessApp:
         if (self.ai_series_running
                 and len(self.aspiration_position_candidates) < 50
                 and self.ai_series_stats['game_count'] < self.AI_SERIES_GAMES):
-            self.master.after(1000, self.reset_game)
+            self._cancel_pending_series_reset()
+            self._series_reset_after_id = self.master.after(
+                1000, self._reset_for_next_series_game
+            )
         else:
             if self.aspiration_position_candidates:
                 self._save_aspiration_position_suite(
@@ -1873,14 +1901,18 @@ class EnhancedChessApp:
             "tablebases_enabled": bool(self.use_tablebase_var.get()),
             "games_requested": self.AI_SERIES_GAMES,
         }
-        saved_path, selected = write_aspiration_position_suite(
-            self.aspiration_position_suite_path,
-            self.aspiration_position_candidates,
-            game_count=self.ai_series_stats['game_count'],
-            target_count=50,
-            series_complete=series_complete,
-            series_context=series_context,
-        )
+        try:
+            saved_path, selected = write_aspiration_position_suite(
+                self.aspiration_position_suite_path,
+                self.aspiration_position_candidates,
+                game_count=self.ai_series_stats['game_count'],
+                target_count=50,
+                series_complete=series_complete,
+                series_context=series_context,
+            )
+        except Exception as exc:
+            print(f"Could not save aspiration position suite: {exc}")
+            return False
         if saved_path == self.aspiration_position_suite_path:
             self.aspiration_position_suite_saved = True
             source_games = len({row["source_game"] for row in selected})
@@ -1893,6 +1925,7 @@ class EnhancedChessApp:
         return False
 
     def start_ai_series(self):
+        self._cancel_pending_series_reset()
         self._stop_ai_process()
         self.game_mode.set(GameMode.AI_VS_AI.value)
         self.ai_series_stats          = {'game_count': 0, 'my_ai_wins': 0, 'op_ai_wins': 0, 'draws': 0}
@@ -1901,7 +1934,13 @@ class EnhancedChessApp:
         self.aspiration_position_candidates = []
         self.aspiration_position_fens = set()
         self.aspiration_position_suite_saved = False
+        self.aspiration_suite_positions = None
+        self.aspiration_suite_index = -1
         try:
+            os.makedirs(
+                os.path.dirname(os.path.abspath(self.aspiration_position_candidate_path)),
+                exist_ok=True,
+            )
             with open(self.aspiration_position_candidate_path, "w", encoding="utf-8"):
                 pass
         except OSError as exc:

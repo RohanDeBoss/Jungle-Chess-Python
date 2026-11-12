@@ -19,6 +19,7 @@ if HERE not in sys.path:
     sys.path.insert(0, HERE)
 
 import TablebaseGenerator as TG
+from TablebaseFormat import infer_flat_table_dtype
 
 DEFAULT_TABLES = [
     "K_Rook_Rook_K",
@@ -307,7 +308,8 @@ def run_case(name, args, budget_seconds, golden_reference, implementation, golde
         print(f"[ERROR] {name}: benchmark validity mask disagrees with generator")
         return False
 
-    table = np.memmap(generator.filename, dtype=TG.TB_DISK_DTYPE, mode="r")
+    disk_dtype = infer_flat_table_dtype(generator.filename, generator.total_positions)
+    table = np.memmap(generator.filename, dtype=disk_dtype, mode="r")
     if table.size != generator.total_positions:
         print(
             f"[ERROR] {name}: table size {table.size} != "

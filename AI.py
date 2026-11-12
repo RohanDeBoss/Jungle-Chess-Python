@@ -1,4 +1,4 @@
-# AI.py (v128.7 - reuse proven mate-in-one score in analysis)
+# AI.py (v128.8 - avoid aspiration retries on immediate mate)
 
 import time
 import random
@@ -287,6 +287,11 @@ class ChessBot:
 
                 if self.cancellation_event.is_set() or (self.stop_time and time.time() > self.stop_time):
                     raise SearchCancelledException()
+
+                # An immediate mate is the maximum root score, so aspiration
+                # widening cannot improve or refine it.
+                if best_score >= self.MATE_SCORE - 1:
+                    break
 
                 if best_score <= alpha_bound:
                     alpha_bound -= window; window *= 2; retries += 1

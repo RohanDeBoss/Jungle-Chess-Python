@@ -38,11 +38,11 @@ bug"). The chain of responsibility:
 is on move.** That would reintroduce the exact bug v17.2 fixed. If a future
 change wants a mover-relative bar as an *option*, it needs to be a distinct,
 explicitly-labeled toggle — not a silent change to the default behavior,
-since the default is depended on by `Section 6` below and by anyone reading
-the bar as "White's chances," full stop.
+since the default is relied on by engine/UI code and by anyone reading the
+bar as "White's chances," full stop.
 
 Note the asymmetry with `TablebaseManager.probe()`, which independently
-documents (see Section 6.4 below) that it also returns White-relative
+documents (see §2.4 below) that it also returns White-relative
 scores — this is consistent with the UI/AI convention above, not a
 coincidence.
 
@@ -154,7 +154,7 @@ aren't overlapping/adjacent-illegally, pawns aren't on illegal ranks), which
 the generator guarantees independently of anything the live UI does. The
 tablebase was never at risk from the FEN-loading gap described in §2.3.
 
-- **Canonical Storage and Ghost Mirrors:** The 16-bit tablebase files ONLY store 
+- **Canonical Storage and Ghost Mirrors:** The tablebase files (`_tb8.bin`) ONLY store
   the canonical representation of a position (where the White King is reflected 
   into the bottom-left a1-d4 triangle). Symmetrical "mirror" indices are left 
   un-evaluated as `0`. Any probing logic or viewer MUST translate a position into 
@@ -162,7 +162,7 @@ tablebase was never at risk from the FEN-loading gap described in §2.3.
   un-evaluated "ghost mirrors" as Draws (0).
 
 - **Evaluation Perspective Contract & Raw Storage Convention:** 
-  - **Raw Storage (STM-Relative):** The `.bin` tablebase files store evaluations relative to the Side-To-Move (STM). A positive value means the STM is winning (DTM), and a negative value means the STM is losing. This is color-blind and standard for tablebase generation.
+  - **Raw Storage (STM-Relative):** The `.bin` tablebase files store signed evaluations relative to the Side-To-Move (STM), using int8 when every |DTM| is <= 127 and int16 when the maximum is <= 30,000 plies. The generator raises if its configured 30,000-ply ceiling is exceeded. Readers infer the dtype from file size (one or two bytes per position). Cross (`_vs_`) tables also need a `.wdl` marker; without it `TablebaseManager` treats a stored 0 as unknown rather than a draw. A positive value means the STM is winning (DTM), and a negative value means the STM is losing. This is color-blind and standard for tablebase generation.
   - **Probe Output (White-Relative):** `TablebaseManager.probe()` acts as a strict conversion layer. It reads the STM-relative value, applies the `(t_idx == 0 and val > 0) or (t_idx == 1 and val < 0)` logic to determine if White is the winner, and returns an absolute White-relative score — the same convention documented in Section 1 for the UI/AI eval reporting. Any code interacting with the tablebases MUST use `probe()` and never read the raw `.bin` files directly. Search pipelines expecting mover-relative scores must convert the White-relative output accordingly.
 
 ### 2.5 Performance-sensitive rules
@@ -177,9 +177,10 @@ tablebase was never at risk from the FEN-loading gap described in §2.3.
 
 - **Keep pruning conservative.** A single AoE knight or queen move can swing
   material by 3000+ points. Standard-chess-tuned LMR/futility margins will
-  blind the engine to these tactics. Additionally, because a quiet King move 
-  can close a mating net and end the game, **Late Move Reduction (LMR) must 
-  be artificially dampened in the endgame (reduction - 1, not disabled)** (e.g., when `total_pieces <= 6`).
+  blind the engine to these tactics. Additionally, because a quiet King move
+  can close a mating net and end the game, when `total_pieces <= 6`, subtract
+  one from the calculated LMR reduction, clamped at zero. Do not disable LMR
+  entirely in this endgame case.
   Don't tighten pruning margins without re-testing against `OPAI.py`.
 
 - **Don't hand-roll 5-piece endgame heuristics.** The tablebase already
@@ -232,14 +233,16 @@ transposition table, eval cache, history table, cancellation event, or
 tablebase manager — only the code that operates on them is shared, never the
 data itself.
 
-### 2.7 Search-side twofold repetition policy
+### 2.7 Search-side repetition policy
 
-While the UI and actual game rules strictly require a 3-fold repetition to 
-declare a draw, the engine's internal search (`AI.py`) intentionally uses a 
-stricter twofold inside the search tree, threefold against real history policy.
-This is a search heuristic: it forces winning bots to seek progress 
-rather than shuffling, helps losing bots find swindles, and prunes massive 
-subtrees a full ply early. **Do not "fix" the search to wait for a 3rd occurrence.**
+The game rule declares a draw on the third occurrence. `AI.py` follows that
+rule against real game history: a searched position is a draw when its hash
+already appears at least twice in `position_counts`, so the current visit is
+the third. Inside the current search line, `AI.py` treats the first repeated
+hash as a draw (a twofold within that hypothetical line). These are separate
+policies: do not change real-history handling to trigger after only one prior
+occurrence, and do not remove the in-tree repeat cutoff. `OpponentAI.py` keeps
+the older twofold policy against real history as its frozen baseline.
 
 ---
 

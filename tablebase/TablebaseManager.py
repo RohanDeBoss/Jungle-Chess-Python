@@ -4,9 +4,10 @@ import os
 import numpy as np
 from GameLogic import King, Board
 from itertools import combinations, combinations_with_replacement
+from tablebase.TablebaseFormat import infer_table_dtype
 
 TB_SUFFIX = "_tb8.bin"
-TB_DTYPE = np.int8   # values stored directly (signed STM-relative DTM, |v| <= 127)
+TB_DTYPE = np.int8   # preferred dtype; long-DTM tables are stored as int16
 TB_WDL_MARKER_SUFFIX = ".wdl"
 
 def _flip(pos):
@@ -112,7 +113,8 @@ class TablebaseManager:
 
             shape = tuple([wk_size] + [64] * (num_pieces + 1) + [2])
             
-            self.tables[base_name] = np.memmap(filename, dtype=TB_DTYPE, mode='r', shape=shape)
+            disk_dtype = infer_table_dtype(filename, shape)
+            self.tables[base_name] = np.memmap(filename, dtype=disk_dtype, mode='r', shape=shape)
             if os.path.exists(filename + TB_WDL_MARKER_SUFFIX):
                 self.full_wdl_tables.add(base_name)
                 
