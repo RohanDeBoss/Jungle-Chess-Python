@@ -525,6 +525,27 @@ def enum_valid(lo, hi, n, gz, has_pawn):
             mask &= ps[i] <= ps[i + 1]
             if gz[i] == 2:
                 mask &= ((ps[i] // 8 + ps[i] % 8) % 2) != ((ps[i + 1] // 8 + ps[i + 1] % 8) % 2)
+    if n == 3 and not has_pawn:
+        # With the white king fixed on a1-h8, transpose is an extra symmetry.
+        # Match the generator's canonical tuple ordering so each state appears once.
+        transposed = [((sq % 8) * 8 + (sq // 8)) for sq in ps + [bk]]
+        same_pairs = [(i, i + 1) for i in range(n - 1) if gz[i] == gz[i + 1]]
+        if gz[0] == gz[1]:
+            same_pairs.append((0, 1))
+        for i, j in same_pairs:
+            swap = transposed[i] > transposed[j]
+            ti = np.where(swap, transposed[j], transposed[i])
+            tj = np.where(swap, transposed[i], transposed[j])
+            transposed[i], transposed[j] = ti, tj
+        original = ps + [bk]
+        less = np.zeros(hi - lo, dtype=bool)
+        decided = np.zeros(hi - lo, dtype=bool)
+        for before, after in zip(original, transposed):
+            lt = before < after
+            gt = before > after
+            less |= (~decided) & lt
+            decided |= lt | gt
+        mask &= ((wk // 8) != (wk % 8)) | less | ~decided
     return flat[mask]
 
 class SameSideKernel:

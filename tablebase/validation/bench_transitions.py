@@ -15,11 +15,17 @@ import time
 import numpy as np
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-if HERE not in sys.path:
-    sys.path.insert(0, HERE)
+ROOT = HERE
+while not os.path.isfile(os.path.join(ROOT, "GameLogic.py")):
+    parent = os.path.dirname(ROOT)
+    if parent == ROOT:
+        raise RuntimeError("Could not find the project root containing GameLogic.py")
+    ROOT = parent
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
 
-import TablebaseGenerator as TG
-from TablebaseFormat import infer_flat_table_dtype
+from tablebase import TablebaseGenerator as TG
+from tablebase.TablebaseFormat import infer_flat_table_dtype
 
 DEFAULT_TABLES = [
     "K_Rook_Rook_K",

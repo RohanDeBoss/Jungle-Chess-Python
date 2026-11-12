@@ -1,5 +1,10 @@
 # Tablebase Generator Performance Experiments
 
+> Scope: This report records an earlier performance experiment. It predates the
+> current v24.6 working-tree changes to packed Stage 2 results, CSR binning,
+> diagonal filtering, and worker counts. Its decision and measurements do not
+> validate those current changes.
+
 ## Decision
 
 No performance experiment produced a sufficiently consistent gain to justify a
@@ -72,7 +77,7 @@ production 10,000-candidate chunk size.
 
 ### Transition correctness and profiling
 
-Added `tablebase/bench_transitions.py` to sample deterministic states, verify
+Added `tablebase/validation/bench_transitions.py` to sample deterministic states, verify
 transition outputs against finished `_tb8.bin` values, save/compare normalized
 golden outputs, and profile the reference Python transition function.
 

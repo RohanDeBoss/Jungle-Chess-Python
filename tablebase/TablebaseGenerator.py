@@ -1,4 +1,4 @@
-# TablebaseGenerator.py (v24.4 - int8 + Numba BFS + temp dir)
+# TablebaseGenerator.py (v24.6 - adaptive DTM storage + disk-backed uint64 CSR + lock)
 
 import os
 import sys
@@ -15,6 +15,7 @@ if PROJECT_ROOT not in sys.path:
 
 from GameLogic import *
 from array import array
+from tablebase.TablebaseFormat import infer_table_dtype
 
 TB_DIR = os.path.join(PROJECT_ROOT, "TBs")
 os.makedirs(TB_DIR, exist_ok=True)
@@ -23,12 +24,13 @@ os.makedirs(TEMP_DIR, exist_ok=True)
 
 TB_SUFFIX = "_tb8.bin"
 TB_DTYPE = np.int16        # in-RAM working dtype (array('h') buffers, BFS table)
-TB_DISK_DTYPE = np.int8    # on-disk dtype; |DTM| <= 127, values stored directly
+TB_DISK_DTYPE = np.int8    # preferred on-disk dtype; use int16 when DTM exceeds int8
 TB_WDL_MARKER_SUFFIX = ".wdl"
-MAX_DTM = 127
+MAX_DTM = 30000            # BFS working ceiling; the in-memory table is int16
+INT8_DTM_LIMIT = 127
 LONGEST_MATES_NOTE_FILE = os.path.join(TB_DIR, "longest_mates_tb8.tsv")
 LONGEST_MATE_KEY_PREFIX = "regen_"
-TB_THREADS_SUBTRACT = 4
+TB_THREADS_SUBTRACT = 2
 _IN_TABLE_SENTINEL = "IN_TABLE"
 PIECE_CLASS_BY_NAME = {
     "Queen": Queen, "Rook": Rook, "Knight": Knight, "Bishop": Bishop, "Pawn": Pawn,
@@ -179,15 +181,16 @@ def _install_worker_interrupt_ignores():
         try: signal.signal(sig, signal.SIG_IGN)
         except Exception: pass
 
+def _infer_disk_dtype(filename, shape):
+    """Delegate table dtype validation to the shared tablebase format helper."""
+    return infer_table_dtype(filename, shape)
+
 def _load_3man_table_file(filename):
     try:
         has_pawn = "Pawn" in os.path.basename(filename)
         shape = (32 if has_pawn else 10, 64, 64, 2)
-        expected_size = shape[0] * 64 * 64 * 2 * np.dtype(TB_DISK_DTYPE).itemsize
-        actual_size = os.path.getsize(filename)
-        if actual_size != expected_size:
-            raise ValueError(f"Corrupted file size! Expected {expected_size:,} bytes, but got {actual_size:,} bytes.")
-        return np.memmap(filename, dtype=TB_DISK_DTYPE, mode='r', shape=shape)
+        disk_dtype = _infer_disk_dtype(filename, shape)
+        return np.memmap(filename, dtype=disk_dtype, mode='r', shape=shape)
     except Exception as e:
         print(f"\n[Loader Error] Failed to map 3-man table {filename}: {e}", flush=True)
         raise e
@@ -196,11 +199,8 @@ def _load_4man_table_file(filename):
     try:
         has_pawn = "Pawn" in os.path.basename(filename)
         shape = (32 if has_pawn else 10, 64, 64, 64, 2)
-        expected_size = shape[0] * 64 * 64 * 64 * 2 * np.dtype(TB_DISK_DTYPE).itemsize
-        actual_size = os.path.getsize(filename)
-        if actual_size != expected_size:
-            raise ValueError(f"Corrupted file size! Expected {expected_size:,} bytes, but got {actual_size:,} bytes.")
-        return np.memmap(filename, dtype=TB_DISK_DTYPE, mode='r', shape=shape)
+        disk_dtype = _infer_disk_dtype(filename, shape)
+        return np.memmap(filename, dtype=disk_dtype, mode='r', shape=shape)
     except Exception as e:
         print(f"\n[Loader Error] Failed to map 4-man table {filename}: {e}", flush=True)
         raise e
@@ -209,11 +209,8 @@ def _load_5man_table_file(filename):
     try:
         has_pawn = "Pawn" in os.path.basename(filename)
         shape = (32 if has_pawn else 10, 64, 64, 64, 64, 2)
-        expected_size = shape[0] * 64 * 64 * 64 * 64 * 2 * np.dtype(TB_DISK_DTYPE).itemsize
-        actual_size = os.path.getsize(filename)
-        if actual_size != expected_size:
-            raise ValueError(f"Corrupted file size! Expected {expected_size:,} bytes, but got {actual_size:,} bytes.")
-        return np.memmap(filename, dtype=TB_DISK_DTYPE, mode='r', shape=shape)
+        disk_dtype = _infer_disk_dtype(filename, shape)
+        return np.memmap(filename, dtype=disk_dtype, mode='r', shape=shape)
     except Exception as e:
         print(f"\n[Loader Error] Failed to map 5-man table {filename}: {e}", flush=True)
         raise e
@@ -221,48 +218,83 @@ def _load_5man_table_file(filename):
 def _flip(pos):
     return (7 - pos[0], pos[1])
 
-def _safe_record_longest_mate(table_key, max_dtm, decisive, remaining, elapsed_seconds):
+def _safe_record_longest_mate(table_key, max_dtm, decisive, remaining, elapsed_seconds, storage_format):
     try:
         records = {}
         if os.path.exists(LONGEST_MATES_NOTE_FILE):
             import re
             with open(LONGEST_MATES_NOTE_FILE, "r", encoding="utf-8") as f:
                 for raw in f:
-                    line = raw.strip()
+                    line = raw.strip().lstrip("\ufeff")
                     if not line or any(line.startswith(x) for x in ("#", "Table", "---")): continue
                     parts = re.split(r'\s{2,}|\t', line)
                     if len(parts) >= 6:
-                        parts[2] = parts[2].replace(',', ''); parts[3] = parts[3].replace(',', '')
-                        records[parts[0]] = parts[1:6]
+                        if len(parts) >= 7 and parts[2] in {"tb8", "tb16"}:
+                            records[parts[0]] = [parts[1], parts[2], parts[3].replace(',', ''),
+                                                 parts[4].replace(',', ''), parts[5], parts[6]]
+                        else:
+                            records[parts[0]] = [parts[1], "tb8", parts[2].replace(',', ''),
+                                                 parts[3].replace(',', ''), parts[4], parts[5]]
         records[f"{LONGEST_MATE_KEY_PREFIX}{table_key}"] = [
-            str(int(max_dtm)), str(int(decisive)), str(int(remaining)),
+            str(int(max_dtm)), storage_format, str(int(decisive)), str(int(remaining)),
             f"{elapsed_seconds / 60.0:.1f}", time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime())
         ]
-        w_table = 35; w_dtm = 6; w_wins = 14; w_draws = 14; w_time = 10; w_utc = 20
+        w_table = 35; w_dtm = 6; w_storage = 8; w_wins = 14; w_draws = 14; w_time = 10; w_utc = 20
         with open(LONGEST_MATES_NOTE_FILE, "w", encoding="utf-8") as f:
-            header = (f"{'Table':<{w_table}}  {'DTM':>{w_dtm}}  {'Decisive':>{w_wins}}  "
+            header = (f"{'Table':<{w_table}}  {'DTM':>{w_dtm}}  {'Storage':<{w_storage}}  "
+                      f"{'Decisive':>{w_wins}}  "
                       f"{'Drawn':>{w_draws}}  {'Min':>{w_time}}  {'Updated (UTC)':<{w_utc}}")
             f.write(header + "\n"); f.write("-" * len(header) + "\n")
             for key in sorted(records.keys()):
                 r = records[key]
-                f.write(f"{key:<{w_table}}  {r[0]:>{w_dtm}}  {int(r[1]):>{w_wins},}  "
-                        f"{int(r[2]):>{w_draws},}  {r[3]:>{w_time}}  {r[4]:<{w_utc}}\n")
+                f.write(f"{key:<{w_table}}  {r[0]:>{w_dtm}}  {r[1]:<{w_storage}}  "
+                        f"{int(r[2]):>{w_wins},}  {int(r[3]):>{w_draws},}  "
+                        f"{r[4]:>{w_time}}  {r[5]:<{w_utc}}\n")
     except Exception as e:
         print(f"[LongestMate] Warning: failed to update note file ({e})")
 
 def _write_dense_table(filename, total_positions, solved_flats_np, solved_values):
-    # Direct signed int8: +DTM = STM wins, -DTM = STM loses, 0 = draw/unsolved.
-    # Root mates stay -1. Validate BEFORE creating the file so a failed run
-    # can't leave a partial table that `generate()` would later treat as done.
+    # +DTM = STM wins, -DTM = STM loses, 0 = draw/unsolved. Keep the compact
+    # int8 format when possible and use int16 only for tables with longer DTM.
+    # Replace atomically so a crash cannot leave a final-looking partial table.
+    out_dtype = TB_DISK_DTYPE
     if len(solved_values):
         lo, hi = int(solved_values.min()), int(solved_values.max())
-        if lo < -127 or hi > 127:
-            raise OverflowError(f"DTM range [{lo}, {hi}] does not fit int8 tablebase format")
-    dense_table = np.memmap(filename, dtype=TB_DISK_DTYPE, mode='w+', shape=(total_positions,))
-    dense_table[:] = 0
-    dense_table[solved_flats_np] = np.asarray(solved_values).astype(TB_DISK_DTYPE)
-    dense_table.flush()
-    del dense_table
+        if lo < -32767 or hi > 32767:
+            raise OverflowError(f"DTM range [{lo}, {hi}] does not fit int16 tablebase format")
+        if lo < -INT8_DTM_LIMIT or hi > INT8_DTM_LIMIT:
+            out_dtype = np.int16
+            print(
+                f"[Write] DTM range [{lo}, {hi}] exceeds int8; writing int16 table",
+                flush=True,
+            )
+    storage_format = "tb16" if out_dtype == np.int16 else "tb8"
+    tmp_filename = f"{filename}.{os.getpid()}.tmp"
+    try:
+        dense_table = np.memmap(tmp_filename, dtype=out_dtype, mode='w+', shape=(total_positions,))
+        try:
+            dense_table[:] = 0
+            dense_table[solved_flats_np] = np.asarray(solved_values).astype(out_dtype)
+            dense_table.flush()
+        finally:
+            dense_table._mmap.close()
+            del dense_table
+
+        for attempt in range(6):
+            try:
+                os.replace(tmp_filename, filename)
+                break
+            except PermissionError:
+                if attempt == 5:
+                    raise
+                time.sleep(0.2 * (attempt + 1))
+        return storage_format
+    except BaseException:
+        try:
+            os.remove(tmp_filename)
+        except OSError:
+            pass
+        raise
 
 def _write_wdl_marker(filename):
     with open(filename + TB_WDL_MARKER_SUFFIX, "w", encoding="utf-8") as f:
@@ -314,6 +346,12 @@ def _build_csr_from_disk(unsolved_flats_np, edges_file, prefix, old_to_new):
             cflats = data[:, 0]
             parents = data[:, 1]
             
+            # Sort the chunk by child flat first: searchsorted then walks the big array
+            # nearly sequentially, and v_idx comes out non-decreasing so the 64 bins are
+            # contiguous slices (one pass instead of 64 full-chunk mask scans).
+            order = np.argsort(cflats)
+            cflats = cflats[order]
+            parents = parents[order]
             idxs = np.searchsorted(unsolved_flats_np, cflats)
             valid = (idxs < num_states) & (unsolved_flats_np[np.minimum(idxs, num_states-1)] == cflats)
             
@@ -322,19 +360,24 @@ def _build_csr_from_disk(unsolved_flats_np, edges_file, prefix, old_to_new):
             
             if len(v_idx) == 0: continue
             
-            bin_assignments = (v_idx.astype(np.uint64) * num_bins) // num_states
+            bin_assignments = ((v_idx.astype(np.uint64) * num_bins) // num_states).astype(np.int64)
+            bounds = np.searchsorted(bin_assignments, np.arange(num_bins + 1), side="left")
             
             for b in range(num_bins):
-                mask = (bin_assignments == b)
-                if mask.any():
-                    arr = np.empty((np.count_nonzero(mask), 2), dtype=np.uint32)
-                    arr[:, 0] = v_idx[mask]
-                    arr[:, 1] = v_par[mask]
+                lo, hi = int(bounds[b]), int(bounds[b + 1])
+                if hi > lo:
+                    arr = np.empty((hi - lo, 2), dtype=np.uint32)
+                    arr[:, 0] = v_idx[lo:hi]
+                    arr[:, 1] = v_par[lo:hi]
                     bin_files[b].write(arr.tobytes())
                     
     for f in bin_files: f.close()
     
-    head = np.zeros(num_states + 1, dtype=np.uint32)
+    head_file = os.path.join(TEMP_DIR, f"{prefix}_head_u64.bin")
+    # Keep 64-bit offsets disk-backed: the largest pawn tables cannot fit two
+    # full CSR head arrays in available RAM.
+    head = np.memmap(head_file, dtype=np.uint64, mode="w+", shape=(num_states + 1,))
+    head[:] = 0
     edges_out_file = os.path.join(TEMP_DIR, f"{prefix}_edges.bin")
     
     with open(edges_out_file, "wb") as f_out:
@@ -365,13 +408,35 @@ def _build_csr_from_disk(unsolved_flats_np, edges_file, prefix, old_to_new):
                     except Exception:
                         pass
             
-    np.cumsum(head, out=head)
-    if os.path.getsize(edges_out_file) == 0:
+    edge_bytes = os.path.getsize(edges_out_file)
+    edge_itemsize = np.dtype(np.uint32).itemsize
+    if edge_bytes % edge_itemsize:
+        raise ValueError(f"CSR edge file has a partial uint32 entry: {edge_bytes:,} bytes")
+    expected_edges = edge_bytes // edge_itemsize
+
+    # Prefix-sum in bounded chunks to avoid an in-RAM copy of this large array.
+    carry = 0
+    prefix_chunk_size = 1_000_000
+    for start in range(0, num_states + 1, prefix_chunk_size):
+        end = min(start + prefix_chunk_size, num_states + 1)
+        block = np.asarray(head[start:end]).copy()
+        np.cumsum(block, dtype=np.uint64, out=block)
+        if carry:
+            block += carry
+        head[start:end] = block
+        carry = int(block[-1])
+    head.flush()
+    if int(head[-1]) != expected_edges:
+        raise OverflowError(
+            f"CSR offset mismatch: head says {int(head[-1]):,}, "
+            f"edge file holds {expected_edges:,}"
+        )
+    if expected_edges == 0:
         edges_out = np.empty(0, dtype=np.uint32)
     else:
         edges_out = np.memmap(edges_out_file, dtype=np.uint32, mode='r')
     
-    return head, edges_out, edges_out_file
+    return head, edges_out, edges_out_file, head_file
 
 def _run_flat_bfs_py(unsolved_flats_np, init_table_np, init_out_degree_np,
                   wtm_promo_wins_idx, wtm_promo_wins_val,
@@ -445,7 +510,7 @@ def _run_flat_bfs_py(unsolved_flats_np, init_table_np, init_out_degree_np,
             
     max_dtm_solved = 1 if solved_count > 0 else 0
     
-    print(f"[Stage 3] BFS start (working int16 / output int8) | Terminal (DTM 1): {solved_count:,} | "
+    print(f"[Stage 3] BFS start (working int16 / adaptive int8/int16 output) | Terminal (DTM 1): {solved_count:,} | "
           f"Elapsed so far: {_fmt_elapsed(time.time() - start_time)}", flush=True)
 
     for dtm in range(1, MAX_DTM + 1):
@@ -490,7 +555,7 @@ def _run_flat_bfs_py(unsolved_flats_np, init_table_np, init_out_degree_np,
         queues[dtm] = None  # Free RAM dynamically
         
         if dtm == MAX_DTM and pending_count > 0:
-            raise OverflowError("working int16 DTM overflowed the supported int8 tablebase range.")
+            raise OverflowError(f"working int16 DTM overflowed MAX_DTM={MAX_DTM}.")
 
         print(f"  [DTM {dtm:^3}] Solved: {solved_count:,}/{num_states:,} "
               f"| Next Q: {len(queues[dtm+1]):<6,} | Held: {pending_count:<6,} ", flush=True)
@@ -599,7 +664,7 @@ def _run_flat_bfs_full_wdl_py(unsolved_flats_np, init_table_np,
 
     max_dtm_solved = 1 if solved_count > 0 else 0
 
-    print(f"[Stage 3] Full WDL BFS start (working int16 / output int8) | Seeded: {solved_count:,} | "
+    print(f"[Stage 3] Full WDL BFS start (working int16 / adaptive int8/int16 output) | Seeded: {solved_count:,} | "
           f"Elapsed so far: {_fmt_elapsed(time.time() - start_time)}", flush=True)
 
     for dtm in range(1, MAX_DTM + 1):
@@ -647,7 +712,7 @@ def _run_flat_bfs_full_wdl_py(unsolved_flats_np, init_table_np,
         queues[dtm] = None  # Free RAM dynamically
 
         if dtm == MAX_DTM and pending_count > 0:
-            raise OverflowError("working int16 DTM overflowed the supported int8 tablebase range.")
+            raise OverflowError(f"working int16 DTM overflowed MAX_DTM={MAX_DTM}.")
 
         print(f"  [DTM {dtm:^3}] Solved: {solved_count:,}/{num_states:,} "
               f"| Next Q: {len(queues[dtm+1]):<6,} | Held: {pending_count:<6,} "
@@ -716,6 +781,134 @@ def _run_flat_bfs_full_wdl(unsolved_flats_np, init_table_np,
                       init_max_child_dtm_np, empty, empty, empty, empty,
                       b2w_head, b2w_edges, w2b_head, w2b_edges, start_time)
 
+
+# ==============================================================================
+# PACKED WORKER RESULTS (workers return numpy arrays; main process bulk-appends)
+# ==============================================================================
+import itertools
+
+def _edge_array(items):
+    """items: [(local_parent_idx, children_tuple)] -> (E,2) uint32 [child, local_parent]"""
+    if not items:
+        return np.empty((0, 2), np.uint32)
+    counts = np.fromiter((len(c) for _, c in items), np.int64, len(items))
+    total = int(counts.sum())
+    out = np.empty((total, 2), np.uint32)
+    out[:, 0] = np.fromiter(itertools.chain.from_iterable(c for _, c in items), np.uint32, total)
+    out[:, 1] = np.repeat(np.fromiter((j for j, _ in items), np.uint32, len(items)), counts)
+    return out
+
+def _pack_same_side(results):
+    n = len(results)
+    flats = np.empty(n, np.uint32)
+    table = np.zeros(n, np.int16)
+    deg = np.zeros(n, np.uint16)
+    wpi, wpv, bpi, bpv = [], [], [], []
+    e_b2w, e_w2b = [], []
+    for j, (flat, trans) in enumerate(results):
+        flats[j] = flat
+        if (flat & 1) == 0:
+            if trans[1]:
+                table[j] = 1
+            else:
+                deg[j] = len(trans[3])
+                if trans[2]:
+                    wpi.append(j); wpv.append(min(trans[2]))
+            if trans[3]:
+                e_b2w.append((j, trans[3]))
+        else:
+            if trans[1] == 0:
+                table[j] = -1
+            elif trans[2]:
+                deg[j] = 65535
+            else:
+                promo_losses, children = trans[3], trans[4]
+                deg[j] = len(children) + len(promo_losses)
+                for v in promo_losses:
+                    bpi.append(j); bpv.append(v)
+                if children:
+                    e_w2b.append((j, children))
+    return (flats, table, deg,
+            np.array(wpi, np.uint32), np.array(wpv, np.uint16),
+            np.array(bpi, np.uint32), np.array(bpv, np.uint16),
+            _edge_array(e_b2w), _edge_array(e_w2b))
+
+class _SameSideAccum:
+    """Bulk equivalent of the old per-state append loop (same array objects, same byte output)."""
+    def __init__(self, flats, table, deg, wpi, wpv, bpi, bpv, f_b2w, f_w2b):
+        self.flats, self.table, self.deg = flats, table, deg
+        self.wpi, self.wpv, self.bpi, self.bpv = wpi, wpv, bpi, bpv
+        self.f_b2w, self.f_w2b = f_b2w, f_w2b
+
+    def add(self, p):
+        flats, table, deg, wpi, wpv, bpi, bpv, e_b2w, e_w2b = p
+        base = np.uint32(len(self.flats))
+        self.flats.frombytes(flats.tobytes())
+        self.table.frombytes(table.tobytes())
+        self.deg.frombytes(deg.tobytes())
+        if len(wpi):
+            self.wpi.frombytes((wpi + base).astype(np.uint32).tobytes()); self.wpv.frombytes(wpv.tobytes())
+        if len(bpi):
+            self.bpi.frombytes((bpi + base).astype(np.uint32).tobytes()); self.bpv.frombytes(bpv.tobytes())
+        if len(e_b2w):
+            e_b2w[:, 1] += base; self.f_b2w.write(e_b2w.tobytes())
+        if len(e_w2b):
+            e_w2b[:, 1] += base; self.f_w2b.write(e_w2b.tobytes())
+
+def _pack_full_wdl(results):
+    """Same logic as _append_full_wdl_state, vectorised per chunk."""
+    n = len(results)
+    flats = np.empty(n, np.uint32)
+    table = np.zeros(n, np.int16)
+    deg = np.zeros(n, np.uint16)
+    mcd = np.zeros(n, np.uint16)
+    e_b2w, e_w2b = [], []
+    for j, (flat, trans) in enumerate(results):
+        flats[j] = flat
+        terminal_value = int(trans[1]); known_values = trans[2]; child_flats = trans[3]
+        if terminal_value:
+            table[j] = terminal_value
+        else:
+            forced_win_dtm = None; max_known_child_win = 0; has_draw_escape = False
+            for raw_val in known_values:
+                val = int(raw_val)
+                if val < 0:
+                    dtm = abs(val) + 1
+                    forced_win_dtm = dtm if forced_win_dtm is None else min(forced_win_dtm, dtm)
+                elif val > 0:
+                    if val > max_known_child_win:
+                        max_known_child_win = val
+                else:
+                    has_draw_escape = True
+            if forced_win_dtm is not None:
+                table[j] = forced_win_dtm
+            elif has_draw_escape:
+                deg[j] = 65535; mcd[j] = max_known_child_win
+            elif not child_flats:
+                table[j] = -(max_known_child_win + 1)
+            else:
+                deg[j] = len(child_flats); mcd[j] = max_known_child_win
+        if child_flats:
+            (e_b2w if (flat & 1) == 0 else e_w2b).append((j, child_flats))
+    return flats, table, deg, mcd, _edge_array(e_b2w), _edge_array(e_w2b)
+
+class _FullWdlAccum:
+    def __init__(self, flats, table, deg, mcd, f_b2w, f_w2b):
+        self.flats, self.table, self.deg, self.mcd = flats, table, deg, mcd
+        self.f_b2w, self.f_w2b = f_b2w, f_w2b
+
+    def add(self, p):
+        flats, table, deg, mcd, e_b2w, e_w2b = p
+        base = np.uint32(len(self.flats))
+        self.flats.frombytes(flats.tobytes())
+        self.table.frombytes(table.tobytes())
+        self.deg.frombytes(deg.tobytes())
+        self.mcd.frombytes(mcd.tobytes())
+        if len(e_b2w):
+            e_b2w[:, 1] += base; self.f_b2w.write(e_b2w.tobytes())
+        if len(e_w2b):
+            e_w2b[:, 1] += base; self.f_w2b.write(e_w2b.tobytes())
+
 # ==============================================================================
 # 3-MAN GENERATOR
 # ==============================================================================
@@ -747,7 +940,7 @@ def _init_transition_worker(piece_name, queen_tb_file):
     _sync_board_z_lists(_W3_BOARD)
 
 def _worker_3_chunk(flats):
-    return len(flats), [r for f in flats if (r := _build_transition_worker(f)) is not None]
+    return len(flats), _pack_same_side([r for f in flats if (r := _build_transition_worker(f)) is not None])
 
 def _build_transition_worker(flat):
     rest = flat // 2; bk_sq = rest % 64; rest //= 64; p1_sq = rest % 64; wk_idx = rest // 64
@@ -811,12 +1004,12 @@ class Generator:
         self.wk_size = 32 if self.has_pawn else 10
         self.total_positions = self.wk_size * 64 * 64 * 2
         self.table = None
-        self.transition_workers = min(8, max(1, (os.cpu_count() or 2) - TB_THREADS_SUBTRACT))
+        self.transition_workers = max(1, (os.cpu_count() or 2) - TB_THREADS_SUBTRACT)
 
     def generate(self):
         if os.path.exists(self.filename): return
         start_time = time.time()
-        print(f"\n{'='*60}\n GENERATING: K+{self.piece_name} vs K (working int16 / output int8)\n{'='*60}")
+        print(f"\n{'='*60}\n GENERATING: K+{self.piece_name} vs K (working int16 / adaptive int8/int16 output)\n{'='*60}")
         s1 = time.time(); print(f"[Stage 1] Enumerating candidates...", flush=True)
         raw_candidates = []
         for flat in range(self.total_positions):
@@ -842,31 +1035,9 @@ class Generator:
         done = 0
         with multiprocessing.Pool(processes=self.transition_workers, initializer=_init_transition_worker,
                                   initargs=(self.piece_name, self.queen_tb_file)) as pool:
-            for processed_count, results in pool.imap(_worker_3_chunk, chunks):
-                for result in results:
-                    flat, trans = result
-                    i = len(unsolved_flats)
-                    unsolved_flats.append(flat)
-                    if (flat & 1) == 0:
-                        if trans[1]: init_table.append(1); init_out_degree.append(0)
-                        else:
-                            init_table.append(0); init_out_degree.append(len(trans[3]))
-                            if trans[2]: wtm_promo_idx.append(i); wtm_promo_val.append(min(trans[2]))
-                        if trans[3]:
-                            arr = np.empty((len(trans[3]), 2), dtype=np.uint32)
-                            arr[:, 0] = trans[3]; arr[:, 1] = i
-                            f_b2w.write(arr.tobytes())
-                    else:
-                        if trans[1] == 0: init_table.append(-1); init_out_degree.append(0)
-                        elif trans[2]: init_table.append(0); init_out_degree.append(65535)
-                        else:
-                            promo_losses, children = trans[3], trans[4]
-                            init_table.append(0); init_out_degree.append(len(children) + len(promo_losses))
-                            for p_val in promo_losses: btm_promo_idx.append(i); btm_promo_val.append(p_val)
-                            if children:
-                                arr = np.empty((len(children), 2), dtype=np.uint32)
-                                arr[:, 0] = children; arr[:, 1] = i
-                                f_w2b.write(arr.tobytes())
+            acc = _SameSideAccum(unsolved_flats, init_table, init_out_degree, wtm_promo_idx, wtm_promo_val, btm_promo_idx, btm_promo_val, f_b2w, f_w2b)
+            for processed_count, packed in pool.imap(_worker_3_chunk, chunks):
+                acc.add(packed)
                 done += processed_count
                 elapsed = time.time() - start_time; speed = done / max(0.001, time.time() - s2)
                 pct = (done / total * 100) if total else 100.0
@@ -885,8 +1056,8 @@ class Generator:
         btm_promo_idx_np = old_to_new[np.frombuffer(btm_promo_idx, dtype=np.uint32)]
         btm_promo_val_np = np.frombuffer(btm_promo_val, dtype=np.uint16)
         del unsolved_flats, init_table, init_out_degree, wtm_promo_idx, wtm_promo_val, btm_promo_idx, btm_promo_val, sort_idx
-        b2w_head, b2w_edges, b2w_file = _build_csr_from_disk(unsolved_flats_np, tmp_b2w, f"{run_prefix}_b2w", old_to_new)
-        w2b_head, w2b_edges, w2b_file = _build_csr_from_disk(unsolved_flats_np, tmp_w2b, f"{run_prefix}_w2b", old_to_new)
+        b2w_head, b2w_edges, b2w_file, b2w_head_file = _build_csr_from_disk(unsolved_flats_np, tmp_b2w, f"{run_prefix}_b2w", old_to_new)
+        w2b_head, w2b_edges, w2b_file, w2b_head_file = _build_csr_from_disk(unsolved_flats_np, tmp_w2b, f"{run_prefix}_w2b", old_to_new)
         print(f"[Stage 2b] Done | {_fmt_elapsed(time.time()-s3)}", flush=True)
         
         try:
@@ -896,20 +1067,23 @@ class Generator:
                 btm_promo_idx_np, btm_promo_val_np,
                 b2w_head, b2w_edges, w2b_head, w2b_edges, start_time)
 
-            _write_dense_table(self.filename, self.total_positions, unsolved_flats_np, table_flat)
+            storage_format = _write_dense_table(self.filename, self.total_positions, unsolved_flats_np, table_flat)
                 
             elapsed = time.time() - start_time
             tb_key = os.path.basename(self.filename).replace(TB_SUFFIX, '')
-            _safe_record_longest_mate(tb_key, max_dtm, decisive, len(unsolved_flats_np) - decisive, elapsed)
+            _safe_record_longest_mate(tb_key, max_dtm, decisive, len(unsolved_flats_np) - decisive, elapsed, storage_format)
             print(f"SUCCESS: {self.filename} | Total time: {_fmt_elapsed(elapsed)}", flush=True)
 
         finally:
+            if hasattr(b2w_head, '_mmap'): b2w_head._mmap.close()
+            if hasattr(w2b_head, '_mmap'): w2b_head._mmap.close()
             if hasattr(b2w_edges, '_mmap'): b2w_edges._mmap.close()
             if hasattr(w2b_edges, '_mmap'): w2b_edges._mmap.close()
-            del b2w_edges; del w2b_edges
+            del b2w_head; del w2b_head; del b2w_edges; del w2b_edges
             try:
                 os.remove(tmp_b2w); os.remove(tmp_w2b)
                 os.remove(b2w_file); os.remove(w2b_file)
+                os.remove(b2w_head_file); os.remove(w2b_head_file)
             except Exception as e:
                 print(f"  [Warning] Temporary file cleanup failed: {e}")
 
@@ -939,7 +1113,7 @@ def _init_transition_worker_4(p1_name, p2_name, promo_tb_file):
     _sync_board_z_lists(_W4_BOARD)
 
 def _worker_4_chunk(flats):
-    return len(flats), [r for f in flats if (r := _build_transition_worker_4(f)) is not None]
+    return len(flats), _pack_same_side([r for f in flats if (r := _build_transition_worker_4(f)) is not None])
 
 def _build_transition_worker_4(flat):
     rest = flat // 2; bk_sq = rest % 64; rest //= 64; p2_sq = rest % 64; rest //= 64; p1_sq = rest % 64; wk_idx = rest // 64
@@ -1051,7 +1225,7 @@ class Generator4:
     def generate(self):
         if os.path.exists(self.filename): return
         start_time = time.time()
-        print(f"\n{'='*60}\n GENERATING: K+{self.p1_name}+{self.p2_name} vs K (working int16 / output int8)\n{'='*60}", flush=True)
+        print(f"\n{'='*60}\n GENERATING: K+{self.p1_name}+{self.p2_name} vs K (working int16 / adaptive int8/int16 output)\n{'='*60}", flush=True)
         s1 = time.time(); print(f"[Stage 1] Enumerating candidates...", flush=True)
         all_flats = array('I')
         for chunk in _gen_valid_4man_indices_numpy(self.total_positions, self.p1_name, self.p2_name, self.same_piece, self.has_pawn):
@@ -1078,31 +1252,9 @@ class Generator4:
         done = 0
         with multiprocessing.Pool(processes=self.transition_workers, initializer=_init_transition_worker_4,
                                   initargs=(self.p1_name, self.p2_name, self.promo_tb_file)) as pool:
-            for processed_count, results in pool.imap(_worker_4_chunk, _get_chunks()):
-                for result in results:
-                    flat, trans = result
-                    i = len(unsolved_flats)
-                    unsolved_flats.append(flat)
-                    if (flat & 1) == 0:
-                        if trans[1]: init_table.append(1); init_out_degree.append(0)
-                        else:
-                            init_table.append(0); init_out_degree.append(len(trans[3]))
-                            if trans[2]: wtm_promo_idx.append(i); wtm_promo_val.append(min(trans[2]))
-                        if trans[3]:
-                            arr = np.empty((len(trans[3]), 2), dtype=np.uint32)
-                            arr[:, 0] = trans[3]; arr[:, 1] = i
-                            f_b2w.write(arr.tobytes())
-                    else:
-                        if trans[1] == 0: init_table.append(-1); init_out_degree.append(0)
-                        elif trans[2]: init_table.append(0); init_out_degree.append(65535)
-                        else:
-                            promo_losses, children = trans[3], trans[4]
-                            init_table.append(0); init_out_degree.append(len(children) + len(promo_losses))
-                            for p_val in promo_losses: btm_promo_idx.append(i); btm_promo_val.append(p_val)
-                            if children:
-                                arr = np.empty((len(children), 2), dtype=np.uint32)
-                                arr[:, 0] = children; arr[:, 1] = i
-                                f_w2b.write(arr.tobytes())
+            acc = _SameSideAccum(unsolved_flats, init_table, init_out_degree, wtm_promo_idx, wtm_promo_val, btm_promo_idx, btm_promo_val, f_b2w, f_w2b)
+            for processed_count, packed in pool.imap(_worker_4_chunk, _get_chunks()):
+                acc.add(packed)
                 done += processed_count
                 elapsed = time.time() - start_time; speed = done / max(0.001, time.time() - s2)
                 pct = (done / total * 100) if total else 100.0
@@ -1121,8 +1273,8 @@ class Generator4:
         btm_promo_idx_np = old_to_new[np.frombuffer(btm_promo_idx, dtype=np.uint32)]
         btm_promo_val_np = np.frombuffer(btm_promo_val, dtype=np.uint16)
         del unsolved_flats, init_table, init_out_degree, wtm_promo_idx, wtm_promo_val, btm_promo_idx, btm_promo_val, sort_idx
-        b2w_head, b2w_edges, b2w_file = _build_csr_from_disk(unsolved_flats_np, tmp_b2w, f"{run_prefix}_b2w", old_to_new)
-        w2b_head, w2b_edges, w2b_file = _build_csr_from_disk(unsolved_flats_np, tmp_w2b, f"{run_prefix}_w2b", old_to_new)
+        b2w_head, b2w_edges, b2w_file, b2w_head_file = _build_csr_from_disk(unsolved_flats_np, tmp_b2w, f"{run_prefix}_b2w", old_to_new)
+        w2b_head, w2b_edges, w2b_file, w2b_head_file = _build_csr_from_disk(unsolved_flats_np, tmp_w2b, f"{run_prefix}_w2b", old_to_new)
         print(f"[Stage 2b] Done | {_fmt_elapsed(time.time()-s3)}", flush=True)
         
         try:
@@ -1132,20 +1284,23 @@ class Generator4:
                 btm_promo_idx_np, btm_promo_val_np,
                 b2w_head, b2w_edges, w2b_head, w2b_edges, start_time)
 
-            _write_dense_table(self.filename, self.total_positions, unsolved_flats_np, table_flat)
+            storage_format = _write_dense_table(self.filename, self.total_positions, unsolved_flats_np, table_flat)
                 
             elapsed = time.time() - start_time
             tb_key = os.path.basename(self.filename).replace(TB_SUFFIX, '')
-            _safe_record_longest_mate(tb_key, max_dtm, decisive, len(unsolved_flats_np) - decisive, elapsed)
+            _safe_record_longest_mate(tb_key, max_dtm, decisive, len(unsolved_flats_np) - decisive, elapsed, storage_format)
             print(f"SUCCESS: {self.filename} | Total time: {_fmt_elapsed(elapsed)}", flush=True)
 
         finally:
+            if hasattr(b2w_head, '_mmap'): b2w_head._mmap.close()
+            if hasattr(w2b_head, '_mmap'): w2b_head._mmap.close()
             if hasattr(b2w_edges, '_mmap'): b2w_edges._mmap.close()
             if hasattr(w2b_edges, '_mmap'): w2b_edges._mmap.close()
-            del b2w_edges; del w2b_edges
+            del b2w_head; del w2b_head; del b2w_edges; del w2b_edges
             try:
                 os.remove(tmp_b2w); os.remove(tmp_w2b)
                 os.remove(b2w_file); os.remove(w2b_file)
+                os.remove(b2w_head_file); os.remove(w2b_head_file)
             except Exception as e:
                 print(f"  [Warning] Temporary file cleanup failed: {e}")
 
@@ -1224,7 +1379,7 @@ def _w4v_ext_stm_value_4vs(child, turn_idx):
     return 0
 
 def _worker_4vs_chunk(flats):
-    return len(flats), [r for f in flats if (r := _build_transition_worker_4vs(f)) is not None]
+    return len(flats), _pack_full_wdl([r for f in flats if (r := _build_transition_worker_4vs(f)) is not None])
 
 def _build_transition_worker_4vs(flat):
     rest = flat // 2; bp_sq = rest % 64; rest //= 64; bk_sq = rest % 64; rest //= 64
@@ -1309,7 +1464,7 @@ class Generator4Vs:
     def generate(self):
         if os.path.exists(self.filename) and os.path.exists(self.filename + TB_WDL_MARKER_SUFFIX): return
         start_time = time.time()
-        print(f"\n{'='*60}\n GENERATING: K+{self.w_name} vs K+{self.b_name} (working int16 / output int8)\n{'='*60}", flush=True)
+        print(f"\n{'='*60}\n GENERATING: K+{self.w_name} vs K+{self.b_name} (working int16 / adaptive int8/int16 output)\n{'='*60}", flush=True)
         s1 = time.time(); print(f"[Stage 1] Enumerating candidates...", flush=True)
         all_flats = array('I')
         for chunk in _gen_valid_4man_vs_indices_numpy(self.total_positions, self.w_name, self.b_name, self.has_pawn):
@@ -1335,12 +1490,9 @@ class Generator4Vs:
         done = 0
         with multiprocessing.Pool(processes=self.transition_workers, initializer=_init_transition_worker_4vs,
                                   initargs=(self.w_name, self.b_name)) as pool:
-            for processed_count, results in pool.imap(_worker_4vs_chunk, _get_chunks()):
-                for result in results:
-                    flat, trans = result
-                    _append_full_wdl_state(flat, trans, unsolved_flats, init_table,
-                                           init_out_degree, init_max_child_dtm,
-                                           f_b2w, f_w2b)
+            acc = _FullWdlAccum(unsolved_flats, init_table, init_out_degree, init_max_child_dtm, f_b2w, f_w2b)
+            for processed_count, packed in pool.imap(_worker_4vs_chunk, _get_chunks()):
+                acc.add(packed)
                 done += processed_count
                 elapsed = time.time() - start_time; speed = done / max(0.001, time.time() - s2)
                 pct = (done / total * 100) if total else 100.0
@@ -1356,8 +1508,8 @@ class Generator4Vs:
         init_out_degree_np = np.frombuffer(init_out_degree, dtype=np.uint16)[sort_idx]
         init_max_child_dtm_np = np.frombuffer(init_max_child_dtm, dtype=np.uint16)[sort_idx]
         del unsolved_flats, init_table, init_out_degree, init_max_child_dtm, sort_idx
-        b2w_head, b2w_edges, b2w_file = _build_csr_from_disk(unsolved_flats_np, tmp_b2w, f"{run_prefix}_b2w", old_to_new)
-        w2b_head, w2b_edges, w2b_file = _build_csr_from_disk(unsolved_flats_np, tmp_w2b, f"{run_prefix}_w2b", old_to_new)
+        b2w_head, b2w_edges, b2w_file, b2w_head_file = _build_csr_from_disk(unsolved_flats_np, tmp_b2w, f"{run_prefix}_b2w", old_to_new)
+        w2b_head, w2b_edges, w2b_file, w2b_head_file = _build_csr_from_disk(unsolved_flats_np, tmp_w2b, f"{run_prefix}_w2b", old_to_new)
         print(f"[Stage 2b] Done | {_fmt_elapsed(time.time()-s3)}", flush=True)
         
         try:
@@ -1368,21 +1520,24 @@ class Generator4Vs:
                 init_max_child_dtm_np,
                 b2w_head, b2w_edges, w2b_head, w2b_edges, start_time)
 
-            _write_dense_table(self.filename, self.total_positions, unsolved_flats_np, table_flat)
+            storage_format = _write_dense_table(self.filename, self.total_positions, unsolved_flats_np, table_flat)
             _write_wdl_marker(self.filename)
                 
             elapsed = time.time() - start_time
             tb_key = os.path.basename(self.filename).replace(TB_SUFFIX, '')
-            _safe_record_longest_mate(tb_key, max_dtm, decisive, len(unsolved_flats_np) - decisive, elapsed)
+            _safe_record_longest_mate(tb_key, max_dtm, decisive, len(unsolved_flats_np) - decisive, elapsed, storage_format)
             print(f"SUCCESS: {self.filename} | Total time: {_fmt_elapsed(elapsed)}", flush=True)
 
         finally:
+            if hasattr(b2w_head, '_mmap'): b2w_head._mmap.close()
+            if hasattr(w2b_head, '_mmap'): w2b_head._mmap.close()
             if hasattr(b2w_edges, '_mmap'): b2w_edges._mmap.close()
             if hasattr(w2b_edges, '_mmap'): w2b_edges._mmap.close()
-            del b2w_edges; del w2b_edges
+            del b2w_head; del w2b_head; del b2w_edges; del w2b_edges
             try:
                 os.remove(tmp_b2w); os.remove(tmp_w2b)
                 os.remove(b2w_file); os.remove(w2b_file)
+                os.remove(b2w_head_file); os.remove(w2b_head_file)
             except Exception as e:
                 print(f"  [Warning] Temporary file cleanup failed: {e}")
 
@@ -1462,7 +1617,7 @@ def _w5_ext_dtm(board, turn_idx):
     return None
 
 def _worker_5_chunk(flats):
-    return len(flats), [r for f in flats if (r := _build_transition_worker_5(f)) is not None]
+    return len(flats), _pack_same_side([r for f in flats if (r := _build_transition_worker_5(f)) is not None])
 
 def _build_transition_worker_5(flat):
     rest = flat // 2; bk_sq = rest % 64; rest //= 64; p3_sq = rest % 64; rest //= 64
@@ -1531,9 +1686,28 @@ def _build_transition_worker_5(flat):
             board.unmake_move(record)
         return (flat, ('b', legal_moves, escape, tuple(known_wins), tuple(child_flats)))
 
-def _gen_valid_5same_indices_numpy(total, p1n, p2n, p3n, has_pawn, chunk_size=1_000_000):
+def _transpose_sq(a):
+    return (a % 8) * 8 + (a // 8)
+
+def _keep_if_canonical_diag(wk_arr, cols, same_pairs):
+    """Non-pawn tables: with the white king on the a1-h8 diagonal the transpose is a second symmetry
+    that maps the king to itself. Keep a row only if the transposed (type-sorted) tuple is not smaller,
+    i.e. only if it is the canonical representative that _canonical_flat_* would return."""
+    t = [_transpose_sq(a) for a in cols]
+    for i, j in same_pairs:
+        sw = t[i] > t[j]
+        ti = np.where(sw, t[j], t[i]); tj = np.where(sw, t[i], t[j]); t[i], t[j] = ti, tj
+    less = np.zeros(len(wk_arr), dtype=bool); decided = np.zeros(len(wk_arr), dtype=bool)
+    for o, x in zip(cols, t):
+        lt = o < x; gt = o > x
+        less |= (~decided) & lt
+        decided |= lt | gt
+    return ((wk_arr // 8) != (wk_arr % 8)) | less | ~decided
+
+def _iter_valid_5same(total, p1n, p2n, p3n, has_pawn, chunk_size=1_000_000):
     wk_list = np.array(PAWN_WK_SQUARES if has_pawn else NON_PAWN_WK_SQUARES)
     same_12 = (p1n == p2n); same_23 = (p2n == p3n)
+    pairs = ([(0, 1)] if same_12 else []) + ([(1, 2)] if same_23 else []) + ([(0, 1)] if same_12 else [])
     for start in range(0, total, chunk_size):
         end_c = min(start + chunk_size, total); flat = np.arange(start, end_c, dtype=np.int64); rest = flat // 2
         bk_arr = rest % 64; rest //= 64; p3_arr = rest % 64; rest //= 64
@@ -1550,8 +1724,19 @@ def _gen_valid_5same_indices_numpy(total, p1n, p2n, p3n, has_pawn, chunk_size=1_
             mask &= ((p1_arr // 8 + p1_arr % 8) % 2) != ((p2_arr // 8 + p2_arr % 8) % 2)
         if p2n == "Bishop" and p3n == "Bishop":
             mask &= ((p2_arr // 8 + p2_arr % 8) % 2) != ((p3_arr // 8 + p3_arr % 8) % 2)
-        if not mask.any(): continue
-        yield flat[mask].tolist()
+        if not has_pawn and mask.any():
+            idx = np.nonzero(mask)[0]
+            keep = _keep_if_canonical_diag(wk_arr[idx], [p1_arr[idx], p2_arr[idx], p3_arr[idx], bk_arr[idx]], pairs)
+            mask[idx[~keep]] = False
+        yield flat, mask
+
+def _gen_valid_5same_indices_numpy(total, p1n, p2n, p3n, has_pawn, chunk_size=1_000_000):
+    for flat, mask in _iter_valid_5same(total, p1n, p2n, p3n, has_pawn, chunk_size):
+        if mask.any():
+            yield flat[mask].tolist()
+
+def _count_valid_5same_indices_numpy(total, p1n, p2n, p3n, has_pawn, chunk_size=1_000_000):
+    return sum(int(np.count_nonzero(mask)) for _, mask in _iter_valid_5same(total, p1n, p2n, p3n, has_pawn, chunk_size))
 
 class Generator5:
     def __init__(self, p1_class, p2_class, p3_class):
@@ -1569,14 +1754,11 @@ class Generator5:
         if os.path.exists(self.filename): return
         start_time = time.time()
         sz_mb = self.wk_size * 64**4 * 2 * 1 / 1024**2
-        print(f"\n{'='*60}\n GENERATING: K+{self.p1_name}+{self.p2_name}+{self.p3_name} vs K (working int16 / output int8)", flush=True)
-        print(f" Estimated file size: {sz_mb:.0f} MB\n{'='*60}", flush=True)
+        print(f"\n{'='*60}\n GENERATING: K+{self.p1_name}+{self.p2_name}+{self.p3_name} vs K (working int16 / adaptive int8/int16 output)", flush=True)
+        print(f" Estimated file size at int8: {sz_mb:.0f} MB\n{'='*60}", flush=True)
         s1 = time.time(); print(f"[Stage 1] Enumerating candidates...", flush=True)
-        total = sum(
-            len(chunk)
-            for chunk in _gen_valid_5same_indices_numpy(
-                self.total_positions, self.p1_name, self.p2_name, self.p3_name, self.has_pawn)
-        )
+        total = _count_valid_5same_indices_numpy(
+            self.total_positions, self.p1_name, self.p2_name, self.p3_name, self.has_pawn)
         print(f"[Stage 1] Done: {total:,} candidates | {_fmt_elapsed(time.time()-s1)}", flush=True)
         
         s2 = time.time(); print(f"[Stage 2] Building flat disk cache ({total:,} states)...", flush=True)
@@ -1596,32 +1778,9 @@ class Generator5:
             chunk_iter = _gen_valid_5same_indices_numpy(
                 self.total_positions, self.p1_name, self.p2_name, self.p3_name, self.has_pawn, chunk_size=chunk_size)
             
-            for processed_count, results in pool.imap(_worker_5_chunk, chunk_iter):
-                for result in results:
-                    flat, trans = result
-                    i = len(unsolved_flats)
-                    unsolved_flats.append(flat)
-                    if (flat & 1) == 0:
-                        if trans[1]: init_table.append(1); init_out_degree.append(0)
-                        else:
-                            init_table.append(0); init_out_degree.append(len(trans[3]))
-                            if trans[2]: wtm_promo_idx.append(i); wtm_promo_val.append(min(trans[2]))
-                        if trans[3]:
-                            arr = np.empty((len(trans[3]), 2), dtype=np.uint32)
-                            arr[:, 0] = trans[3]; arr[:, 1] = i
-                            f_b2w.write(arr.tobytes())
-                    else:
-                        if trans[1] == 0: init_table.append(-1); init_out_degree.append(0)
-                        elif trans[2]: init_table.append(0); init_out_degree.append(65535)
-                        else:
-                            promo_losses, children = trans[3], trans[4]
-                            init_table.append(0); init_out_degree.append(len(children) + len(promo_losses))
-                            for p_val in promo_losses: btm_promo_idx.append(i); btm_promo_val.append(p_val)
-                            if children:
-                                arr = np.empty((len(children), 2), dtype=np.uint32)
-                                arr[:, 0] = children; arr[:, 1] = i
-                                f_w2b.write(arr.tobytes())
-                
+            acc = _SameSideAccum(unsolved_flats, init_table, init_out_degree, wtm_promo_idx, wtm_promo_val, btm_promo_idx, btm_promo_val, f_b2w, f_w2b)
+            for processed_count, packed in pool.imap(_worker_5_chunk, chunk_iter):
+                acc.add(packed)
                 done += processed_count
                 elapsed = time.time() - start_time; speed = done / max(0.001, time.time() - s2)
                 pct = (done / total * 100) if total else 100.0
@@ -1640,8 +1799,8 @@ class Generator5:
         btm_promo_idx_np = old_to_new[np.frombuffer(btm_promo_idx, dtype=np.uint32)]
         btm_promo_val_np = np.frombuffer(btm_promo_val, dtype=np.uint16)
         del unsolved_flats, init_table, init_out_degree, wtm_promo_idx, wtm_promo_val, btm_promo_idx, btm_promo_val, sort_idx
-        b2w_head, b2w_edges, b2w_file = _build_csr_from_disk(unsolved_flats_np, tmp_b2w, f"{run_prefix}_b2w", old_to_new)
-        w2b_head, w2b_edges, w2b_file = _build_csr_from_disk(unsolved_flats_np, tmp_w2b, f"{run_prefix}_w2b", old_to_new)
+        b2w_head, b2w_edges, b2w_file, b2w_head_file = _build_csr_from_disk(unsolved_flats_np, tmp_b2w, f"{run_prefix}_b2w", old_to_new)
+        w2b_head, w2b_edges, w2b_file, w2b_head_file = _build_csr_from_disk(unsolved_flats_np, tmp_w2b, f"{run_prefix}_w2b", old_to_new)
         print(f"[Stage 2b] Done | {_fmt_elapsed(time.time()-s3)}", flush=True)
         
         try:
@@ -1651,20 +1810,23 @@ class Generator5:
                 btm_promo_idx_np, btm_promo_val_np,
                 b2w_head, b2w_edges, w2b_head, w2b_edges, start_time)
 
-            _write_dense_table(self.filename, self.total_positions, unsolved_flats_np, table_flat)
+            storage_format = _write_dense_table(self.filename, self.total_positions, unsolved_flats_np, table_flat)
                 
             elapsed = time.time() - start_time
             tb_key = os.path.basename(self.filename).replace(TB_SUFFIX, '')
-            _safe_record_longest_mate(tb_key, max_dtm, decisive, len(unsolved_flats_np) - decisive, elapsed)
+            _safe_record_longest_mate(tb_key, max_dtm, decisive, len(unsolved_flats_np) - decisive, elapsed, storage_format)
             print(f"SUCCESS: {self.filename} | Total time: {_fmt_elapsed(elapsed)}", flush=True)
 
         finally:
+            if hasattr(b2w_head, '_mmap'): b2w_head._mmap.close()
+            if hasattr(w2b_head, '_mmap'): w2b_head._mmap.close()
             if hasattr(b2w_edges, '_mmap'): b2w_edges._mmap.close()
             if hasattr(w2b_edges, '_mmap'): w2b_edges._mmap.close()
-            del b2w_edges; del w2b_edges
+            del b2w_head; del w2b_head; del b2w_edges; del w2b_edges
             try:
                 os.remove(tmp_b2w); os.remove(tmp_w2b)
                 os.remove(b2w_file); os.remove(w2b_file)
+                os.remove(b2w_head_file); os.remove(w2b_head_file)
             except Exception as e:
                 print(f"  [Warning] Temporary file cleanup failed: {e}")
 
@@ -1812,7 +1974,7 @@ def _w5v_ext_stm_value(board, turn_idx):
     return 0
 
 def _worker_5vs_chunk(flats):
-    return len(flats), [r for f in flats if (r := _build_transition_worker_5vs(f)) is not None]
+    return len(flats), _pack_full_wdl([r for f in flats if (r := _build_transition_worker_5vs(f)) is not None])
 
 def _build_transition_worker_5vs(flat):
     rest = flat // 2; bp_sq = rest % 64; rest //= 64; bk_sq = rest % 64; rest //= 64
@@ -1872,7 +2034,7 @@ def _build_transition_worker_5vs(flat):
         return (flat, ('g', 1, (), ()))
     return (flat, ('g', 0, tuple(known_values), tuple(child_flats)))
 
-def _gen_valid_5vs_indices_numpy(total, w1n, w2n, bn, has_pawn, same_wp, chunk_size=1_000_000):
+def _iter_valid_5vs(total, w1n, w2n, bn, has_pawn, same_wp, chunk_size=1_000_000):
     wk_list = np.array(PAWN_WK_SQUARES if has_pawn else NON_PAWN_WK_SQUARES)
     for start in range(0, total, chunk_size):
         end_c = min(start + chunk_size, total); flat = np.arange(start, end_c, dtype=np.int64); rest = flat // 2
@@ -1887,8 +2049,20 @@ def _gen_valid_5vs_indices_numpy(total, w1n, w2n, bn, has_pawn, same_wp, chunk_s
         if same_wp: mask &= (wp1_arr <= wp2_arr)
         if w1n == "Bishop" and w2n == "Bishop":
             mask &= ((wp1_arr // 8 + wp1_arr % 8) % 2) != ((wp2_arr // 8 + wp2_arr % 8) % 2)
-        if not mask.any(): continue
-        yield flat[mask].tolist()
+        if not has_pawn and mask.any():
+            idx = np.nonzero(mask)[0]
+            keep = _keep_if_canonical_diag(wk_arr[idx], [wp1_arr[idx], wp2_arr[idx], bk_arr[idx], bp_arr[idx]],
+                                           [(0, 1)] if same_wp else [])
+            mask[idx[~keep]] = False
+        yield flat, mask
+
+def _gen_valid_5vs_indices_numpy(total, w1n, w2n, bn, has_pawn, same_wp, chunk_size=1_000_000):
+    for flat, mask in _iter_valid_5vs(total, w1n, w2n, bn, has_pawn, same_wp, chunk_size):
+        if mask.any():
+            yield flat[mask].tolist()
+
+def _count_valid_5vs_indices_numpy(total, w1n, w2n, bn, has_pawn, same_wp, chunk_size=1_000_000):
+    return sum(int(np.count_nonzero(mask)) for _, mask in _iter_valid_5vs(total, w1n, w2n, bn, has_pawn, same_wp, chunk_size))
 
 class Generator5Vs:
     def __init__(self, w1_class, w2_class, b_class):
@@ -1907,15 +2081,12 @@ class Generator5Vs:
         if os.path.exists(self.filename) and os.path.exists(self.filename + TB_WDL_MARKER_SUFFIX): return
         start_time = time.time()
         sz_mb = self.wk_size * 64**4 * 2 * 1 / 1024**2
-        print(f"\n{'='*60}\n GENERATING: K+{self.w1_name}+{self.w2_name} vs K+{self.b_name} (working int16 / output int8)", flush=True)
-        print(f" Estimated file size: {sz_mb:.0f} MB\n{'='*60}", flush=True)
+        print(f"\n{'='*60}\n GENERATING: K+{self.w1_name}+{self.w2_name} vs K+{self.b_name} (working int16 / adaptive int8/int16 output)", flush=True)
+        print(f" Estimated file size at int8: {sz_mb:.0f} MB\n{'='*60}", flush=True)
         s1 = time.time(); print(f"[Stage 1] Enumerating candidates...", flush=True)
-        total = sum(
-            len(chunk)
-            for chunk in _gen_valid_5vs_indices_numpy(
-                self.total_positions, self.w1_name, self.w2_name,
-                self.b_name, self.has_pawn, self.same_wp)
-        )
+        total = _count_valid_5vs_indices_numpy(
+            self.total_positions, self.w1_name, self.w2_name,
+            self.b_name, self.has_pawn, self.same_wp)
         print(f"[Stage 1] Done: {total:,} candidates | {_fmt_elapsed(time.time()-s1)}", flush=True)
         
         s2 = time.time(); print(f"[Stage 2] Building flat disk cache ({total:,} states)...", flush=True)
@@ -1935,13 +2106,9 @@ class Generator5Vs:
                 self.total_positions, self.w1_name, self.w2_name,
                 self.b_name, self.has_pawn, self.same_wp, chunk_size=chunk_size)
             
-            for processed_count, results in pool.imap(_worker_5vs_chunk, chunk_iter):
-                for result in results:
-                    flat, trans = result
-                    _append_full_wdl_state(flat, trans, unsolved_flats, init_table,
-                                           init_out_degree, init_max_child_dtm,
-                                           f_b2w, f_w2b)
-                
+            acc = _FullWdlAccum(unsolved_flats, init_table, init_out_degree, init_max_child_dtm, f_b2w, f_w2b)
+            for processed_count, packed in pool.imap(_worker_5vs_chunk, chunk_iter):
+                acc.add(packed)
                 done += processed_count
                 elapsed = time.time() - start_time; speed = done / max(0.001, time.time() - s2)
                 pct = (done / total * 100) if total else 100.0
@@ -1957,8 +2124,8 @@ class Generator5Vs:
         init_out_degree_np = np.frombuffer(init_out_degree, dtype=np.uint16)[sort_idx]
         init_max_child_dtm_np = np.frombuffer(init_max_child_dtm, dtype=np.uint16)[sort_idx]
         del unsolved_flats, init_table, init_out_degree, init_max_child_dtm, sort_idx
-        b2w_head, b2w_edges, b2w_file = _build_csr_from_disk(unsolved_flats_np, tmp_b2w, f"{run_prefix}_b2w", old_to_new)
-        w2b_head, w2b_edges, w2b_file = _build_csr_from_disk(unsolved_flats_np, tmp_w2b, f"{run_prefix}_w2b", old_to_new)
+        b2w_head, b2w_edges, b2w_file, b2w_head_file = _build_csr_from_disk(unsolved_flats_np, tmp_b2w, f"{run_prefix}_b2w", old_to_new)
+        w2b_head, w2b_edges, w2b_file, w2b_head_file = _build_csr_from_disk(unsolved_flats_np, tmp_w2b, f"{run_prefix}_w2b", old_to_new)
         print(f"[Stage 2b] Done | {_fmt_elapsed(time.time()-s3)}", flush=True)
         
         try:
@@ -1969,21 +2136,24 @@ class Generator5Vs:
                 init_max_child_dtm_np,
                 b2w_head, b2w_edges, w2b_head, w2b_edges, start_time)
 
-            _write_dense_table(self.filename, self.total_positions, unsolved_flats_np, table_flat)
+            storage_format = _write_dense_table(self.filename, self.total_positions, unsolved_flats_np, table_flat)
             _write_wdl_marker(self.filename)
                 
             elapsed = time.time() - start_time
             tb_key = os.path.basename(self.filename).replace(TB_SUFFIX, '')
-            _safe_record_longest_mate(tb_key, max_dtm, decisive, len(unsolved_flats_np) - decisive, elapsed)
+            _safe_record_longest_mate(tb_key, max_dtm, decisive, len(unsolved_flats_np) - decisive, elapsed, storage_format)
             print(f"SUCCESS: {self.filename} | Total time: {_fmt_elapsed(elapsed)}", flush=True)
 
         finally:
+            if hasattr(b2w_head, '_mmap'): b2w_head._mmap.close()
+            if hasattr(w2b_head, '_mmap'): w2b_head._mmap.close()
             if hasattr(b2w_edges, '_mmap'): b2w_edges._mmap.close()
             if hasattr(w2b_edges, '_mmap'): w2b_edges._mmap.close()
-            del b2w_edges; del w2b_edges
+            del b2w_head; del w2b_head; del b2w_edges; del w2b_edges
             try:
                 os.remove(tmp_b2w); os.remove(tmp_w2b)
                 os.remove(b2w_file); os.remove(w2b_file)
+                os.remove(b2w_head_file); os.remove(w2b_head_file)
             except Exception as e:
                 print(f"  [Warning] Temporary file cleanup failed: {e}")
 
@@ -2011,7 +2181,7 @@ def auto_cleanup_tb_directory():
         path = os.path.join(TB_DIR, f)
         
         # 1. Nuke any leftover temp files from crashes
-        if any(x in f for x in ("_tmp_", "_bin_", "_edges.")):
+        if f.endswith(".tmp") or any(x in f for x in ("_tmp_", "_bin_", "_edges.")):
             try:
                 os.remove(path)
                 cleaned += 1
@@ -2051,11 +2221,42 @@ def is_possible(pieces):
 if __name__ == "__main__":
     _install_main_interrupt_ignores()
     
+    # Single-instance guard: startup cleanup wipes TBs/temp.
+    import atexit
+    _lock_path = os.path.join(TB_DIR, "generator.lock")
+    _lock_pid = str(os.getpid())
+    try:
+        _lock_fd = os.open(_lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except FileExistsError:
+        print(f"Another generator appears to be running (lock file: {_lock_path}).\n"
+              "If it crashed, delete that file and start again.")
+        sys.exit(1)
+    try:
+        os.write(_lock_fd, (_lock_pid + "\n").encode("ascii"))
+    except BaseException:
+        try:
+            os.remove(_lock_path)
+        except OSError:
+            pass
+        raise
+    finally:
+        os.close(_lock_fd)
+
+    def _release_generator_lock():
+        try:
+            with open(_lock_path, "r", encoding="ascii") as lock_file:
+                if lock_file.read().strip() == _lock_pid:
+                    os.remove(_lock_path)
+        except OSError:
+            pass
+
+    atexit.register(_release_generator_lock)
+
     # Run the auto-cleanup routine before starting
     auto_cleanup_tb_directory()
     
     overall_start = time.time()
-    print("=== Tablebase Generator (v24 - Auto-Cleanup & Perfected RAM/DTM) ===")
+    print("=== Tablebase Generator (v24.6 - Adaptive DTM Storage & 64-bit CSR) ===")
 
     all_pieces = [Queen, Rook, Bishop, Knight, Pawn]
     all_gens = []
