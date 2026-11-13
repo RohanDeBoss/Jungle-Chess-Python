@@ -1,0 +1,243 @@
+{
+  "old_dir": "TBs",
+  "new_dir": "TBs",
+  "old_suffix": "_tb8.bin",
+  "new_suffix": "_tb8(new).bin",
+  "common_table_count": 1,
+  "common_tables": [
+    "K_Bishop_Bishop_Knight_K"
+  ],
+  "old_only_tables": [
+    "K_Bishop_Bishop_K",
+    "K_Bishop_Bishop_Queen_K",
+    "K_Bishop_Bishop_Rook_K",
+    "K_Bishop_K",
+    "K_Bishop_Knight_K",
+    "K_Bishop_Knight_Knight_K",
+    "K_Bishop_Knight_Queen_K",
+    "K_Bishop_Knight_Rook_K",
+    "K_Bishop_Pawn_K",
+    "K_Bishop_Queen_K",
+    "K_Bishop_Queen_Queen_K",
+    "K_Bishop_Queen_Rook_K",
+    "K_Bishop_Rook_K",
+    "K_Bishop_Rook_Rook_K",
+    "K_Bishop_vs_Bishop_K",
+    "K_Bishop_vs_Knight_K",
+    "K_Bishop_vs_Pawn_K",
+    "K_Bishop_vs_Queen_K",
+    "K_Bishop_vs_Rook_K",
+    "K_Knight_K",
+    "K_Knight_Knight_K",
+    "K_Knight_Knight_Queen_K",
+    "K_Knight_Knight_Rook_K",
+    "K_Knight_Pawn_K",
+    "K_Knight_Queen_K",
+    "K_Knight_Queen_Queen_K",
+    "K_Knight_Queen_Rook_K",
+    "K_Knight_Rook_K",
+    "K_Knight_Rook_Rook_K",
+    "K_Knight_vs_Knight_K",
+    "K_Knight_vs_Pawn_K",
+    "K_Knight_vs_Queen_K",
+    "K_Knight_vs_Rook_K",
+    "K_Pawn_K",
+    "K_Pawn_Pawn_K",
+    "K_Pawn_Queen_K",
+    "K_Pawn_Rook_K",
+    "K_Pawn_vs_Pawn_K",
+    "K_Pawn_vs_Queen_K",
+    "K_Pawn_vs_Rook_K",
+    "K_Queen_K",
+    "K_Queen_Queen_K",
+    "K_Queen_Queen_Queen_K",
+    "K_Queen_Queen_Rook_K",
+    "K_Queen_Queen_vs_Knight_K",
+    "K_Queen_Queen_vs_Queen_K",
+    "K_Queen_Queen_vs_Rook_K",
+    "K_Queen_Rook_K",
+    "K_Queen_Rook_Rook_K",
+    "K_Queen_Rook_vs_Queen_K",
+    "K_Queen_vs_Queen_K",
+    "K_Queen_vs_Rook_K",
+    "K_Rook_K",
+    "K_Rook_Rook_K",
+    "K_Rook_vs_Rook_K"
+  ],
+  "new_only_tables": [
+    "K_Queen_Queen_vs_Bishop_K"
+  ],
+  "longest_mate_comparison": {
+    "shared_note_entries": 0,
+    "metadata_match_count": 0,
+    "metadata_mismatches": [],
+    "old_only_note_entries": [],
+    "new_only_note_entries": [
+      "K_Bishop_Bishop_K",
+      "K_Bishop_Bishop_Knight_K",
+      "K_Bishop_Bishop_Queen_K",
+      "K_Bishop_Bishop_Rook_K",
+      "K_Bishop_K",
+      "K_Bishop_Knight_K",
+      "K_Bishop_Knight_Knight_K",
+      "K_Bishop_Knight_Queen_K",
+      "K_Bishop_Knight_Rook_K",
+      "K_Bishop_Pawn_K",
+      "K_Bishop_Queen_K",
+      "K_Bishop_Queen_Queen_K",
+      "K_Bishop_Queen_Rook_K",
+      "K_Bishop_Rook_K",
+      "K_Bishop_Rook_Rook_K",
+      "K_Bishop_vs_Bishop_K",
+      "K_Bishop_vs_Knight_K",
+      "K_Bishop_vs_Pawn_K",
+      "K_Bishop_vs_Queen_K",
+      "K_Bishop_vs_Rook_K",
+      "K_Knight_K",
+      "K_Knight_Knight_K",
+      "K_Knight_Knight_Queen_K",
+      "K_Knight_Knight_Rook_K",
+      "K_Knight_Pawn_K",
+      "K_Knight_Queen_K",
+      "K_Knight_Queen_Queen_K",
+      "K_Knight_Queen_Rook_K",
+      "K_Knight_Rook_K",
+      "K_Knight_Rook_Rook_K",
+      "K_Knight_vs_Knight_K",
+      "K_Knight_vs_Pawn_K",
+      "K_Knight_vs_Queen_K",
+      "K_Knight_vs_Rook_K",
+      "K_Pawn_K",
+      "K_Pawn_Pawn_K",
+      "K_Pawn_Queen_K",
+      "K_Pawn_Rook_K",
+      "K_Pawn_vs_Pawn_K",
+      "K_Pawn_vs_Queen_K",
+      "K_Pawn_vs_Rook_K",
+      "K_Queen_K",
+      "K_Queen_Queen_K",
+      "K_Queen_Queen_Queen_K",
+      "K_Queen_Queen_Rook_K",
+      "K_Queen_Queen_vs_Bishop_K",
+      "K_Queen_Queen_vs_Knight_K",
+      "K_Queen_Queen_vs_Queen_K",
+      "K_Queen_Queen_vs_Rook_K",
+      "K_Queen_Rook_K",
+      "K_Queen_Rook_Rook_K",
+      "K_Queen_Rook_vs_Queen_K",
+      "K_Queen_vs_Queen_K",
+      "K_Queen_vs_Rook_K",
+      "K_Rook_K",
+      "K_Rook_Rook_K",
+      "K_Rook_vs_Rook_K"
+    ]
+  },
+  "table_comparisons": [
+    {
+      "table": "K_Bishop_Bishop_Knight_K",
+      "state_count": 335544320,
+      "identical": false,
+      "mismatch_count": 7061930,
+      "max_abs_diff": 18,
+      "old_actual": {
+        "max_abs_value": 20,
+        "decisive_entries": 35431758,
+        "zero_entries_total": 300112562
+      },
+      "new_actual": {
+        "max_abs_value": 20,
+        "decisive_entries": 28369828,
+        "zero_entries_total": 307174492
+      },
+      "mismatch_examples": [
+        {
+          "flat_index": 1114247,
+          "old": -14,
+          "new": 0
+        },
+        {
+          "flat_index": 1114249,
+          "old": -14,
+          "new": 0
+        },
+        {
+          "flat_index": 1114251,
+          "old": -2,
+          "new": 0
+        },
+        {
+          "flat_index": 1114253,
+          "old": -4,
+          "new": 0
+        },
+        {
+          "flat_index": 1114254,
+          "old": 1,
+          "new": 0
+        },
+        {
+          "flat_index": 1114255,
+          "old": -1,
+          "new": 0
+        },
+        {
+          "flat_index": 1114261,
+          "old": -14,
+          "new": 0
+        },
+        {
+          "flat_index": 1114263,
+          "old": -14,
+          "new": 0
+        },
+        {
+          "flat_index": 1114265,
+          "old": -4,
+          "new": 0
+        },
+        {
+          "flat_index": 1114267,
+          "old": -4,
+          "new": 0
+        }
+      ],
+      "canonical_equivalent": true,
+      "expected_diagonal_alias_mismatches": 7061930,
+      "unexpected_mismatches": 0,
+      "unexpected_mismatch_examples": [],
+      "metadata": {
+        "category": "5-Man Same-Side",
+        "shape": [
+          10,
+          64,
+          64,
+          64,
+          64,
+          2
+        ],
+        "has_pawn": false
+      },
+      "old_note": null,
+      "new_note": {
+        "dtm": 20,
+        "decisive": 28369828,
+        "drawn": 1162,
+        "minutes": 14.5,
+        "updated_utc": "2026-11-12 09:14:33",
+        "storage": "tb8"
+      },
+      "old_note_matches_actual": false,
+      "new_note_matches_actual": true,
+      "sample_probe_checks": [],
+      "sample_probe_mismatch_count": 0
+    }
+  ],
+  "summary": {
+    "fully_identical_tables": 0,
+    "tables_with_value_mismatches": 1,
+    "canonical_equivalent_tables": 1,
+    "tables_with_unexpected_mismatches": 0,
+    "sample_probe_checks_run": 0,
+    "sample_probe_mismatches": 0
+  }
+}

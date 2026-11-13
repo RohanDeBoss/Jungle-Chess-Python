@@ -303,7 +303,67 @@ def compare_longest_mates(old_records, new_records, common_bases):
 COMPARE_CHUNK_SIZE = 1 << 22
 
 
-def full_compare_table(base_name, old_arr, new_arr):
+def _transpose_square(square):
+    return (square % 8) * 8 + square // 8
+
+
+def _diagonal_aliases(flat_indices, metadata):
+    """Return (is_removed_alias, canonical_flat) for non-pawn five-man flats."""
+    flat_indices = np.asarray(flat_indices, dtype=np.int64)
+    rest = flat_indices >> 1
+    turn = flat_indices & 1
+
+    if metadata.category == "5-Man Same-Side":
+        bk = rest & 63; rest >>= 6
+        p3 = rest & 63; rest >>= 6
+        p2 = rest & 63; rest >>= 6
+        p1 = rest & 63; rest >>= 6
+        wk_idx = rest
+        original = [p1, p2, p3, bk]
+        piece_names = metadata.white_pieces
+        transposed = [_transpose_square(sq) for sq in original]
+
+        # Match the generator's type-sorted piece order after transposing.
+        i = 0
+        while i < len(piece_names):
+            j = i + 1
+            while j < len(piece_names) and piece_names[j] == piece_names[i]:
+                j += 1
+            if j - i > 1:
+                sorted_group = np.sort(np.stack(transposed[i:j], axis=0), axis=0)
+                transposed[i:j] = [sorted_group[k] for k in range(j - i)]
+            i = j
+
+        canonical_alias = (((((wk_idx * 64 + transposed[0]) * 64 + transposed[1])
+                             * 64 + transposed[2]) * 64 + transposed[3]) * 2 + turn)
+    elif metadata.category == "5-Man Cross":
+        bp = rest & 63; rest >>= 6
+        bk = rest & 63; rest >>= 6
+        wp2 = rest & 63; rest >>= 6
+        wp1 = rest & 63; rest >>= 6
+        wk_idx = rest
+        original = [wp1, wp2, bk, bp]
+        transposed = [_transpose_square(sq) for sq in original]
+        if metadata.white_pieces[0] == metadata.white_pieces[1]:
+            sorted_pair = np.sort(np.stack(transposed[:2], axis=0), axis=0)
+            transposed[:2] = [sorted_pair[0], sorted_pair[1]]
+        canonical_alias = (((((wk_idx * 64 + transposed[0]) * 64 + transposed[1])
+                             * 64 + transposed[2]) * 64 + transposed[3]) * 2 + turn)
+    else:
+        raise ValueError("Diagonal-alias comparison requires a five-man table")
+
+    wk_square = np.asarray(NON_PAWN_WK_SQUARES, dtype=np.int64)[wk_idx]
+    on_diagonal = (wk_square // 8) == (wk_square % 8)
+    original_is_greater = np.zeros(flat_indices.size, dtype=bool)
+    decided = np.zeros(flat_indices.size, dtype=bool)
+    for before, after in zip(original, transposed):
+        original_is_greater |= (~decided) & (before > after)
+        decided |= before != after
+
+    return on_diagonal & original_is_greater, canonical_alias
+
+
+def full_compare_table(base_name, old_arr, new_arr, metadata=None, canonical_diagonal=False):
     old_flat = np.asarray(old_arr).reshape(-1)
     new_flat = np.asarray(new_arr).reshape(-1)
     mismatch_count = 0
@@ -313,6 +373,9 @@ def full_compare_table(base_name, old_arr, new_arr):
     new_decisive = 0
     new_max_dtm = 0
     mismatch_examples = []
+    expected_alias_mismatches = 0
+    unexpected_mismatches = 0
+    unexpected_examples = []
     total_chunks = (old_flat.size + COMPARE_CHUNK_SIZE - 1) // COMPARE_CHUNK_SIZE
     progress_interval = max(1, total_chunks // 20)
 
@@ -338,6 +401,34 @@ def full_compare_table(base_name, old_arr, new_arr):
                             "new": int(new_chunk[local_idx]),
                         }
                     )
+
+            if canonical_diagonal:
+                local_mismatch = np.flatnonzero(mismatch_mask)
+                mismatch_flats = start + local_mismatch
+                alias_mask, alias_flats = _diagonal_aliases(mismatch_flats, metadata)
+                old_values = old_chunk[local_mismatch]
+                new_values = new_chunk[local_mismatch]
+                expected = alias_mask & (old_values != 0) & (new_values == 0)
+                expected_positions = np.flatnonzero(expected)
+                if expected_positions.size:
+                    retained_values = new_flat[alias_flats[expected_positions]].astype(np.int32, copy=False)
+                    expected_positions = expected_positions[retained_values == old_values[expected_positions]]
+                expected_alias_mismatches += int(expected_positions.size)
+                unexpected_here = chunk_mismatch_count - int(expected_positions.size)
+                unexpected_mismatches += unexpected_here
+                if unexpected_here and len(unexpected_examples) < 10:
+                    expected_mask = np.zeros(chunk_mismatch_count, dtype=bool)
+                    expected_mask[expected_positions] = True
+                    for pos in np.flatnonzero(~expected_mask)[:10 - len(unexpected_examples)]:
+                        unexpected_examples.append(
+                            {
+                                "flat_index": int(mismatch_flats[pos]),
+                                "old": int(old_values[pos]),
+                                "new": int(new_values[pos]),
+                                "diagonal_alias_candidate": bool(alias_mask[pos]),
+                                "canonical_flat": int(alias_flats[pos]),
+                            }
+                        )
 
         old_nonzero = old_chunk != 0
         new_nonzero = new_chunk != 0
@@ -374,6 +465,15 @@ def full_compare_table(base_name, old_arr, new_arr):
         },
         "mismatch_examples": mismatch_examples,
     }
+    if canonical_diagonal:
+        summary.update(
+            {
+                "canonical_equivalent": unexpected_mismatches == 0,
+                "expected_diagonal_alias_mismatches": expected_alias_mismatches,
+                "unexpected_mismatches": unexpected_mismatches,
+                "unexpected_mismatch_examples": unexpected_examples,
+            }
+        )
     return summary
 
 
@@ -467,10 +567,19 @@ def main():
     parser.add_argument("--new-dir", default="TBs")
     parser.add_argument("--old-suffix", default=OLD_SUFFIX)
     parser.add_argument("--new-suffix", default=NEW_SUFFIX)
+    parser.add_argument("--table", action="append", help="table base name to compare; may be repeated")
     parser.add_argument("--old-longest", default=OLD_LONGEST)
     parser.add_argument("--new-longest", default=NEW_LONGEST)
     parser.add_argument("--samples-per-table", type=int, default=12)
     parser.add_argument("--seed", type=int, default=12345)
+    parser.add_argument(
+        "--canonical-diagonal-equivalence",
+        action="store_true",
+        help=(
+            "for non-pawn five-man tables, treat old diagonal-transpose aliases "
+            "as equivalent only when the old value equals the retained new canonical value"
+        ),
+    )
     parser.add_argument(
         "--output",
         default=os.path.join(SCRIPT_DIR, "tablebase_equivalence_report.json"),
@@ -479,7 +588,30 @@ def main():
 
     old_bases = list_table_bases(args.old_dir, args.old_suffix)
     new_bases = list_table_bases(args.new_dir, args.new_suffix)
-    common_bases = sorted(old_bases & new_bases)
+    if args.table:
+        requested = set(args.table)
+        missing_old = sorted(requested - old_bases)
+        missing_new = sorted(requested - new_bases)
+        if missing_old or missing_new:
+            parser.error(
+                f"requested tables missing: old={missing_old}, new={missing_new}"
+            )
+        common_bases = sorted(requested)
+    else:
+        common_bases = sorted(old_bases & new_bases)
+
+    if args.canonical_diagonal_equivalence:
+        unsupported = [
+            base for base in common_bases
+            if (lambda meta: meta.category not in {"5-Man Same-Side", "5-Man Cross"} or meta.has_pawn)(
+                parse_table_metadata(base)
+            )
+        ]
+        if unsupported:
+            parser.error(
+                "--canonical-diagonal-equivalence only supports non-pawn five-man tables; "
+                f"unsupported: {', '.join(unsupported)}"
+            )
 
     old_longest = parse_longest_mates(os.path.join(args.old_dir, args.old_longest))
     new_longest = parse_longest_mates(os.path.join(args.new_dir, args.new_longest))
@@ -507,7 +639,13 @@ def main():
         new_arr = load_table(args.new_dir, base_name, args.new_suffix, metadata.shape)
 
         print(f"  Comparing {old_arr.size:,} states in chunks...", flush=True)
-        table_report = full_compare_table(base_name, old_arr, new_arr)
+        table_report = full_compare_table(
+            base_name,
+            old_arr,
+            new_arr,
+            metadata=metadata,
+            canonical_diagonal=args.canonical_diagonal_equivalence,
+        )
         table_report["metadata"] = {
             "category": metadata.category,
             "shape": list(metadata.shape),
@@ -525,24 +663,41 @@ def main():
             and table_report["new_note"]["dtm"] == table_report["new_actual"]["max_abs_value"]
             and table_report["new_note"]["decisive"] == table_report["new_actual"]["decisive_entries"]
         )
-        print(f"  Sampling up to {args.samples_per_table} legal probe positions...", flush=True)
-        table_report["sample_probe_checks"] = sample_probe_checks(
-            base_name, metadata, old_arr, new_arr, args.samples_per_table, args.seed + offset
-        )
+        if args.canonical_diagonal_equivalence:
+            # The exhaustive alias-value check above is the primary proof in this mode.
+            # The legacy probe sampler starts with raw mismatch indices, which are
+            # intentionally invalid in the reduced new table's dense representation.
+            table_report["sample_probe_checks"] = []
+        else:
+            print(f"  Sampling up to {args.samples_per_table} legal probe positions...", flush=True)
+            table_report["sample_probe_checks"] = sample_probe_checks(
+                base_name, metadata, old_arr, new_arr, args.samples_per_table, args.seed + offset
+            )
         table_report["sample_probe_mismatch_count"] = sum(
             1 for item in table_report["sample_probe_checks"] if not item["probe_match"]
         )
         report["table_comparisons"].append(table_report)
-        print(
-            f"  Done: {'MATCH' if table_report['identical'] else 'DIFF'} "
-            f"({table_report['mismatch_count']:,} mismatches; "
-            f"{len(table_report['sample_probe_checks'])} probes)",
-            flush=True,
-        )
+        if args.canonical_diagonal_equivalence:
+            status = "CANONICAL MATCH" if table_report["canonical_equivalent"] else "UNEXPECTED DIFF"
+            detail = (
+                f"{table_report['expected_diagonal_alias_mismatches']:,} expected mirror cells cleared; "
+                f"{table_report['unexpected_mismatches']:,} unexpected mismatches"
+            )
+        else:
+            status = "MATCH" if table_report["identical"] else "DIFF"
+            detail = f"{table_report['mismatch_count']:,} mismatches; {len(table_report['sample_probe_checks'])} probes"
+        print(f"  Done: {status} ({detail})", flush=True)
 
     report["summary"] = {
         "fully_identical_tables": sum(1 for item in report["table_comparisons"] if item["identical"]),
         "tables_with_value_mismatches": sum(1 for item in report["table_comparisons"] if not item["identical"]),
+        "canonical_equivalent_tables": sum(
+            1 for item in report["table_comparisons"] if item.get("canonical_equivalent", False)
+        ),
+        "tables_with_unexpected_mismatches": sum(
+            1 for item in report["table_comparisons"]
+            if args.canonical_diagonal_equivalence and not item.get("canonical_equivalent", False)
+        ),
         "sample_probe_checks_run": sum(len(item["sample_probe_checks"]) for item in report["table_comparisons"]),
         "sample_probe_mismatches": sum(item["sample_probe_mismatch_count"] for item in report["table_comparisons"]),
     }
@@ -553,6 +708,9 @@ def main():
     print(f"Common tables: {report['common_table_count']}")
     print(f"Fully identical tables: {report['summary']['fully_identical_tables']}")
     print(f"Tables with value mismatches: {report['summary']['tables_with_value_mismatches']}")
+    if args.canonical_diagonal_equivalence:
+        print(f"Canonical-equivalent tables: {report['summary']['canonical_equivalent_tables']}")
+        print(f"Tables with unexpected mismatches: {report['summary']['tables_with_unexpected_mismatches']}")
     print(f"Sample probe checks run: {report['summary']['sample_probe_checks_run']}")
     print(f"Sample probe mismatches: {report['summary']['sample_probe_mismatches']}")
     print(f"Report written to: {args.output}")
@@ -570,9 +728,18 @@ def main():
     if mismatch_tables:
         print("\nTables with direct value mismatches:")
         for item in mismatch_tables:
+            if args.canonical_diagonal_equivalence and item.get("canonical_equivalent"):
+                print(
+                    f"  {item['table']}: {item['expected_diagonal_alias_mismatches']:,} "
+                    "noncanonical mirror cells cleared; canonical values match"
+                )
+                continue
             print(
                 f"  {item['table']}: {item['mismatch_count']} mismatching states, max abs diff {item['max_abs_diff']}"
             )
+
+    if args.canonical_diagonal_equivalence and report["summary"]["tables_with_unexpected_mismatches"]:
+        sys.exit(1)
 
 
 if __name__ == "__main__":

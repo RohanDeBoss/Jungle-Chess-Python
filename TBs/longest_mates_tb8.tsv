@@ -1,7 +1,7 @@
 Table                                   DTM  Storage         Decisive           Drawn         Min  Updated (UTC)       
 -----------------------------------------------------------------------------------------------------------------------
 regen_K_Bishop_Bishop_K                  10  tb8              482,043         149,635         0.5  2026-07-17 12:32:19 
-regen_K_Bishop_Bishop_Knight_K           20  tb8           35,431,758           1,525        16.1  2026-10-29 08:34:16 
+regen_K_Bishop_Bishop_Knight_K           20  tb8           28,369,828           1,162        14.5  2026-11-12 09:14:33 
 regen_K_Bishop_Bishop_Queen_K            14  tb8           35,150,467               0        23.2  2026-07-19 21:32:39 
 regen_K_Bishop_Bishop_Rook_K             22  tb8           36,613,079           1,487        23.8  2026-10-25 07:47:45 
 regen_K_Bishop_K                          9  tb8                1,017          51,229         0.0  2026-10-23 23:22:02 
@@ -37,7 +37,7 @@ regen_K_Knight_vs_Rook_K                 37  tb8              583,920       2,20
 regen_K_Pawn_K                           70  tb8              114,699          34,501         0.1  2026-07-17 12:16:20 
 regen_K_Pawn_Pawn_K                      74  tb8            3,256,947          70,087         2.3  2026-07-17 13:52:52 
 regen_K_Pawn_Queen_K                     70  tb8            7,493,129          76,003         6.2  2026-07-17 13:06:23 
-regen_K_Pawn_Rook_K                      70  tb8            7,463,602         694,955         5.2  2026-07-17 13:11:37 
+regen_K_Pawn_Rook_K                      70  tb8            7,463,602         694,955         4.2  2026-11-12 09:00:02 
 regen_K_Pawn_vs_Pawn_K                   73  tb8            3,413,828       3,234,150         6.6  2026-07-17 13:59:30 
 regen_K_Pawn_vs_Queen_K                  71  tb8            5,818,450       1,549,613         6.6  2026-07-17 13:29:03 
 regen_K_Pawn_vs_Rook_K                   71  tb8              660,551       7,425,246         5.2  2026-07-17 13:34:14 
@@ -45,7 +45,7 @@ regen_K_Queen_K                          20  tb8               46,917           
 regen_K_Queen_Queen_K                    20  tb8            1,366,504               0         1.2  2026-07-17 12:17:31 
 regen_K_Queen_Queen_Queen_K              10  tb8           24,464,874               0        41.2  2026-07-17 14:40:44 
 regen_K_Queen_Queen_Rook_K               14  tb8           76,951,052               0       124.4  2026-07-17 16:45:06 
-regen_K_Queen_Queen_vs_Bishop_K          33  tb8           43,336,826      18,464,289        88.9  2026-10-30 08:32:57 
+regen_K_Queen_Queen_vs_Bishop_K          33  tb8           34,782,594      14,805,913        61.0  2026-11-12 10:15:35 
 regen_K_Queen_Queen_vs_Knight_K          56  tb8           47,259,136      14,212,742        61.0  2026-10-30 09:34:01 
 regen_K_Queen_Queen_vs_Queen_K           46  tb8           49,346,333       9,189,958        86.1  2026-10-29 10:48:52 
 regen_K_Queen_Queen_vs_Rook_K            34  tb8           50,127,713      18,293,609        79.9  2026-10-30 07:04:01 
@@ -56,4 +56,4 @@ regen_K_Queen_vs_Queen_K                 25  tb8              422,710       2,00
 regen_K_Queen_vs_Rook_K                  34  tb8              246,810       2,479,786         2.8  2026-07-17 12:40:59 
 regen_K_Rook_K                           15  tb8                  986          55,475         0.0  2026-10-23 23:24:13 
 regen_K_Rook_Rook_K                      22  tb8            1,327,485         228,113         0.8  2026-11-12 08:53:14 
-regen_K_Rook_vs_Rook_K                   15  tb8               17,221       3,004,603         2.6  2026-10-23 23:28:05 
+regen_K_Rook_vs_Rook_K                   15  tb8               17,221       3,004,603         2.6  2026-11-12 08:55:53 

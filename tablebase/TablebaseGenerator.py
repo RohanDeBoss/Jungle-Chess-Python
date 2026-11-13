@@ -510,7 +510,7 @@ def _run_flat_bfs_py(unsolved_flats_np, init_table_np, init_out_degree_np,
             
     max_dtm_solved = 1 if solved_count > 0 else 0
     
-    print(f"[Stage 3] BFS start (working int16 / adaptive int8/int16 output) | Terminal (DTM 1): {solved_count:,} | "
+    print(f"[Stage 3] BFS start (working int16; disk auto-selects int8/int16) | Terminal (DTM 1): {solved_count:,} | "
           f"Elapsed so far: {_fmt_elapsed(time.time() - start_time)}", flush=True)
 
     for dtm in range(1, MAX_DTM + 1):
@@ -664,7 +664,7 @@ def _run_flat_bfs_full_wdl_py(unsolved_flats_np, init_table_np,
 
     max_dtm_solved = 1 if solved_count > 0 else 0
 
-    print(f"[Stage 3] Full WDL BFS start (working int16 / adaptive int8/int16 output) | Seeded: {solved_count:,} | "
+    print(f"[Stage 3] Full WDL BFS start (working int16; disk auto-selects int8/int16) | Seeded: {solved_count:,} | "
           f"Elapsed so far: {_fmt_elapsed(time.time() - start_time)}", flush=True)
 
     for dtm in range(1, MAX_DTM + 1):
@@ -1009,7 +1009,7 @@ class Generator:
     def generate(self):
         if os.path.exists(self.filename): return
         start_time = time.time()
-        print(f"\n{'='*60}\n GENERATING: K+{self.piece_name} vs K (working int16 / adaptive int8/int16 output)\n{'='*60}")
+        print(f"\n{'='*60}\n GENERATING: K+{self.piece_name} vs K (working int16; disk auto-selects int8/int16)\n{'='*60}")
         s1 = time.time(); print(f"[Stage 1] Enumerating candidates...", flush=True)
         raw_candidates = []
         for flat in range(self.total_positions):
@@ -1225,7 +1225,7 @@ class Generator4:
     def generate(self):
         if os.path.exists(self.filename): return
         start_time = time.time()
-        print(f"\n{'='*60}\n GENERATING: K+{self.p1_name}+{self.p2_name} vs K (working int16 / adaptive int8/int16 output)\n{'='*60}", flush=True)
+        print(f"\n{'='*60}\n GENERATING: K+{self.p1_name}+{self.p2_name} vs K (working int16; disk auto-selects int8/int16)\n{'='*60}", flush=True)
         s1 = time.time(); print(f"[Stage 1] Enumerating candidates...", flush=True)
         all_flats = array('I')
         for chunk in _gen_valid_4man_indices_numpy(self.total_positions, self.p1_name, self.p2_name, self.same_piece, self.has_pawn):
@@ -1464,7 +1464,7 @@ class Generator4Vs:
     def generate(self):
         if os.path.exists(self.filename) and os.path.exists(self.filename + TB_WDL_MARKER_SUFFIX): return
         start_time = time.time()
-        print(f"\n{'='*60}\n GENERATING: K+{self.w_name} vs K+{self.b_name} (working int16 / adaptive int8/int16 output)\n{'='*60}", flush=True)
+        print(f"\n{'='*60}\n GENERATING: K+{self.w_name} vs K+{self.b_name} (working int16; disk auto-selects int8/int16)\n{'='*60}", flush=True)
         s1 = time.time(); print(f"[Stage 1] Enumerating candidates...", flush=True)
         all_flats = array('I')
         for chunk in _gen_valid_4man_vs_indices_numpy(self.total_positions, self.w_name, self.b_name, self.has_pawn):
@@ -1754,7 +1754,7 @@ class Generator5:
         if os.path.exists(self.filename): return
         start_time = time.time()
         sz_mb = self.wk_size * 64**4 * 2 * 1 / 1024**2
-        print(f"\n{'='*60}\n GENERATING: K+{self.p1_name}+{self.p2_name}+{self.p3_name} vs K (working int16 / adaptive int8/int16 output)", flush=True)
+        print(f"\n{'='*60}\n GENERATING: K+{self.p1_name}+{self.p2_name}+{self.p3_name} vs K (working int16; disk auto-selects int8/int16)", flush=True)
         print(f" Estimated file size at int8: {sz_mb:.0f} MB\n{'='*60}", flush=True)
         s1 = time.time(); print(f"[Stage 1] Enumerating candidates...", flush=True)
         total = _count_valid_5same_indices_numpy(
@@ -2081,7 +2081,7 @@ class Generator5Vs:
         if os.path.exists(self.filename) and os.path.exists(self.filename + TB_WDL_MARKER_SUFFIX): return
         start_time = time.time()
         sz_mb = self.wk_size * 64**4 * 2 * 1 / 1024**2
-        print(f"\n{'='*60}\n GENERATING: K+{self.w1_name}+{self.w2_name} vs K+{self.b_name} (working int16 / adaptive int8/int16 output)", flush=True)
+        print(f"\n{'='*60}\n GENERATING: K+{self.w1_name}+{self.w2_name} vs K+{self.b_name} (working int16; disk auto-selects int8/int16)", flush=True)
         print(f" Estimated file size at int8: {sz_mb:.0f} MB\n{'='*60}", flush=True)
         s1 = time.time(); print(f"[Stage 1] Enumerating candidates...", flush=True)
         total = _count_valid_5vs_indices_numpy(
