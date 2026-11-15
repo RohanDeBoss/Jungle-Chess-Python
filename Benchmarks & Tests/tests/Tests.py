@@ -1,4 +1,4 @@
-# Tests.py (v8.3 - Runtime-deadline and knight-collateral regressions)
+# Tests.py (v8.5 - repetition labels and legal Soft-SEE fixture)
 
 import sys
 import os
@@ -918,12 +918,9 @@ def case_regression_nmp_mate_blindness():
 
 
 def case_regression_twofold_as_draw_policy():
-    # v127.1 introduced a search-side policy where any position that has
-    # already occurred once — either for real (position_counts) or purely
-    # within this search's own line (search_path) — is scored as an
-    # immediate draw, instead of waiting for a literal third occurrence.
-    # This exercises both trigger paths directly, plus a control case
-    # proving the change didn't make negamax return DRAW_SCORE everywhere.
+    # Real history draws when a position has occurred twice already (the
+    # third occurrence); a position repeated in this search's own line draws
+    # after one prior visit. Exercise both trigger paths and a control case.
     board = make_board([
         ("white", King, (7, 4)),
         ("white", Rook, (7, 0)),
@@ -933,17 +930,17 @@ def case_regression_twofold_as_draw_policy():
     bot = ChessBot(board, "white", {}, _DummyQueue(), _DummyEvent(), use_tablebase=False)
     hash_val = board_hash(board, "white")
 
-    details = position_details(board, "Twofold-as-draw repetition policy")
+    details = position_details(board, "Threefold history / search-line repetition policy")
 
     # 1. Real-history trigger: position already occurred twice for real (threefold).
     bot.position_counts = {hash_val: 2}
     score_real = bot.negamax(board, 2, -bot.MATE_SCORE, bot.MATE_SCORE,
                               "white", 1, set(), current_hash=hash_val)
-    details.append(f"negamax score with position_counts[hash]=1 (real repeat): {score_real}")
+    details.append(f"negamax score with position_counts[hash]=2 (genuine threefold): {score_real}")
     expect(
         score_real == bot.DRAW_SCORE,
-        f"Regression detected: a position that already occurred once for real should be an "
-        f"immediate draw under the twofold policy, but negamax returned {score_real}."
+        f"Regression detected: a position that already occurred twice for real (a genuine "
+        f"threefold) should be an immediate draw, but negamax returned {score_real}."
     )
 
     # 2. Search-path trigger: position never happened for real, but this
@@ -955,16 +952,16 @@ def case_regression_twofold_as_draw_policy():
     expect(
         score_path == bot.DRAW_SCORE,
         f"Regression detected: a position already present in search_path should be an immediate "
-        f"draw under the twofold policy, but negamax returned {score_path}."
+        f"draw under the search-path repetition policy, but negamax returned {score_path}."
     )
 
     # 3. qsearch should honor the same policy.
     bot.position_counts = {hash_val: 2}
     qscore = bot.qsearch(board, -bot.MATE_SCORE, bot.MATE_SCORE, "white", 1, current_hash=hash_val)
-    details.append(f"qsearch score with position_counts[hash]=1 (real repeat): {qscore}")
+    details.append(f"qsearch score with position_counts[hash]=2 (genuine threefold): {qscore}")
     expect(
         qscore == bot.DRAW_SCORE,
-        f"Regression detected: qsearch should also honor the twofold-as-draw policy, but "
+        f"Regression detected: qsearch should also honor the real-history threefold policy, but "
         f"returned {qscore} instead of {bot.DRAW_SCORE}."
     )
 
@@ -986,7 +983,7 @@ def case_regression_twofold_as_draw_policy():
     expect(
         score_control != bot_control.DRAW_SCORE,
         f"Regression detected: a fresh, never-repeated, clearly non-drawish position was scored "
-        f"as a draw ({score_control}) — the twofold policy must only apply to actual repeats."
+        f"as a draw ({score_control}) — repetition draws must only apply to actual repeats."
     )
 
     # 5. Control: a position seen only ONCE in real history must NOT be a draw.
@@ -1019,12 +1016,12 @@ def case_regression_unconditional_soft_see_ordering():
         ("black", King, (0, 0)),
         ("black", Rook, (3, 4)),   # target: defended, large swing (600)
         ("black", Rook, (3, 0)),   # defends (3,4) via rank
-        ("black", Rook, (5, 5)),   # undefended capture target, same swing (600), for comparison
+        ("black", Rook, (4, 1)),   # undefended capture target on white rook's rank, same swing (600)
     ])
     bot = ChessBot(board, "white", {}, _DummyQueue(), _DummyEvent(), use_tablebase=False)
 
     move_defended   = ((4, 4), (3, 4))  # Rxr, defended: should be discounted by SEE
-    move_undefended = ((4, 4), (5, 5))  # Rxr, undefended: should NOT be discounted
+    move_undefended = ((4, 4), (4, 1))  # Rxr, undefended: should NOT be discounted
 
     ordered = bot.order_moves(board, [move_defended, move_undefended], 0, None, "white")
 
@@ -1296,8 +1293,8 @@ CASES = [
     TestCaseSpec(
         "regression_twofold_as_draw_policy",
         "engine_internals",
-        "Verify negamax/qsearch score any already-occurred position (real or search-path) as an "
-        "immediate draw under the v127.1 twofold policy, without forcing fresh positions to draw.",
+        "Verify negamax/qsearch draw a position that occurred twice in real history (threefold) "
+        "or once in the current search line, without drawing fresh or once-seen positions.",
         case_regression_twofold_as_draw_policy,
     ),
     TestCaseSpec(

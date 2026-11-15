@@ -19,6 +19,7 @@ regen_K_Bishop_Queen_vs_Queen_K          43  tb8           27,556,833      68,63
 regen_K_Bishop_Queen_vs_Rook_K           54  tb8           77,435,519      34,283,511       147.0  2026-11-14 12:55:04 
 regen_K_Bishop_Rook_K                    22  tb8            2,509,802         427,644         2.9  2026-07-17 12:29:49 
 regen_K_Bishop_Rook_Rook_K               22  tb8           82,078,194           1,480        82.0  2026-10-25 06:34:44 
+regen_K_Bishop_Rook_vs_Queen_K           39  tb8           29,888,336      76,206,353       157.5  2026-11-15 08:48:49 
 regen_K_Bishop_vs_Bishop_K                9  tb8               11,679       2,532,707         2.9  2026-07-17 12:56:24 
 regen_K_Bishop_vs_Knight_K               33  tb8              448,853       2,101,981         2.3  2026-07-17 12:58:42 
 regen_K_Bishop_vs_Pawn_K                 71  tb8              696,956       6,833,521         6.5  2026-07-17 13:40:44 
@@ -67,5 +68,8 @@ regen_K_Queen_vs_Queen_K                 25  tb8              422,710       2,00
 regen_K_Queen_vs_Rook_K                  34  tb8              246,810       2,479,786         2.8  2026-07-17 12:40:59 
 regen_K_Rook_K                           15  tb8                  986          55,475         0.0  2026-10-23 23:24:13 
 regen_K_Rook_Rook_K                      22  tb8            1,327,485         228,113         0.8  2026-11-12 08:53:14 
+regen_K_Rook_Rook_vs_Bishop_K            74  tb8           36,037,964      23,373,331        64.1  2026-11-15 05:25:14 
+regen_K_Rook_Rook_vs_Knight_K           151  tb16          37,077,174      21,988,908        46.0  2026-11-15 06:11:18 
 regen_K_Rook_Rook_vs_Queen_K             33  tb8           14,442,397      42,410,900        64.1  2026-11-15 01:17:48 
+regen_K_Rook_Rook_vs_Rook_K              41  tb8           15,564,287      49,051,707        62.0  2026-11-15 04:21:08 
 regen_K_Rook_vs_Rook_K                   15  tb8               17,221       3,004,603         2.6  2026-11-12 08:55:53 

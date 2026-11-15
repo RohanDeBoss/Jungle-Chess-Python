@@ -1,4 +1,4 @@
-# TablebaseViewer.py (v2.2 - Drawn dont show duplicates)
+# TablebaseViewer.py (v2.3 - chunked decisive-mate scan)
 
 import os
 import sys
@@ -377,34 +377,54 @@ class TBViewerApp:
             }
 
             if view_mode == "Decisive Mates":
-                non_zero_indices = np.where(data_flat != 0)[0]
-                if len(non_zero_indices) == 0:
+                # Chunked scan: keep only a bounded top-|DTM| pool per panel instead of
+                # materialising every decisive index (several GB on 5-man tables).
+                # (want_white_win, side_to_move) per panel.
+                panel_defs = {"panel_1": (True, 0), "panel_2": (True, 1),
+                              "panel_3": (False, 0), "panel_4": (False, 1)}
+                POOL = QUARTER_CAP * 40          # spare candidates for the canonical/legal filters
+                pools = {key: (np.empty(0, np.int64), np.empty(0, np.int32)) for key in PANEL_KEYS}
+                total_len = len(data_flat)
+                scan_chunk = 1 << 23             # even, so local parity == global parity
+                total_chunks = max(1, -(-total_len // scan_chunk))
+                any_decisive = False
+
+                for chunk_no, start_i in enumerate(range(0, total_len, scan_chunk), 1):
+                    vals = np.asarray(data_flat[start_i:start_i + scan_chunk])
+                    nz = np.flatnonzero(vals)
+                    if nz.size:
+                        any_decisive = True
+                        v = vals[nz].astype(np.int32)
+                        turns = nz & 1
+                        white_wins = ((v > 0) & (turns == 0)) | ((v < 0) & (turns == 1))
+                        gidx = nz.astype(np.int64) + start_i
+                        for key, (want_white, turn_t) in panel_defs.items():
+                            m = (white_wins == want_white) & (turns == turn_t)
+                            if not m.any():
+                                continue
+                            idxs = np.concatenate((pools[key][0], gidx[m]))
+                            mags = np.concatenate((pools[key][1], np.abs(v[m])))
+                            if len(idxs) > POOL:
+                                keep = np.argpartition(-mags, POOL - 1)[:POOL]
+                                idxs, mags = idxs[keep], mags[keep]
+                            pools[key] = (idxs, mags)
+                    if chunk_no % 8 == 0:
+                        pct = int(chunk_no * 100 / total_chunks)
+                        self.root.after(0, lambda p=pct: self.info_label.config(
+                            text=f"Scanning {filename} (decisive)... {p}%"))
+
+                if not any_decisive:
                     self._close_scan_data(data)
                     self.root.after(0, lambda: self._search_finished_empty("No decisive mate positions found."))
                     return
 
-                vals = data_flat[non_zero_indices]
-                turns = non_zero_indices % 2
-
-                white_wins = ((vals > 0) & (turns == 0)) | ((vals < 0) & (turns == 1))
-
-                masks = {
-                    "panel_1": white_wins & (turns == 0),
-                    "panel_2": white_wins & (turns == 1),
-                    "panel_3": ~white_wins & (turns == 0),
-                    "panel_4": ~white_wins & (turns == 1),
-                }
-
                 for key in PANEL_KEYS:
                     results[key]['title'] = panel_titles[key]
-                    m = masks[key]
-                    sub_indices = non_zero_indices[m]
-                    sub_vals = np.abs(vals[m])
+                    pool_idx, pool_mag = pools[key]
+                    if len(pool_idx) == 0: continue
 
-                    if len(sub_indices) == 0: continue
-
-                    order = np.argsort(-sub_vals)
-                    ranked_indices = sub_indices[order]
+                    order = np.argsort(-pool_mag, kind='stable')
+                    ranked_indices = pool_idx[order]
 
                     bucket_count = 0
                     for idx in ranked_indices:

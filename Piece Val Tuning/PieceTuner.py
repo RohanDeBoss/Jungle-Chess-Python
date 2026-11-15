@@ -1,4 +1,4 @@
-# PieceTuner.py (v3.3 - Compatible with AI v114.3 and GameLogic v59.1)
+# PieceTuner.py (v3.4 - Compatible with AI v128.8 and GameLogic v71.3)
 
 import sys
 import os

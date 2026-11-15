@@ -1,4 +1,4 @@
-# JungleChessUI.py (v18.1 - series-state hygiene, single clock chain, mate labels)
+# JungleChessUI.py (v18.2 - series timing and worker-error handling)
 
 import tkinter as tk
 from tkinter import ttk, messagebox
@@ -973,6 +973,15 @@ class EnhancedChessApp:
                 self.master.after(self._get_ai_move_delay(), self._make_game_ai_move)
         else:
             print("AI reported no valid move.")
+            if (not self.game_over and self.ai_series_running
+                    and self.game_mode.get() == GameMode.AI_VS_AI.value):
+                # A worker error (traceback is on the console) would otherwise leave
+                # the series waiting forever for a move that never comes.
+                self.ai_series_running = False
+                self._cancel_pending_series_reset()
+                self.turn_label.config(text="SERIES STOPPED: ENGINE ERROR")
+                if self.auto_save_stats_var.get():
+                    self.save_depth_stats_to_file()
             
         self._stop_ai_process()
         self.update_bot_labels()
@@ -1417,12 +1426,15 @@ class EnhancedChessApp:
                             r'Nodes(?:Total)?[=:]\s*(\d+).*?KNPS[=:]\s*([\d.]+).*?Time[=:]\s*([\d.]+)s',
                             msg[1])
                         if m:
+                            # Each log line is one iteration: sum the times (nodes are
+                            # already cumulative) so the stat covers the whole move.
+                            prev = self._pending_move_stat.get(m.group(1))
                             self._pending_move_stat[m.group(1)] = {
                                 'depth': m.group(2),
                                 'eval':  float(m.group(3)),
                                 'nodes': int(m.group(4)),
                                 'knps':  float(m.group(5)),
-                                'time':  float(m.group(6)),
+                                'time':  float(m.group(6)) + (prev['time'] if prev else 0.0),
                             }
                 elif kind == 'eval':
                     self.last_eval_score, self.last_eval_depth = msg[1], msg[2]
@@ -1496,6 +1508,7 @@ class EnhancedChessApp:
 
         self.current_task_id += 1  # Increment task generation
         self.latest_task_id.value = self.current_task_id
+        self._pending_move_stat.clear()   # a cancelled search must not leak time into this move
         worker_key = 'main' if bot_class is ChessBot else 'op'
 
         task = {

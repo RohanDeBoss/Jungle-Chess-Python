@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+# bench_transitions.py (v1.0 - Stage 2 transition benchmark and correctness checks)
 """Benchmark and correctness-check Stage 2 tablebase transitions."""
 
 import argparse
