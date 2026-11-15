@@ -1,4 +1,4 @@
-# JungleChessUI.py (v18.0 - suite refresh and safe series transitions)
+# JungleChessUI.py (v18.1 - series-state hygiene, single clock chain, mate labels)
 
 import tkinter as tk
 from tkinter import ttk, messagebox
@@ -143,6 +143,7 @@ class EnhancedChessApp:
         self.increment       = 0.0
         self.last_clock_tick = None
         self.clock_running   = False
+        self._clock_after_id = None
         self.use_clock_var   = tk.BooleanVar(value=True)
 
         self.COLORS = self.setup_styles()
@@ -434,6 +435,7 @@ class EnhancedChessApp:
         self.tt_fullness_label = ttk.Label(info, text="", style='SmallHeader.TLabel')
         self.tt_fullness_label.pack(anchor=tk.W, pady=(2, 2))
         ttk.Checkbutton(info, text="Use Clock", variable=self.use_clock_var,
+                        style='Custom.TCheckbutton',
                         command=self._toggle_clock).pack(anchor=tk.W, pady=(2, 2))
 
         self.clock_frame = ttk.Frame(info, style='Left.TFrame')
@@ -638,6 +640,12 @@ class EnhancedChessApp:
     def on_mode_changed(self):
         self._stop_ai_process()
         mode = self.game_mode.get()
+        if mode != GameMode.AI_VS_AI.value:
+            # Leaving AI-vs-AI abandons the series; otherwise the harvester keeps
+            # sampling human games and a queued reset can wipe the board.
+            self._cancel_pending_series_reset()
+            self.ai_series_running = False
+            self.update_scoreboard()
         if mode == GameMode.HUMAN_VS_BOT.value:
             self.board_orientation = self.human_color
             if not self.game_over and self.turn != self.human_color:
@@ -916,7 +924,6 @@ class EnhancedChessApp:
                 self.black_time += self.increment
             self.render_clocks()
         self.switch_turn()
-        self._start_clock()
         if self.history_pointer < len(self.full_history) - 1:
             self.full_history = self.full_history[:self.history_pointer + 1]
             self.position_counts.clear()
@@ -932,6 +939,9 @@ class EnhancedChessApp:
         if status != "ongoing":
             self.game_over   = True
             self.game_result = (status, winner)
+        self._start_clock()
+        if self.game_over:
+            self.render_clocks()
         self._maybe_harvest_aspiration_position()
         self.update_ui_after_state_change()
         if self.game_over:
@@ -1371,7 +1381,14 @@ class EnhancedChessApp:
         mx = int(((max(-1.0, min(1.0, math.tanh(score / 10.0))) + 1) / 2.0) * w)
         self.eval_bar_canvas.create_line(mx,   0, mx,   h, fill="#FF0000", width=3, tags="marker")
         self.eval_bar_canvas.create_line(w//2, 0, w//2, h, fill="#00FF00", width=2, tags="marker")
-        sfx = f" (D{depth})" if depth is not None else ""
+        if depth is None:
+            sfx = ""
+        else:
+            sfx = f" ({depth})" if isinstance(depth, str) else f" (D{depth})"
+        if abs(eval_score) > 990000:
+            n = (1000000 - abs(eval_score) + 1) // 2
+            self.eval_score_label.config(text=f"{'+' if eval_score > 0 else '-'}M{n}{sfx}")
+            return
         self.eval_score_label.config(text=f"Even{sfx}" if abs(score) < 0.05
                                      else f"{'+' if score > 0 else ''}{score:.2f}{sfx}")
 
@@ -1443,7 +1460,9 @@ class EnhancedChessApp:
                 not getattr(self, 'show_pv_var', None) or not self.show_pv_var.get():
             self.pv_text.pack_forget()
             return
-        self.pv_text.pack(side=tk.BOTTOM, fill=tk.X, padx=5, pady=10)
+        if not self.pv_text.winfo_manager():
+            self.pv_text.pack(side=tk.BOTTOM, fill=tk.X, padx=5, pady=10,
+                              before=self.controls_frame)
         msg = getattr(self, 'last_pv_message', None)
         if not msg:
             return
@@ -1458,7 +1477,8 @@ class EnhancedChessApp:
             sd = f"{score / 100:+.2f}"
         self.pv_text.config(state=tk.NORMAL)
         self.pv_text.delete(1.0, tk.END)
-        self.pv_text.insert(tk.END, f"[{sd}] (D{depth}):\n")
+        depth_txt = depth if isinstance(depth, str) else f"D{depth}"
+        self.pv_text.insert(tk.END, f"[{sd}] ({depth_txt}):\n")
         for i, (san, _) in enumerate(zip(pv_san_list, pv_raw)):
             tag = f"pv_move_{i}"
             self.pv_text.insert(tk.END, self._format_san_display(san) + " ", tag)
@@ -1556,7 +1576,15 @@ class EnhancedChessApp:
         if self.game_mode.get() == GameMode.HUMAN_VS_HUMAN.value and not self.game_over:
             fullmove = (self.history_pointer + 1) // 2 + 1
             print(f"\n--- Analysis: Move {fullmove}, Ply {self.history_pointer}, {self.turn.capitalize()} ---")
-            self.master.after(50, lambda: self._start_ai_process(ChessBot, self.ANALYSIS_AI_NAME, 99))
+            self.master.after(50, self._start_analysis_if_still_valid)
+
+    def _start_analysis_if_still_valid(self):
+        """Deferred analysis start: state may have changed during the 50 ms delay."""
+        if (self._shutting_down or self.game_over
+                or not self.analysis_mode_var.get()
+                or self.game_mode.get() != GameMode.HUMAN_VS_HUMAN.value):
+            return
+        self._start_ai_process(ChessBot, self.ANALYSIS_AI_NAME, 99)
 
     # ------------------------------------------------------------------ misc helpers
     def _on_time_slider_release(self, event=None):
@@ -1621,6 +1649,14 @@ class EnhancedChessApp:
             self.black_clock_lbl.config(bg=self.COLORS['bg_medium'], fg=self.COLORS['text_light'])
 
     def _tick_clock(self):
+        # A direct call (resume/restart) can overlap a callback queued before a
+        # pause; cancel it so only one tick chain exists.
+        if self._clock_after_id is not None:
+            try:
+                self.master.after_cancel(self._clock_after_id)
+            except tk.TclError:
+                pass
+            self._clock_after_id = None
         if not self.use_clock_var.get() or not self.clock_running or self.game_over:
             self.clock_running = False
             return
@@ -1639,7 +1675,7 @@ class EnhancedChessApp:
             self.handle_timeout(self.turn)
             return
         self.render_clocks()
-        self.master.after(25, self._tick_clock)
+        self._clock_after_id = self.master.after(25, self._tick_clock)
 
     def handle_timeout(self, color):
         self.game_over     = True
