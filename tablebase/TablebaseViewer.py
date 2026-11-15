@@ -2,6 +2,7 @@
 
 import os
 import sys
+import tempfile
 import numpy as np
 import tkinter as tk
 from tkinter import ttk, messagebox
@@ -12,6 +13,7 @@ if PROJECT_ROOT not in sys.path:
 from GameLogic import Board, King, Queen, Rook, Bishop, Knight, Pawn, is_in_check
 from tablebase.TablebaseManager import TablebaseManager
 from tablebase.TablebaseFormat import infer_flat_table_dtype
+from tablebase.DiagonalCompressedTable import expand_compressed_table
 
 # --- CONFIGURATION ---
 TB_DIR = os.path.join(PROJECT_ROOT, "TBs")
@@ -159,6 +161,8 @@ class TBViewerApp:
         self.bucket_listboxes = {}                           # key -> Listbox
         self.bucket_title_labels = {}                        # key -> Label
         self.categorized_files = {category: [] for category in CATEGORY_ORDER}
+        self.file_variants = {}                              # standard filename -> available storage variants
+        self.tb_manager = None
 
         self.setup_styles()
         self.build_ui()
@@ -188,6 +192,12 @@ class TBViewerApp:
         ttk.Label(top_frame, text="Tablebase:").pack(side=tk.LEFT, padx=(10, 5))
         self.file_combo = ttk.Combobox(top_frame, state="readonly", width=28, font=('Helvetica', 11))
         self.file_combo.pack(side=tk.LEFT, padx=5)
+        self.file_combo.bind('<<ComboboxSelected>>', self.on_select_file)
+
+        ttk.Label(top_frame, text="Storage:").pack(side=tk.LEFT, padx=(10, 5))
+        self.storage_combo = ttk.Combobox(top_frame, state="readonly", width=20, font=('Helvetica', 11))
+        self.storage_combo.pack(side=tk.LEFT, padx=5)
+        self.storage_combo.bind('<<ComboboxSelected>>', lambda e: self.load_tablebase())
 
         ttk.Label(top_frame, text="Filter:").pack(side=tk.LEFT, padx=(10, 5))
         self.mode_combo = ttk.Combobox(top_frame, state="readonly", width=18, font=('Helvetica', 11),
@@ -267,10 +277,22 @@ class TBViewerApp:
 
     def load_file_list(self):
         os.makedirs(TB_DIR, exist_ok=True)
-        files = [f for f in os.listdir(TB_DIR) if f.endswith(TB_SUFFIX)]
-        if not files: return
+        self.file_variants.clear()
+        for filename in sorted(os.listdir(TB_DIR)):
+            if filename.endswith(TB_SUFFIX):
+                standard_name = filename
+                self.file_variants.setdefault(standard_name, set()).add("Dense")
+            elif filename.endswith("_tb8(compressed).bin"):
+                standard_name = filename.replace("_tb8(compressed).bin", TB_SUFFIX)
+                compressed_path = os.path.join(TB_DIR, filename)
+                if not os.path.isfile(compressed_path + ".diagmap"):
+                    continue
+                self.file_variants.setdefault(standard_name, set()).add("Diagonal compressed")
 
-        for f in sorted(files):
+        if not self.file_variants:
+            return
+
+        for f in sorted(self.file_variants):
             metadata = parse_tablebase_filename(f)
             if metadata is None:
                 continue
@@ -285,8 +307,33 @@ class TBViewerApp:
     def on_select_category(self, event):
         files = self.categorized_files.get(self.category_combo.get(), [])
         self.file_combo['values'] = files
-        if files: self.file_combo.current(0)
-        else: self.file_combo.set('')
+        if files:
+            self.file_combo.current(0)
+            self.on_select_file(None)
+        else:
+            self.file_combo.set('')
+            self.storage_combo['values'] = []
+            self.storage_combo.set('')
+
+    def on_select_file(self, event):
+        filename = self.file_combo.get()
+        variants = sorted(
+            self.file_variants.get(filename, ()),
+            key=lambda value: (value != "Dense", value),
+        )
+        self.storage_combo['values'] = variants
+        if variants:
+            self.storage_combo.current(0)
+            self.info_label.config(text=f"Selected {filename} ({variants[0]})")
+        else:
+            self.storage_combo.set('')
+
+    def _selected_table_path(self, filename=None, storage=None):
+        filename = filename or self.file_combo.get()
+        storage = storage or self.storage_combo.get()
+        if storage == "Diagonal compressed":
+            filename = filename.replace(TB_SUFFIX, "_tb8(compressed).bin")
+        return os.path.join(TB_DIR, filename)
 
     def _fast_is_position_legal(self, placements, turn, board):
         """Ultra-fast legality check reusing a single Board instance to prevent RAM allocation lag."""
@@ -314,6 +361,11 @@ class TBViewerApp:
             color = 'white' if char.isupper() else 'black'
             board.add_piece(PIECE_CLASSES[char.upper()](color), r, c)
 
+        if self.tb_manager is None:
+            self.tb_manager = TablebaseManager()
+        if not self.tb_manager.is_material_supported(board):
+            return False
+
         passive_color = 'black' if turn == 0 else 'white'
         return not is_in_check(board, passive_color)
 
@@ -322,20 +374,22 @@ class TBViewerApp:
         
         filename = self.file_combo.get()
         if not filename: return
+        storage = self.storage_combo.get() or "Dense"
 
         self._is_searching = True
         self.load_btn.config(state=tk.DISABLED, text="Scanning...")
-        self.info_label.config(text="Scanning tablebase... Please wait.")
+        self.info_label.config(text=f"Scanning {filename} ({storage})... Please wait.")
         
         for key in PANEL_KEYS:
             self.bucket_fens[key] = []
             self.bucket_listboxes[key].delete(0, tk.END)
 
         import threading
-        threading.Thread(target=self._tb_search_thread, args=(filename, self.mode_combo.get()), daemon=True).start()
+        threading.Thread(target=self._tb_search_thread,
+                         args=(filename, self.mode_combo.get(), storage), daemon=True).start()
 
-    def _tb_search_thread(self, filename, view_mode):
-        filepath = os.path.join(TB_DIR, filename)
+    def _tb_search_thread(self, filename, view_mode, storage="Dense"):
+        filepath = self._selected_table_path(filename, storage)
         metadata = parse_tablebase_filename(filename)
         
         if metadata is None:
@@ -345,14 +399,29 @@ class TBViewerApp:
         has_pawn = "Pawn" in filename
         category = metadata["category"]
 
+        temporary_directory = None
+        data = None
         try:
             position_count = (
                 (32 if has_pawn else 10)
                 * 64 ** (len(metadata["white_pieces"]) + len(metadata["black_pieces"]) + 1)
                 * 2
             )
-            disk_dtype = infer_flat_table_dtype(filepath, position_count)
-            data = np.memmap(filepath, dtype=disk_dtype, mode='r')
+            if storage == "Diagonal compressed":
+                shape = (
+                    (32 if has_pawn else 10),
+                    *([64] * (len(metadata["white_pieces"]) + len(metadata["black_pieces"]) + 1)),
+                    2,
+                )
+                if has_pawn or metadata["category"] != "5-Man Same-Side":
+                    raise ValueError("Diagonal-compressed storage is only supported for non-pawn same-side tables.")
+                temporary_directory = tempfile.TemporaryDirectory(prefix="tbviewer_")
+                expanded_path = os.path.join(temporary_directory.name, filename)
+                disk_dtype = expand_compressed_table(filepath, expanded_path, shape, filename[:-len(TB_SUFFIX)])
+                data = np.memmap(expanded_path, dtype=disk_dtype, mode='r', shape=(position_count,))
+            else:
+                disk_dtype = infer_flat_table_dtype(filepath, position_count)
+                data = np.memmap(filepath, dtype=disk_dtype, mode='r')
             data_flat = data.reshape(-1)
             
             reusable_board = Board(setup=False)
@@ -369,6 +438,7 @@ class TBViewerApp:
             if view_mode == "Decisive Mates":
                 non_zero_indices = np.where(data_flat != 0)[0]
                 if len(non_zero_indices) == 0:
+                    self._close_scan_data(data, temporary_directory)
                     self.root.after(0, lambda: self._search_finished_empty("No decisive mate positions found."))
                     return
 
@@ -480,9 +550,18 @@ class TBViewerApp:
                     self.bucket_title_labels[key].config(text="N/A")
 
             self.root.after(0, self._tb_search_complete, results, view_mode, any_found)
+            self._close_scan_data(data, temporary_directory)
 
         except Exception as e:
+            self._close_scan_data(data, temporary_directory)
             self.root.after(0, lambda err=e: self._search_finished_error(f"Failed to parse tablebase:\n{err}"))
+
+    @staticmethod
+    def _close_scan_data(data, temporary_directory):
+        if data is not None and getattr(data, "_mmap", None) is not None:
+            data._mmap.close()
+        if temporary_directory is not None:
+            temporary_directory.cleanup()
 
     def _search_finished_error(self, msg):
         self._is_searching = False

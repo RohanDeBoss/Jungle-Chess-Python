@@ -5,6 +5,7 @@ import numpy as np
 from GameLogic import King, Board
 from itertools import combinations, combinations_with_replacement
 from tablebase.TablebaseFormat import infer_table_dtype
+from tablebase.DiagonalCompressedTable import DiagonalCompressedTable
 
 TB_SUFFIX = "_tb8.bin"
 TB_DTYPE = np.int8   # preferred dtype; long-DTM tables are stored as int16
@@ -113,8 +114,11 @@ class TablebaseManager:
 
             shape = tuple([wk_size] + [64] * (num_pieces + 1) + [2])
             
-            disk_dtype = infer_table_dtype(filename, shape)
-            self.tables[base_name] = np.memmap(filename, dtype=disk_dtype, mode='r', shape=shape)
+            if os.path.exists(filename + ".diagmap"):
+                self.tables[base_name] = DiagonalCompressedTable(filename, shape, base_name)
+            else:
+                disk_dtype = infer_table_dtype(filename, shape)
+                self.tables[base_name] = np.memmap(filename, dtype=disk_dtype, mode='r', shape=shape)
             if os.path.exists(filename + TB_WDL_MARKER_SUFFIX):
                 self.full_wdl_tables.add(base_name)
                 
@@ -140,6 +144,27 @@ class TablebaseManager:
         except Exception as e:
             print(f"[TablebaseManager] Failed to memmap {base_name}: {e}")
         return False
+
+    def is_material_supported(self, board):
+        """Return whether this position's material class and bishop colours are represented."""
+        if not board.white_king_pos or not board.black_king_pos:
+            return False
+        w_z = board.piece_counts_z['white']
+        b_z = board.piece_counts_z['black']
+        signature = (w_z[0], w_z[1], w_z[2], w_z[3], w_z[4],
+                     b_z[0], b_z[1], b_z[2], b_z[3], b_z[4])
+        if signature not in self.signature_map:
+            return False
+
+        if w_z[2] < 2 and b_z[2] < 2:
+            return True
+        for pieces in (board.white_pieces, board.black_pieces):
+            bishops = [p for p in pieces if type(p).__name__ == "Bishop"]
+            for i, first in enumerate(bishops):
+                for second in bishops[i + 1:]:
+                    if ((first.pos[0] + first.pos[1]) & 1) == ((second.pos[0] + second.pos[1]) & 1):
+                        return False
+        return True
 
     def _tb_score_to_ai_score(self, tb_val, is_win_for_white):
         if tb_val == 0: return 0
@@ -243,28 +268,13 @@ class TablebaseManager:
     def probe(self, board, turn_to_move):
         w_z = board.piece_counts_z['white']
         b_z = board.piece_counts_z['black']
-        
-        # O(1) Material Signature Filter
-        sig = (w_z[0], w_z[1], w_z[2], w_z[3], w_z[4],
-               b_z[0], b_z[1], b_z[2], b_z[3], b_z[4])
-               
-        if sig not in self.signature_map:
+
+        if not self.is_material_supported(board):
             return None
             
         w_objs = [p for p in board.white_pieces if not isinstance(p, King)]
         b_objs = [p for p in board.black_pieces if not isinstance(p, King)]
         if not board.white_king_pos or not board.black_king_pos: return None
-
-        # Same-color bishop blindspot fix (only run if 2+ bishops exist)
-        if w_z[2] >= 2 or b_z[2] >= 2:
-            for objs in (w_objs, b_objs):
-                bishops = [p for p in objs if type(p).__name__ == "Bishop"]
-                if len(bishops) >= 2:
-                    for i in range(len(bishops)):
-                        for j in range(i + 1, len(bishops)):
-                            sq1, sq2 = bishops[i].pos, bishops[j].pos
-                            if ((sq1[0] + sq1[1]) % 2) == ((sq2[0] + sq2[1]) % 2):
-                                return None 
 
         wk = board.white_king_pos[0] * 8 + board.white_king_pos[1]
         bk = board.black_king_pos[0] * 8 + board.black_king_pos[1]

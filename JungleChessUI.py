@@ -410,8 +410,8 @@ class EnhancedChessApp:
         self.bot_depth_slider.pack(fill=tk.X, pady=(0, 3))
 
         for text, var, cmd in [
-            ("Use Opening Book",           self.use_opening_book_var, None),
-            ("Use Tablebase",              self.use_tablebase_var,    None),
+            ("Use Opening Book",           self.use_opening_book_var, self._update_analysis_after_state_change),
+            ("Use Tablebase",              self.use_tablebase_var,    self._update_analysis_after_state_change),
             ("Auto Adjudicate TB Draw",    self.auto_adjudicate_var,  None),
             ("Analysis Mode (H-vs-H)",     self.analysis_mode_var,    self._update_analysis_after_state_change),
             ("Auto-save Depth Stats",      self.auto_save_stats_var,  None),
@@ -1585,6 +1585,16 @@ class EnhancedChessApp:
             self.time_control_frame.pack_forget()
             self._pause_clock()
             self.last_clock_tick = None
+            if (self.game_mode.get() == GameMode.HUMAN_VS_HUMAN.value
+                    and self.analysis_mode_var.get()
+                    and self.game_result
+                    and self.game_result[0] == "timeout"):
+                # A timeout ends a timed game, but disabling the clock in analysis
+                # should return the current position to an editable state.
+                self.game_over = False
+                self.game_result = None
+                self.update_ui_after_state_change()
+                self._update_analysis_after_state_change()
 
     def _get_ai_move_delay(self):
         return 0
