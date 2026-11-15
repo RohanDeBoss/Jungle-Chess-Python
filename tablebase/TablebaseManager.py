@@ -5,7 +5,6 @@ import numpy as np
 from GameLogic import King, Board
 from itertools import combinations, combinations_with_replacement
 from tablebase.TablebaseFormat import infer_table_dtype
-from tablebase.DiagonalCompressedTable import DiagonalCompressedTable
 
 TB_SUFFIX = "_tb8.bin"
 TB_DTYPE = np.int8   # preferred dtype; long-DTM tables are stored as int16
@@ -114,11 +113,8 @@ class TablebaseManager:
 
             shape = tuple([wk_size] + [64] * (num_pieces + 1) + [2])
             
-            if os.path.exists(filename + ".diagmap"):
-                self.tables[base_name] = DiagonalCompressedTable(filename, shape, base_name)
-            else:
-                disk_dtype = infer_table_dtype(filename, shape)
-                self.tables[base_name] = np.memmap(filename, dtype=disk_dtype, mode='r', shape=shape)
+            disk_dtype = infer_table_dtype(filename, shape)
+            self.tables[base_name] = np.memmap(filename, dtype=disk_dtype, mode='r', shape=shape)
             if os.path.exists(filename + TB_WDL_MARKER_SUFFIX):
                 self.full_wdl_tables.add(base_name)
                 

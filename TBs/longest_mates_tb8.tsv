@@ -67,4 +67,5 @@ regen_K_Queen_vs_Queen_K                 25  tb8              422,710       2,00
 regen_K_Queen_vs_Rook_K                  34  tb8              246,810       2,479,786         2.8  2026-07-17 12:40:59 
 regen_K_Rook_K                           15  tb8                  986          55,475         0.0  2026-10-23 23:24:13 
 regen_K_Rook_Rook_K                      22  tb8            1,327,485         228,113         0.8  2026-11-12 08:53:14 
+regen_K_Rook_Rook_vs_Queen_K             33  tb8           14,442,397      42,410,900        64.1  2026-11-15 01:17:48 
 regen_K_Rook_vs_Rook_K                   15  tb8               17,221       3,004,603         2.6  2026-11-12 08:55:53 
