@@ -1,4 +1,4 @@
-# TablebaseGenerator.py (v24.6 - adaptive DTM storage + disk-backed uint64 CSR + lock)
+# TablebaseGenerator.py (v24.7 - standardized Python Stage 1+2)
 
 import os
 import sys
@@ -823,9 +823,9 @@ def _numba_bfs(unsolved_flats_np, init_table_np, init_out_degree_np, init_max_ch
                wtm_idx, wtm_val, btm_idx, btm_val,
                b2w_head, b2w_edges, w2b_head, w2b_edges, start_time):
     try:
-        from TBKernels import bfs_kernel
+        from TBTransition import bfs_kernel
     except ImportError:
-        from tablebase.TBKernels import bfs_kernel
+        from tablebase.TBTransition import bfs_kernel
 
     n = len(unsolved_flats_np)
     local_table = init_table_np.astype(TB_DTYPE)

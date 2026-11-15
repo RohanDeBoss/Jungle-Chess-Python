@@ -1,4 +1,4 @@
-# PieceTuner.py (v3.4 - Compatible with AI v128.8 and GameLogic v71.3)
+# PieceTuner.py (v3.5 - per-move self-play aging; AI v128.8/GameLogic v71.3)
 
 import sys
 import os
@@ -288,6 +288,8 @@ def _play_one_game(args: tuple) -> tuple:
             bot.ply_count       = plies
             root_hash = board_hash(board, turn)
 
+            bot.current_age += 1          # mirror update_state: age TT entries per move
+            bot._age_history_table()
             _, best_move = _search_with_id(gen_depth, legal, root_hash)
             move = best_move if best_move else random.choice(legal)
 
