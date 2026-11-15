@@ -4,6 +4,8 @@ import os
 import sys
 import time
 import signal
+import errno
+import uuid
 from concurrent.futures import ProcessPoolExecutor
 import multiprocessing
 from itertools import combinations_with_replacement
@@ -180,6 +182,102 @@ def _install_worker_interrupt_ignores():
     for sig in _CONSOLE_INTERRUPT_SIGNALS:
         try: signal.signal(sig, signal.SIG_IGN)
         except Exception: pass
+
+_WINDOWS_CONSOLE_CLOSE_HANDLER = None
+
+def _pid_is_running(pid):
+    """Return True unless the OS can confirm that this PID no longer exists."""
+    if pid <= 0:
+        return False
+    if os.name == "nt":
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        kernel32.GetExitCodeProcess.argtypes = (wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD))
+        kernel32.GetExitCodeProcess.restype = wintypes.BOOL
+        kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+        kernel32.CloseHandle.restype = wintypes.BOOL
+
+        process = kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+        if not process:
+            # ERROR_INVALID_PARAMETER / ERROR_NOT_FOUND mean the PID is gone.
+            return ctypes.get_last_error() not in (87, 1168)
+        try:
+            exit_code = wintypes.DWORD()
+            if not kernel32.GetExitCodeProcess(process, ctypes.byref(exit_code)):
+                return True
+            return exit_code.value == 259  # STILL_ACTIVE
+        finally:
+            kernel32.CloseHandle(process)
+
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError as exc:
+        if exc.errno == errno.ESRCH or getattr(exc, "winerror", None) in (87, 1168):
+            return False
+        # Permission errors mean the process exists; unknown errors are treated
+        # conservatively so a live generator's lock is never casually removed.
+        return True
+
+def _remove_stale_generator_lock(lock_path):
+    """Remove a lock only when its recorded owner PID is confirmed dead."""
+    try:
+        with open(lock_path, "r", encoding="ascii") as lock_file:
+            original = lock_file.read().strip()
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
+
+    fields = original.split()
+    if not fields or not fields[0].isdigit() or _pid_is_running(int(fields[0])):
+        return False
+
+    # A second read avoids deleting a lock that another generator replaced
+    # while the stale owner's process status was being checked.
+    try:
+        with open(lock_path, "r", encoding="ascii") as lock_file:
+            if lock_file.read().strip() != original:
+                return False
+        os.remove(lock_path)
+        print(f"[Lock] Removed stale generator lock from PID {fields[0]}.", flush=True)
+        return True
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
+
+def _install_windows_console_close_handler(cleanup):
+    """Run lock cleanup when Windows closes the console hosting this process."""
+    global _WINDOWS_CONSOLE_CLOSE_HANDLER
+    if os.name != "nt":
+        return
+
+    import ctypes
+    from ctypes import wintypes
+    handler_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.DWORD)
+
+    @handler_type
+    def console_handler(control_type):
+        # CTRL_CLOSE_EVENT, CTRL_LOGOFF_EVENT, CTRL_SHUTDOWN_EVENT
+        if control_type in (2, 5, 6):
+            try:
+                cleanup()
+            finally:
+                return True
+        return False
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.SetConsoleCtrlHandler.argtypes = (handler_type, wintypes.BOOL)
+    kernel32.SetConsoleCtrlHandler.restype = wintypes.BOOL
+    if not kernel32.SetConsoleCtrlHandler(console_handler, True):
+        raise ctypes.WinError(ctypes.get_last_error())
+    # Keep the callback alive for as long as Windows may call it.
+    _WINDOWS_CONSOLE_CLOSE_HANDLER = (console_handler, kernel32)
 
 def _infer_disk_dtype(filename, shape):
     """Delegate table dtype validation to the shared tablebase format helper."""
@@ -2225,14 +2323,24 @@ if __name__ == "__main__":
     import atexit
     _lock_path = os.path.join(TB_DIR, "generator.lock")
     _lock_pid = str(os.getpid())
-    try:
-        _lock_fd = os.open(_lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-    except FileExistsError:
-        print(f"Another generator appears to be running (lock file: {_lock_path}).\n"
-              "If it crashed, delete that file and start again.")
+    _lock_token = uuid.uuid4().hex
+    _lock_owner = f"{_lock_pid} {_lock_token}"
+    _lock_fd = None
+    for _attempt in range(3):
+        try:
+            _lock_fd = os.open(_lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            break
+        except FileExistsError:
+            if _remove_stale_generator_lock(_lock_path):
+                continue
+            print(f"Another generator appears to be running (lock file: {_lock_path}).\n"
+                  "The lock is retained because its owner may still be active.")
+            sys.exit(1)
+    if _lock_fd is None:
+        print(f"Could not claim generator lock after retries: {_lock_path}")
         sys.exit(1)
     try:
-        os.write(_lock_fd, (_lock_pid + "\n").encode("ascii"))
+        os.write(_lock_fd, (_lock_owner + "\n").encode("ascii"))
     except BaseException:
         try:
             os.remove(_lock_path)
@@ -2245,12 +2353,16 @@ if __name__ == "__main__":
     def _release_generator_lock():
         try:
             with open(_lock_path, "r", encoding="ascii") as lock_file:
-                if lock_file.read().strip() == _lock_pid:
+                if lock_file.read().strip() == _lock_owner:
                     os.remove(_lock_path)
         except OSError:
             pass
 
     atexit.register(_release_generator_lock)
+    try:
+        _install_windows_console_close_handler(_release_generator_lock)
+    except Exception as e:
+        print(f"[Lock] Windows close handler unavailable; stale-lock recovery remains enabled: {e}", flush=True)
 
     # Run the auto-cleanup routine before starting
     auto_cleanup_tb_directory()
